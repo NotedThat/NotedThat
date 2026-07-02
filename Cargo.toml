@@ -32,6 +32,10 @@ futures = "0.3"
 
 # HTTP layer
 axum = { version = "0.8", default-features = false }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+headers = "0.4"
+hex = "0.4"
+httpdate = "1.0"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", default-features = false }
 http = "1"
@@ -55,6 +59,7 @@ anyhow = "1"
 
 # Security & IDs
 subtle = "2.4"
+sha2 = "0.10"
 uuid = { version = "1.6", default-features = false, features = ["v7"] }
 
 # Testing
