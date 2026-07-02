@@ -103,7 +103,9 @@ pub fn parse_range_header(value: &str) -> Result<ParsedRanges, RangeParseError> 
         return Err(RangeParseError::Empty);
     }
 
-    let (unit, range_set) = value.split_once('=').ok_or(RangeParseError::MissingEquals)?;
+    let (unit, range_set) = value
+        .split_once('=')
+        .ok_or(RangeParseError::MissingEquals)?;
     if range_set.is_empty() {
         return Err(RangeParseError::NoRanges);
     }
@@ -152,9 +154,7 @@ fn parse_u64(component: &str, spec: &str) -> Result<u64, RangeParseError> {
         return Err(RangeParseError::InvalidSpec(spec.to_string()));
     }
 
-    component
-        .parse()
-        .map_err(|_| RangeParseError::OverflowU64)
+    component.parse().map_err(|_| RangeParseError::OverflowU64)
 }
 
 #[cfg(test)]
@@ -266,7 +266,10 @@ mod tests {
 
     #[test]
     fn parse_missing_equals_is_error() {
-        assert_eq!(parse_range_header("bytes"), Err(RangeParseError::MissingEquals));
+        assert_eq!(
+            parse_range_header("bytes"),
+            Err(RangeParseError::MissingEquals)
+        );
     }
 
     #[test]
@@ -376,7 +379,20 @@ mod tests {
 
     #[test]
     fn suffix_zero_is_unsatisfiable() {
-        assert_eq!(ByteRange::Suffix { length: 0 }.to_exclusive_range(500), None);
+        assert_eq!(
+            ByteRange::Suffix { length: 0 }.to_exclusive_range(500),
+            None
+        );
+    }
+
+    #[test]
+    fn is_satisfiable_true_when_exclusive_range_exists() {
+        assert!(ByteRange::Suffix { length: 100 }.is_satisfiable(500));
+    }
+
+    #[test]
+    fn is_satisfiable_false_when_exclusive_range_is_none() {
+        assert!(!ByteRange::Suffix { length: 0 }.is_satisfiable(500));
     }
 
     #[test]
