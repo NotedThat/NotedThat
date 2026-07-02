@@ -1,0 +1,15 @@
+[package]
+name = "notedthat-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NotedThat server — HTTP API + WebDAV in one process (placeholder in M1)"
+readme = "README.md"
+
+[[bin]]
+name = "notedthat-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true
