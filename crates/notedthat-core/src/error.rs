@@ -1,5 +1,112 @@
 //! Domain error types: `Error` and `StorageError`.
 
+use thiserror::Error;
+
+/// Domain error mapped to §6.12 HTTP status codes.
+/// This is the general error for the API layer — storage-specific errors use [`StorageError`].
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Input from the client was invalid (e.g., malformed slug, invalid path).
+    #[error("invalid input: {message}")]
+    InvalidInput {
+        /// Human-readable description of what was invalid.
+        message: String,
+    },
+
+    /// The requested resource was not found.
+    #[error("not found: {resource}")]
+    NotFound {
+        /// Identifies the missing resource (e.g., `"kb:my-notes"`).
+        resource: String,
+    },
+
+    /// The request payload exceeded the allowed size limit.
+    #[error("payload too large: {size} bytes (limit {limit})")]
+    PayloadTooLarge {
+        /// The actual payload size in bytes.
+        size: u64,
+        /// The maximum allowed size in bytes.
+        limit: u64,
+    },
+
+    /// The derived S3 bucket name exceeds 63 characters.
+    #[error("bucket name too long: {name} ({len} chars, max 63)")]
+    BucketNameTooLong {
+        /// The full bucket name that was too long.
+        name: String,
+        /// The length in bytes of the too-long name.
+        len: usize,
+    },
+
+    /// A required configuration value was missing or invalid.
+    #[error("configuration error: {message}")]
+    Config {
+        /// Human-readable description of the configuration problem.
+        message: String,
+    },
+
+    /// A storage-layer error (see [`StorageError`]).
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
+
+/// Storage-layer error — distinct from [`enum@Error`] so that different backends
+/// (S3, in-memory mock, future prefix-per-KB) share a stable failure surface.
+#[derive(Debug)]
+pub enum StorageError {
+    /// The requested object was not found in storage.
+    NotFound {
+        /// The key of the missing object.
+        key: String,
+    },
+
+    /// The storage bucket for the KB was not found.
+    BucketNotFound {
+        /// The bucket name that was not found.
+        bucket: String,
+    },
+
+    /// The storage backend is temporarily unavailable.
+    BackendUnavailable {
+        /// The underlying error message from the backend.
+        source: String,
+    },
+
+    /// An unexpected storage error. The inner error provides details.
+    Other {
+        /// The root cause.
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound { key } => write!(f, "object not found: {key}"),
+            Self::BucketNotFound { bucket } => write!(f, "bucket not found: {bucket}"),
+            Self::BackendUnavailable { source } => write!(f, "backend unavailable: {source}"),
+            Self::Other { source } => write!(f, "storage error: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for StorageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Self::Other { source } = self {
+            Some(source.as_ref())
+        } else {
+            None
+        }
+    }
+}
+
+impl StorageError {
+    /// Returns `true` if this error represents a missing object or bucket.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. } | Self::BucketNotFound { .. })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,43 @@
 //! Bearer token verification and extraction per RFC 6750.
 
+use subtle::ConstantTimeEq;
+
+/// Verify a Bearer token in constant time.
+///
+/// # Token length leakage
+///
+/// This function short-circuits on length mismatch (returns `false` immediately
+/// without invoking the constant-time comparison). This leaks the length of the
+/// expected token, which is an **acceptable limitation** for a static Bearer token
+/// per D21 (the token length is small and enumerable).
+pub fn verify_bearer_token(provided: &str, expected: &str) -> bool {
+    if provided.len() != expected.len() {
+        return false;
+    }
+    if expected.is_empty() {
+        return false;
+    }
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+/// Extract the Bearer token value from an `Authorization` header value.
+///
+/// The scheme match is **case-insensitive** per RFC 6750 §2.1. The token
+/// is separated from the scheme by exactly one space; tabs and multiple
+/// consecutive spaces are rejected.
+///
+/// Returns `None` if the header value is malformed or missing a token.
+pub fn extract_bearer_from_header(value: &str) -> Option<&str> {
+    let (scheme, rest) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    if rest.is_empty() || rest.starts_with(' ') {
+        return None;
+    }
+    Some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
