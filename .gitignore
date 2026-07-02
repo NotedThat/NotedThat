@@ -1,0 +1,14 @@
+# Cargo build artifacts — do NOT add Cargo.lock here.
+# Workspace with binaries: Cargo.lock is committed for reproducible builds.
+# See: https://doc.rust-lang.org/cargo/faq.html#why-do-binaries-have-cargolock-in-version-control-but-not-libraries
+/target/
+
+# Rust backup files
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

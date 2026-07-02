@@ -1,0 +1,45 @@
+# M1: Workspace skeleton only — all crate members are placeholders.
+# Real dependencies land in M2+ when implementation begins.
+
+[workspace]
+resolver = "2"
+members = [
+  "crates/notedthat-core",
+  "crates/notedthat-storage-s3",
+  "crates/notedthat-indexer",
+  "crates/notedthat-api-http",
+  "crates/notedthat-webdav",
+  "crates/notedthat-mcp",
+  "crates/notedthat-server",
+  "bin/notedthat-mcp-stdio",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/NotedThat/NotedThat"
+homepage = "https://github.com/NotedThat/NotedThat"
+authors = ["NotedThat Contributors"]
+
+[workspace.dependencies]
+# Populated when real deps land in M2+
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Groups at priority -1 so individual allows (priority 0) override them.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# --- Selective allows: pedantic group ---
+# Reason: Names like event::EventType are standard Rust patterns
+module_name_repetitions = "allow"
+# Reason: Placeholder code has no real error docs yet
+missing_errors_doc = "allow"
+# Reason: Placeholder code has no real panic docs yet
+missing_panics_doc = "allow"
+# Reason: Placeholder code has no meaningful return values yet
+must_use_candidate = "allow"
