@@ -13,6 +13,10 @@ pub struct ObjectRead {
     pub bytes: Bytes,
     /// Associated metadata (size, content-type, last-modified).
     pub meta: ObjectMeta,
+    /// `Content-Range: bytes start-end/total` header value from the backend
+    /// when responding to a range request, or `None` for full-body reads.
+    /// Passed through to HTTP clients on 206 responses.
+    pub content_range: Option<String>,
 }
 
 /// The result of a LIST operation.
