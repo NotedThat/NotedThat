@@ -65,7 +65,7 @@ Three logical layers:
 | D41 | Pagination (v1) | **Simple limits.** `list` uses S3 lexicographic order and an opaque continuation cursor passed through from the storage adapter. `search` is top-k only: `limit` controls the number of hits; no search pagination/cursor in v1. |
 | D42 | Reindex (v1) | **No public reindex endpoint/tool in v1.** Qdrant remains rebuildable by design, but rebuild is an operator/internal future operation. If indexing falls behind or data is stale, v1 accepts temporary search staleness. |
 | D43 | Error contract (v1) | **Small stable mapping.** HTTP mirrors normal status codes (`400` invalid input/path/range syntax, `401` auth, `403` forbidden in v2 ACL cases, `404` KB/object missing, `409` conflicts that are not preconditions, `412` S3 precondition failed, `416` unsatisfiable range, `413` upload too large, `502/503` backend unavailable). MCP maps these to typed tool errors with the same code strings; WebDAV uses the nearest HTTP/WebDAV status. |
-| D44 | HTTP API path shape | Routes under `/v1/knowledgebases/{kb_slug}[/{object_path}]`, mirroring the WebDAV path shape (D23) so all three surfaces share URL structure. Namespaced under `/v1/` and versioned for future evolution. Full route table in §6.12. |
+| D44 | HTTP API route shape | **Routes under `/v1/knowledgebases/{kb_slug}/{path}`** where `{path}` is a percent-encoded (URL-encoded) object key — a single URL segment. Any `/` within an object key becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`, etc. Single-segment matching avoids multi-segment wildcard routing and eliminates any KB-vs-object boundary ambiguity. KB discovery via `GET /v1/knowledgebases`. Health endpoints (`/healthz`, `/readyz`) are unauthenticated and unversioned. The `v1` prefix reserves the option for a breaking API version later without disturbing WebDAV (D23) or MCP (D25). WebDAV keeps its native multi-segment path semantics; the HTTP API and WebDAV share the logical KB+object model but not the URL wire format. See §6.13 for the concrete route surface. |
 
 ---
 
@@ -82,7 +82,7 @@ Three logical layers:
 - **Pass-through optimistic concurrency** — conditional PUT headers forwarded to the backend verbatim (D9)
 
 ### 3.1 Single write path across three surfaces `[DECIDED]`
-API `POST`, MCP `write`, and WebDAV `PUT/MOVE/COPY/DELETE/MKCOL` all route through one internal `commit(kb, path, bytes, conditional_headers)` primitive. Path normalization, MIME sniffing, size limits, ACL check, S3 put (with client headers forwarded verbatim), and indexing-event emission live there — not per surface.
+API `PUT`, MCP `write`, and WebDAV `PUT/MOVE/COPY/DELETE/MKCOL` all route through one internal `commit(kb, path, bytes, conditional_headers)` primitive. Path normalization, MIME sniffing, size limits, ACL check, S3 put (with client headers forwarded verbatim), and indexing-event emission live there — not per surface.
 
 ---
 
@@ -384,15 +384,15 @@ Cargo workspace:
 ```
 notedthat/
 ├── Cargo.toml                    # workspace root
-├── crates/
-│   ├── notedthat-core/           # domain types, traits, static auth checks; JWT verify post-v1
-│   ├── notedthat-storage-s3/     # S3 adapter (aws-sdk-s3); implements Storage trait
-│   ├── notedthat-indexer/        # chunker + embedder client + Qdrant integration
-│   ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
-│   ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
-│   ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
-│   ├── notedthat-server/         # main binary — wires all listeners in one process
-│   └── notedthat-mcp-stdio/      # small binary — MCP over stdio → HTTP API of a running server
+└── crates/
+    ├── notedthat-core/           # domain types, traits, static auth checks; JWT verify post-v1
+    ├── notedthat-storage-s3/     # S3 adapter (aws-sdk-s3); implements Storage trait
+    ├── notedthat-indexer/        # chunker + embedder client + Qdrant integration
+    ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
+    ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
+    ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
+    ├── notedthat-server/         # main binary — wires all listeners in one process
+    └── notedthat-mcp-stdio/      # small binary — MCP over stdio → HTTP API of a running server
 ```
 
 Dep graph:
@@ -406,24 +406,9 @@ Dep graph:
 
 Per D10, `notedthat-server` is the main artifact. `notedthat-mcp-stdio` ships in the same Docker image and separately as an installable (`cargo install notedthat-mcp-stdio`).
 
-### 6.12 v1 operational contracts `[DECIDED — D38–D44]`
+### 6.12 v1 operational contracts `[DECIDED — D38–D43]`
 
-#### HTTP API path shape `[DECIDED — D44]`
-
-Routes are namespaced under `/v1/` and follow the WebDAV path shape (D23) so all three surfaces share the same URL structure.
-
-| Method | Route | Purpose |
-|---|---|---|
-| `GET` | `/v1/knowledgebases` | List every KB declared in `NOTEDTHAT_KBS` (v1: static-token holder sees them all) |
-| `GET` | `/v1/knowledgebases/{kb_slug}` | List objects in a KB with `?prefix=`, `?limit=`, `?cursor=` |
-| `HEAD` | `/v1/knowledgebases/{kb_slug}/{object_path}` | Existence + metadata check (no body) |
-| `GET` | `/v1/knowledgebases/{kb_slug}/{object_path}` | Read object; `Range` header honored per §6.12 Byte ranges |
-| `PUT` | `/v1/knowledgebases/{kb_slug}/{object_path}` | Create/update object; conditional headers per D9 |
-| `DELETE` | `/v1/knowledgebases/{kb_slug}/{object_path}` | Delete object; conditional headers per D9 |
-| `GET` | `/healthz` | Liveness probe (server up) |
-| `GET` | `/readyz` | Readiness probe (KB provisioning complete, S3 reachable) |
-
-`{object_path}` is a URL-percent-encoded path with `/` used as a nested-key separator, normalized per §6.12 "Path normalization". Health probes are unauthenticated; every other route requires the static Bearer token (D21).
+The concrete HTTP API route surface (D44) lives in §6.13.
 
 #### Startup provisioning
 1. Parse `NOTEDTHAT_KBS` as comma-separated `slug:Display Name` pairs.
@@ -479,6 +464,35 @@ Routes are namespaced under `/v1/` and follow the WebDAV path shape (D23) so all
 | Unexpected internal error | `500` | `internal_error` | `500` |
 
 HTTP error bodies are JSON: `{ "error": "code", "message": "human readable", "request_id": "..." }`. MCP tool errors use the same `error` code string and include the human message as tool error content.
+
+### 6.13 HTTP API route surface `[DECIDED — D44]`
+
+All routes are prefixed with `/v1`. Object paths are percent-encoded into a single URL path segment — see the encoding rules below.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
+| `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
+| `GET` | `/v1/knowledgebases` | List declared KBs — matches MCP `list_knowledgebases()` (§6.10) and WebDAV root PROPFIND (D23) |
+| `GET` | `/v1/knowledgebases/{kb_slug}` | List objects in a KB. Query params: `prefix`, `limit` (default 100, max 1000), `cursor` (opaque continuation token per §6.12) |
+| `HEAD` | `/v1/knowledgebases/{kb_slug}/{path}` | Object metadata (ETag, `Content-Length`, `Last-Modified`) |
+| `GET` | `/v1/knowledgebases/{kb_slug}/{path}` | Read object; supports `Range: bytes=` (D6, §6.12) |
+| `PUT` | `/v1/knowledgebases/{kb_slug}/{path}` | Create/update object; forwards `If-Match` / `If-None-Match` / `If-*-Since` verbatim (D9) |
+| `DELETE` | `/v1/knowledgebases/{kb_slug}/{path}` | Delete object; forwards `If-Match` (D9) |
+| `POST` | `/v1/knowledgebases/{kb_slug}/search` | Hybrid search. Body: `{ query, filters?, limit? }`. Response shape mirrors MCP `search` (§6.10) |
+
+#### Path encoding
+
+- The client **percent-encodes the object path as a single URL segment**. Any `/` within a logical object key becomes `%2F`; `?` becomes `%3F`; `#` becomes `%23`; and so on per RFC 3986.
+- The server percent-decodes once, then applies path normalization per D40 (reject `.` / `..` segments, reject backslashes and NUL bytes, `/` as the only separator, preserve case and Unicode exactly).
+- Example: logical object `docs/rfc/7231.md` in KB `my-notes` is fetched via `GET /v1/knowledgebases/my-notes/docs%2Frfc%2F7231.md`.
+- `kb_slug` is `[a-z0-9-]{1,40}` (D24) and never contains reserved characters, but compliant clients should percent-encode it defensively.
+
+#### Auth
+
+Health probes (`/healthz`, `/readyz`) are unauthenticated. Every other route requires the static Bearer token in v1 (D21); JWT in v2 (D27).
+
+Rationale: single-segment paths avoid multi-segment wildcard routing and eliminate KB-vs-object boundary ambiguity. WebDAV keeps its native multi-segment path semantics per D23 — the two surfaces are logically equivalent but wire-format-distinct.
 
 ---
 
