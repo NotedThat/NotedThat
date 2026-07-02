@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP-over-stdio → HTTP API adapter for NotedThat (placeholder in M1)"
+description = "MCP-over-stdio transport adapter for NotedThat"
 readme = "README.md"
 
 [[bin]]

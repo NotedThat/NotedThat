@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP tool schemas and HTTP-backed implementation for NotedThat (rmcp-based in later milestones; placeholder in M1)"
+description = "MCP tool schemas and HTTP-backed implementation for NotedThat"
 readme = "README.md"
 
 [lib]
