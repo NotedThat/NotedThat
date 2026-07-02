@@ -1,0 +1,140 @@
+name: Publish crate (initial)
+
+# Manual workflow for the *first-ever* publish of a new crate to crates.io.
+#
+# Why this exists:
+# Trusted Publishing (OIDC) cannot create new crates. crates.io returns
+# HTTP 403: "Trusted Publishing tokens do not support creating new crates.
+# Publish the crate manually, first". A long-lived API token is required
+# for the bootstrap publish. After that, future versions publish via OIDC
+# through release-plz (see ci.yml's release-plz-release job).
+#
+# Token used: the repo secret CARGO_REGISTRY_TOKEN. It is scoped to crate
+# creation only; routine releases continue to flow through Trusted Publishing
+# with no long-lived credential.
+#
+# This workflow:
+#   1. Validates the crate exists in this workspace and is publishable.
+#      Checks both crates/ and bin/ directories (notedthat-mcp-stdio lives
+#      under bin/, not crates/).
+#   2. Publishes it with CARGO_REGISTRY_TOKEN.
+#   3. Best-effort: registers two Trusted Publishing configs on crates.io
+#      (ci.yml + release, and publish-crate-manual.yml + release) so future
+#      versions can publish via OIDC without web-UI steps. If the token
+#      lacks the `trusted-publishing` scope or the user is not a crate
+#      owner, registration is skipped with a warning — configure manually
+#      at https://crates.io/crates/<NAME>/settings (see RELEASING.md).
+#
+# Usage:
+#   Actions -> "Publish crate (initial)" -> Run workflow ->
+#   enter the crate name (e.g. "notedthat-core") -> Run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: 'Crate name to publish (must not be publish=false)'
+        required: true
+        type: string
+      register_trusted_publishers:
+        description: 'After publish, register Trusted Publisher configs on crates.io (best-effort)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Allow only one initial-publish per crate at a time to avoid double-submit races
+# on the very first crates.io insert.
+concurrency:
+  group: publish-crate-initial-${{ inputs.crate }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: 'Initial publish: ${{ inputs.crate }}'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate crate is publishable
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+
+          # Reject path traversal, empty input, and anything outside the crate
+          # name charset accepted by crates.io.
+          if ! printf '%s' "${CRATE}" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$'; then
+            echo "::error::invalid crate name '${CRATE}': must match ^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+            exit 1
+          fi
+
+          # Try crates/ first, then bin/ (notedthat-mcp-stdio lives under bin/)
+          if [ -f "crates/${CRATE}/Cargo.toml" ]; then
+            crate_toml="crates/${CRATE}/Cargo.toml"
+            crate_path="crates/${CRATE}"
+          elif [ -f "bin/${CRATE}/Cargo.toml" ]; then
+            crate_toml="bin/${CRATE}/Cargo.toml"
+            crate_path="bin/${CRATE}"
+          else
+            echo "::error::${CRATE}: no Cargo.toml at crates/${CRATE}/ or bin/${CRATE}/"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "${crate_toml}"; then
+            echo "::error::crate ${CRATE} has publish = false in ${crate_toml}; refusing to publish."
+            exit 1
+          fi
+
+          # Defence in depth: the directory name must match the [package].name field.
+          declared_name=$(awk -F\" '/^[[:space:]]*name[[:space:]]*=/ { print $2; exit }' "${crate_toml}")
+          if [ "${declared_name}" != "${CRATE}" ]; then
+            echo "::error::crate name mismatch: ${crate_toml} declares name='${declared_name}' but input was '${CRATE}'"
+            exit 1
+          fi
+
+          echo "Validated: ${crate_path} (name=${CRATE})"
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          cargo publish -p "${CRATE}"
+
+      - name: Register Trusted Publishers (best-effort)
+        if: inputs.register_trusted_publishers
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CRATE: ${{ inputs.crate }}
+          REPO: NotedThat/NotedThat
+        run: |
+          set -uo pipefail
+
+          echo "Registering Trusted Publishing configs for ${CRATE}..."
+
+          for workflow in "ci.yml" "publish-crate-manual.yml"; do
+            echo "  -> ${workflow} + release environment"
+            curl -sf \
+              -X POST \
+              -H "Authorization: Bearer ${CARGO_REGISTRY_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -H "User-Agent: notedthat-publish-bot (release@notedthat.dev)" \
+              "https://crates.io/api/v1/trusted_publishing/github_configs" \
+              -d "{\"github_owner\":\"NotedThat\",\"github_repo\":\"NotedThat\",\"workflow_filename\":\"${workflow}\",\"environment\":\"release\",\"crate_name\":\"${CRATE}\"}" \
+              && echo "    OK: ${workflow}" \
+              || echo "    WARNING: failed to register ${workflow} (configure manually at https://crates.io/crates/${CRATE}/settings)"
+          done
+
+          echo "Trusted Publishing registration complete (best-effort)."
