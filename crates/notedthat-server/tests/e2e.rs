@@ -1,0 +1,161 @@
+//! End-to-end tests for `notedthat-server` against a real SeaweedFS testcontainer.
+//!
+//! These tests are marked `#[ignore]` because they require Docker. Run with:
+//! ```sh
+//! cargo test -p notedthat-server --locked -- --include-ignored
+//! ```
+#![allow(missing_docs)]
+
+use notedthat_core::{KbSlug, TenantSlug};
+use notedthat_server::config::{Config, LogFormat};
+use notedthat_storage_s3::S3Config;
+use std::collections::BTreeMap;
+use std::time::Duration;
+use testcontainers::{
+    core::{IntoContainerPort, WaitFor},
+    runners::AsyncRunner,
+    GenericImage, ImageExt,
+};
+
+async fn start_seaweedfs() -> (impl std::any::Any, String) {
+    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
+        .with_exposed_port(8333_u16.tcp())
+        .with_wait_for(WaitFor::seconds(5))
+        .with_cmd(["server", "-s3", "-filer"])
+        .start()
+        .await
+        .expect("failed to start SeaweedFS testcontainer");
+    let port = container
+        .get_host_port_ipv4(8333_u16)
+        .await
+        .expect("failed to get port");
+    (container, format!("http://127.0.0.1:{port}"))
+}
+
+fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
+    let mut kbs = BTreeMap::new();
+    kbs.insert("notes".to_string(), KbSlug::try_new("notes").unwrap());
+    Config {
+        api_token: "e2e-test-token".to_string(),
+        kbs,
+        tenant_slug: TenantSlug::default(),
+        listen_addr,
+        s3: S3Config {
+            endpoint_url: Some(endpoint.to_string()),
+            region: "us-east-1".to_string(),
+            access_key_id: "any".to_string(),
+            secret_access_key: "any".to_string(),
+            force_path_style: true,
+        },
+        log_format: LogFormat::Pretty,
+    }
+}
+
+async fn free_addr() -> std::net::SocketAddr {
+    let listener =
+        tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind to port 0");
+    let addr = listener.local_addr().expect("local_addr");
+    drop(listener);
+    addr
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn e2e_healthz_and_put_get() {
+    let (_container, endpoint) = start_seaweedfs().await;
+
+    let bound_addr = free_addr().await;
+    let config = test_config(bound_addr, &endpoint);
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run(config).await.expect("server run failed");
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{bound_addr}");
+
+    let resp = client.get(format!("{base}/healthz")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let resp = client.get(format!("{base}/v1/knowledgebases")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    let resp = client
+        .put(format!("{base}/v1/knowledgebases/notes/hello.md"))
+        .header("authorization", "Bearer e2e-test-token")
+        .header("content-type", "text/markdown")
+        .body("# Hello")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let resp = client
+        .get(format!("{base}/v1/knowledgebases/notes/hello.md"))
+        .header("authorization", "Bearer e2e-test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "# Hello");
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn e2e_list_and_delete() {
+    let (_container, endpoint) = start_seaweedfs().await;
+
+    let bound_addr = free_addr().await;
+    let config = test_config(bound_addr, &endpoint);
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run(config).await.expect("server run failed");
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{bound_addr}");
+
+    for name in &["file1.md", "file2.md"] {
+        client
+            .put(format!("{base}/v1/knowledgebases/notes/{name}"))
+            .header("authorization", "Bearer e2e-test-token")
+            .body("content")
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let resp = client
+        .get(format!("{base}/v1/knowledgebases/notes"))
+        .header("authorization", "Bearer e2e-test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    let count = json["objects"].as_array().map(Vec::len).unwrap_or(0);
+    assert!(count >= 2, "expected at least 2 objects, got {count}");
+
+    let resp = client
+        .delete(format!("{base}/v1/knowledgebases/notes/file1.md"))
+        .header("authorization", "Bearer e2e-test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 204);
+
+    let resp = client
+        .delete(format!("{base}/v1/knowledgebases/notes/file1.md"))
+        .header("authorization", "Bearer e2e-test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 204);
+
+    server_handle.abort();
+}
