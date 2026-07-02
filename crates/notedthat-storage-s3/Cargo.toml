@@ -4,8 +4,25 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "S3 storage adapter for NotedThat"
-readme = "README.md"
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+notedthat-core = { path = "../notedthat-core", version = "0.1.0" }
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+aws-smithy-runtime-api.workspace = true
+aws-smithy-types = "1"
+async-trait.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+tracing.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers.workspace = true
+temp-env = "0.3"
 
 [lib]
 path = "src/lib.rs"
