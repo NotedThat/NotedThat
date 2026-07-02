@@ -1,4 +1,4 @@
-//! End-to-end tests for `notedthat-server` against a real SeaweedFS testcontainer.
+//! End-to-end tests for `notedthat-server` against a real `SeaweedFS` testcontainer.
 //!
 //! These tests are marked `#[ignore]` because they require Docker. Run with:
 //! ```sh
@@ -12,9 +12,9 @@ use notedthat_storage_s3::S3Config;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use testcontainers::{
+    GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
-    GenericImage, ImageExt,
 };
 
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
@@ -52,8 +52,9 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
 }
 
 async fn free_addr() -> std::net::SocketAddr {
-    let listener =
-        tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind to port 0");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to port 0");
     let addr = listener.local_addr().expect("local_addr");
     drop(listener);
     addr
@@ -67,7 +68,9 @@ async fn e2e_healthz_and_put_get() {
     let bound_addr = free_addr().await;
     let config = test_config(bound_addr, &endpoint);
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config).await.expect("server run failed");
+        notedthat_server::run::run(config)
+            .await
+            .expect("server run failed");
     });
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -78,7 +81,11 @@ async fn e2e_healthz_and_put_get() {
     let resp = client.get(format!("{base}/healthz")).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 
-    let resp = client.get(format!("{base}/v1/knowledgebases")).send().await.unwrap();
+    let resp = client
+        .get(format!("{base}/v1/knowledgebases"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 
     let resp = client
@@ -112,7 +119,9 @@ async fn e2e_list_and_delete() {
     let bound_addr = free_addr().await;
     let config = test_config(bound_addr, &endpoint);
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config).await.expect("server run failed");
+        notedthat_server::run::run(config)
+            .await
+            .expect("server run failed");
     });
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -138,7 +147,7 @@ async fn e2e_list_and_delete() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let json: serde_json::Value = resp.json().await.unwrap();
-    let count = json["objects"].as_array().map(Vec::len).unwrap_or(0);
+    let count = json["objects"].as_array().map_or(0, Vec::len);
     assert!(count >= 2, "expected at least 2 objects, got {count}");
 
     let resp = client

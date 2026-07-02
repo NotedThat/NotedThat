@@ -1,4 +1,4 @@
-//! Integration tests for `S3Storage` against a real SeaweedFS instance.
+//! Integration tests for `S3Storage` against a real `SeaweedFS` instance.
 //!
 //! These tests are marked `#[ignore]` because they require Docker. Run with:
 //! ```sh
@@ -10,9 +10,9 @@ use bytes::Bytes;
 use notedthat_core::{KbManifest, KbSlug, ObjectPath, Storage, TenantSlug};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use testcontainers::{
+    GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
-    GenericImage, ImageExt,
 };
 
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
@@ -51,7 +51,12 @@ async fn integration_round_trip_put_get_head_delete_list() {
     storage.ensure_bucket(&kb).await.expect("ensure_bucket");
 
     storage
-        .put_object(&kb, &path, Bytes::from_static(b"# Hello"), Some("text/markdown"))
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"# Hello"),
+            Some("text/markdown"),
+        )
         .await
         .expect("put_object");
 
@@ -62,14 +67,23 @@ async fn integration_round_trip_put_get_head_delete_list() {
     let read = storage.get_object(&kb, &path).await.expect("get_object");
     assert_eq!(&read.bytes[..], b"# Hello");
 
-    let list = storage.list_objects(&kb, None, 10).await.expect("list_objects");
+    let list = storage
+        .list_objects(&kb, None, 10)
+        .await
+        .expect("list_objects");
     assert!(
         list.objects.iter().any(|o| o.key == "hello.md"),
         "hello.md should appear in list"
     );
 
-    storage.delete_object(&kb, &path).await.expect("delete_object");
-    storage.delete_object(&kb, &path).await.expect("delete_object is idempotent");
+    storage
+        .delete_object(&kb, &path)
+        .await
+        .expect("delete_object");
+    storage
+        .delete_object(&kb, &path)
+        .await
+        .expect("delete_object is idempotent");
 
     assert!(
         storage.head_object(&kb, &path).await.is_err(),
@@ -84,8 +98,14 @@ async fn integration_ensure_bucket_idempotent() {
     let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
     let kb = KbSlug::try_new("idempotent-test").unwrap();
 
-    storage.ensure_bucket(&kb).await.expect("first ensure_bucket");
-    storage.ensure_bucket(&kb).await.expect("second ensure_bucket is idempotent");
+    storage
+        .ensure_bucket(&kb)
+        .await
+        .expect("first ensure_bucket");
+    storage
+        .ensure_bucket(&kb)
+        .await
+        .expect("second ensure_bucket is idempotent");
 }
 
 #[tokio::test]
@@ -111,7 +131,10 @@ async fn integration_manifest_read_write() {
         .as_secs();
     let created_at = i64::try_from(secs).unwrap_or(i64::MAX);
     let manifest = KbManifest::new_v1(&tenant, &kb, "Manifest Test KB", created_at);
-    storage.write_manifest(&kb, &manifest).await.expect("write_manifest");
+    storage
+        .write_manifest(&kb, &manifest)
+        .await
+        .expect("write_manifest");
 
     let read = storage.read_manifest(&kb).await.expect("read_manifest");
     assert_eq!(read.kb_slug.as_str(), "manifest-test");
