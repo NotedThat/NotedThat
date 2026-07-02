@@ -11,7 +11,7 @@ members = [
   "crates/notedthat-webdav",
   "crates/notedthat-mcp",
   "crates/notedthat-server",
-  "bin/notedthat-mcp-stdio",
+  "crates/notedthat-mcp-stdio",
 ]
 
 [workspace.package]

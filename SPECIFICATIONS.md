@@ -391,9 +391,8 @@ notedthat/
 │   ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
 │   ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
 │   ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
-│   └── notedthat-server/         # main binary — wires all listeners in one process
-└── bin/
-    └── notedthat-mcp-stdio/      # small binary — MCP over stdio → HTTP API of a running server
+│   ├── notedthat-server/         # main binary — wires all listeners in one process
+│   └── notedthat-mcp-stdio/      # small binary — MCP over stdio → HTTP API of a running server
 ```
 
 Dep graph:

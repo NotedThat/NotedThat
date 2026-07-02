@@ -15,8 +15,6 @@ name: Publish crate (initial)
 #
 # This workflow:
 #   1. Validates the crate exists in this workspace and is publishable.
-#      Checks both crates/ and bin/ directories (notedthat-mcp-stdio lives
-#      under bin/, not crates/).
 #   2. Publishes it with CARGO_REGISTRY_TOKEN.
 #   3. Best-effort: registers two Trusted Publishing configs on crates.io
 #      (ci.yml + release, and publish-crate-manual.yml + release) so future
@@ -79,17 +77,12 @@ jobs:
             exit 1
           fi
 
-          # Try crates/ first, then bin/ (notedthat-mcp-stdio lives under bin/)
-          if [ -f "crates/${CRATE}/Cargo.toml" ]; then
-            crate_toml="crates/${CRATE}/Cargo.toml"
-            crate_path="crates/${CRATE}"
-          elif [ -f "bin/${CRATE}/Cargo.toml" ]; then
-            crate_toml="bin/${CRATE}/Cargo.toml"
-            crate_path="bin/${CRATE}"
-          else
-            echo "::error::${CRATE}: no Cargo.toml at crates/${CRATE}/ or bin/${CRATE}/"
+          if [ ! -f "crates/${CRATE}/Cargo.toml" ]; then
+            echo "::error::${CRATE}: no Cargo.toml at crates/${CRATE}/"
             exit 1
           fi
+          crate_toml="crates/${CRATE}/Cargo.toml"
+          crate_path="crates/${CRATE}"
 
           if grep -Eq '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "${crate_toml}"; then
             echo "::error::crate ${CRATE} has publish = false in ${crate_toml}; refusing to publish."

@@ -22,7 +22,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
 | `notedthat-server` | `crates/notedthat-server` | Main server binary — HTTP API + WebDAV in one process (release facade) |
-| `notedthat-mcp-stdio` | `bin/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
+| `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 
 All 8 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
