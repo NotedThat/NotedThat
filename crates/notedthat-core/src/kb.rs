@@ -100,6 +100,11 @@ pub struct ObjectMeta {
     /// Content-Type as stored in S3 (echoed from the original PUT).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+    /// Opaque ETag from the backend, wrapped in quotes per RFC 7232 §2.3
+    /// (e.g., `"\"abc123\""`). Emitted verbatim in HTTP responses.
+    /// Never generated locally except by the `InMemoryStorage` mock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 #[cfg(test)]
@@ -190,6 +195,7 @@ mod tests {
             size: 1024_u64,
             last_modified: Some(1_700_000_000_i64),
             content_type: Some("text/markdown".to_string()),
+            etag: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let restored: ObjectMeta = serde_json::from_str(&json).unwrap();
@@ -197,6 +203,7 @@ mod tests {
         assert_eq!(restored.size, meta.size);
         assert_eq!(restored.last_modified, meta.last_modified);
         assert_eq!(restored.content_type, meta.content_type);
+        assert_eq!(restored.etag, meta.etag);
     }
 
     #[test]
@@ -206,10 +213,12 @@ mod tests {
             size: 0_u64,
             last_modified: None,
             content_type: None,
+            etag: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let restored: ObjectMeta = serde_json::from_str(&json).unwrap();
         assert!(restored.last_modified.is_none());
         assert!(restored.content_type.is_none());
+        assert!(restored.etag.is_none());
     }
 }
