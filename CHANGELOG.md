@@ -9,3 +9,11 @@ version; any breaking change in any crate increments the ecosystem major version
 See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
+
+## [0.1.0](https://github.com/NotedThat/NotedThat/releases/tag/v0.1.0) - 2026-07-02
+
+### Other
+
+- fix clippy missing_docs, fmt, gitignore; commit Cargo.lock
+- clean crate descriptions (remove phase-specific noise)
+- *(server)* scaffold empty binary crate (facade)
