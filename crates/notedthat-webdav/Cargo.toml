@@ -1,0 +1,14 @@
+[package]
+name = "notedthat-webdav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebDAV surface for NotedThat (dav-server-based in later milestones; placeholder in M1)"
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
