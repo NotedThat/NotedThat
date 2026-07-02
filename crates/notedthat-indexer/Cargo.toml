@@ -1,0 +1,14 @@
+[package]
+name = "notedthat-indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Chunking, embedder client, and Qdrant integration for NotedThat (placeholder — real implementation in M2+)"
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
