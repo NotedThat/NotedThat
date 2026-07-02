@@ -1,12 +1,11 @@
 //! The single write path primitive — all PUT operations funnel through [`commit`].
 //!
-//! In M3 (#10), [`commit`] will receive a `ConditionalHeaders` parameter for
-//! `ETag`/`If-Match` handling. In M5, `WebDAV` will call this path. For now, it is
+//! In M5, `WebDAV` will call this path. For now, it is
 //! a thin wrapper around [`Storage::put_object`].
 
 use crate::error::ApiError;
 use bytes::Bytes;
-use notedthat_core::{KbSlug, ObjectPath, Storage};
+use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, PutOutcome, Storage};
 
 /// Store an object, replacing any existing content at the same path.
 ///
@@ -19,9 +18,10 @@ pub async fn commit(
     path: &ObjectPath,
     bytes: Bytes,
     content_type: Option<&str>,
-) -> Result<(), ApiError> {
+    conditionals: ConditionalHeaders,
+) -> Result<PutOutcome, ApiError> {
     storage
-        .put_object(kb, path, bytes, content_type)
+        .put_object(kb, path, bytes, content_type, conditionals)
         .await
         .map_err(Into::into)
 }

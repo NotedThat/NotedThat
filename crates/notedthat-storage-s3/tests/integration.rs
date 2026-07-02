@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 
 use bytes::Bytes;
-use notedthat_core::{KbManifest, KbSlug, ObjectPath, Storage, TenantSlug};
+use notedthat_core::{ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Storage, TenantSlug};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use testcontainers::{
     GenericImage, ImageExt,
@@ -56,15 +56,22 @@ async fn integration_round_trip_put_get_head_delete_list() {
             &path,
             Bytes::from_static(b"# Hello"),
             Some("text/markdown"),
+            ConditionalHeaders::default(),
         )
         .await
         .expect("put_object");
 
-    let meta = storage.head_object(&kb, &path).await.expect("head_object");
+    let meta = storage
+        .head_object(&kb, &path, ConditionalHeaders::default())
+        .await
+        .expect("head_object");
     assert_eq!(meta.size, 7);
     assert_eq!(meta.key, "hello.md");
 
-    let read = storage.get_object(&kb, &path).await.expect("get_object");
+    let read = storage
+        .get_object(&kb, &path, None, ConditionalHeaders::default())
+        .await
+        .expect("get_object");
     assert_eq!(&read.bytes[..], b"# Hello");
 
     let list = storage
@@ -77,16 +84,19 @@ async fn integration_round_trip_put_get_head_delete_list() {
     );
 
     storage
-        .delete_object(&kb, &path)
+        .delete_object(&kb, &path, ConditionalHeaders::default())
         .await
         .expect("delete_object");
     storage
-        .delete_object(&kb, &path)
+        .delete_object(&kb, &path, ConditionalHeaders::default())
         .await
         .expect("delete_object is idempotent");
 
     assert!(
-        storage.head_object(&kb, &path).await.is_err(),
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .is_err(),
         "HEAD after DELETE should return an error"
     );
 }

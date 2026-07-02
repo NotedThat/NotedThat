@@ -6,7 +6,8 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use notedthat_core::{
-    KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath, ObjectRead, Storage, StorageError,
+    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
+    ObjectRead, PutOutcome, Storage, StorageError,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -62,7 +63,11 @@ impl Storage for InMemoryStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
+        conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
+        // M3 T9: evaluate conditionals
+        let _ = conditionals;
+
         let inner = self.inner.read().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         inner
@@ -73,13 +78,24 @@ impl Storage for InMemoryStorage {
                 size: bytes.len() as u64,
                 last_modified: None,
                 content_type: content_type.clone(),
+                etag: None,
             })
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
             })
     }
 
-    async fn get_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectRead, StorageError> {
+    async fn get_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectRead, StorageError> {
+        // M3 T9: apply range slicing, evaluate conditionals
+        let _ = range;
+        let _ = conditionals;
+
         let inner = self.inner.read().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         inner
@@ -92,7 +108,9 @@ impl Storage for InMemoryStorage {
                     size: bytes.len() as u64,
                     last_modified: None,
                     content_type: content_type.clone(),
+                    etag: None,
                 },
+                content_range: None,
             })
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
@@ -105,16 +123,28 @@ impl Storage for InMemoryStorage {
         path: &ObjectPath,
         bytes: Bytes,
         content_type: Option<&str>,
-    ) -> Result<(), StorageError> {
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        // M3 T9: compute etag, evaluate conditionals
+        let _ = conditionals;
+
         let mut inner = self.inner.write().await;
         inner.objects.insert(
             (kb.as_str().to_string(), path.as_str().to_string()),
             (bytes, content_type.map(str::to_string)),
         );
-        Ok(())
+        Ok(PutOutcome { etag: None })
     }
 
-    async fn delete_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<(), StorageError> {
+    async fn delete_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        conditionals: ConditionalHeaders,
+    ) -> Result<(), StorageError> {
+        // M3 T9: evaluate if_match conditional
+        let _ = conditionals;
+
         let mut inner = self.inner.write().await;
         inner
             .objects
@@ -141,6 +171,7 @@ impl Storage for InMemoryStorage {
                 size: bytes.len() as u64,
                 last_modified: None,
                 content_type: content_type.clone(),
+                etag: None,
             })
             .collect();
         matching.sort_by(|a, b| a.key.cmp(&b.key));
@@ -177,10 +208,14 @@ mod tests {
                 &path("hello.md"),
                 Bytes::from_static(b"# Hello"),
                 Some("text/markdown"),
+                ConditionalHeaders::default(),
             )
             .await
             .unwrap();
-        let read = storage.get_object(&kb, &path("hello.md")).await.unwrap();
+        let read = storage
+            .get_object(&kb, &path("hello.md"), None, ConditionalHeaders::default())
+            .await
+            .unwrap();
         assert_eq!(&read.bytes[..], b"# Hello");
         assert_eq!(read.meta.content_type.as_deref(), Some("text/markdown"));
     }
@@ -191,7 +226,7 @@ mod tests {
         let kb = kb();
         assert!(
             storage
-                .delete_object(&kb, &path("no-such-file.md"))
+                .delete_object(&kb, &path("no-such-file.md"), ConditionalHeaders::default())
                 .await
                 .is_ok()
         );
@@ -203,7 +238,13 @@ mod tests {
         let kb = kb();
         for i in 0..5 {
             storage
-                .put_object(&kb, &path(&format!("{i}.md")), Bytes::new(), None)
+                .put_object(
+                    &kb,
+                    &path(&format!("{i}.md")),
+                    Bytes::new(),
+                    None,
+                    ConditionalHeaders::default(),
+                )
                 .await
                 .unwrap();
         }

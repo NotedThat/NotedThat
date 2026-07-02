@@ -1,8 +1,10 @@
 //! `Storage` trait — object store abstraction.
 
+use crate::conditional::ConditionalHeaders;
 use crate::error::StorageError;
 use crate::kb::{KbManifest, ObjectMeta};
 use crate::object_path::ObjectPath;
+use crate::range::ByteRange;
 use crate::slug::KbSlug;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -26,6 +28,13 @@ pub struct ListResponse {
     /// `true` if the backend indicated more objects exist beyond `limit`.
     /// Cursor/continuation is deferred to M4.
     pub truncated: bool,
+}
+
+/// Return value from [`Storage::put_object`]. Carries the `ETag` of the stored object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PutOutcome {
+    /// `ETag` from the backend (opaque, quoted per RFC 7232 §2.3), or `None` if not returned.
+    pub etag: Option<String>,
 }
 
 /// The storage abstraction shared by all `NotedThat` components.
@@ -54,32 +63,52 @@ pub trait Storage: Send + Sync {
 
     /// Return metadata for an object without fetching its body.
     ///
+    /// `conditionals` carries raw HTTP conditional headers for the backend to evaluate.
     /// Returns `Err(StorageError::NotFound)` if the object does not exist.
-    async fn head_object(&self, kb: &KbSlug, path: &ObjectPath)
-    -> Result<ObjectMeta, StorageError>;
+    async fn head_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectMeta, StorageError>;
 
     /// Fetch an object's bytes and metadata.
     ///
+    /// `range` carries parsed byte ranges for the backend, and `conditionals`
+    /// carries raw HTTP conditional headers for the backend to evaluate.
     /// Returns `Err(StorageError::NotFound)` if the object does not exist.
-    /// Range support is deferred to M4.
-    async fn get_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectRead, StorageError>;
+    async fn get_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectRead, StorageError>;
 
     /// Store an object, overwriting any existing object at the same path.
     ///
     /// The `content_type` is stored with the object and echoed on GET/HEAD.
+    /// `conditionals` carries raw HTTP conditional headers for the backend to evaluate.
     async fn put_object(
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
         bytes: Bytes,
         content_type: Option<&str>,
-    ) -> Result<(), StorageError>;
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError>;
 
     /// Delete an object.
     ///
+    /// `conditionals` carries raw HTTP conditional headers for the backend to evaluate.
     /// This operation is **idempotent** — deleting a non-existent object returns
     /// `Ok(())` (matching S3 semantics per Metis directive).
-    async fn delete_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<(), StorageError>;
+    async fn delete_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        conditionals: ConditionalHeaders,
+    ) -> Result<(), StorageError>;
 
     /// List objects in the KB, optionally filtered by a prefix.
     ///
