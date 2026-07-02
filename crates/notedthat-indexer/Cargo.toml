@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Chunking, embedder client, and Qdrant integration for NotedThat (placeholder — real implementation in M2+)"
+description = "Chunking, embedder client, and Qdrant integration for NotedThat"
 readme = "README.md"
 
 [lib]

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "HTTP API surface for NotedThat (axum-based in later milestones; placeholder in M1)"
+description = "HTTP API surface for NotedThat"
 readme = "README.md"
 
 [lib]
