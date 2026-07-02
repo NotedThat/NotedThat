@@ -1,14 +1,18 @@
 //! `notedthat-server` binary entry point.
 
-use notedthat_server::config::Config;
+use notedthat_server::{config::Config, run::run, tracing_init::init_tracing};
 
-/// Application entry point. All logic is in `notedthat_server::run::run`.
-/// T20 will add the full run function; for now just validate config.
+/// `NotedThat` server entry point.
+///
+/// Parses configuration from environment variables, initializes tracing,
+/// and delegates to [`run`] for all application logic. Returns non-zero on
+/// any startup failure (config missing/invalid, S3 provisioning error, etc.).
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _config = Config::from_env().map_err(|e| {
-        eprintln!("startup error: {e}");
+    let config = Config::from_env().map_err(|e| {
+        eprintln!("startup: {e}");
         e
     })?;
-    Ok(())
+    init_tracing(config.log_format)?;
+    run(config).await
 }
