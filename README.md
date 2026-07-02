@@ -25,3 +25,11 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-mcp-stdio` | `bin/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 
 All 8 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+
+## Contributing
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for how to build, test, and run the project locally. The project is pre-v1, so interfaces change frequently. Check open issues before starting significant work.
+
+## License
+
+Mozilla Public License 2.0. See [LICENSE](LICENSE) for the full text.
