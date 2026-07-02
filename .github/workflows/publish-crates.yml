@@ -1,0 +1,56 @@
+name: Publish crate
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Path to the crate to publish (e.g. 'crates/notedthat-core')."
+        required: true
+        type: string
+      ref:
+        description: "Git ref to publish from. Empty = caller commit."
+        required: false
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: cargo publish -p ${{ inputs.crate }}
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Mint short-lived OIDC token for crates.io (trusted publishing)
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CRATE_PATH: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          crate_toml="${CRATE_PATH}/Cargo.toml"
+          if [ ! -f "${crate_toml}" ]; then
+            echo "ERROR: ${crate_toml} not found" >&2
+            exit 1
+          fi
+          name=$(basename "${CRATE_PATH}")
+          if grep -Eq '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "${crate_toml}"; then
+            echo "Skipping ${name} (publish = false)"
+            exit 0
+          fi
+          cargo publish -p "${name}"
