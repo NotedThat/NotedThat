@@ -1,0 +1,79 @@
+# Local dev + example stack for NotedThat.
+#
+#   docker compose up --build          # build & run the whole stack
+#   docker compose logs -f notedthat-server
+#   docker compose down                # stop (keeps data)
+#   docker compose down -v             # stop and wipe SeaweedFS/Qdrant volumes
+#
+# Ports are bound to 127.0.0.1 so nothing is exposed to the LAN by default.
+# Override anything below by copying .env.example to .env and editing values.
+
+name: notedthat
+
+services:
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.18
+    container_name: notedthat-seaweedfs
+    command: server -s3 -filer -dir=/data
+    ports:
+      - "127.0.0.1:8333:8333"   # S3 API
+      - "127.0.0.1:8888:8888"   # Filer HTTP
+      - "127.0.0.1:9333:9333"   # Master status/UI
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      # The S3 endpoint returns 405 on empty GET, so probe the master instead —
+      # /cluster/status returns 200 only once the whole server stack is up.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # Included so local dev matches the intended production topology. The indexer
+  # crate is a placeholder in M2/M3 — nothing calls Qdrant yet, but wiring will
+  # land in a future milestone.
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: notedthat-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"   # HTTP
+      - "127.0.0.1:6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # No custom healthcheck: qdrant/qdrant ships a scratch-style rootfs with
+    # no shell, so `CMD-SHELL` probes can't run inside it. `depends_on` below
+    # uses `service_started` for this reason.
+    restart: unless-stopped
+
+  notedthat-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notedthat-server:local
+    container_name: notedthat-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
+      NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
+      NOTEDTHAT_S3_REGION: ${NOTEDTHAT_S3_REGION:-us-east-1}
+      NOTEDTHAT_S3_ACCESS_KEY_ID: ${NOTEDTHAT_S3_ACCESS_KEY_ID:-any}
+      NOTEDTHAT_S3_SECRET_ACCESS_KEY: ${NOTEDTHAT_S3_SECRET_ACCESS_KEY:-any}
+      NOTEDTHAT_LISTEN_ADDR: 0.0.0.0:8080
+      NOTEDTHAT_S3_ENDPOINT_URL: http://seaweedfs:8333
+      NOTEDTHAT_S3_FORCE_PATH_STYLE: "true"
+      NOTEDTHAT_LOG_FORMAT: ${NOTEDTHAT_LOG_FORMAT:-pretty}
+      RUST_LOG: ${RUST_LOG:-info,notedthat=debug}
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  seaweedfs-data:
+  qdrant-data:
