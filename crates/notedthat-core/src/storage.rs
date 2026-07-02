@@ -24,7 +24,7 @@ pub struct ListResponse {
     /// The matching objects, up to the requested `limit`.
     pub objects: Vec<ObjectMeta>,
     /// `true` if the backend indicated more objects exist beyond `limit`.
-    /// Cursor/continuation is deferred to M3.
+    /// Cursor/continuation is deferred to M4.
     pub truncated: bool,
 }
 
@@ -61,7 +61,7 @@ pub trait Storage: Send + Sync {
     /// Fetch an object's bytes and metadata.
     ///
     /// Returns `Err(StorageError::NotFound)` if the object does not exist.
-    /// Range support is deferred to M3.
+    /// Range support is deferred to M4.
     async fn get_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectRead, StorageError>;
 
     /// Store an object, overwriting any existing object at the same path.
@@ -84,7 +84,7 @@ pub trait Storage: Send + Sync {
     /// List objects in the KB, optionally filtered by a prefix.
     ///
     /// Results are capped at `limit` (default 100, max 1000).
-    /// Cursor/continuation tokens are deferred to M3.
+    /// Cursor/continuation tokens are deferred to M4.
     async fn list_objects(
         &self,
         kb: &KbSlug,
