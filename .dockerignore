@@ -1,0 +1,46 @@
+# Version control
+.git/
+.gitattributes
+.gitignore
+
+# Rust build artifacts (massive; must never be sent to the daemon)
+target/
+**/target/
+**/*.rs.bk
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Agent workspace (per-developer, never committed anyway)
+.sisyphus/
+
+# CI (not needed inside the image)
+.github/
+
+# Docs (not needed at build time)
+docs/
+CHANGELOG.md
+DEVELOPMENT.md
+RELEASING.md
+SPECIFICATIONS.md
+
+# Docker meta files (already sent as the Dockerfile input; don't ship copies)
+Dockerfile
+Dockerfile.*
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+compose.yml
+compose.*.yml
+
+# Env files (may contain secrets). Explicitly allow the template.
+.env
+.env.*
+!.env.example
