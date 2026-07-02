@@ -1,5 +1,115 @@
 //! Knowledge base domain structs: `KbManifest`, `Kb`, `ObjectMeta`.
 
+use serde::{Deserialize, Serialize};
+use crate::error::Error;
+use crate::slug::{KbSlug, TenantSlug};
+
+/// The KB manifest stored as `.notedthat/manifest.json` inside each KB's S3 bucket.
+/// See SPECIFICATIONS.md §6.7 for the full schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KbManifest {
+    /// Semver of the notedthat server that wrote this manifest.
+    pub notedthat_version: String,
+    /// Manifest schema version. Must equal [`KbManifest::CURRENT_VERSION`] for M2.
+    pub manifest_version: u32,
+    /// The tenant this KB belongs to.
+    pub tenant_slug: TenantSlug,
+    /// The knowledge-base slug.
+    pub kb_slug: KbSlug,
+    /// Human-readable name for the KB.
+    pub display_name: String,
+    /// Unix timestamp (seconds) of when this KB was first provisioned.
+    pub created_at: i64,
+    /// Qdrant collection name (reserved for M4 indexer; optional in M2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qdrant_collection: Option<String>,
+}
+
+impl KbManifest {
+    /// The only supported manifest schema version in M2.
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// Construct a v1 manifest for a newly provisioned KB.
+    pub fn new_v1(
+        tenant: &TenantSlug,
+        kb: &KbSlug,
+        display_name: &str,
+        created_at: i64,
+    ) -> Self {
+        Self {
+            notedthat_version: env!("CARGO_PKG_VERSION").to_string(),
+            manifest_version: Self::CURRENT_VERSION,
+            tenant_slug: tenant.clone(),
+            kb_slug: kb.clone(),
+            display_name: display_name.to_string(),
+            created_at,
+            qdrant_collection: None,
+        }
+    }
+
+    /// Validate that this manifest's `manifest_version` is supported.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.manifest_version != Self::CURRENT_VERSION {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "unsupported manifest_version {}; expected {}",
+                    self.manifest_version,
+                    Self::CURRENT_VERSION
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A knowledge base as seen by the API layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kb {
+    /// The unique slug identifying this KB.
+    pub slug: KbSlug,
+    /// Human-readable name (≤ 128 Unicode code points per §6.8).
+    pub display_name: String,
+}
+
+impl Kb {
+    /// Maximum length of `display_name` in Unicode code points (§6.8).
+    pub const DISPLAY_NAME_MAX: usize = 128;
+
+    /// Construct a [`Kb`], validating the display name.
+    pub fn new(slug: KbSlug, display_name: impl Into<String>) -> Result<Self, Error> {
+        let display_name = display_name.into();
+        if display_name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "display_name must not be empty".into(),
+            });
+        }
+        if display_name.chars().count() > Self::DISPLAY_NAME_MAX {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "display_name exceeds {} characters",
+                    Self::DISPLAY_NAME_MAX
+                ),
+            });
+        }
+        Ok(Self { slug, display_name })
+    }
+}
+
+/// Metadata about a single stored object, returned by HEAD and LIST responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObjectMeta {
+    /// The object's key (path within the KB bucket, without leading slash).
+    pub key: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// Last-modified Unix timestamp (seconds), if the backend provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<i64>,
+    /// Content-Type as stored in S3 (echoed from the original PUT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

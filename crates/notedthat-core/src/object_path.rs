@@ -1,5 +1,96 @@
 //! `ObjectPath` — normalized object storage key with D40 validation rules.
 
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
+use crate::error::Error;
+
+/// A normalized object path within a knowledge-base bucket.
+///
+/// Rules (D40, §6.12 path normalization):
+/// - One leading `/` is stripped if present.
+/// - Empty paths and paths that are only `/` are rejected.
+/// - Empty segments (from `//` or trailing `/`) are rejected.
+/// - `.` and `..` segments are rejected (no resolution — just rejection).
+/// - Backslash (`\`) and NUL (`\0`) characters are rejected.
+/// - Case and Unicode are preserved verbatim.
+/// - Spaces are valid (S3 permits them).
+///
+/// The stored form has no leading slash and uses `/` as the separator.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct ObjectPath(String);
+
+impl ObjectPath {
+    /// Validate and construct an [`ObjectPath`] from a string slice.
+    pub fn try_from_str(input: &str) -> Result<Self, Error> {
+        let s = input.strip_prefix('/').unwrap_or(input);
+
+        if s.is_empty() {
+            return Err(Error::InvalidInput { message: "path must not be empty".into() });
+        }
+        if s.contains('\\') {
+            return Err(Error::InvalidInput {
+                message: "path must not contain backslash".into(),
+            });
+        }
+        if s.contains('\0') {
+            return Err(Error::InvalidInput {
+                message: "path must not contain NUL byte".into(),
+            });
+        }
+        for segment in s.split('/') {
+            if segment.is_empty() {
+                return Err(Error::InvalidInput {
+                    message: "path must not contain empty segments (double slashes or trailing slash)".into(),
+                });
+            }
+            if segment == "." || segment == ".." {
+                return Err(Error::InvalidInput {
+                    message: "path must not contain '.' or '..' segments".into(),
+                });
+            }
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    /// Returns the normalized path as a `&str` (no leading slash).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for ObjectPath {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from_str(value)
+    }
+}
+
+impl TryFrom<String> for ObjectPath {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from_str(&value)
+    }
+}
+
+impl AsRef<str> for ObjectPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ObjectPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for ObjectPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::try_from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
