@@ -59,6 +59,16 @@ impl ApiError {
             Self::Core(CoreError::PayloadTooLarge { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
             }
+            Self::Core(CoreError::MalformedRange(_)) => {
+                (StatusCode::BAD_REQUEST, "malformed_range")
+            }
+            Self::Core(CoreError::NotModified) => (StatusCode::NOT_MODIFIED, "not_modified"),
+            Self::Core(CoreError::PreconditionFailed) => {
+                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
+            }
+            Self::Core(CoreError::RangeNotSatisfiable { .. }) => {
+                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
+            }
             Self::Core(CoreError::BucketNameTooLong { .. } | CoreError::Config { .. }) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
             }
@@ -73,6 +83,13 @@ impl ApiError {
             }
             StorageError::BackendUnavailable { .. } => {
                 (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
+            }
+            StorageError::NotModified => (StatusCode::NOT_MODIFIED, "not_modified"),
+            StorageError::PreconditionFailed => {
+                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
+            }
+            StorageError::RangeNotSatisfiable { .. } => {
+                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
             }
             StorageError::Other { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         }

@@ -268,9 +268,16 @@ mod tests {
 
     #[test]
     fn storage_error_range_not_satisfiable_converts_to_error() {
-        let storage_err = StorageError::RangeNotSatisfiable { complete_length: 100 };
+        let storage_err = StorageError::RangeNotSatisfiable {
+            complete_length: 100,
+        };
         let err: Error = Error::from(storage_err);
-        assert!(matches!(err, Error::RangeNotSatisfiable { complete_length: 100 }));
+        assert!(matches!(
+            err,
+            Error::RangeNotSatisfiable {
+                complete_length: 100
+            }
+        ));
     }
 
     #[test]

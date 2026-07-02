@@ -22,4 +22,4 @@ pub use kb::{Kb, KbManifest, ObjectMeta};
 pub use object_path::ObjectPath;
 pub use range::{ByteRange, ParsedRanges, RangeParseError, parse_range_header};
 pub use slug::{KbSlug, TenantSlug};
-pub use storage::{ListResponse, ObjectRead, Storage};
+pub use storage::{ListResponse, ObjectRead, PutOutcome, Storage};

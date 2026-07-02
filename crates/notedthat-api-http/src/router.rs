@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
-use notedthat_core::{Error as CoreError, KbSlug, ObjectPath};
+use notedthat_core::{ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath};
 use serde::Deserialize;
 use std::fmt::Write;
 use tower::ServiceBuilder;
@@ -141,7 +141,7 @@ async fn head_object(
 
     let meta = state
         .storage
-        .head_object(&kb, &path)
+        .head_object(&kb, &path, ConditionalHeaders::default())
         .await
         .map_err(|error| err(ApiError::Storage(error)))?;
 
@@ -182,7 +182,7 @@ async fn get_object(
 
     let read = state
         .storage
-        .get_object(&kb, &path)
+        .get_object(&kb, &path, None, ConditionalHeaders::default())
         .await
         .map_err(|error| err(ApiError::Storage(error)))?;
     let content_type = read
@@ -252,12 +252,13 @@ async fn put_object(
         })));
     }
 
-    commit(
+    let _outcome = commit(
         state.storage.as_ref(),
         &kb,
         &path,
         body_bytes,
         content_type.as_deref(),
+        ConditionalHeaders::default(),
     )
     .await
     .map_err(&err)?;
@@ -291,7 +292,7 @@ async fn delete_object(
 
     state
         .storage
-        .delete_object(&kb, &path)
+        .delete_object(&kb, &path, ConditionalHeaders::default())
         .await
         .map_err(|error| err(ApiError::Storage(error)))?;
     Ok(StatusCode::NO_CONTENT)
