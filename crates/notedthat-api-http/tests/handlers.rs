@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
@@ -67,7 +67,12 @@ async fn response_json(resp: axum::response::Response) -> serde_json::Value {
 #[tokio::test]
 async fn healthz_no_auth_required() {
     let resp = app()
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -78,7 +83,12 @@ async fn healthz_no_auth_required() {
 #[tokio::test]
 async fn readyz_no_auth_required() {
     let resp = app()
-        .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -91,7 +101,12 @@ async fn readyz_no_auth_required() {
 #[tokio::test]
 async fn list_kbs_requires_auth() {
     let resp = app()
-        .oneshot(Request::builder().uri("/v1/knowledgebases").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/knowledgebases")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -147,7 +162,11 @@ async fn lowercase_bearer_is_accepted() {
 #[tokio::test]
 async fn list_kbs_returns_declared_kbs() {
     let resp = app()
-        .oneshot(authed_request("GET", "/v1/knowledgebases".to_string(), Body::empty()))
+        .oneshot(authed_request(
+            "GET",
+            "/v1/knowledgebases".to_string(),
+            Body::empty(),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -161,7 +180,11 @@ async fn list_kbs_returns_declared_kbs() {
 #[tokio::test]
 async fn list_kbs_has_request_id_header() {
     let resp = app()
-        .oneshot(authed_request("GET", "/v1/knowledgebases".to_string(), Body::empty()))
+        .oneshot(authed_request(
+            "GET",
+            "/v1/knowledgebases".to_string(),
+            Body::empty(),
+        ))
         .await
         .unwrap();
     assert!(resp.headers().contains_key("x-request-id"));
@@ -237,8 +260,14 @@ async fn put_percent_encodes_location_for_non_ascii_paths() {
 #[tokio::test]
 async fn put_overwrites_existing_object() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "same.md", "first").await, StatusCode::CREATED);
-    assert_eq!(put_text(a.clone(), KB, "same.md", "second").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "same.md", "first").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put_text(a.clone(), KB, "same.md", "second").await,
+        StatusCode::CREATED
+    );
 
     let resp = a
         .oneshot(authed_request(
@@ -255,7 +284,10 @@ async fn put_overwrites_existing_object() {
 #[tokio::test]
 async fn head_returns_content_length_no_body() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "file.txt", "hello world").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "file.txt", "hello world").await,
+        StatusCode::CREATED
+    );
 
     let head_resp = a
         .oneshot(authed_request(
@@ -297,13 +329,19 @@ async fn head_echoes_content_type() {
         ))
         .await
         .unwrap();
-    assert_eq!(head_resp.headers().get("content-type").unwrap(), "text/plain");
+    assert_eq!(
+        head_resp.headers().get("content-type").unwrap(),
+        "text/plain"
+    );
 }
 
 #[tokio::test]
 async fn delete_returns_204() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "todel.md", "bye").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "todel.md", "bye").await,
+        StatusCode::CREATED
+    );
 
     let del_resp = a
         .oneshot(authed_request(
@@ -332,7 +370,10 @@ async fn delete_idempotent_non_existent_returns_204() {
 #[tokio::test]
 async fn delete_removes_object() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "gone.md", "bye").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "gone.md", "bye").await,
+        StatusCode::CREATED
+    );
     let del_resp = a
         .clone()
         .oneshot(authed_request(
@@ -358,7 +399,10 @@ async fn delete_removes_object() {
 #[tokio::test]
 async fn get_default_content_type_for_untyped_put() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "raw.bin", "abc").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "raw.bin", "abc").await,
+        StatusCode::CREATED
+    );
     let resp = a
         .oneshot(authed_request(
             "GET",
@@ -367,14 +411,23 @@ async fn get_default_content_type_for_untyped_put() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.headers().get("content-type").unwrap(), "application/octet-stream");
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/octet-stream"
+    );
 }
 
 #[tokio::test]
 async fn objects_are_scoped_by_kb() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "shared.md", "notes").await, StatusCode::CREATED);
-    assert_eq!(put_text(a.clone(), KB2, "shared.md", "docs").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "shared.md", "notes").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put_text(a.clone(), KB2, "shared.md", "docs").await,
+        StatusCode::CREATED
+    );
 
     let resp = a
         .oneshot(authed_request(
@@ -395,13 +448,23 @@ async fn list_objects_returns_objects() {
     let a = app();
     for i in 0..3 {
         assert_eq!(
-            put_text(a.clone(), KB, &format!("file{i}.md"), &format!("content {i}")).await,
+            put_text(
+                a.clone(),
+                KB,
+                &format!("file{i}.md"),
+                &format!("content {i}")
+            )
+            .await,
             StatusCode::CREATED
         );
     }
 
     let resp = a
-        .oneshot(authed_request("GET", format!("/v1/knowledgebases/{KB}"), Body::empty()))
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}"),
+            Body::empty(),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -415,7 +478,13 @@ async fn list_objects_truncated_at_limit() {
     let a = app();
     for i in 0..5 {
         assert_eq!(
-            put_text(a.clone(), KB, &format!("obj{i}.md"), &format!("content {i}")).await,
+            put_text(
+                a.clone(),
+                KB,
+                &format!("obj{i}.md"),
+                &format!("content {i}")
+            )
+            .await,
             StatusCode::CREATED
         );
     }
@@ -437,9 +506,18 @@ async fn list_objects_truncated_at_limit() {
 #[tokio::test]
 async fn list_objects_filters_by_prefix() {
     let a = app();
-    assert_eq!(put_text(a.clone(), KB, "a/one.md", "1").await, StatusCode::CREATED);
-    assert_eq!(put_text(a.clone(), KB, "a/two.md", "2").await, StatusCode::CREATED);
-    assert_eq!(put_text(a.clone(), KB, "b/three.md", "3").await, StatusCode::CREATED);
+    assert_eq!(
+        put_text(a.clone(), KB, "a/one.md", "1").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put_text(a.clone(), KB, "a/two.md", "2").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put_text(a.clone(), KB, "b/three.md", "3").await,
+        StatusCode::CREATED
+    );
 
     let resp = a
         .oneshot(authed_request(
@@ -452,14 +530,21 @@ async fn list_objects_filters_by_prefix() {
     let json = response_json(resp).await;
     let objects = json["objects"].as_array().unwrap();
     assert_eq!(objects.len(), 2);
-    assert!(objects.iter().all(|object| object["key"].as_str().unwrap().starts_with("a/")));
+    assert!(
+        objects
+            .iter()
+            .all(|object| object["key"].as_str().unwrap().starts_with("a/"))
+    );
 }
 
 #[tokio::test]
 async fn list_objects_limit_zero_uses_default() {
     let a = app();
     for i in 0..3 {
-        assert_eq!(put_text(a.clone(), KB, &format!("z{i}.md"), "z").await, StatusCode::CREATED);
+        assert_eq!(
+            put_text(a.clone(), KB, &format!("z{i}.md"), "z").await,
+            StatusCode::CREATED
+        );
     }
 
     let resp = a
@@ -575,12 +660,20 @@ async fn unsupported_method_returns_405() {
 #[tokio::test]
 async fn error_body_contains_request_id() {
     let resp = app()
-        .oneshot(Request::builder().uri("/v1/knowledgebases").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/knowledgebases")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let json = response_json(resp).await;
-    assert!(json["request_id"].is_string(), "request_id field must be a string");
+    assert!(
+        json["request_id"].is_string(),
+        "request_id field must be a string"
+    );
     assert!(!json["request_id"].as_str().unwrap().is_empty());
 }
 
@@ -626,8 +719,17 @@ async fn get_content_type_echoed_from_put() {
         ))
         .await
         .unwrap();
-    let content_type = get_resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
-    assert!(content_type.contains("text/markdown"), "content-type must echo the PUT value");
+    let content_type = get_resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.contains("text/markdown"),
+        "content-type must echo the PUT value"
+    );
 }
 
 #[tokio::test]

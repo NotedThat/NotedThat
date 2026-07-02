@@ -113,7 +113,9 @@ mod tests {
 
     #[test]
     fn test_error_invalid_input_display() {
-        let e = Error::InvalidInput { message: "bad".into() };
+        let e = Error::InvalidInput {
+            message: "bad".into(),
+        };
         let s = e.to_string();
         assert!(s.contains("bad"), "Display should contain the message: {s}");
     }
@@ -150,13 +152,17 @@ mod tests {
 
     #[test]
     fn test_storage_error_is_not_found_true_for_bucket_not_found() {
-        let e = StorageError::BucketNotFound { bucket: "my-bucket".into() };
+        let e = StorageError::BucketNotFound {
+            bucket: "my-bucket".into(),
+        };
         assert!(e.is_not_found());
     }
 
     #[test]
     fn test_storage_error_is_not_found_false_for_backend_unavailable() {
-        let e = StorageError::BackendUnavailable { source: "connection refused".into() };
+        let e = StorageError::BackendUnavailable {
+            source: "connection refused".into(),
+        };
         assert!(!e.is_not_found());
     }
 
@@ -170,7 +176,9 @@ mod tests {
     #[test]
     fn test_error_implements_std_error() {
         fn assert_std_error<T: std::error::Error>(_: &T) {}
-        let e = Error::InvalidInput { message: "test".into() };
+        let e = Error::InvalidInput {
+            message: "test".into(),
+        };
         assert_std_error(&e);
     }
 
@@ -183,9 +191,14 @@ mod tests {
 
     #[test]
     fn test_error_not_found_display() {
-        let e = Error::NotFound { resource: "kb:my-notes".into() };
+        let e = Error::NotFound {
+            resource: "kb:my-notes".into(),
+        };
         let s = e.to_string();
-        assert!(s.contains("my-notes"), "Display should contain resource: {s}");
+        assert!(
+            s.contains("my-notes"),
+            "Display should contain resource: {s}"
+        );
     }
 
     #[test]

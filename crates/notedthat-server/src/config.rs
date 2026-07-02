@@ -45,7 +45,9 @@ impl Config {
             message: "NOTEDTHAT_API_TOKEN is required".into(),
         })?;
         if api_token.is_empty() {
-            return Err(Error::Config { message: "NOTEDTHAT_API_TOKEN must not be empty".into() });
+            return Err(Error::Config {
+                message: "NOTEDTHAT_API_TOKEN must not be empty".into(),
+            });
         }
 
         let kbs_raw = std::env::var("NOTEDTHAT_KBS").map_err(|_| Error::Config {
@@ -91,7 +93,14 @@ impl Config {
             _ => LogFormat::Pretty,
         };
 
-        Ok(Self { api_token, kbs, tenant_slug, listen_addr, s3, log_format })
+        Ok(Self {
+            api_token,
+            kbs,
+            tenant_slug,
+            listen_addr,
+            s3,
+            log_format,
+        })
     }
 }
 
@@ -137,7 +146,12 @@ mod tests {
     fn test_empty_kbs_rejected() {
         let result = run_with_env(&[("NOTEDTHAT_KBS", Some(""))], Config::from_env);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("at least one knowledge base"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one knowledge base")
+        );
     }
 
     #[test]
@@ -145,7 +159,10 @@ mod tests {
         let result = run_with_env(&[("NOTEDTHAT_KBS", Some("notes,notes"))], Config::from_env);
         assert!(result.is_err(), "duplicate slugs should fail");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("duplicate"), "error should mention 'duplicate'");
+        assert!(
+            msg.contains("duplicate"),
+            "error should mention 'duplicate'"
+        );
     }
 
     #[test]
@@ -156,7 +173,8 @@ mod tests {
 
     #[test]
     fn test_log_format_json() {
-        let cfg = run_with_env(&[("NOTEDTHAT_LOG_FORMAT", Some("json"))], Config::from_env).unwrap();
+        let cfg =
+            run_with_env(&[("NOTEDTHAT_LOG_FORMAT", Some("json"))], Config::from_env).unwrap();
         assert_eq!(cfg.log_format, LogFormat::Json);
     }
 
@@ -193,7 +211,12 @@ mod tests {
     fn test_missing_api_token_rejected() {
         let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", None)], Config::from_env);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("NOTEDTHAT_API_TOKEN"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_API_TOKEN")
+        );
     }
 
     #[test]

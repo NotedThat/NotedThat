@@ -30,7 +30,10 @@ pub async fn auth_middleware(
 
     let request_id = extract_request_id(&req);
 
-    let header_value = req.headers().get("authorization").and_then(|v| v.to_str().ok());
+    let header_value = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
     let Some(token) = header_value.and_then(extract_bearer_from_header) else {
         return Err(ApiErrorResponse::unauthorized(request_id));
     };
@@ -48,10 +51,13 @@ pub fn extract_request_id<B>(req: &Request<B>) -> String {
     req.extensions()
         .get::<RequestId>()
         .and_then(|r| r.header_value().to_str().ok())
-        .map_or_else(|| {
-            tracing::warn!("request_id missing from Extensions — generating fallback");
-            uuid::Uuid::now_v7().to_string()
-        }, str::to_string)
+        .map_or_else(
+            || {
+                tracing::warn!("request_id missing from Extensions — generating fallback");
+                uuid::Uuid::now_v7().to_string()
+            },
+            str::to_string,
+        )
 }
 
 #[cfg(test)]
@@ -61,7 +67,7 @@ mod tests {
     use axum::middleware::from_fn_with_state;
     use axum::response::IntoResponse;
     use axum::routing::get;
-    use axum::{body::Body, http::StatusCode, Router};
+    use axum::{Router, body::Body, http::StatusCode};
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::util::ServiceExt;
@@ -87,7 +93,12 @@ mod tests {
     #[tokio::test]
     async fn test_healthz_bypasses_auth() {
         let resp = app("my-token")
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -96,7 +107,12 @@ mod tests {
     #[tokio::test]
     async fn test_rejects_missing_auth() {
         let resp = app("my-token")
-            .oneshot(Request::builder().uri("/protected").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

@@ -45,16 +45,24 @@ impl Storage for InMemoryStorage {
             .manifests
             .get(kb.as_str())
             .cloned()
-            .ok_or_else(|| StorageError::NotFound { key: ".notedthat/manifest.json".into() })
+            .ok_or_else(|| StorageError::NotFound {
+                key: ".notedthat/manifest.json".into(),
+            })
     }
 
     async fn write_manifest(&self, kb: &KbSlug, manifest: &KbManifest) -> Result<(), StorageError> {
         let mut inner = self.inner.write().await;
-        inner.manifests.insert(kb.as_str().to_string(), manifest.clone());
+        inner
+            .manifests
+            .insert(kb.as_str().to_string(), manifest.clone());
         Ok(())
     }
 
-    async fn head_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectMeta, StorageError> {
+    async fn head_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+    ) -> Result<ObjectMeta, StorageError> {
         let inner = self.inner.read().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         inner
@@ -66,7 +74,9 @@ impl Storage for InMemoryStorage {
                 last_modified: None,
                 content_type: content_type.clone(),
             })
-            .ok_or_else(|| StorageError::NotFound { key: path.as_str().to_string() })
+            .ok_or_else(|| StorageError::NotFound {
+                key: path.as_str().to_string(),
+            })
     }
 
     async fn get_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectRead, StorageError> {
@@ -84,7 +94,9 @@ impl Storage for InMemoryStorage {
                     content_type: content_type.clone(),
                 },
             })
-            .ok_or_else(|| StorageError::NotFound { key: path.as_str().to_string() })
+            .ok_or_else(|| StorageError::NotFound {
+                key: path.as_str().to_string(),
+            })
     }
 
     async fn put_object(
@@ -104,7 +116,9 @@ impl Storage for InMemoryStorage {
 
     async fn delete_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<(), StorageError> {
         let mut inner = self.inner.write().await;
-        inner.objects.remove(&(kb.as_str().to_string(), path.as_str().to_string()));
+        inner
+            .objects
+            .remove(&(kb.as_str().to_string(), path.as_str().to_string()));
         Ok(())
     }
 
@@ -134,7 +148,10 @@ impl Storage for InMemoryStorage {
         let limit = limit.min(1000) as usize;
         let truncated = matching.len() > limit;
         matching.truncate(limit);
-        Ok(ListResponse { objects: matching, truncated })
+        Ok(ListResponse {
+            objects: matching,
+            truncated,
+        })
     }
 }
 
@@ -155,7 +172,12 @@ mod tests {
         let storage = InMemoryStorage::default();
         let kb = kb();
         storage
-            .put_object(&kb, &path("hello.md"), Bytes::from_static(b"# Hello"), Some("text/markdown"))
+            .put_object(
+                &kb,
+                &path("hello.md"),
+                Bytes::from_static(b"# Hello"),
+                Some("text/markdown"),
+            )
             .await
             .unwrap();
         let read = storage.get_object(&kb, &path("hello.md")).await.unwrap();
@@ -167,7 +189,12 @@ mod tests {
     async fn test_delete_idempotent() {
         let storage = InMemoryStorage::default();
         let kb = kb();
-        assert!(storage.delete_object(&kb, &path("no-such-file.md")).await.is_ok());
+        assert!(
+            storage
+                .delete_object(&kb, &path("no-such-file.md"))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -175,7 +202,10 @@ mod tests {
         let storage = InMemoryStorage::default();
         let kb = kb();
         for i in 0..5 {
-            storage.put_object(&kb, &path(&format!("{i}.md")), Bytes::new(), None).await.unwrap();
+            storage
+                .put_object(&kb, &path(&format!("{i}.md")), Bytes::new(), None)
+                .await
+                .unwrap();
         }
         let result = storage.list_objects(&kb, None, 2).await.unwrap();
         assert_eq!(result.objects.len(), 2);

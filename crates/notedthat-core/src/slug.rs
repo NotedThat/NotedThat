@@ -1,8 +1,8 @@
 //! `KbSlug` and `TenantSlug` — validated lowercase-alphanumeric-hyphen identifiers.
 
+use crate::error::Error;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
-use crate::error::Error;
 
 /// A knowledge-base slug: `[a-z0-9-]{1,40}` (ASCII only, no leading/trailing hyphen).
 /// See SPECIFICATIONS.md §6.8 and decision D24.
@@ -128,7 +128,9 @@ impl<'de> Deserialize<'de> for TenantSlug {
 
 fn validate_slug(s: &str, max_len: usize) -> Result<(), Error> {
     if s.is_empty() {
-        return Err(Error::InvalidInput { message: "slug must not be empty".into() });
+        return Err(Error::InvalidInput {
+            message: "slug must not be empty".into(),
+        });
     }
     if s.len() > max_len {
         return Err(Error::InvalidInput {
@@ -136,10 +138,14 @@ fn validate_slug(s: &str, max_len: usize) -> Result<(), Error> {
         });
     }
     if s.starts_with('-') {
-        return Err(Error::InvalidInput { message: "slug must not start with a hyphen".into() });
+        return Err(Error::InvalidInput {
+            message: "slug must not start with a hyphen".into(),
+        });
     }
     if s.ends_with('-') {
-        return Err(Error::InvalidInput { message: "slug must not end with a hyphen".into() });
+        return Err(Error::InvalidInput {
+            message: "slug must not end with a hyphen".into(),
+        });
     }
     for ch in s.chars() {
         match ch {
@@ -149,7 +155,7 @@ fn validate_slug(s: &str, max_len: usize) -> Result<(), Error> {
                     message: format!(
                         "slug contains invalid character '{ch}'; only [a-z0-9-] allowed"
                     ),
-                })
+                });
             }
         }
     }
@@ -289,7 +295,10 @@ mod tests {
     fn test_tenant_slug_deserialize_rejects_too_long() {
         let s = format!("\"{}\"", "a".repeat(21));
         let result = serde_json::from_str::<TenantSlug>(&s);
-        assert!(result.is_err(), "Deserializing 21-char tenant slug should fail");
+        assert!(
+            result.is_err(),
+            "Deserializing 21-char tenant slug should fail"
+        );
     }
 
     #[test]

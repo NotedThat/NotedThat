@@ -75,7 +75,10 @@ mod tests {
         let tenant = TenantSlug::try_new("a".repeat(20)).unwrap();
         let kb = KbSlug::try_new("b".repeat(39)).unwrap();
         let result = validate_bucket_name(&tenant, &kb);
-        assert!(result.is_ok(), "63-char bucket name should be Ok, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "63-char bucket name should be Ok, got: {result:?}"
+        );
     }
 
     #[test]

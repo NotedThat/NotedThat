@@ -124,7 +124,10 @@ mod tests {
 
     #[test]
     fn test_extract_bearer_mixed_case_scheme() {
-        assert_eq!(extract_bearer_from_header("BeArEr mytoken"), Some("mytoken"));
+        assert_eq!(
+            extract_bearer_from_header("BeArEr mytoken"),
+            Some("mytoken")
+        );
     }
 
     #[test]

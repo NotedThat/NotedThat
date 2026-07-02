@@ -1,7 +1,7 @@
 //! S3 client configuration parsed from `NOTEDTHAT_S3_*` environment variables.
 
-use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::Client;
+use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use notedthat_core::Error;
 
 /// S3 client config parsed from `NOTEDTHAT_S3_*` env vars.
@@ -39,19 +39,27 @@ impl S3Config {
         let region = std::env::var("NOTEDTHAT_S3_REGION").map_err(|_| Error::Config {
             message: "NOTEDTHAT_S3_REGION is required".into(),
         })?;
-        let access_key_id = std::env::var("NOTEDTHAT_S3_ACCESS_KEY_ID").map_err(|_| {
-            Error::Config { message: "NOTEDTHAT_S3_ACCESS_KEY_ID is required".into() }
-        })?;
-        let secret_access_key = std::env::var("NOTEDTHAT_S3_SECRET_ACCESS_KEY").map_err(|_| {
-            Error::Config { message: "NOTEDTHAT_S3_SECRET_ACCESS_KEY is required".into() }
-        })?;
+        let access_key_id =
+            std::env::var("NOTEDTHAT_S3_ACCESS_KEY_ID").map_err(|_| Error::Config {
+                message: "NOTEDTHAT_S3_ACCESS_KEY_ID is required".into(),
+            })?;
+        let secret_access_key =
+            std::env::var("NOTEDTHAT_S3_SECRET_ACCESS_KEY").map_err(|_| Error::Config {
+                message: "NOTEDTHAT_S3_SECRET_ACCESS_KEY is required".into(),
+            })?;
         let endpoint_url = std::env::var("NOTEDTHAT_S3_ENDPOINT_URL").ok();
         let force_path_style = std::env::var("NOTEDTHAT_S3_FORCE_PATH_STYLE")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
 
-        Ok(Self { endpoint_url, region, access_key_id, secret_access_key, force_path_style })
+        Ok(Self {
+            endpoint_url,
+            region,
+            access_key_id,
+            secret_access_key,
+            force_path_style,
+        })
     }
 
     /// Build an [`aws_sdk_s3::Client`] from this configuration.
