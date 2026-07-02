@@ -47,7 +47,27 @@ pub enum Error {
 
     /// A storage-layer error (see [`StorageError`]).
     #[error(transparent)]
-    Storage(#[from] StorageError),
+    Storage(StorageError),
+
+    /// Malformed `Range: bytes=` header — unparseable syntax. Maps to HTTP 400.
+    #[error("malformed Range header: {0}")]
+    MalformedRange(String),
+
+    /// Backend returned 304 Not Modified (conditional request). Maps to HTTP 304.
+    #[error("not modified")]
+    NotModified,
+
+    /// Backend returned 412 Precondition Failed (conditional request). Maps to HTTP 412.
+    #[error("precondition failed")]
+    PreconditionFailed,
+
+    /// Backend returned 416 Range Not Satisfiable. `complete_length` is the total object size.
+    /// Maps to HTTP 416 with `Content-Range: bytes */complete_length`.
+    #[error("range not satisfiable (object size: {complete_length})")]
+    RangeNotSatisfiable {
+        /// The total size of the object in bytes.
+        complete_length: u64,
+    },
 }
 
 /// Storage-layer error — distinct from [`enum@Error`] so that different backends
@@ -69,13 +89,26 @@ pub enum StorageError {
     /// The storage backend is temporarily unavailable.
     BackendUnavailable {
         /// The underlying error message from the backend.
-        source: String,
+        message: String,
     },
 
     /// An unexpected storage error. The inner error provides details.
     Other {
         /// The root cause.
         source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// S3 backend returned 304 Not Modified.
+    NotModified,
+
+    /// S3 backend returned 412 Precondition Failed.
+    PreconditionFailed,
+
+    /// S3 backend returned 416 Range Not Satisfiable. `complete_length` is the total object size
+    /// extracted from the `Content-Range: bytes */N` header in the error response.
+    RangeNotSatisfiable {
+        /// The total size of the object in bytes.
+        complete_length: u64,
     },
 }
 
@@ -84,8 +117,13 @@ impl std::fmt::Display for StorageError {
         match self {
             Self::NotFound { key } => write!(f, "object not found: {key}"),
             Self::BucketNotFound { bucket } => write!(f, "bucket not found: {bucket}"),
-            Self::BackendUnavailable { source } => write!(f, "backend unavailable: {source}"),
+            Self::BackendUnavailable { message } => write!(f, "backend unavailable: {message}"),
             Self::Other { source } => write!(f, "storage error: {source}"),
+            Self::NotModified => write!(f, "not modified"),
+            Self::PreconditionFailed => write!(f, "precondition failed"),
+            Self::RangeNotSatisfiable { complete_length } => {
+                write!(f, "range not satisfiable (object size: {complete_length})")
+            }
         }
     }
 }
@@ -104,6 +142,19 @@ impl StorageError {
     /// Returns `true` if this error represents a missing object or bucket.
     pub fn is_not_found(&self) -> bool {
         matches!(self, Self::NotFound { .. } | Self::BucketNotFound { .. })
+    }
+}
+
+impl From<StorageError> for Error {
+    fn from(err: StorageError) -> Self {
+        match err {
+            StorageError::NotModified => Error::NotModified,
+            StorageError::PreconditionFailed => Error::PreconditionFailed,
+            StorageError::RangeNotSatisfiable { complete_length } => {
+                Error::RangeNotSatisfiable { complete_length }
+            }
+            other => Error::Storage(other),
+        }
     }
 }
 
@@ -161,7 +212,7 @@ mod tests {
     #[test]
     fn test_storage_error_is_not_found_false_for_backend_unavailable() {
         let e = StorageError::BackendUnavailable {
-            source: "connection refused".into(),
+            message: "connection refused".into(),
         };
         assert!(!e.is_not_found());
     }
@@ -213,5 +264,26 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    #[test]
+    fn storage_error_range_not_satisfiable_converts_to_error() {
+        let storage_err = StorageError::RangeNotSatisfiable { complete_length: 100 };
+        let err: Error = Error::from(storage_err);
+        assert!(matches!(err, Error::RangeNotSatisfiable { complete_length: 100 }));
+    }
+
+    #[test]
+    fn storage_error_not_modified_converts_to_error() {
+        let storage_err = StorageError::NotModified;
+        let err: Error = Error::from(storage_err);
+        assert!(matches!(err, Error::NotModified));
+    }
+
+    #[test]
+    fn storage_error_precondition_failed_converts_to_error() {
+        let storage_err = StorageError::PreconditionFailed;
+        let err: Error = Error::from(storage_err);
+        assert!(matches!(err, Error::PreconditionFailed));
     }
 }
