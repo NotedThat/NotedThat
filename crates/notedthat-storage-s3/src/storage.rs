@@ -1,14 +1,14 @@
 //! [`S3Storage`]: implements the `notedthat_core::Storage` trait against `aws-sdk-s3`.
 
 use async_trait::async_trait;
+use aws_sdk_s3::Client;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use bytes::Bytes;
 use notedthat_core::{
-    derive_bucket_name, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath, ObjectRead,
-    Storage, StorageError, TenantSlug,
+    KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath, ObjectRead, Storage, StorageError,
+    TenantSlug, derive_bucket_name,
 };
 use tracing::info;
 
@@ -70,7 +70,9 @@ impl Storage for S3Storage {
             .await
             .map_err(|e| {
                 if is_not_found_sdk(&e) {
-                    StorageError::NotFound { key: MANIFEST_KEY.into() }
+                    StorageError::NotFound {
+                        key: MANIFEST_KEY.into(),
+                    }
                 } else {
                     StorageError::BackendUnavailable {
                         source: format!("get_object(manifest) failed for {bucket}: {e}"),
@@ -78,9 +80,13 @@ impl Storage for S3Storage {
                 }
             })?;
 
-        let body = resp.body.collect().await.map_err(|e| StorageError::BackendUnavailable {
-            source: format!("reading manifest body from {bucket}: {e}"),
-        })?;
+        let body = resp
+            .body
+            .collect()
+            .await
+            .map_err(|e| StorageError::BackendUnavailable {
+                source: format!("reading manifest body from {bucket}: {e}"),
+            })?;
         let bytes = body.into_bytes();
 
         let manifest: KbManifest =
@@ -88,9 +94,11 @@ impl Storage for S3Storage {
                 source: format!("deserializing manifest from {bucket}: {e}"),
             })?;
 
-        manifest.validate().map_err(|e| StorageError::BackendUnavailable {
-            source: format!("manifest validation failed for {bucket}: {e}"),
-        })?;
+        manifest
+            .validate()
+            .map_err(|e| StorageError::BackendUnavailable {
+                source: format!("manifest validation failed for {bucket}: {e}"),
+            })?;
 
         Ok(manifest)
     }
@@ -118,7 +126,11 @@ impl Storage for S3Storage {
         Ok(())
     }
 
-    async fn head_object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<ObjectMeta, StorageError> {
+    async fn head_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+    ) -> Result<ObjectMeta, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
@@ -131,7 +143,9 @@ impl Storage for S3Storage {
             .await
             .map_err(|e| {
                 if is_not_found_sdk(&e) {
-                    StorageError::NotFound { key: key.to_string() }
+                    StorageError::NotFound {
+                        key: key.to_string(),
+                    }
                 } else {
                     StorageError::BackendUnavailable {
                         source: format!("head_object({key}) failed for {bucket}: {e}"),
@@ -160,7 +174,9 @@ impl Storage for S3Storage {
             .await
             .map_err(|e| {
                 if is_not_found_sdk(&e) {
-                    StorageError::NotFound { key: key.to_string() }
+                    StorageError::NotFound {
+                        key: key.to_string(),
+                    }
                 } else {
                     StorageError::BackendUnavailable {
                         source: format!("get_object({key}) failed for {bucket}: {e}"),
@@ -171,15 +187,24 @@ impl Storage for S3Storage {
         let content_type = resp.content_type().map(str::to_string);
         let last_modified = resp.last_modified().map(aws_smithy_types::DateTime::secs);
 
-        let body = resp.body.collect().await.map_err(|e| StorageError::BackendUnavailable {
-            source: format!("reading body for {key} from {bucket}: {e}"),
-        })?;
+        let body = resp
+            .body
+            .collect()
+            .await
+            .map_err(|e| StorageError::BackendUnavailable {
+                source: format!("reading body for {key} from {bucket}: {e}"),
+            })?;
         let bytes = body.into_bytes();
         let size = bytes.len() as u64;
 
         Ok(ObjectRead {
             bytes,
-            meta: ObjectMeta { key: key.to_string(), size, last_modified, content_type },
+            meta: ObjectMeta {
+                key: key.to_string(),
+                size,
+                last_modified,
+                content_type,
+            },
         })
     }
 
@@ -193,15 +218,22 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
-        let mut req = self.client.put_object().bucket(&bucket).key(key).body(ByteStream::from(bytes));
+        let mut req = self
+            .client
+            .put_object()
+            .bucket(&bucket)
+            .key(key)
+            .body(ByteStream::from(bytes));
 
         if let Some(ct) = content_type {
             req = req.content_type(ct);
         }
 
-        req.send().await.map_err(|e| StorageError::BackendUnavailable {
-            source: format!("put_object({key}) failed for {bucket}: {e}"),
-        })?;
+        req.send()
+            .await
+            .map_err(|e| StorageError::BackendUnavailable {
+                source: format!("put_object({key}) failed for {bucket}: {e}"),
+            })?;
 
         info!(bucket = %bucket, key = %key, "object stored");
         Ok(())
@@ -211,7 +243,14 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
-        match self.client.delete_object().bucket(&bucket).key(key).send().await {
+        match self
+            .client
+            .delete_object()
+            .bucket(&bucket)
+            .key(key)
+            .send()
+            .await
+        {
             Ok(_) => {
                 info!(bucket = %bucket, key = %key, "object deleted");
                 Ok(())
@@ -236,15 +275,22 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let max_keys = i32::try_from(limit.min(1000)).unwrap_or(1000);
 
-        let mut req = self.client.list_objects_v2().bucket(&bucket).max_keys(max_keys);
+        let mut req = self
+            .client
+            .list_objects_v2()
+            .bucket(&bucket)
+            .max_keys(max_keys);
 
         if let Some(p) = prefix {
             req = req.prefix(p);
         }
 
-        let resp = req.send().await.map_err(|e| StorageError::BackendUnavailable {
-            source: format!("list_objects_v2 failed for {bucket}: {e}"),
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| StorageError::BackendUnavailable {
+                source: format!("list_objects_v2 failed for {bucket}: {e}"),
+            })?;
 
         let truncated = resp.is_truncated().unwrap_or(false);
         let objects = resp
@@ -254,7 +300,12 @@ impl Storage for S3Storage {
                 let key = obj.key().unwrap_or("").to_string();
                 let size = u64::try_from(obj.size().unwrap_or(0)).unwrap_or(0);
                 let last_modified = obj.last_modified().map(aws_smithy_types::DateTime::secs);
-                ObjectMeta { key, size, last_modified, content_type: None }
+                ObjectMeta {
+                    key,
+                    size,
+                    last_modified,
+                    content_type: None,
+                }
             })
             .collect();
 

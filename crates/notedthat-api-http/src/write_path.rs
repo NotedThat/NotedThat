@@ -20,5 +20,8 @@ pub async fn commit(
     bytes: Bytes,
     content_type: Option<&str>,
 ) -> Result<(), ApiError> {
-    storage.put_object(kb, path, bytes, content_type).await.map_err(Into::into)
+    storage
+        .put_object(kb, path, bytes, content_type)
+        .await
+        .map_err(Into::into)
 }

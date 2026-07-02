@@ -11,7 +11,9 @@ pub mod slug;
 pub mod storage;
 
 pub use auth::{extract_bearer_from_header, verify_bearer_token};
-pub use bucket_name::{derive_bucket_name, validate_bucket_name, BUCKET_NAME_MAX, BUCKET_NAME_PREFIX};
+pub use bucket_name::{
+    BUCKET_NAME_MAX, BUCKET_NAME_PREFIX, derive_bucket_name, validate_bucket_name,
+};
 pub use error::{Error, StorageError};
 pub use kb::{Kb, KbManifest, ObjectMeta};
 pub use object_path::ObjectPath;

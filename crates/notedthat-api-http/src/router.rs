@@ -16,7 +16,9 @@ use notedthat_core::{Error as CoreError, KbSlug, ObjectPath};
 use serde::Deserialize;
 use std::fmt::Write;
 use tower::ServiceBuilder;
-use tower_http::request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer};
+use tower_http::request_id::{
+    MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
+};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -45,12 +47,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
         .route(
             "/v1/knowledgebases/{kb_slug}/{*object_path}",
-            get(get_object).head(head_object).put(put_object).delete(delete_object),
+            get(get_object)
+                .head(head_object)
+                .put(put_object)
+                .delete(delete_object),
         )
         .layer(
             ServiceBuilder::new()
                 .layer(DefaultBodyLimit::max(body_limit_usize(MAX_BODY_BYTES)))
-                .layer(SetRequestIdLayer::new(request_id_header.clone(), MakeRequestUuidV7))
+                .layer(SetRequestIdLayer::new(
+                    request_id_header.clone(),
+                    MakeRequestUuidV7,
+                ))
                 .layer(PropagateRequestIdLayer::new(request_id_header))
                 .layer(TraceLayer::new_for_http())
                 .layer(from_fn_with_state(state.clone(), auth_middleware)),
@@ -94,7 +102,10 @@ async fn list_objects(
     req: Request,
 ) -> Result<impl IntoResponse, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse { error, request_id: request_id.clone() };
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let limit = q.limit.filter(|&limit| limit > 0).unwrap_or(100).min(1000);
@@ -120,7 +131,10 @@ async fn head_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse { error, request_id: request_id.clone() };
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
@@ -132,7 +146,11 @@ async fn head_object(
         .map_err(|error| err(ApiError::Storage(error)))?;
 
     let mut resp = StatusCode::OK.into_response();
-    let content_length = meta.size.to_string().parse().unwrap_or(HeaderValue::from_static("0"));
+    let content_length = meta
+        .size
+        .to_string()
+        .parse()
+        .unwrap_or(HeaderValue::from_static("0"));
     resp.headers_mut().insert("content-length", content_length);
     if let Some(content_type) = meta.content_type
         && let Ok(header_value) = content_type.parse::<HeaderValue>()
@@ -154,7 +172,10 @@ async fn get_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse { error, request_id: request_id.clone() };
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
@@ -164,7 +185,10 @@ async fn get_object(
         .get_object(&kb, &path)
         .await
         .map_err(|error| err(ApiError::Storage(error)))?;
-    let content_type = read.meta.content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let content_type = read
+        .meta
+        .content_type
+        .unwrap_or_else(|| "application/octet-stream".to_string());
 
     let resp = Response::builder()
         .status(StatusCode::OK)
@@ -183,7 +207,10 @@ async fn put_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse { error, request_id: request_id.clone() };
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
@@ -208,14 +235,15 @@ async fn put_object(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    let body_bytes: Bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(state.max_body_size))
-        .await
-        .map_err(|_| {
-            err(ApiError::Core(CoreError::PayloadTooLarge {
-                size: state.max_body_size + 1,
-                limit: state.max_body_size,
-            }))
-        })?;
+    let body_bytes: Bytes =
+        axum::body::to_bytes(req.into_body(), body_limit_usize(state.max_body_size))
+            .await
+            .map_err(|_| {
+                err(ApiError::Core(CoreError::PayloadTooLarge {
+                    size: state.max_body_size + 1,
+                    limit: state.max_body_size,
+                }))
+            })?;
 
     if body_bytes.len() as u64 > state.max_body_size {
         return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
@@ -224,11 +252,20 @@ async fn put_object(
         })));
     }
 
-    commit(state.storage.as_ref(), &kb, &path, body_bytes, content_type.as_deref())
-        .await
-        .map_err(&err)?;
+    commit(
+        state.storage.as_ref(),
+        &kb,
+        &path,
+        body_bytes,
+        content_type.as_deref(),
+    )
+    .await
+    .map_err(&err)?;
 
-    let location = format!("/v1/knowledgebases/{kb_slug}/{}", percent_encode_path(path.as_str()));
+    let location = format!(
+        "/v1/knowledgebases/{kb_slug}/{}",
+        percent_encode_path(path.as_str())
+    );
     let resp = Response::builder()
         .status(StatusCode::CREATED)
         .header("location", location)
@@ -244,7 +281,10 @@ async fn delete_object(
     req: Request,
 ) -> Result<StatusCode, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse { error, request_id: request_id.clone() };
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
@@ -262,7 +302,9 @@ async fn delete_object(
 /// Look up a [`KbSlug`] from `state.declared_kbs`, returning 404 if not found.
 fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
     state.declared_kbs.get(slug).cloned().ok_or_else(|| {
-        ApiError::Core(CoreError::NotFound { resource: format!("KB '{slug}' not declared") })
+        ApiError::Core(CoreError::NotFound {
+            resource: format!("KB '{slug}' not declared"),
+        })
     })
 }
 

@@ -1,8 +1,8 @@
 //! Knowledge base domain structs: `KbManifest`, `Kb`, `ObjectMeta`.
 
-use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::slug::{KbSlug, TenantSlug};
+use serde::{Deserialize, Serialize};
 
 /// The KB manifest stored as `.notedthat/manifest.json` inside each KB's S3 bucket.
 /// See SPECIFICATIONS.md §6.7 for the full schema.
@@ -30,12 +30,7 @@ impl KbManifest {
     pub const CURRENT_VERSION: u32 = 1;
 
     /// Construct a v1 manifest for a newly provisioned KB.
-    pub fn new_v1(
-        tenant: &TenantSlug,
-        kb: &KbSlug,
-        display_name: &str,
-        created_at: i64,
-    ) -> Self {
+    pub fn new_v1(tenant: &TenantSlug, kb: &KbSlug, display_name: &str, created_at: i64) -> Self {
         Self {
             notedthat_version: env!("CARGO_PKG_VERSION").to_string(),
             manifest_version: Self::CURRENT_VERSION,
@@ -85,10 +80,7 @@ impl Kb {
         }
         if display_name.chars().count() > Self::DISPLAY_NAME_MAX {
             return Err(Error::InvalidInput {
-                message: format!(
-                    "display_name exceeds {} characters",
-                    Self::DISPLAY_NAME_MAX
-                ),
+                message: format!("display_name exceeds {} characters", Self::DISPLAY_NAME_MAX),
             });
         }
         Ok(Self { slug, display_name })
@@ -159,7 +151,10 @@ mod tests {
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
         };
-        assert!(manifest.validate().is_err(), "manifest_version != 1 should fail validate()");
+        assert!(
+            manifest.validate().is_err(),
+            "manifest_version != 1 should fail validate()"
+        );
     }
 
     #[test]

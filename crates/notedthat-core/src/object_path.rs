@@ -1,8 +1,8 @@
 //! `ObjectPath` — normalized object storage key with D40 validation rules.
 
+use crate::error::Error;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
-use crate::error::Error;
 
 /// A normalized object path within a knowledge-base bucket.
 ///
@@ -25,7 +25,9 @@ impl ObjectPath {
         let s = input.strip_prefix('/').unwrap_or(input);
 
         if s.is_empty() {
-            return Err(Error::InvalidInput { message: "path must not be empty".into() });
+            return Err(Error::InvalidInput {
+                message: "path must not be empty".into(),
+            });
         }
         if s.contains('\\') {
             return Err(Error::InvalidInput {
@@ -40,7 +42,9 @@ impl ObjectPath {
         for segment in s.split('/') {
             if segment.is_empty() {
                 return Err(Error::InvalidInput {
-                    message: "path must not contain empty segments (double slashes or trailing slash)".into(),
+                    message:
+                        "path must not contain empty segments (double slashes or trailing slash)"
+                            .into(),
                 });
             }
             if segment == "." || segment == ".." {
