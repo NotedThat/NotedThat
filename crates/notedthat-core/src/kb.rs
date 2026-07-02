@@ -100,7 +100,7 @@ pub struct ObjectMeta {
     /// Content-Type as stored in S3 (echoed from the original PUT).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-    /// Opaque ETag from the backend, wrapped in quotes per RFC 7232 §2.3
+    /// Opaque `ETag` from the backend, wrapped in quotes per RFC 7232 §2.3
     /// (e.g., `"\"abc123\""`). Emitted verbatim in HTTP responses.
     /// Never generated locally except by the `InMemoryStorage` mock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
