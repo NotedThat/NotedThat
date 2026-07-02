@@ -22,8 +22,43 @@ repository = "https://github.com/NotedThat/NotedThat"
 homepage = "https://github.com/NotedThat/NotedThat"
 authors = ["NotedThat Contributors"]
 
+# Populated in M2. Features left minimal here; crates opt into features they need.
 [workspace.dependencies]
-# Populated when real deps land in M2+
+# Async runtime & primitives
+tokio = { version = "1", default-features = false }
+async-trait = "0.1.89"
+bytes = "1.12"
+futures = "0.3"
+
+# HTTP layer
+axum = { version = "0.8", default-features = false }
+tower = "0.4"
+tower-http = { version = "0.5", default-features = false }
+http = "1"
+
+# S3
+aws-sdk-s3 = { version = "1.137", default-features = false }
+aws-config = { version = "1.1", default-features = false, features = ["behavior-version-latest"] }
+aws-smithy-runtime-api = "1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+
+# Errors
+thiserror = "2.0"
+anyhow = "1"
+
+# Security & IDs
+subtle = "2.4"
+uuid = { version = "1.6", default-features = false, features = ["v7"] }
+
+# Testing
+testcontainers = "0.27"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
