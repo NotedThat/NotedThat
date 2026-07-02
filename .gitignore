@@ -10,3 +10,7 @@
 # IDE
 .idea/
 .vscode/
+
+# Agent scratch directory (per-developer plans, drafts, evidence, notepads).
+# Never committed — belongs to the local workflow, not the repo.
+.sisyphus/
