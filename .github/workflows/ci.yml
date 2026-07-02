@@ -48,9 +48,28 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  integration-test:
+    name: Integration tests (SeaweedFS testcontainer)
+    needs: [test, clippy, fmt]
+    if: >-
+      github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.repository == 'NotedThat/NotedThat'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo test --workspace --locked -- --include-ignored
+
   release-plz-release:
     name: Tag and publish crates
-    needs: [test, clippy, fmt]
+    needs: [test, clippy, fmt, integration-test]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
@@ -80,7 +99,7 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, release-plz-release]
+    needs: [test, clippy, fmt, integration-test, release-plz-release]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
