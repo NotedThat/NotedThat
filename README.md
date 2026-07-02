@@ -26,6 +26,52 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 
 All 8 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
+## Running locally
+
+NotedThat requires an S3-compatible object store. For local development, we use
+[SeaweedFS](https://github.com/seaweedfs/seaweedfs) >= 4.18 in Docker.
+
+```sh
+# 1. Start SeaweedFS on the S3 gateway port (8333)
+docker run -d --name nt-seaweedfs \
+  -p 8333:8333 \
+  chrislusf/seaweedfs:4.18 server -s3 -filer
+
+# 2. Start the NotedThat server
+NOTEDTHAT_API_TOKEN=dev-token \
+NOTEDTHAT_KBS=notes,scratch \
+NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333 \
+NOTEDTHAT_S3_REGION=us-east-1 \
+NOTEDTHAT_S3_ACCESS_KEY_ID=any \
+NOTEDTHAT_S3_SECRET_ACCESS_KEY=any \
+NOTEDTHAT_S3_FORCE_PATH_STYLE=true \
+NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080 \
+RUST_LOG=info,notedthat=debug \
+cargo run -p notedthat-server
+
+# 3. Verify the server is running
+curl http://127.0.0.1:8080/healthz
+
+# 4. Try the API
+curl -H "Authorization: Bearer dev-token" \
+     http://127.0.0.1:8080/v1/knowledgebases
+
+# 5. Upload a file
+echo "# Hello World" | curl -X PUT \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: text/markdown" \
+  --data-binary @- \
+  http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+
+# 6. Read it back
+curl -H "Authorization: Bearer dev-token" \
+     http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+```
+
+Full environment variable reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+
+Full API documentation: [`docs/API.md`](docs/API.md)
+
 ## Contributing
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for how to build, test, and run the project locally. The project is pre-v1, so interfaces change frequently. Check open issues before starting significant work.
