@@ -2019,6 +2019,7 @@ dependencies = [
  "httpdate",
  "notedthat-api-http",
  "notedthat-core",
+ "notedthat-indexer",
  "reqwest",
  "serde",
  "serde_json",
