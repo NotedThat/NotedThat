@@ -362,19 +362,36 @@ impl notedthat_indexer::Searcher for NoopSearcher {
 /// A scriptable `Searcher` for unit tests. Pre-load responses via `push_response`.
 #[cfg(feature = "test-support")]
 pub struct MockSearcher {
-    responses: std::sync::Mutex<std::collections::VecDeque<Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>>>,
+    responses: std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
+        >,
+    >,
 }
 
 #[cfg(feature = "test-support")]
 impl MockSearcher {
     /// Create a new empty `MockSearcher`.
     pub fn new() -> Self {
-        Self { responses: std::sync::Mutex::new(std::collections::VecDeque::new()) }
+        Self {
+            responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
     }
 
     /// Push a response to the queue. Responses are returned in FIFO order.
-    pub fn push_response(&self, r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>) {
+    pub fn push_response(
+        &self,
+        r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
+    ) {
         self.responses.lock().unwrap().push_back(r);
+    }
+
+    /// Alias for `push_response` — matches the plan's specified API.
+    pub fn set_response(
+        &self,
+        r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
+    ) {
+        self.push_response(r);
     }
 }
 
@@ -386,7 +403,10 @@ impl notedthat_indexer::Searcher for MockSearcher {
         _kb: &notedthat_core::KbSlug,
         _request: notedthat_core::search::ValidatedRequest,
     ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
-        self.responses.lock().unwrap().pop_front()
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
             .unwrap_or_else(|| Ok(notedthat_core::search::SearchResponse::empty()))
     }
 }

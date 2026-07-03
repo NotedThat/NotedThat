@@ -146,8 +146,14 @@ async fn test2_mock_searcher_returns_two_hits_with_correct_shape() {
     assert_eq!(hits[0]["byte_start"], 0u64);
     assert_eq!(hits[0]["byte_end"], 256u64);
     assert!(hits[0]["score"].is_number());
-    assert_eq!(hits[0]["preview"], "Install cargo by running rustup install.");
-    assert_eq!(hits[0]["heading_path"], serde_json::json!(["Getting Started"]));
+    assert_eq!(
+        hits[0]["preview"],
+        "Install cargo by running rustup install."
+    );
+    assert_eq!(
+        hits[0]["heading_path"],
+        serde_json::json!(["Getting Started"])
+    );
 }
 
 #[tokio::test]
@@ -374,9 +380,7 @@ async fn test15_backend_unavailable_returns_503() {
 #[tokio::test]
 async fn test16_mock_unknown_kb_returns_404_not_found() {
     let mock = Arc::new(MockSearcher::new());
-    mock.push_response(Err(SearchError::UnknownKb {
-        slug: KB.into(),
-    }));
+    mock.push_response(Err(SearchError::UnknownKb { slug: KB.into() }));
 
     let resp = make_mock_app(mock)
         .oneshot(search_request(r#"{"query":"install cargo"}"#))

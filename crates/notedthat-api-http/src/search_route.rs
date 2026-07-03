@@ -35,11 +35,7 @@ pub async fn search_kb(
     // Validate slug format before declaration lookup so malformed slugs return
     // 400 `invalid_request` instead of leaking as a 404.
     let kb_slug = KbSlug::try_new(kb_slug_raw).map_err(|e| err(ApiError::Core(e)))?;
-    let kb = state.declared_kbs.get(kb_slug.as_str()).cloned().ok_or_else(|| {
-        err(ApiError::Core(CoreError::NotFound {
-            resource: format!("KB '{}' not declared", kb_slug.as_str()),
-        }))
-    })?;
+    let kb = crate::router::lookup_kb(&state, kb_slug.as_str()).map_err(err)?;
 
     let (parts, body) = req.into_parts();
     let body_bytes: Bytes = axum::body::to_bytes(body, SEARCH_BODY_MAX_BYTES)
@@ -155,10 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_returns_400() {
-        let response = app()
-            .oneshot(request(r#"{"query":""}"#))
-            .await
-            .unwrap();
+        let response = app().oneshot(request(r#"{"query":""}"#)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = response_json(response).await;

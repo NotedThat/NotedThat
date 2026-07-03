@@ -4,12 +4,12 @@
 //! §9.5 (RRF fusion), §9.6 (filter selectivity mitigation).
 
 mod filter;
-mod preview;
 mod hybrid;
+mod preview;
 
 pub use filter::{PostFilter, TranslatedFilter, translate_filter};
-pub use preview::{truncate_preview, PREVIEW_MAX_CHARS};
 pub use hybrid::HybridSearcher;
+pub use preview::{PREVIEW_MAX_CHARS, truncate_preview};
 
 use async_trait::async_trait;
 use notedthat_core::KbSlug;

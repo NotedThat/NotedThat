@@ -134,6 +134,16 @@ mod tests {
     }
 
     #[test]
+    fn backslash_in_key() {
+        // Backslash is not explicitly rejected by ObjectKey validation rules
+        // (only leading slash, NUL, and .. / . segments are rejected).
+        // This test documents the current behavior.
+        let result = ObjectKey::try_new("docs\\windows\\path.md");
+        // Backslash is allowed (it's a valid S3 key character)
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn serde_round_trip() {
         let key = ObjectKey::try_new("docs/rfc/7231.md").unwrap();
         let json = serde_json::to_string(&key).unwrap();

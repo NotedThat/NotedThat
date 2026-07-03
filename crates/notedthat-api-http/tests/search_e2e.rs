@@ -181,8 +181,7 @@ impl FullE2eEnv {
     async fn join(self) {
         self.shutdown.cancel();
         // Give the drain loop up to 10 s to flush remaining events.
-        let _ =
-            tokio::time::timeout(Duration::from_secs(10), self.worker_handle).await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), self.worker_handle).await;
         // `self._mock_server` drops here, then the environment is fully torn down.
     }
 }
@@ -198,12 +197,13 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     let kb_slug = KbSlug::try_new(kb).expect("valid kb slug for e2e test");
     let collection = format!("kb_{kb}_v1");
 
-    let qdrant_cfg = QdrantConfig { url: qdrant_url.clone(), api_key: None };
-    let qdrant_client =
-        Arc::new(QdrantClient::new(&qdrant_cfg).expect("qdrant client creation"));
-    let provisioner = QdrantProvisioner::new(
-        QdrantClient::new(&qdrant_cfg).expect("provisioner qdrant client"),
-    );
+    let qdrant_cfg = QdrantConfig {
+        url: qdrant_url.clone(),
+        api_key: None,
+    };
+    let qdrant_client = Arc::new(QdrantClient::new(&qdrant_cfg).expect("qdrant client creation"));
+    let provisioner =
+        QdrantProvisioner::new(QdrantClient::new(&qdrant_cfg).expect("provisioner qdrant client"));
     provisioner
         .ensure_collection(&kb_slug, 4)
         .await
@@ -214,9 +214,7 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
         .mount(&mock_server)
         .await;
 
@@ -250,12 +248,10 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
 
     // HybridSearcher shares the same Qdrant client + embedder as the worker
     // to avoid model/endpoint drift (§6.4, D18).
-    let searcher: Arc<dyn Searcher> = Arc::new(
-        notedthat_indexer::searcher::HybridSearcher::new(
-            Arc::clone(&qdrant_client),
-            Arc::clone(&embedder),
-        ),
-    );
+    let searcher: Arc<dyn Searcher> = Arc::new(notedthat_indexer::searcher::HybridSearcher::new(
+        Arc::clone(&qdrant_client),
+        Arc::clone(&embedder),
+    ));
 
     let mut kbs = BTreeMap::new();
     kbs.insert(kb.to_string(), kb_slug);
@@ -551,7 +547,11 @@ async fn e2e_delete_removes_from_search() {
         )
         .await
         .unwrap();
-    assert_eq!(del.status(), StatusCode::NO_CONTENT, "DELETE must return 204");
+    assert_eq!(
+        del.status(),
+        StatusCode::NO_CONTENT,
+        "DELETE must return 204"
+    );
 
     wait_for_tombstone(
         &env.qdrant_raw,
