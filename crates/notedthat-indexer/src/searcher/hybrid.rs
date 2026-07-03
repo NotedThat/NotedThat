@@ -51,6 +51,8 @@ impl super::Searcher for HybridSearcher {
             kb = %kb,
             query_len = request.query.len(),
             limit = request.limit,
+            qdrant_filter_present = tracing::field::Empty,
+            post_filter_present = tracing::field::Empty,
         )
     )]
     async fn search(
@@ -82,6 +84,9 @@ impl super::Searcher for HybridSearcher {
             .as_ref()
             .map(super::filter::translate_filter)
             .unwrap_or_default();
+        tracing::Span::current()
+            .record("qdrant_filter_present", translated.qdrant.is_some())
+            .record("post_filter_present", !translated.post.is_empty());
 
         let prefetch_limit: u64 = if translated.qdrant.is_some() {
             100 // §9.6: bump prefetch limit under selective filters.

@@ -52,10 +52,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
         .route(
             "/v1/knowledgebases/{kb_slug}/search",
-            axum::routing::post(crate::search_route::search_kb)
-                .layer(axum::extract::DefaultBodyLimit::max(
-                    crate::search_route::SEARCH_BODY_MAX_BYTES
-                )),
+            axum::routing::post(crate::search_route::search_kb).layer(
+                axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
+            ),
         )
         .route(
             "/v1/knowledgebases/{kb_slug}/{*object_path}",

@@ -112,7 +112,10 @@ async fn raw_upsert_point(
     payload.insert("object_key".to_string(), object_key.to_string().into());
     payload.insert("chunk_index".to_string(), 0_i64.into());
     payload.insert("byte_start".to_string(), 0_i64.into());
-    payload.insert("byte_end".to_string(), (i64::try_from(text.len()).unwrap_or(i64::MAX)).into());
+    payload.insert(
+        "byte_end".to_string(),
+        (i64::try_from(text.len()).unwrap_or(i64::MAX)).into(),
+    );
     payload.insert("etag".to_string(), "deadbeef".to_string().into());
     payload.insert("content_hash".to_string(), "deadbeef".to_string().into());
     payload.insert("mtime".to_string(), mtime.into());
@@ -153,9 +156,39 @@ async fn search_returns_upserted_chunks() {
 
     let raw = raw_client(&url);
     let collection = coll(&kb);
-    raw_upsert_point(&raw, &collection, 1, "the quick brown fox", "fox.md", "text/markdown", vec![], 1000).await;
-    raw_upsert_point(&raw, &collection, 2, "lazy dog sits still", "dog.md", "text/markdown", vec![], 2000).await;
-    raw_upsert_point(&raw, &collection, 3, "hello world greeting", "hello.md", "text/markdown", vec![], 3000).await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        1,
+        "the quick brown fox",
+        "fox.md",
+        "text/markdown",
+        vec![],
+        1000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        2,
+        "lazy dog sits still",
+        "dog.md",
+        "text/markdown",
+        vec![],
+        2000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        3,
+        "hello world greeting",
+        "hello.md",
+        "text/markdown",
+        vec![],
+        3000,
+    )
+    .await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -183,7 +216,11 @@ async fn search_returns_upserted_chunks() {
         !hits[0].object_key.as_str().is_empty(),
         "expected non-empty object_key"
     );
-    assert!(hits[0].score > 0.0, "expected score > 0.0, got {}", hits[0].score);
+    assert!(
+        hits[0].score > 0.0,
+        "expected score > 0.0, got {}",
+        hits[0].score
+    );
 
     drop(container);
 }
@@ -202,9 +239,39 @@ async fn filter_by_mime_excludes_non_matching() {
 
     let raw = raw_client(&url);
     let collection = coll(&kb);
-    raw_upsert_point(&raw, &collection, 1, "markdown document content", "md-file.md", "text/markdown", vec![], 1000).await;
-    raw_upsert_point(&raw, &collection, 2, "plain text document content", "txt-file.md", "text/plain", vec![], 2000).await;
-    raw_upsert_point(&raw, &collection, 3, "pdf document content binary", "pdf-file.md", "application/pdf", vec![], 3000).await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        1,
+        "markdown document content",
+        "md-file.md",
+        "text/markdown",
+        vec![],
+        1000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        2,
+        "plain text document content",
+        "txt-file.md",
+        "text/plain",
+        vec![],
+        2000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        3,
+        "pdf document content binary",
+        "pdf-file.md",
+        "application/pdf",
+        vec![],
+        3000,
+    )
+    .await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -255,9 +322,39 @@ async fn filter_by_heading_path_prefix() {
 
     let raw = raw_client(&url);
     let collection = coll(&kb);
-    raw_upsert_point(&raw, &collection, 1, "section A overview", "a.md", "text/markdown", vec!["A".to_string()], 1000).await;
-    raw_upsert_point(&raw, &collection, 2, "section A sub B details", "ab.md", "text/markdown", vec!["A".to_string(), "B".to_string()], 2000).await;
-    raw_upsert_point(&raw, &collection, 3, "section C unrelated", "c.md", "text/markdown", vec!["C".to_string()], 3000).await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        1,
+        "section A overview",
+        "a.md",
+        "text/markdown",
+        vec!["A".to_string()],
+        1000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        2,
+        "section A sub B details",
+        "ab.md",
+        "text/markdown",
+        vec!["A".to_string(), "B".to_string()],
+        2000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        3,
+        "section C unrelated",
+        "c.md",
+        "text/markdown",
+        vec!["C".to_string()],
+        3000,
+    )
+    .await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -308,9 +405,39 @@ async fn filter_by_updated_after() {
 
     let raw = raw_client(&url);
     let collection = coll(&kb);
-    raw_upsert_point(&raw, &collection, 1, "old document content here", "old.md", "text/markdown", vec![], 1000).await;
-    raw_upsert_point(&raw, &collection, 2, "mid document content here", "mid.md", "text/markdown", vec![], 2000).await;
-    raw_upsert_point(&raw, &collection, 3, "new document content here", "new.md", "text/markdown", vec![], 3000).await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        1,
+        "old document content here",
+        "old.md",
+        "text/markdown",
+        vec![],
+        1000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        2,
+        "mid document content here",
+        "mid.md",
+        "text/markdown",
+        vec![],
+        2000,
+    )
+    .await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        3,
+        "new document content here",
+        "new.md",
+        "text/markdown",
+        vec![],
+        3000,
+    )
+    .await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -442,7 +569,17 @@ async fn preview_truncates_multi_byte() {
     let raw = raw_client(&url);
     let collection = coll(&kb);
     let long_text = "日本語".repeat(300);
-    raw_upsert_point(&raw, &collection, 1, &long_text, "long.md", "text/markdown", vec![], 1000).await;
+    raw_upsert_point(
+        &raw,
+        &collection,
+        1,
+        &long_text,
+        "long.md",
+        "text/markdown",
+        vec![],
+        1000,
+    )
+    .await;
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
