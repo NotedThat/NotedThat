@@ -7,6 +7,28 @@ repository.workspace = true
 description = "Chunking, embedder client, and Qdrant integration for NotedThat"
 readme = "README.md"
 
+[dependencies]
+notedthat-core = { path = "../notedthat-core" }
+qdrant-client = { workspace = true }
+pulldown-cmark = { workspace = true }
+text-splitter = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+testcontainers = { workspace = true }
+tracing-subscriber = { workspace = true }
+
 [lib]
 path = "src/lib.rs"
 
