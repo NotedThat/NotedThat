@@ -6,7 +6,7 @@ use crate::state::AppState;
 use crate::write_path::commit;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -142,30 +142,36 @@ async fn head_object(
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
 
+    // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
+
     let meta = state
         .storage
-        .head_object(&kb, &path, ConditionalHeaders::default())
+        .head_object(&kb, &path, conditionals)
         .await
-        .map_err(|error| err(ApiError::Storage(error)))?;
+        .map_err(|e| err(ApiError::from(e)))?;
 
-    let mut resp = StatusCode::OK.into_response();
-    let content_length = meta
-        .size
-        .to_string()
-        .parse()
-        .unwrap_or(HeaderValue::from_static("0"));
-    resp.headers_mut().insert("content-length", content_length);
-    if let Some(content_type) = meta.content_type
-        && let Ok(header_value) = content_type.parse::<HeaderValue>()
-    {
-        resp.headers_mut().insert("content-type", header_value);
+    let mut builder = Response::builder().status(StatusCode::OK);
+
+    if let Some(ct) = &meta.content_type {
+        builder = builder.header("content-type", ct.as_str());
     }
-    if let Some(last_modified) = meta.last_modified
-        && let Ok(header_value) = last_modified.to_string().parse::<HeaderValue>()
-    {
-        resp.headers_mut().insert("last-modified", header_value);
+    if let Some(etag) = &meta.etag {
+        builder = builder.header("etag", etag.as_str());
     }
-    Ok(resp)
+    if let Some(last_modified) = meta
+        .last_modified
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
+    {
+        builder = builder.header("last-modified", httpdate::fmt_http_date(last_modified));
+    }
+    // Content-Length from metadata size, not body length (HEAD has no body).
+    builder = builder.header("content-length", meta.size.to_string());
+
+    Ok(builder
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
 }
 
 /// `GET /v1/knowledgebases/{kb_slug}/{*object_path}` — download an object.
