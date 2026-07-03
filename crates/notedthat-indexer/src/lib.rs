@@ -13,4 +13,5 @@ pub use chunker::{Chunk, SOFT_CHAR_CAP, chunk};
 pub use embedder::{Embedder, EmbedderError};
 pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::IndexEvent;
+pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
