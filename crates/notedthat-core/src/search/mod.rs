@@ -16,4 +16,7 @@ pub use filter::SearchFilter;
 mod error;
 pub use error::SearchError;
 
+mod hit;
+pub use hit::SearchHit;
+
 // TODO(m5): populated by T3-T8
