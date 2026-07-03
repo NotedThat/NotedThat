@@ -73,12 +73,22 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     )
     .await?;
 
+    // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
+    // Using separate instances risks model or endpoint drift between write and query paths.
+    let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
+        notedthat_indexer::searcher::HybridSearcher::new(
+            qdrant_client.clone(),
+            embedder.clone(),
+        ),
+    );
+
     let state = AppState {
         storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
         declared_kbs: Arc::new(config.kbs.clone()),
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
         indexer_tx,
+        searcher,
     };
 
     let worker_handle = tokio::spawn(
