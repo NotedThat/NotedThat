@@ -28,7 +28,10 @@ uuid = { workspace = true, features = ["v7"] }
 path = "src/lib.rs"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+testcontainers = { workspace = true }
+reqwest = { workspace = true }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.0" }
 
 [lints]
 workspace = true
