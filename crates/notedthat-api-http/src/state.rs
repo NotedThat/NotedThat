@@ -28,9 +28,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    fn minimal_state(
-        tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
-    ) -> AppState {
+    fn minimal_state(tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>) -> AppState {
         AppState {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),

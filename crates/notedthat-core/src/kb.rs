@@ -252,7 +252,10 @@ mod tests {
         });
         let manifest: KbManifest = serde_json::from_value(json).unwrap();
         assert_eq!(manifest.manifest_version, 1);
-        assert!(manifest.embedding.is_none(), "embedding should default to None");
+        assert!(
+            manifest.embedding.is_none(),
+            "embedding should default to None"
+        );
     }
 
     #[test]
@@ -295,9 +298,19 @@ mod tests {
             embedding: Some(embedding),
         };
         let json = serde_json::to_string(&manifest).unwrap();
-        assert!(!json.contains("endpoint_url_hint"), "endpoint_url_hint should not be serialized when None");
+        assert!(
+            !json.contains("endpoint_url_hint"),
+            "endpoint_url_hint should not be serialized when None"
+        );
         let restored: KbManifest = serde_json::from_str(&json).unwrap();
         assert!(restored.embedding.is_some());
-        assert!(restored.embedding.as_ref().unwrap().endpoint_url_hint.is_none());
+        assert!(
+            restored
+                .embedding
+                .as_ref()
+                .unwrap()
+                .endpoint_url_hint
+                .is_none()
+        );
     }
 }

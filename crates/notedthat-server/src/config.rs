@@ -165,10 +165,9 @@ impl EmbedderConfig {
     ///
     /// Returns `Err(Error::Config { .. })` if any required variable is missing or invalid.
     pub fn from_env() -> Result<Self, Error> {
-        let endpoint_url =
-            std::env::var("EMBEDDING_ENDPOINT_URL").map_err(|_| Error::Config {
-                message: "EMBEDDING_ENDPOINT_URL is required".into(),
-            })?;
+        let endpoint_url = std::env::var("EMBEDDING_ENDPOINT_URL").map_err(|_| Error::Config {
+            message: "EMBEDDING_ENDPOINT_URL is required".into(),
+        })?;
         let model = std::env::var("EMBEDDING_MODEL").map_err(|_| Error::Config {
             message: "EMBEDDING_MODEL is required".into(),
         })?;
@@ -393,7 +392,10 @@ mod tests {
     #[test]
     fn qdrant_url_propagated_to_config() {
         let cfg = run_with_env(
-            &[("NOTEDTHAT_QDRANT_URL", Some("http://qdrant.example.com:6334"))],
+            &[(
+                "NOTEDTHAT_QDRANT_URL",
+                Some("http://qdrant.example.com:6334"),
+            )],
             Config::from_env,
         )
         .unwrap();
@@ -478,8 +480,7 @@ mod tests {
 
     #[test]
     fn embedding_max_input_tokens_default() {
-        let cfg =
-            run_with_env(&[("EMBEDDING_MAX_INPUT_TOKENS", None)], Config::from_env).unwrap();
+        let cfg = run_with_env(&[("EMBEDDING_MAX_INPUT_TOKENS", None)], Config::from_env).unwrap();
         assert_eq!(cfg.embedder.max_input_tokens, 8192);
     }
 
