@@ -434,3 +434,19 @@ async fn move_cross_server_returns_502() {
         "expected <D:destination-different-server/> in body, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn options_without_auth_returns_401() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "OPTIONS without auth must return 401"
+    );
+}

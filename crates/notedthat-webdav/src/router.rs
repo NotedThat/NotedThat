@@ -35,12 +35,12 @@ pub fn build_router(state: WebDavState) -> Router {
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .layer(PropagateRequestIdLayer::x_request_id())
+            .layer(from_fn_with_state(state.clone(), basic_auth_middleware))
             .layer(TraceLayer::new_for_http())
-            .layer(from_fn_with_state(state.clone(), intercept_write_methods))
+            .layer(from_fn_with_state(state, intercept_write_methods))
             .layer(from_fn(intercept_options))
             .layer(from_fn(intercept_proppatch))
-            .layer(from_fn(intercept_lock_unlock))
-            .layer(from_fn_with_state(state, basic_auth_middleware)),
+            .layer(from_fn(intercept_lock_unlock)),
     )
 }
 
