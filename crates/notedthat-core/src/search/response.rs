@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::SearchHit;
+use serde::{Deserialize, Serialize};
 
 /// Response from `POST /v1/knowledgebases/{kb_slug}/search`.
 ///

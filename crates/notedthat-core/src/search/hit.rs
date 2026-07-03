@@ -1,7 +1,7 @@
 //! `SearchHit` — one hit in a search result set.
 
-use serde::{Deserialize, Serialize};
 use super::ObjectKey;
+use serde::{Deserialize, Serialize};
 
 /// One hit in a search result set.
 ///

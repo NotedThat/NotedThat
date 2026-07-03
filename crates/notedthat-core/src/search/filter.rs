@@ -54,37 +54,55 @@ mod tests {
 
     #[test]
     fn object_key_prefix_sets_not_empty() {
-        let f = SearchFilter { object_key_prefix: Some("docs/".into()), ..Default::default() };
+        let f = SearchFilter {
+            object_key_prefix: Some("docs/".into()),
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
     #[test]
     fn mime_sets_not_empty() {
-        let f = SearchFilter { mime: Some("text/markdown".into()), ..Default::default() };
+        let f = SearchFilter {
+            mime: Some("text/markdown".into()),
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
     #[test]
     fn heading_path_prefix_sets_not_empty() {
-        let f = SearchFilter { heading_path_prefix: vec!["Intro".into()], ..Default::default() };
+        let f = SearchFilter {
+            heading_path_prefix: vec!["Intro".into()],
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
     #[test]
     fn updated_after_sets_not_empty() {
-        let f = SearchFilter { updated_after: Some(1_700_000_000), ..Default::default() };
+        let f = SearchFilter {
+            updated_after: Some(1_700_000_000),
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
     #[test]
     fn updated_before_sets_not_empty() {
-        let f = SearchFilter { updated_before: Some(1_800_000_000), ..Default::default() };
+        let f = SearchFilter {
+            updated_before: Some(1_800_000_000),
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
     #[test]
     fn tags_sets_not_empty() {
-        let f = SearchFilter { tags: vec!["rust".into()], ..Default::default() };
+        let f = SearchFilter {
+            tags: vec!["rust".into()],
+            ..Default::default()
+        };
         assert!(!f.is_empty());
     }
 
@@ -125,7 +143,8 @@ mod tests {
 
     #[test]
     fn deserialize_ignores_unknown_fields() {
-        let f: SearchFilter = serde_json::from_str(r#"{"mime":"text/plain","unknown_field":true}"#).unwrap();
+        let f: SearchFilter =
+            serde_json::from_str(r#"{"mime":"text/plain","unknown_field":true}"#).unwrap();
         assert_eq!(f.mime, Some("text/plain".into()));
     }
 }
