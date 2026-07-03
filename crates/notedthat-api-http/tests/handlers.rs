@@ -687,7 +687,7 @@ async fn delete_enqueues_tombstone_on_success() {
             assert_eq!(kb.as_str(), KB);
             assert_eq!(object_key.as_str(), "to-delete.md");
         }
-        _ => panic!("expected Tombstone event, got {:?}", event),
+        IndexEvent::Upsert { .. } => panic!("expected Tombstone event, got {event:?}"),
     }
 }
 
@@ -728,7 +728,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
             assert_eq!(kb.as_str(), KB);
             assert_eq!(object_key.as_str(), "does-not-exist.md");
         }
-        _ => panic!("expected Tombstone event, got {:?}", event),
+        IndexEvent::Upsert { .. } => panic!("expected Tombstone event, got {event:?}"),
     }
 }
 
