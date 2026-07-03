@@ -80,6 +80,7 @@ mod tests {
             bearer_token: Arc::new(token.to_string()),
             max_body_size: 16 * 1024 * 1024,
             indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
         }
     }
 
