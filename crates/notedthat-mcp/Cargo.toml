@@ -10,5 +10,23 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+rmcp = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+percent-encoding = { workspace = true }
+url = { workspace = true }
+notedthat-core = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true
