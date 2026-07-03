@@ -122,8 +122,8 @@ impl IndexerWorker {
             Err(err) => return Err(format!("storage.get_object failed: {err}")),
         };
 
-        let mime = object_read.meta.content_type.as_deref().unwrap_or("");
-        if !is_indexable(mime) {
+        let mime = object_read.meta.content_type.clone().unwrap_or_default();
+        if !is_indexable(&mime) {
             tracing::debug!(
                 target: "notedthat::indexing",
                 kb = %kb.as_str(),
@@ -134,6 +134,7 @@ impl IndexerWorker {
             return Ok(());
         }
 
+        let content_hash = sha256_hex(&object_read.bytes);
         let text = match std::str::from_utf8(&object_read.bytes) {
             Ok(text) => text.to_string(),
             Err(err) => {
@@ -212,14 +213,16 @@ impl IndexerWorker {
             &object_key,
             object_read.meta.etag.as_deref().unwrap_or(""),
             object_read.meta.last_modified.unwrap_or(0),
+            &mime,
+            &content_hash,
         )?;
 
         self.qdrant
             .inner()
-            .upsert_points(qdrant_client::qdrant::UpsertPointsBuilder::new(
-                collection_name(&kb),
-                points,
-            ))
+            .upsert_points(
+                qdrant_client::qdrant::UpsertPointsBuilder::new(collection_name(&kb), points)
+                    .wait(true),
+            )
             .await
             .map_err(|err| format!("qdrant upsert failed: {err}"))?;
 
@@ -262,8 +265,10 @@ fn build_points(
     object_key: &ObjectPath,
     etag: &str,
     mtime: i64,
+    object_mime: &str,
+    content_hash: &str,
 ) -> Result<Vec<qdrant_client::qdrant::PointStruct>, String> {
-    use qdrant_client::qdrant::{PointStruct, Value};
+    use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
     use std::collections::HashMap;
 
     if filtered.len() != embeddings.len() {
@@ -296,16 +301,33 @@ fn build_points(
                 i64::try_from(chunk.byte_end).unwrap_or(i64::MAX).into(),
             );
             payload.insert("etag".to_string(), etag.to_string().into());
+            payload.insert("mime".to_string(), object_mime.to_string().into());
             payload.insert("mtime".to_string(), mtime.into());
             payload.insert(
                 "heading_path".to_string(),
                 chunk.heading_path.clone().into(),
             );
+            payload.insert("tags".to_string(), Value::from(Vec::<Value>::new()));
+            payload.insert("content_hash".to_string(), content_hash.to_string().into());
+            payload.insert("text".to_string(), chunk.text.clone().into());
 
-            let vectors = HashMap::from([("dense".to_string(), embedding.clone())]);
+            let vectors = HashMap::from([
+                ("dense".to_string(), Vector::from(embedding.clone())),
+                (
+                    "sparse_bm25".to_string(),
+                    Vector::from(Document::new(chunk.text.clone(), "qdrant/bm25")),
+                ),
+            ]);
             PointStruct::new(point_id(object_key, *chunk_index), vectors, payload)
         })
         .collect())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let hash = Sha256::digest(bytes);
+    format!("{hash:x}")
 }
 
 fn point_id(object_key: &ObjectPath, chunk_index: usize) -> u64 {

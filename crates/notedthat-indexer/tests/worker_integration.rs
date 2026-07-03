@@ -16,7 +16,10 @@ use notedthat_indexer::{
     Embedder, IndexEvent, IndexerWorker, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder,
     QdrantClient, QdrantConfig, QdrantProvisioner,
 };
-use qdrant_client::qdrant::{Condition, Filter, ScrollPoints};
+use qdrant_client::qdrant::{
+    Condition, Filter, RetrievedPoint, ScrollPoints, VectorsOutput, value::Kind,
+    vectors_output::VectorsOptions,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -35,6 +38,12 @@ use wiremock::{
 };
 
 type StorageObject = (Bytes, Option<String>);
+
+static INTEGRATION_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn integration_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    INTEGRATION_TEST_MUTEX.lock().await
+}
 
 struct MockStorage {
     objects: Mutex<HashMap<(String, String), StorageObject>>,
@@ -208,15 +217,24 @@ fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
 }
 
 fn make_embedder(server_uri: &str, dim: usize) -> Arc<dyn Embedder> {
+    make_embedder_with_limits(server_uri, dim, 8192, 3)
+}
+
+fn make_embedder_with_limits(
+    server_uri: &str,
+    dim: usize,
+    max_input_tokens: usize,
+    max_retries: u32,
+) -> Arc<dyn Embedder> {
     Arc::new(
         OpenAiCompatibleEmbedder::new(OpenAiCompatibleConfig {
             endpoint_url: server_uri.to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dim,
-            max_input_tokens: 8192,
+            max_input_tokens,
             timeout: Duration::from_secs(10),
-            max_retries: 3,
+            max_retries,
         })
         .expect("embedder construction failed"),
     )
@@ -262,6 +280,17 @@ fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
 }
 
 async fn count_points(qdrant_url: &str, collection: &str, key: &str) -> usize {
+    scroll_points(qdrant_url, collection, key, false)
+        .await
+        .len()
+}
+
+async fn scroll_points(
+    qdrant_url: &str,
+    collection: &str,
+    key: &str,
+    with_vectors: bool,
+) -> Vec<RetrievedPoint> {
     let qdrant = qdrant_client::Qdrant::from_url(qdrant_url)
         .build()
         .expect("qdrant build failed");
@@ -271,17 +300,45 @@ async fn count_points(qdrant_url: &str, collection: &str, key: &str) -> usize {
             collection_name: collection.to_string(),
             filter: Some(filter),
             limit: Some(1000),
+            with_payload: Some(true.into()),
+            with_vectors: Some(with_vectors.into()),
             ..Default::default()
         })
         .await
         .expect("scroll failed")
         .result
-        .len()
+}
+
+fn string_payload<'a>(point: &'a RetrievedPoint, key: &str) -> &'a str {
+    match point.payload.get(key).and_then(|value| value.kind.as_ref()) {
+        Some(Kind::StringValue(value)) => value,
+        other => panic!("expected string payload for {key}, got {other:?}"),
+    }
+}
+
+fn list_payload_len(point: &RetrievedPoint, key: &str) -> usize {
+    match point.payload.get(key).and_then(|value| value.kind.as_ref()) {
+        Some(Kind::ListValue(value)) => value.values.len(),
+        other => panic!("expected list payload for {key}, got {other:?}"),
+    }
+}
+
+fn has_vector(vectors: &VectorsOutput, name: &str) -> bool {
+    match vectors.vectors_options.as_ref() {
+        Some(VectorsOptions::Vectors(named)) => named.vectors.contains_key(name),
+        Some(VectorsOptions::Vector(_)) | None => false,
+    }
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn happy_path_upsert_creates_qdrant_point() {
+    let _guard = integration_guard().await;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("notedthat=debug")
+        .with_test_writer()
+        .try_init();
+
     let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
@@ -328,8 +385,29 @@ async fn happy_path_upsert_creates_qdrant_point() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "hello.md").await;
+    let points = scroll_points(&qdrant_url, &coll(&kb), "hello.md", true).await;
+    let n = points.len();
     assert!(n >= 1, "expected ≥1 point for hello.md, got {n}");
+    let point = points.first().expect("at least one point");
+
+    assert_eq!(string_payload(point, "mime"), "text/markdown");
+    assert_eq!(list_payload_len(point, "tags"), 0, "tags must be empty");
+    let content_hash = string_payload(point, "content_hash");
+    assert_eq!(content_hash.len(), 64, "content_hash must be sha256 hex");
+    assert!(
+        content_hash.chars().all(|ch| ch.is_ascii_hexdigit()),
+        "content_hash must be hex"
+    );
+    assert!(
+        !string_payload(point, "text").is_empty(),
+        "text payload should be non-empty"
+    );
+    let vectors = point.vectors.as_ref().expect("vectors should be returned");
+    assert!(has_vector(vectors, "dense"), "dense vector missing");
+    assert!(
+        has_vector(vectors, "sparse_bm25"),
+        "sparse_bm25 vector missing"
+    );
 
     drop(container);
 }
@@ -337,6 +415,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn tombstone_removes_points() {
+    let _guard = integration_guard().await;
     let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
@@ -399,6 +478,7 @@ async fn tombstone_removes_points() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn not_found_on_reread_implicit_tombstone() {
+    let _guard = integration_guard().await;
     let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
@@ -449,18 +529,112 @@ async fn not_found_on_reread_implicit_tombstone() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn non_markdown_content_type_skipped() {
-    todo!("insert image/png object, send Upsert, assert 0 Qdrant points");
+    let _guard = integration_guard().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
+    let kb = kb();
+    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let mock_server = MockServer::start().await;
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "image.png", "not markdown", "image/png");
+
+    let (tx, rx) = mpsc::channel(100);
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder(&mock_server.uri(), 4),
+            Arc::clone(&qdrant_client),
+            rx,
+            shutdown.clone(),
+        )
+        .run(),
+    );
+
+    tx.send(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("image.png"),
+        etag: "etag-image".to_string(),
+        mtime: 1_700_000_003,
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    shutdown.cancel();
+    handle.await.unwrap();
+
+    let n = count_points(&qdrant_url, &coll(&kb), "image.png").await;
+    assert_eq!(n, 0, "non-markdown object should not be indexed");
+    let calls = mock_server.received_requests().await.unwrap_or_default();
+    assert_eq!(
+        calls.len(),
+        0,
+        "embedder should not be called for image/png"
+    );
+
+    drop(container);
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn oversized_chunk_dropped_with_warn() {
-    todo!("set max_input_tokens=5, insert large doc, assert 0 points and no panic");
+    let _guard = integration_guard().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
+    let kb = kb();
+    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let mock_server = MockServer::start().await;
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        "test-kb",
+        "large.md",
+        "# Large\n\nThis chunk is intentionally longer than five characters.",
+        "text/markdown",
+    );
+
+    let (tx, rx) = mpsc::channel(100);
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder_with_limits(&mock_server.uri(), 4, 5, 3),
+            Arc::clone(&qdrant_client),
+            rx,
+            shutdown.clone(),
+        )
+        .run(),
+    );
+
+    tx.send(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("large.md"),
+        etag: "etag-large".to_string(),
+        mtime: 1_700_000_004,
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    shutdown.cancel();
+    handle.await.unwrap();
+
+    let n = count_points(&qdrant_url, &coll(&kb), "large.md").await;
+    assert_eq!(n, 0, "oversized chunk should be dropped");
+    let calls = mock_server.received_requests().await.unwrap_or_default();
+    assert_eq!(
+        calls.len(),
+        0,
+        "embedder should not receive oversized chunk"
+    );
+
+    drop(container);
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn queue_full_logs_index_queue_full() {
+    let _guard = integration_guard().await;
     let (tx, _rx) = mpsc::channel::<IndexEvent>(4);
     let kb = kb();
 
@@ -489,6 +663,7 @@ async fn queue_full_logs_index_queue_full() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn graceful_shutdown_drains_queue() {
+    let _guard = integration_guard().await;
     let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
@@ -556,17 +731,163 @@ async fn graceful_shutdown_drains_queue() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn qdrant_down_logs_indexing_failed() {
-    todo!("point worker at non-existent port, send Upsert, assert worker exits without panic");
+    let _guard = integration_guard().await;
+    let kb = kb();
+    let qdrant_client = Arc::new(
+        QdrantClient::new(&QdrantConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            api_key: None,
+        })
+        .unwrap(),
+    );
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_server)
+        .await;
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "down.md", "# Down\n\nContent.", "text/markdown");
+
+    let (tx, rx) = mpsc::channel(100);
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder(&mock_server.uri(), 4),
+            qdrant_client,
+            rx,
+            shutdown.clone(),
+        )
+        .run(),
+    );
+
+    tx.send(IndexEvent::Upsert {
+        kb,
+        object_key: opath("down.md"),
+        etag: "etag-down".to_string(),
+        mtime: 1_700_000_010,
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    shutdown.cancel();
+    handle.await.unwrap();
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retry_on_429_succeeds() {
-    todo!("wiremock returns 429 twice then 200; assert point created after 3 attempts");
+    let _guard = integration_guard().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
+    let kb = kb();
+    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(2)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_server)
+        .await;
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        "test-kb",
+        "retry.md",
+        "# Retry\n\nContent.",
+        "text/markdown",
+    );
+
+    let (tx, rx) = mpsc::channel(100);
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder(&mock_server.uri(), 4),
+            Arc::clone(&qdrant_client),
+            rx,
+            shutdown.clone(),
+        )
+        .run(),
+    );
+
+    tx.send(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("retry.md"),
+        etag: "etag-retry".to_string(),
+        mtime: 1_700_000_011,
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    shutdown.cancel();
+    handle.await.unwrap();
+
+    let n = count_points(&qdrant_url, &coll(&kb), "retry.md").await;
+    assert!(n >= 1, "expected point after retry success, got {n}");
+    let calls = mock_server.received_requests().await.unwrap_or_default();
+    assert_eq!(calls.len(), 3, "expected two retries plus success");
+
+    drop(container);
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retries_exhausted_logs_indexing_failed() {
-    todo!("wiremock always returns 429; assert worker exits without panic");
+    let _guard = integration_guard().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
+    let kb = kb();
+    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&mock_server)
+        .await;
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "fail.md", "# Fail\n\nContent.", "text/markdown");
+
+    let (tx, rx) = mpsc::channel(100);
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder_with_limits(&mock_server.uri(), 4, 8192, 2),
+            Arc::clone(&qdrant_client),
+            rx,
+            shutdown.clone(),
+        )
+        .run(),
+    );
+
+    tx.send(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("fail.md"),
+        etag: "etag-fail".to_string(),
+        mtime: 1_700_000_012,
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    shutdown.cancel();
+    handle.await.unwrap();
+
+    let n = count_points(&qdrant_url, &coll(&kb), "fail.md").await;
+    assert_eq!(n, 0, "failed embed should not write points");
+    let calls = mock_server.received_requests().await.unwrap_or_default();
+    assert_eq!(calls.len(), 2, "expected max_retries attempts");
+
+    drop(container);
 }
