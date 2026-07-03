@@ -2170,6 +2170,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.8.9",
+ "base64",
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
@@ -2185,6 +2186,7 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
