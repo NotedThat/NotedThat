@@ -43,8 +43,9 @@ impl IndexEvent {
     /// Returns the object key for logging.
     pub fn object_key(&self) -> &ObjectPath {
         match self {
-            IndexEvent::Upsert { object_key, .. }
-            | IndexEvent::Tombstone { object_key, .. } => object_key,
+            IndexEvent::Upsert { object_key, .. } | IndexEvent::Tombstone { object_key, .. } => {
+                object_key
+            }
         }
     }
 
@@ -128,5 +129,9 @@ mod tests {
     }
 
     // Compile-only bounds check
-    fn _channel_bounds() where IndexEvent: Send + Sync + Clone + std::fmt::Debug + 'static {}
+    fn _channel_bounds()
+    where
+        IndexEvent: Send + Sync + Clone + std::fmt::Debug + 'static,
+    {
+    }
 }
