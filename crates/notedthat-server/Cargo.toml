@@ -11,10 +11,12 @@ authors.workspace = true
 notedthat-core = { path = "../notedthat-core", version = "0.1.0" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.0" }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.0" }
+notedthat-indexer = { path = "../notedthat-indexer" }
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = { workspace = true }
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }

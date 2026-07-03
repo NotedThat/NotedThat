@@ -5,6 +5,7 @@
 use notedthat_core::{
     Error, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name, validate_bucket_name,
 };
+use notedthat_indexer::{ProvisionError, QdrantProvisioner};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
@@ -21,6 +22,10 @@ pub async fn provision_kbs(
     storage: &dyn Storage,
     tenant: &TenantSlug,
     kbs: &[KbSlug],
+    provisioner: &QdrantProvisioner,
+    embedder_model: &str,
+    embedder_dim: u32,
+    embedder_endpoint_hint: Option<&str>,
 ) -> Result<(), Error> {
     for kb in kbs {
         validate_bucket_name(tenant, kb)?;
@@ -30,7 +35,7 @@ pub async fn provision_kbs(
 
         storage.ensure_bucket(kb).await?;
 
-        match storage.read_manifest(kb).await {
+        let mut manifest = match storage.read_manifest(kb).await {
             Ok(manifest) => {
                 if manifest.kb_slug.as_str() != kb.as_str() {
                     warn!(
@@ -40,18 +45,68 @@ pub async fn provision_kbs(
                     );
                     let fresh = KbManifest::new_v1(tenant, kb, kb.as_str(), current_unix_ts());
                     storage.write_manifest(kb, &fresh).await?;
+                    fresh
+                } else {
+                    info!(kb = %kb.as_str(), "manifest OK");
+                    manifest
                 }
-                info!(kb = %kb.as_str(), "manifest OK");
             }
             Err(e) if e.is_not_found() => {
                 info!(kb = %kb.as_str(), "writing initial manifest");
                 let fresh = KbManifest::new_v1(tenant, kb, kb.as_str(), current_unix_ts());
                 storage.write_manifest(kb, &fresh).await?;
+                fresh
             }
             Err(e) => return Err(Error::Storage(e)),
+        };
+
+        match QdrantProvisioner::cross_check_manifest(&manifest, embedder_model, embedder_dim) {
+            Ok(None) => match provisioner
+                .ensure_collection(kb, u64::from(embedder_dim))
+                .await
+            {
+                Ok(()) => {
+                    manifest.embedding = Some(QdrantProvisioner::manifest_embedding_from_env(
+                        embedder_model.to_string(),
+                        embedder_dim,
+                        embedder_endpoint_hint.map(str::to_string),
+                    ));
+                    storage.write_manifest(kb, &manifest).await?;
+                    info!(kb = %kb.as_str(), "qdrant collection provisioned and manifest embedding recorded");
+                }
+                Err(err) => warn!(
+                    kb = %kb.as_str(),
+                    error = %err,
+                    "qdrant collection provisioning failed; continuing startup"
+                ),
+            },
+            Ok(Some(())) => {
+                if let Err(err) = provisioner
+                    .ensure_collection(kb, u64::from(embedder_dim))
+                    .await
+                {
+                    warn!(
+                        kb = %kb.as_str(),
+                        error = %err,
+                        "qdrant collection ensure failed; continuing startup"
+                    );
+                }
+            }
+            Err(err @ ProvisionError::ManifestMismatch { .. }) => return Err(provision_error(err)),
+            Err(err) => warn!(
+                kb = %kb.as_str(),
+                error = %err,
+                "qdrant manifest cross-check failed; continuing startup"
+            ),
         }
     }
     Ok(())
+}
+
+fn provision_error(err: ProvisionError) -> Error {
+    Error::Config {
+        message: err.to_string(),
+    }
 }
 
 /// Current Unix timestamp in seconds. Used for `created_at` in manifests.
@@ -68,6 +123,17 @@ fn current_unix_ts() -> i64 {
 mod tests {
     use super::*;
     use notedthat_api_http::testing::InMemoryStorage;
+    use notedthat_indexer::{QdrantClient, QdrantConfig};
+
+    fn provisioner() -> QdrantProvisioner {
+        QdrantProvisioner::new(
+            QdrantClient::new(&QdrantConfig {
+                url: "http://127.0.0.1:6334".to_string(),
+                api_key: None,
+            })
+            .expect("qdrant client construction does not connect"),
+        )
+    }
 
     #[tokio::test]
     async fn test_provision_kbs_happy_path() {
@@ -78,7 +144,17 @@ mod tests {
             KbSlug::try_new("docs").unwrap(),
         ];
 
-        provision_kbs(&storage, &tenant, &kbs).await.unwrap();
+        provision_kbs(
+            &storage,
+            &tenant,
+            &kbs,
+            &provisioner(),
+            "test-model",
+            3,
+            Some("http://embedder.example"),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             storage
@@ -106,8 +182,28 @@ mod tests {
         let tenant = TenantSlug::default();
         let kbs = vec![KbSlug::try_new("notes").unwrap()];
 
-        provision_kbs(&storage, &tenant, &kbs).await.unwrap();
-        provision_kbs(&storage, &tenant, &kbs).await.unwrap();
+        provision_kbs(
+            &storage,
+            &tenant,
+            &kbs,
+            &provisioner(),
+            "test-model",
+            3,
+            Some("http://embedder.example"),
+        )
+        .await
+        .unwrap();
+        provision_kbs(
+            &storage,
+            &tenant,
+            &kbs,
+            &provisioner(),
+            "test-model",
+            3,
+            Some("http://embedder.example"),
+        )
+        .await
+        .unwrap();
 
         let manifest = storage.read_manifest(&kbs[0]).await.unwrap();
         assert_eq!(manifest.kb_slug.as_str(), "notes");
@@ -121,7 +217,17 @@ mod tests {
         let kb = KbSlug::try_new("mykb").unwrap();
         let kbs = vec![kb.clone()];
 
-        provision_kbs(&storage, &tenant, &kbs).await.unwrap();
+        provision_kbs(
+            &storage,
+            &tenant,
+            &kbs,
+            &provisioner(),
+            "test-model",
+            3,
+            Some("http://embedder.example"),
+        )
+        .await
+        .unwrap();
 
         let manifest = storage.read_manifest(&kb).await.unwrap();
         assert_eq!(manifest.kb_slug.as_str(), "mykb");
