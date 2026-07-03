@@ -18,10 +18,20 @@ use testcontainers::{
 };
 
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
+    // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests.
+    let s3_iam = serde_json::json!({
+        "identities": [{
+            "name": "test",
+            "credentials": [{"accessKey": "any", "secretKey": "any"}],
+            "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+        }]
+    });
+    let config_bytes = serde_json::to_vec(&s3_iam).expect("serialize IAM config");
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
         .with_wait_for(WaitFor::seconds(5))
-        .with_cmd(["server", "-s3", "-filer"])
+        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
+        .with_copy_to("/tmp/s3.json", config_bytes)
         .start()
         .await
         .expect("failed to start SeaweedFS testcontainer");
