@@ -2,10 +2,10 @@
 //!
 //! Uses a Qdrant testcontainer, an in-process wiremock embedder, and the shared
 //! [`InMemoryStorage`] so the HTTP router and the [`IndexerWorker`] operate on
-//! the same backing store without requiring a real S3 / SeaweedFS instance.
+//! the same backing store without requiring a real S3 / `SeaweedFS` instance.
 //!
 //! Run with:
-//!   cargo test -p notedthat-api-http --test search_e2e -- --ignored --nocapture
+//!   cargo test -p notedthat-api-http --test `search_e2e` -- --ignored --nocapture
 #![allow(missing_docs)]
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -47,7 +47,7 @@ const KB: &str = "notes";
 // ─── Test serialization ──────────────────────────────────────────────────────
 
 /// Serialize all Qdrant-backed tests to avoid testcontainer resource exhaustion
-/// (same pattern as `notedthat-indexer` worker_integration tests).
+/// (same pattern as `notedthat-indexer` `worker_integration` tests).
 static E2E_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn e2e_guard() -> tokio::sync::MutexGuard<'static, ()> {

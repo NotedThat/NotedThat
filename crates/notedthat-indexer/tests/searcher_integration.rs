@@ -94,13 +94,14 @@ fn coll(kb: &KbSlug) -> String {
 /// Directly upsert a point into Qdrant for test isolation.
 /// Writes BOTH `dense` (fixed 4-dim vector) AND `sparse_bm25` (Document inference) vectors.
 /// This mirrors the T1 fix where M4 only wrote `dense`.
+#[allow(clippy::too_many_arguments)]
 async fn raw_upsert_point(
     qdrant: &qdrant_client::Qdrant,
     collection: &str,
     id: u64,
     text: &str,
     object_key: &str,
-    mime: &str,
+    mime_type: &str,
     heading_path: Vec<String>,
     mtime: i64,
 ) {
@@ -111,11 +112,11 @@ async fn raw_upsert_point(
     payload.insert("object_key".to_string(), object_key.to_string().into());
     payload.insert("chunk_index".to_string(), 0_i64.into());
     payload.insert("byte_start".to_string(), 0_i64.into());
-    payload.insert("byte_end".to_string(), (text.len() as i64).into());
+    payload.insert("byte_end".to_string(), (i64::try_from(text.len()).unwrap_or(i64::MAX)).into());
     payload.insert("etag".to_string(), "deadbeef".to_string().into());
     payload.insert("content_hash".to_string(), "deadbeef".to_string().into());
     payload.insert("mtime".to_string(), mtime.into());
-    payload.insert("mime".to_string(), mime.to_string().into());
+    payload.insert("mime".to_string(), mime_type.to_string().into());
     payload.insert("heading_path".to_string(), heading_path.into());
     payload.insert("tags".to_string(), Vec::<String>::new().into());
     payload.insert("text".to_string(), text.to_string().into());
@@ -496,7 +497,7 @@ async fn limit_capped_by_request() {
             &format!("doc{i}.md"),
             "text/markdown",
             vec![],
-            i as i64 * 1000,
+            i64::try_from(i).unwrap_or(i64::MAX) * 1000,
         )
         .await;
     }
@@ -560,7 +561,7 @@ async fn object_key_prefix_post_filter() {
             key,
             "text/markdown",
             vec![],
-            *id as i64 * 1000,
+            i64::try_from(*id).unwrap_or(i64::MAX) * 1000,
         )
         .await;
     }
