@@ -2217,6 +2217,7 @@ dependencies = [
  "dav-server",
  "futures",
  "notedthat-core",
+ "notedthat-indexer",
  "notedthat-write",
  "thiserror 2.0.18",
  "tokio",
