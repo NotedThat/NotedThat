@@ -51,6 +51,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/knowledgebases", get(list_kbs))
         .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
         .route(
+            "/v1/knowledgebases/{kb_slug}/search",
+            axum::routing::post(crate::search_route::search_kb)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::search_route::SEARCH_BODY_MAX_BYTES
+                )),
+        )
+        .route(
             "/v1/knowledgebases/{kb_slug}/{*object_path}",
             get(get_object)
                 .head(head_object)
@@ -393,7 +400,7 @@ async fn delete_object(
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /// Look up a [`KbSlug`] from `state.declared_kbs`, returning 404 if not found.
-fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
+pub(crate) fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
     state.declared_kbs.get(slug).cloned().ok_or_else(|| {
         ApiError::Core(CoreError::NotFound {
             resource: format!("KB '{slug}' not declared"),
