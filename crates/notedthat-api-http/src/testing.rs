@@ -11,7 +11,16 @@ use notedthat_core::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+#[derive(Clone)]
+struct StoredObject {
+    bytes: Bytes,
+    content_type: Option<String>,
+    etag: String,
+    last_modified: SystemTime,
+}
 
 /// In-memory storage implementation for use in integration tests.
 ///
@@ -26,10 +35,142 @@ pub struct InMemoryStorage {
 
 #[derive(Default)]
 struct InMemoryInner {
-    /// (`kb_slug`, `object_key`) → (bytes, `content_type`)
-    objects: HashMap<(String, String), (Bytes, Option<String>)>,
+    /// (`kb_slug`, `object_key`) → stored object
+    objects: HashMap<(String, String), StoredObject>,
     manifests: HashMap<String, KbManifest>,
     buckets: HashSet<String>,
+}
+
+fn compute_etag(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
+}
+
+fn parse_http_date_or_err(s: &str) -> Result<SystemTime, StorageError> {
+    httpdate::parse_http_date(s).map_err(|e| StorageError::Other {
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid HTTP-date '{s}': {e}"),
+        )),
+    })
+}
+
+/// Strong `ETag` comparison: `If-Match` semantics.
+fn matches_if_match(current_etag: &str, if_match_value: &str) -> bool {
+    if if_match_value.trim() == "*" {
+        return true;
+    }
+
+    if_match_value
+        .split(',')
+        .map(str::trim)
+        .any(|tag| tag == current_etag)
+}
+
+/// Returns true if `If-None-Match` matches the current object.
+fn matches_if_none_match(current_etag: Option<&str>, if_none_match_value: &str) -> bool {
+    let Some(current) = current_etag else {
+        return false;
+    };
+
+    if if_none_match_value.trim() == "*" {
+        return true;
+    }
+
+    if_none_match_value.split(',').map(str::trim).any(|tag| {
+        let tag = tag.trim_start_matches("W/");
+        let current = current.trim_start_matches("W/");
+        tag == current
+    })
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn unix_seconds_i64(time: SystemTime) -> i64 {
+    i64::try_from(unix_seconds(time)).unwrap_or(i64::MAX)
+}
+
+fn to_slice_index(value: u64) -> Result<usize, StorageError> {
+    usize::try_from(value).map_err(|e| StorageError::Other {
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("range index {value} does not fit usize: {e}"),
+        )),
+    })
+}
+
+fn object_meta(path: &ObjectPath, stored: &StoredObject, size: u64) -> ObjectMeta {
+    ObjectMeta {
+        key: path.as_str().to_string(),
+        size,
+        last_modified: Some(unix_seconds_i64(stored.last_modified)),
+        content_type: stored.content_type.clone(),
+        etag: Some(stored.etag.clone()),
+    }
+}
+
+fn evaluate_write_preconditions(
+    stored: Option<&StoredObject>,
+    conditionals: &ConditionalHeaders,
+) -> Result<(), StorageError> {
+    if let Some(if_match) = &conditionals.if_match
+        && !stored.is_some_and(|object| matches_if_match(&object.etag, if_match))
+    {
+        return Err(StorageError::PreconditionFailed);
+    }
+
+    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since {
+        let threshold = parse_http_date_or_err(if_unmodified_since)?;
+        if stored.is_some_and(|object| unix_seconds(object.last_modified) > unix_seconds(threshold))
+        {
+            return Err(StorageError::PreconditionFailed);
+        }
+    }
+
+    if let Some(if_none_match) = &conditionals.if_none_match
+        && matches_if_none_match(stored.map(|object| object.etag.as_str()), if_none_match)
+    {
+        return Err(StorageError::PreconditionFailed);
+    }
+
+    Ok(())
+}
+
+fn evaluate_read_preconditions(
+    stored: &StoredObject,
+    conditionals: &ConditionalHeaders,
+) -> Result<(), StorageError> {
+    if let Some(if_match) = &conditionals.if_match
+        && !matches_if_match(&stored.etag, if_match)
+    {
+        return Err(StorageError::PreconditionFailed);
+    }
+
+    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since {
+        let threshold = parse_http_date_or_err(if_unmodified_since)?;
+        if unix_seconds(stored.last_modified) > unix_seconds(threshold) {
+            return Err(StorageError::PreconditionFailed);
+        }
+    }
+
+    if let Some(if_none_match) = &conditionals.if_none_match
+        && matches_if_none_match(Some(&stored.etag), if_none_match)
+    {
+        return Err(StorageError::NotModified);
+    }
+
+    if let Some(if_modified_since) = &conditionals.if_modified_since {
+        let threshold = parse_http_date_or_err(if_modified_since)?;
+        if unix_seconds(stored.last_modified) <= unix_seconds(threshold) {
+            return Err(StorageError::NotModified);
+        }
+    }
+
+    Ok(())
 }
 
 #[async_trait]
@@ -65,24 +206,16 @@ impl Storage for InMemoryStorage {
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
-        // M3 T9: evaluate conditionals
-        let _ = conditionals;
-
         let inner = self.inner.read().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
-        inner
+        let stored = inner
             .objects
             .get(&key)
-            .map(|(bytes, content_type)| ObjectMeta {
-                key: path.as_str().to_string(),
-                size: bytes.len() as u64,
-                last_modified: None,
-                content_type: content_type.clone(),
-                etag: None,
-            })
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
-            })
+            })?;
+        evaluate_read_preconditions(stored, &conditionals)?;
+        Ok(object_meta(path, stored, stored.bytes.len() as u64))
     }
 
     async fn get_object(
@@ -92,29 +225,41 @@ impl Storage for InMemoryStorage {
         range: Option<Vec<ByteRange>>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
-        // M3 T9: apply range slicing, evaluate conditionals
-        let _ = range;
-        let _ = conditionals;
-
         let inner = self.inner.read().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
-        inner
+        let stored = inner
             .objects
             .get(&key)
-            .map(|(bytes, content_type)| ObjectRead {
-                bytes: bytes.clone(),
-                meta: ObjectMeta {
-                    key: path.as_str().to_string(),
-                    size: bytes.len() as u64,
-                    last_modified: None,
-                    content_type: content_type.clone(),
-                    etag: None,
-                },
-                content_range: None,
-            })
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
-            })
+            })?;
+        evaluate_read_preconditions(stored, &conditionals)?;
+
+        let total_size = stored.bytes.len() as u64;
+        let first_range = range.as_ref().and_then(|ranges| ranges.first());
+        let (bytes, content_range) = if let Some(byte_range) = first_range {
+            let exclusive = byte_range.to_exclusive_range(total_size).ok_or(
+                StorageError::RangeNotSatisfiable {
+                    complete_length: total_size,
+                },
+            )?;
+            let start = exclusive.start;
+            let end = exclusive.end;
+            (
+                stored
+                    .bytes
+                    .slice(to_slice_index(start)?..to_slice_index(end)?),
+                Some(format!("bytes {}-{}/{}", start, end - 1, total_size)),
+            )
+        } else {
+            (stored.bytes.clone(), None)
+        };
+
+        Ok(ObjectRead {
+            meta: object_meta(path, stored, bytes.len() as u64),
+            bytes,
+            content_range,
+        })
     }
 
     async fn put_object(
@@ -125,15 +270,21 @@ impl Storage for InMemoryStorage {
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
-        // M3 T9: compute etag, evaluate conditionals
-        let _ = conditionals;
-
         let mut inner = self.inner.write().await;
+        let key = (kb.as_str().to_string(), path.as_str().to_string());
+        evaluate_write_preconditions(inner.objects.get(&key), &conditionals)?;
+
+        let etag = compute_etag(&bytes);
         inner.objects.insert(
-            (kb.as_str().to_string(), path.as_str().to_string()),
-            (bytes, content_type.map(str::to_string)),
+            key,
+            StoredObject {
+                bytes,
+                content_type: content_type.map(str::to_string),
+                etag: etag.clone(),
+                last_modified: SystemTime::now(),
+            },
         );
-        Ok(PutOutcome { etag: None })
+        Ok(PutOutcome { etag: Some(etag) })
     }
 
     async fn delete_object(
@@ -142,13 +293,18 @@ impl Storage for InMemoryStorage {
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
     ) -> Result<(), StorageError> {
-        // M3 T9: evaluate if_match conditional
-        let _ = conditionals;
-
         let mut inner = self.inner.write().await;
-        inner
-            .objects
-            .remove(&(kb.as_str().to_string(), path.as_str().to_string()));
+        let key = (kb.as_str().to_string(), path.as_str().to_string());
+        if let Some(if_match) = &conditionals.if_match
+            && !inner
+                .objects
+                .get(&key)
+                .is_some_and(|object| matches_if_match(&object.etag, if_match))
+        {
+            return Err(StorageError::PreconditionFailed);
+        }
+
+        inner.objects.remove(&key);
         Ok(())
     }
 
@@ -166,12 +322,12 @@ impl Storage for InMemoryStorage {
             .filter(|((kb_key, obj_key), _)| {
                 kb_key == kb_str && prefix.is_none_or(|p| obj_key.starts_with(p))
             })
-            .map(|((_, obj_key), (bytes, content_type))| ObjectMeta {
+            .map(|((_, obj_key), stored)| ObjectMeta {
                 key: obj_key.clone(),
-                size: bytes.len() as u64,
-                last_modified: None,
-                content_type: content_type.clone(),
-                etag: None,
+                size: stored.bytes.len() as u64,
+                last_modified: Some(unix_seconds_i64(stored.last_modified)),
+                content_type: stored.content_type.clone(),
+                etag: Some(stored.etag.clone()),
             })
             .collect();
         matching.sort_by(|a, b| a.key.cmp(&b.key));
@@ -253,5 +409,187 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.objects[0].key, "0.md");
         assert_eq!(result.objects[1].key, "1.md");
+    }
+
+    #[tokio::test]
+    async fn etag_deterministic() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        let expected = compute_etag(b"hello world");
+
+        let put = storage
+            .put_object(
+                &kb,
+                &path("etag.md"),
+                Bytes::from_static(b"hello world"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+        let read = storage
+            .get_object(&kb, &path("etag.md"), None, ConditionalHeaders::default())
+            .await
+            .unwrap();
+
+        assert_eq!(put.etag.as_deref(), Some(expected.as_str()));
+        assert_eq!(read.meta.etag.as_deref(), Some(expected.as_str()));
+    }
+
+    #[tokio::test]
+    async fn if_match_multi() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        let object_path = path("conditional.md");
+        let etag = storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(b"initial"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap()
+            .etag
+            .unwrap();
+
+        let ok = storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(b"updated"),
+                None,
+                ConditionalHeaders {
+                    if_match: Some(format!("\"other\", {etag}, \"another\"")),
+                    ..ConditionalHeaders::default()
+                },
+            )
+            .await;
+        assert!(ok.is_ok());
+
+        let err = storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(b"rejected"),
+                None,
+                ConditionalHeaders {
+                    if_match: Some("\"nope\"".to_string()),
+                    ..ConditionalHeaders::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::PreconditionFailed));
+    }
+
+    #[tokio::test]
+    async fn if_none_match_get_304() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        let object_path = path("not-modified.md");
+        let etag = storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(b"cached"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap()
+            .etag
+            .unwrap();
+
+        let Err(err) = storage
+            .get_object(
+                &kb,
+                &object_path,
+                None,
+                ConditionalHeaders {
+                    if_none_match: Some(etag),
+                    ..ConditionalHeaders::default()
+                },
+            )
+            .await
+        else {
+            panic!("If-None-Match should return NotModified");
+        };
+        assert!(matches!(err, StorageError::NotModified));
+    }
+
+    #[tokio::test]
+    async fn range_slice() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        let object_path = path("range.bin");
+        storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from((0_u8..100).collect::<Vec<_>>()),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        let read = storage
+            .get_object(
+                &kb,
+                &object_path,
+                Some(vec![ByteRange::FromStart {
+                    first: 10,
+                    last: 19,
+                }]),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(read.bytes.len(), 10);
+        let expected = (10_u8..20).collect::<Vec<_>>();
+        assert_eq!(read.bytes.as_ref(), expected.as_slice());
+        assert_eq!(read.meta.size, 10);
+        assert_eq!(read.content_range.as_deref(), Some("bytes 10-19/100"));
+    }
+
+    #[tokio::test]
+    async fn range_416() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        let object_path = path("range-416.bin");
+        storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from(vec![0_u8; 50]),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        let Err(err) = storage
+            .get_object(
+                &kb,
+                &object_path,
+                Some(vec![ByteRange::FromStart {
+                    first: 100,
+                    last: 200,
+                }]),
+                ConditionalHeaders::default(),
+            )
+            .await
+        else {
+            panic!("unsatisfiable range should return RangeNotSatisfiable");
+        };
+        assert!(matches!(
+            err,
+            StorageError::RangeNotSatisfiable {
+                complete_length: 50
+            }
+        ));
     }
 }
