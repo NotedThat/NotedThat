@@ -343,6 +343,61 @@ impl Storage for InMemoryStorage {
     }
 }
 
+/// A `Searcher` that always returns an empty `SearchResponse`.
+/// Used as the default searcher in test `AppState` instances so existing tests
+/// don't need to mock the search path.
+pub struct NoopSearcher;
+
+#[async_trait]
+impl notedthat_indexer::Searcher for NoopSearcher {
+    async fn search(
+        &self,
+        _kb: &notedthat_core::KbSlug,
+        _request: notedthat_core::search::ValidatedRequest,
+    ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
+        Ok(notedthat_core::search::SearchResponse::empty())
+    }
+}
+
+/// A scriptable `Searcher` for unit tests. Pre-load responses via `push_response`.
+#[cfg(feature = "test-support")]
+pub struct MockSearcher {
+    responses: std::sync::Mutex<std::collections::VecDeque<Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>>>,
+}
+
+#[cfg(feature = "test-support")]
+impl MockSearcher {
+    /// Create a new empty `MockSearcher`.
+    pub fn new() -> Self {
+        Self { responses: std::sync::Mutex::new(std::collections::VecDeque::new()) }
+    }
+
+    /// Push a response to the queue. Responses are returned in FIFO order.
+    pub fn push_response(&self, r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>) {
+        self.responses.lock().unwrap().push_back(r);
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait]
+impl notedthat_indexer::Searcher for MockSearcher {
+    async fn search(
+        &self,
+        _kb: &notedthat_core::KbSlug,
+        _request: notedthat_core::search::ValidatedRequest,
+    ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
+        self.responses.lock().unwrap().pop_front()
+            .unwrap_or_else(|| Ok(notedthat_core::search::SearchResponse::empty()))
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Default for MockSearcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Build a test [`crate::state::AppState`] discarding the indexer receiver.
 pub fn test_app_state_with_default_channel(
     storage: Arc<dyn Storage>,
@@ -357,6 +412,7 @@ pub fn test_app_state_with_default_channel(
         bearer_token,
         max_body_size,
         indexer_tx,
+        searcher: Arc::new(NoopSearcher),
     }
 }
 
@@ -378,6 +434,7 @@ pub fn test_app_state_with_channel(
             bearer_token,
             max_body_size,
             indexer_tx,
+            searcher: Arc::new(NoopSearcher),
         },
         rx,
     )

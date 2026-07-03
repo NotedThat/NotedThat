@@ -1,6 +1,7 @@
 //! Shared application state for the axum router.
 
 use notedthat_core::{KbSlug, Storage};
+use notedthat_indexer::Searcher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct AppState {
     pub max_body_size: u64,
     /// Sender half of the async indexing queue.
     pub indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
+    /// The search implementation (injected at startup).
+    pub searcher: Arc<dyn Searcher>,
 }
 
 #[cfg(test)]
@@ -35,6 +38,7 @@ mod tests {
             bearer_token: Arc::new("token".to_string()),
             max_body_size: 1024,
             indexer_tx: tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
         }
     }
 
