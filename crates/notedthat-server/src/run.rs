@@ -20,25 +20,19 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// Grace period for in-flight WebDAV uploads after shutdown signal.
+/// Grace period for in-flight `WebDAV` uploads after shutdown signal.
 /// Runs BEFORE the existing 31-second indexer drain.
 pub const WEBDAV_INFLIGHT_GRACE: Duration = Duration::from_secs(60);
 
-/// Start the HTTP server with the provided configuration.
-///
-/// # Startup sequence (fail-fast per D39)
-///
-/// 1. Build S3 client from config.
-/// 2. Provision all declared KBs (validate bucket names, ensure buckets, write manifests).
-/// 3. Bind the TCP listener.
-/// 4. Serve requests until SIGTERM / SIGINT.
-///
-/// Any failure in steps 1-3 returns `Err` immediately (non-zero exit via `main`).
-///
-/// # Errors
-///
-/// Returns an error if S3 provisioning fails, the listener cannot bind, or axum serving fails.
-pub async fn run(config: Config) -> anyhow::Result<()> {
+/// Build infrastructure components (S3, Qdrant, embedder, indexer, app state).
+async fn build_infrastructure(
+    config: Config,
+) -> anyhow::Result<(
+    AppState,
+    WebDavState,
+    CancellationToken,
+    tokio::task::JoinHandle<()>,
+)> {
     let client = config.s3.build_client();
     let storage = Arc::new(S3Storage::new(client, config.tenant_slug.clone()));
 
@@ -113,6 +107,27 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         )
         .run(),
     );
+
+    Ok((state, dav_state, indexer_shutdown, worker_handle))
+}
+
+/// Start the HTTP server with the provided configuration.
+///
+/// # Startup sequence (fail-fast per D39)
+///
+/// 1. Build S3 client from config.
+/// 2. Provision all declared KBs (validate bucket names, ensure buckets, write manifests).
+/// 3. Bind the TCP listener.
+/// 4. Serve requests until SIGTERM / SIGINT.
+///
+/// Any failure in steps 1-3 returns `Err` immediately (non-zero exit via `main`).
+///
+/// # Errors
+///
+/// Returns an error if S3 provisioning fails, the listener cannot bind, or axum serving fails.
+pub async fn run(config: Config) -> anyhow::Result<()> {
+    let (state, dav_state, indexer_shutdown, worker_handle) =
+        build_infrastructure(config.clone()).await?;
 
     // Bind BOTH listeners before serving either (G11: atomic startup failure).
     let http_listener = TcpListener::bind(config.listen_addr)
