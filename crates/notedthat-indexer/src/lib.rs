@@ -15,3 +15,4 @@ pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::IndexEvent;
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
+pub use worker::{DRAIN_TIMEOUT, IndexerWorker};
