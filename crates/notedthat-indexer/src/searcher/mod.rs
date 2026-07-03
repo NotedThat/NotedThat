@@ -3,8 +3,10 @@
 //! See SPECIFICATIONS.md §6.10 (search API), §6.11 (crate dependency rules),
 //! §9.5 (RRF fusion), §9.6 (filter selectivity mitigation).
 
+mod filter;
 mod preview;
 
+pub use filter::{PostFilter, TranslatedFilter, translate_filter};
 pub use preview::{truncate_preview, PREVIEW_MAX_CHARS};
 
 use async_trait::async_trait;
