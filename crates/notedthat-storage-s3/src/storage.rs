@@ -135,19 +135,16 @@ fn storage_other(message: String) -> StorageError {
 }
 
 fn range_header(ranges: &[ByteRange]) -> Option<String> {
-    match ranges {
-        [] => None,
-        [one] => Some(one.to_http_string()),
-        many => Some(format!(
-            "bytes={}",
-            many.iter()
-                .map(|range| range
-                    .to_http_string()
-                    .trim_start_matches("bytes=")
-                    .to_string())
+    if ranges.is_empty() {
+        None
+    } else {
+        Some(
+            ranges
+                .iter()
+                .map(ByteRange::to_http_string)
                 .collect::<Vec<_>>()
-                .join(",")
-        )),
+                .join(", "),
+        )
     }
 }
 
