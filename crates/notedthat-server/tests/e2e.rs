@@ -62,6 +62,9 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
+        webdav_listen_addr: "127.0.0.1:0".parse().unwrap(),
+        webdav_username: "webdav-user".to_string(),
+        webdav_password: "webdav-pass".to_string(),
     }
 }
 

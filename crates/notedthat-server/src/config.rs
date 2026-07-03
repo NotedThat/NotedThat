@@ -26,6 +26,12 @@ pub struct Config {
     pub qdrant: ServerQdrantConfig,
     /// Embedder configuration.
     pub embedder: EmbedderConfig,
+    /// Socket address the `WebDAV` server binds to (`NOTEDTHAT_WEBDAV_LISTEN_ADDR`; default `0.0.0.0:8081`).
+    pub webdav_listen_addr: SocketAddr,
+    /// `WebDAV` Basic authentication username (`NOTEDTHAT_WEBDAV_USERNAME`; required).
+    pub webdav_username: String,
+    /// `WebDAV` Basic authentication password (`NOTEDTHAT_WEBDAV_PASSWORD`; required).
+    pub webdav_password: String,
 }
 
 /// Tracing output format.
@@ -100,6 +106,33 @@ impl Config {
         let qdrant = ServerQdrantConfig::from_env()?;
         let embedder = EmbedderConfig::from_env()?;
 
+        let webdav_username =
+            std::env::var("NOTEDTHAT_WEBDAV_USERNAME").map_err(|_| Error::Config {
+                message: "NOTEDTHAT_WEBDAV_USERNAME is required".into(),
+            })?;
+        if webdav_username.is_empty() {
+            return Err(Error::Config {
+                message: "NOTEDTHAT_WEBDAV_USERNAME is required and must not be empty".into(),
+            });
+        }
+
+        let webdav_password =
+            std::env::var("NOTEDTHAT_WEBDAV_PASSWORD").map_err(|_| Error::Config {
+                message: "NOTEDTHAT_WEBDAV_PASSWORD is required".into(),
+            })?;
+        if webdav_password.is_empty() {
+            return Err(Error::Config {
+                message: "NOTEDTHAT_WEBDAV_PASSWORD is required and must not be empty".into(),
+            });
+        }
+
+        let webdav_listen_addr = std::env::var("NOTEDTHAT_WEBDAV_LISTEN_ADDR")
+            .unwrap_or_else(|_| "0.0.0.0:8081".to_string())
+            .parse::<SocketAddr>()
+            .map_err(|e| Error::Config {
+                message: format!("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid: {e}"),
+            })?;
+
         Ok(Self {
             api_token,
             kbs,
@@ -109,6 +142,9 @@ impl Config {
             log_format,
             qdrant,
             embedder,
+            webdav_listen_addr,
+            webdav_username,
+            webdav_password,
         })
     }
 }
@@ -223,7 +259,7 @@ impl EmbedderConfig {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 19] = [
+    const ALL_ENV_KEYS: [&str; 22] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_S3_REGION",
@@ -235,6 +271,9 @@ mod tests {
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
         "NOTEDTHAT_QDRANT_URL",
         "NOTEDTHAT_QDRANT_API_KEY",
+        "NOTEDTHAT_WEBDAV_USERNAME",
+        "NOTEDTHAT_WEBDAV_PASSWORD",
+        "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -258,6 +297,9 @@ mod tests {
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
             ("NOTEDTHAT_QDRANT_URL", Some("http://localhost:6334")),
             ("NOTEDTHAT_QDRANT_API_KEY", None),
+            ("NOTEDTHAT_WEBDAV_USERNAME", Some("webdav-user")),
+            ("NOTEDTHAT_WEBDAV_PASSWORD", Some("webdav-pass")),
+            ("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -355,8 +397,102 @@ mod tests {
     }
 
     #[test]
+    fn test_missing_webdav_username_rejected() {
+        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_USERNAME", None)], Config::from_env);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_WEBDAV_USERNAME")
+        );
+    }
+
+    #[test]
+    fn test_empty_webdav_username_rejected() {
+        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_USERNAME", Some(""))], Config::from_env);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_WEBDAV_USERNAME")
+        );
+    }
+
+    #[test]
+    fn test_missing_webdav_password_rejected() {
+        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_PASSWORD", None)], Config::from_env);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_WEBDAV_PASSWORD")
+        );
+    }
+
+    #[test]
+    fn test_empty_webdav_password_rejected() {
+        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_PASSWORD", Some(""))], Config::from_env);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_WEBDAV_PASSWORD")
+        );
+    }
+
+    #[test]
+    fn test_default_webdav_listen_addr() {
+        let cfg =
+            run_with_env(&[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.webdav_listen_addr.to_string(), "0.0.0.0:8081");
+    }
+
+    #[test]
+    fn test_custom_webdav_listen_addr() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", Some("127.0.0.1:9999"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.webdav_listen_addr.to_string(), "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_invalid_webdav_listen_addr() {
+        let result = run_with_env(
+            &[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", Some("not-an-addr"))],
+            Config::from_env,
+        );
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid")
+        );
+    }
+
+    #[test]
+    fn test_webdav_credentials_propagated() {
+        let cfg = run_with_env(
+            &[
+                ("NOTEDTHAT_WEBDAV_USERNAME", Some("myuser")),
+                ("NOTEDTHAT_WEBDAV_PASSWORD", Some("mypass")),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.webdav_username, "myuser");
+        assert_eq!(cfg.webdav_password, "mypass");
+    }
+
+    #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 19);
+        assert_eq!(ALL_ENV_KEYS.len(), 22);
     }
 
     #[test]
