@@ -661,13 +661,10 @@ async fn delete_enqueues_tombstone_on_success() {
         StatusCode::CREATED
     );
 
-    let _upsert_event = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        indexer_rx.recv(),
-    )
-    .await
-    .expect("timeout waiting for upsert event")
-    .expect("channel closed");
+    let _upsert_event = tokio::time::timeout(std::time::Duration::from_secs(1), indexer_rx.recv())
+        .await
+        .expect("timeout waiting for upsert event")
+        .expect("channel closed");
 
     let del_resp = router
         .clone()
@@ -680,13 +677,10 @@ async fn delete_enqueues_tombstone_on_success() {
         .unwrap();
     assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
 
-    let event = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        indexer_rx.recv(),
-    )
-    .await
-    .expect("timeout waiting for tombstone event")
-    .expect("channel closed");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), indexer_rx.recv())
+        .await
+        .expect("timeout waiting for tombstone event")
+        .expect("channel closed");
 
     match event {
         IndexEvent::Tombstone { kb, object_key } => {
@@ -724,13 +718,10 @@ async fn delete_enqueues_tombstone_on_not_found() {
         .unwrap();
     assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
 
-    let event = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        indexer_rx.recv(),
-    )
-    .await
-    .expect("timeout waiting for event")
-    .expect("channel closed");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), indexer_rx.recv())
+        .await
+        .expect("timeout waiting for event")
+        .expect("channel closed");
 
     match event {
         IndexEvent::Tombstone { kb, object_key } => {

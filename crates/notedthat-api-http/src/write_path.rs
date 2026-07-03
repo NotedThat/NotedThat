@@ -124,7 +124,10 @@ mod tests {
         )
         .await;
 
-        assert!(outcome.is_ok(), "write should succeed even if queue is full");
+        assert!(
+            outcome.is_ok(),
+            "write should succeed even if queue is full"
+        );
     }
 
     #[tokio::test]
@@ -149,7 +152,10 @@ mod tests {
         )
         .await;
 
-        assert!(outcome.is_ok(), "write should succeed even if queue is closed");
+        assert!(
+            outcome.is_ok(),
+            "write should succeed even if queue is closed"
+        );
     }
 
     #[tokio::test]
