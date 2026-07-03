@@ -92,7 +92,9 @@ pub async fn provision_kbs(
                     );
                 }
             }
-            Err(err @ ProvisionError::ManifestMismatch { .. }) => return Err(provision_error(&err)),
+            Err(err @ ProvisionError::ManifestMismatch { .. }) => {
+                return Err(provision_error(&err));
+            }
             Err(err) => warn!(
                 kb = %kb.as_str(),
                 error = %err,
