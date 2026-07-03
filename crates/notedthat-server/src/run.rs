@@ -33,11 +33,13 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
     provision_kbs(storage.as_ref(), &config.tenant_slug, &kb_list).await?;
 
+    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
         declared_kbs: Arc::new(config.kbs.clone()),
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
+        indexer_tx,
     };
 
     let app = build_router(state);

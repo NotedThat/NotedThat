@@ -73,11 +73,13 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn test_state(token: &str) -> AppState {
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
         AppState {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(token.to_string()),
             max_body_size: 16 * 1024 * 1024,
+            indexer_tx,
         }
     }
 
