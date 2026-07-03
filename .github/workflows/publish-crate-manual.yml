@@ -11,6 +11,7 @@ on:
           - notedthat-core
           - notedthat-storage-s3
           - notedthat-indexer
+          - notedthat-write
           - notedthat-api-http
           - notedthat-webdav
           - notedthat-mcp

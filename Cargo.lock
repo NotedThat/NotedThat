@@ -2020,16 +2020,21 @@ dependencies = [
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
+ "notedthat-write",
+ "qdrant-client",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "testcontainers",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -2123,6 +2128,19 @@ dependencies = [
 [[package]]
 name = "notedthat-webdav"
 version = "0.1.0"
+
+[[package]]
+name = "notedthat-write"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "notedthat-core",
+ "notedthat-indexer",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "nu-ansi-term"

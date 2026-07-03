@@ -3,7 +3,6 @@
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::{auth_middleware, extract_request_id};
 use crate::state::AppState;
-use crate::write_path::commit;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderName, StatusCode};
@@ -15,11 +14,9 @@ use bytes::Bytes;
 use notedthat_core::{
     ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath, StorageError, parse_range_header,
 };
-use notedthat_indexer::IndexEvent;
 use serde::Deserialize;
 use std::fmt::Write;
 use std::time::{Duration, UNIX_EPOCH};
-use tokio::sync::mpsc::error::TrySendError;
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -318,7 +315,7 @@ async fn put_object(
         })));
     }
 
-    let outcome = commit(
+    let outcome = notedthat_write::commit(
         state.storage.as_ref(),
         &state.indexer_tx,
         &kb,
@@ -328,7 +325,7 @@ async fn put_object(
         conditionals,
     )
     .await
-    .map_err(&err)?;
+    .map_err(|e| err(ApiError::from(e)))?;
 
     let location = format!(
         "/v1/knowledgebases/{kb_slug}/{}",
@@ -362,38 +359,17 @@ async fn delete_object(
     let path = parse_path(&object_path).map_err(&err)?;
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
-    match state.storage.delete_object(&kb, &path, conditionals).await {
-        Ok(()) | Err(StorageError::NotFound { .. }) => {
-            // Enqueue Tombstone — both branches return 204
-            // delete_points with empty match is idempotent on Qdrant
-            let event = IndexEvent::Tombstone {
-                kb: kb.clone(),
-                object_key: path.clone(),
-            };
-            match state.indexer_tx.try_send(event) {
-                Ok(()) => {}
-                Err(TrySendError::Full(ev)) => {
-                    tracing::warn!(
-                        target: "notedthat::indexing",
-                        kb = %ev.kb().as_str(),
-                        path = %ev.object_key().as_str(),
-                        "INDEX_QUEUE_FULL"
-                    );
-                }
-                Err(TrySendError::Closed(ev)) => {
-                    tracing::error!(
-                        target: "notedthat::indexing",
-                        kb = %ev.kb().as_str(),
-                        path = %ev.object_key().as_str(),
-                        "INDEX_QUEUE_CLOSED"
-                    );
-                }
-            }
-            Ok(StatusCode::NO_CONTENT.into_response())
-        }
-        Err(StorageError::PreconditionFailed) => Err(err(ApiError::PreconditionFailed)),
-        Err(e) => Err(err(ApiError::Storage(e))),
-    }
+    notedthat_write::commit_delete(
+        state.storage.as_ref(),
+        &state.indexer_tx,
+        &kb,
+        &path,
+        conditionals,
+    )
+    .await
+    .map_err(|e| err(ApiError::from(e)))?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
