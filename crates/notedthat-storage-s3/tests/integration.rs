@@ -497,3 +497,302 @@ async fn m3_get_bad_date() {
 
     assert!(matches!(err, StorageError::Other { .. }));
 }
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_get_object_range_suffix_clamped() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-range-suffix").unwrap();
+    let path = ObjectPath::try_from_str("suffix.bin").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from(vec![b'z'; 50]),
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    // Suffix range much larger than object — S3 may return all bytes (clamped) or 416.
+    // Either is acceptable; what must NOT happen is a panic or unexpected error variant.
+    match storage
+        .get_object(
+            &kb,
+            &path,
+            Some(vec![ByteRange::Suffix { length: 9999 }]),
+            ConditionalHeaders::default(),
+        )
+        .await
+    {
+        Ok(read) => assert_eq!(
+            read.bytes.len(),
+            50,
+            "suffix beyond file end should return all bytes"
+        ),
+        Err(StorageError::RangeNotSatisfiable { complete_length: 50 }) => {
+            // Also acceptable per S3 implementation semantics
+        }
+        Err(e) => panic!("unexpected error on oversized suffix range: {e:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_head_object_returns_etag() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-head-etag").unwrap();
+    let path = ObjectPath::try_from_str("head-etag.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"head etag test"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let meta = storage
+        .head_object(&kb, &path, ConditionalHeaders::default())
+        .await
+        .expect("head_object");
+
+    assert!(meta.etag.is_some(), "HEAD should populate ETag");
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_head_if_none_match_304() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-head-304").unwrap();
+    let path = ObjectPath::try_from_str("head-304.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    let put = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"conditional head"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let etag = if let Some(e) = put.etag {
+        e
+    } else {
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .expect("head for etag")
+            .etag
+            .expect("etag from head")
+    };
+
+    let Err(err) = storage
+        .head_object(
+            &kb,
+            &path,
+            ConditionalHeaders {
+                if_none_match: Some(etag),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+    else {
+        panic!("matching If-None-Match on HEAD should return NotModified");
+    };
+
+    assert!(matches!(err, StorageError::NotModified));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_put_if_match_correct_201() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-put-if-match-ok").unwrap();
+    let path = ObjectPath::try_from_str("conditional-put.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    let put1 = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"original content"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("initial put");
+
+    let etag = if let Some(e) = put1.etag {
+        e
+    } else {
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .expect("head for etag")
+            .etag
+            .expect("etag from head")
+    };
+
+    let put2 = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"updated content differs"),
+            Some("text/plain"),
+            ConditionalHeaders {
+                if_match: Some(etag),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect("conditional PUT with correct If-Match should succeed");
+
+    assert!(
+        put2.etag.is_some(),
+        "successful conditional PUT should return ETag"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_put_if_none_match_wildcard_new() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-put-inm-new").unwrap();
+    let path = ObjectPath::try_from_str("new-object.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+
+    // Object does not exist yet — If-None-Match: * means "create only", should succeed.
+    let outcome = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"brand new object"),
+            Some("text/plain"),
+            ConditionalHeaders {
+                if_none_match: Some("*".to_string()),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect("If-None-Match: * on non-existent object should succeed");
+
+    assert!(
+        outcome.etag.is_some(),
+        "successful PUT should return ETag"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_delete_if_match_correct_204() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-del-if-match-ok").unwrap();
+    let path = ObjectPath::try_from_str("delete-conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    let put = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"to be deleted"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let etag = if let Some(e) = put.etag {
+        e
+    } else {
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .expect("head for etag")
+            .etag
+            .expect("etag from head")
+    };
+
+    storage
+        .delete_object(
+            &kb,
+            &path,
+            ConditionalHeaders {
+                if_match: Some(etag),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect("DELETE with correct If-Match should succeed");
+
+    assert!(
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .is_err(),
+        "object should be absent after conditional delete"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn m3_content_range_extracted_correctly() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-content-range").unwrap();
+    let path = ObjectPath::try_from_str("large.bin").unwrap();
+    let data: Vec<u8> = (0_u8..=255).cycle().take(1000).collect();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from(data),
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put 1000-byte object");
+
+    let read = storage
+        .get_object(
+            &kb,
+            &path,
+            Some(vec![ByteRange::FromStart {
+                first: 100,
+                last: 199,
+            }]),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("range GET 100-199");
+
+    assert_eq!(
+        read.content_range,
+        Some("bytes 100-199/1000".to_string()),
+        "Content-Range header should match requested range over total object size"
+    );
+    assert_eq!(
+        read.bytes.len(),
+        100,
+        "range response should contain exactly 100 bytes"
+    );
+}
