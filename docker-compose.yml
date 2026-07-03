@@ -56,6 +56,7 @@ services:
     container_name: notedthat-server
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
     environment:
       NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
       NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
@@ -67,6 +68,9 @@ services:
       NOTEDTHAT_S3_FORCE_PATH_STYLE: "true"
       NOTEDTHAT_LOG_FORMAT: ${NOTEDTHAT_LOG_FORMAT:-pretty}
       RUST_LOG: ${RUST_LOG:-info,notedthat=debug}
+      NOTEDTHAT_WEBDAV_USERNAME: ${NOTEDTHAT_WEBDAV_USERNAME:-webdav-user-please-change}
+      NOTEDTHAT_WEBDAV_PASSWORD: ${NOTEDTHAT_WEBDAV_PASSWORD:-webdav-pass-please-change}
+      NOTEDTHAT_WEBDAV_LISTEN_ADDR: 0.0.0.0:8081
     depends_on:
       seaweedfs:
         condition: service_healthy
