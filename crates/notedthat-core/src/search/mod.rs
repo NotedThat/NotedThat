@@ -10,4 +10,7 @@
 mod object_key;
 pub use object_key::ObjectKey;
 
+mod filter;
+pub use filter::SearchFilter;
+
 // TODO(m5): populated by T3-T8
