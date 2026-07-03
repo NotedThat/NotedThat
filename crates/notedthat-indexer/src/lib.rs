@@ -7,6 +7,7 @@ pub mod embedder;
 pub mod event;
 pub mod provisioner;
 pub mod qdrant;
+pub mod searcher;
 pub mod worker;
 
 pub use chunker::{Chunk, SOFT_CHAR_CAP, chunk};
@@ -15,4 +16,5 @@ pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::IndexEvent;
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
+pub use searcher::Searcher;
 pub use worker::{DRAIN_TIMEOUT, IndexerWorker};
