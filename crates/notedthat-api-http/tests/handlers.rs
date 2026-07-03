@@ -24,11 +24,13 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
+    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
+        indexer_tx,
     };
     build_router(state)
 }

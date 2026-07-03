@@ -9,7 +9,7 @@ use notedthat_core::{
     ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
     ObjectRead, PutOutcome, Storage, StorageError,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -341,6 +341,46 @@ impl Storage for InMemoryStorage {
             truncated,
         })
     }
+}
+
+/// Build a test [`crate::state::AppState`] discarding the indexer receiver.
+pub fn test_app_state_with_default_channel(
+    storage: Arc<dyn Storage>,
+    declared_kbs: Arc<BTreeMap<String, KbSlug>>,
+    bearer_token: Arc<String>,
+    max_body_size: u64,
+) -> crate::state::AppState {
+    let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
+    crate::state::AppState {
+        storage,
+        declared_kbs,
+        bearer_token,
+        max_body_size,
+        indexer_tx,
+    }
+}
+
+/// Build a test [`crate::state::AppState`] returning both the state and the indexer receiver.
+pub fn test_app_state_with_channel(
+    storage: Arc<dyn Storage>,
+    declared_kbs: Arc<BTreeMap<String, KbSlug>>,
+    bearer_token: Arc<String>,
+    max_body_size: u64,
+) -> (
+    crate::state::AppState,
+    tokio::sync::mpsc::Receiver<notedthat_indexer::IndexEvent>,
+) {
+    let (indexer_tx, rx) = tokio::sync::mpsc::channel(1024);
+    (
+        crate::state::AppState {
+            storage,
+            declared_kbs,
+            bearer_token,
+            max_body_size,
+            indexer_tx,
+        },
+        rx,
+    )
 }
 
 #[cfg(test)]
