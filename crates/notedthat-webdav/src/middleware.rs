@@ -59,6 +59,64 @@ pub async fn basic_auth_middleware(
     next.run(req).await
 }
 
+/// Intercept OPTIONS requests and return DAV Class 1 response before dav-server.
+///
+/// dav-server v0.11 hardcodes `DAV: 1,2,3,sabredav-partialupdate` which violates
+/// issue #22 which requires `DAV: 1` only. Interception is the only way to override.
+pub async fn intercept_options(req: Request, next: Next) -> Response {
+    if req.method() == axum::http::Method::OPTIONS {
+        let mut response = (StatusCode::NO_CONTENT, "").into_response();
+        let headers = response.headers_mut();
+        headers.insert("dav", HeaderValue::from_static("1"));
+        headers.insert("ms-author-via", HeaderValue::from_static("DAV"));
+        headers.insert(
+            "allow",
+            HeaderValue::from_static(
+                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
+            ),
+        );
+        return response;
+    }
+    next.run(req).await
+}
+
+/// Intercept PROPPATCH requests and return 405 before dav-server.
+///
+/// dav-server v0.11 always handles PROPPATCH and returns 207. Issue #22 requires 405.
+pub async fn intercept_proppatch(req: Request, next: Next) -> Response {
+    if req.method().as_str() == "PROPPATCH" {
+        let mut response = (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
+        response.headers_mut().insert(
+            "allow",
+            HeaderValue::from_static(
+                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
+            ),
+        );
+        return response;
+    }
+    next.run(req).await
+}
+
+/// Intercept LOCK/UNLOCK requests and return 405 before dav-server.
+///
+/// dav-server v0.11 already returns 405 when no `LockSystem` is registered, but we
+/// add belt-and-braces interception so future dav-server default changes cannot
+/// silently enable LOCK/UNLOCK (D17: no `LockSystem`, ever, in v1).
+pub async fn intercept_lock_unlock(req: Request, next: Next) -> Response {
+    let method = req.method().as_str();
+    if method == "LOCK" || method == "UNLOCK" {
+        let mut response = (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
+        response.headers_mut().insert(
+            "allow",
+            HeaderValue::from_static(
+                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
+            ),
+        );
+        return response;
+    }
+    next.run(req).await
+}
+
 #[cfg(test)]
 mod basic_auth {
     mod tests {
@@ -296,6 +354,151 @@ mod basic_auth {
 
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
             assert!(resp.headers().contains_key("x-request-id"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod intercept_options {
+    mod tests {
+        use super::super::*;
+        use axum::{
+            Router, body::Body, http::Request as HttpRequest, middleware::from_fn, routing::any,
+        };
+        use tower::util::ServiceExt;
+
+        fn app() -> Router {
+            Router::new()
+                .route("/", any(|| async { "inner handler reached" }))
+                .layer(from_fn(intercept_options))
+        }
+
+        #[tokio::test]
+        async fn test_options_returns_204_dav_1() {
+            let req = HttpRequest::builder()
+                .method("OPTIONS")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+            let dav = resp.headers().get("dav").unwrap();
+            assert_eq!(dav.to_str().unwrap(), "1");
+            assert!(!dav.to_str().unwrap().contains('2'));
+            assert!(!dav.to_str().unwrap().contains('3'));
+            assert!(resp.headers().contains_key("allow"));
+        }
+
+        #[tokio::test]
+        async fn test_options_body_empty() {
+            let req = HttpRequest::builder()
+                .method("OPTIONS")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(body.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_non_options_passes_through() {
+            let req = HttpRequest::builder()
+                .method("GET")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+    }
+}
+
+#[cfg(test)]
+mod intercept_proppatch {
+    mod tests {
+        use super::super::*;
+        use axum::{
+            Router, body::Body, http::Request as HttpRequest, middleware::from_fn, routing::any,
+        };
+        use tower::util::ServiceExt;
+
+        fn app() -> Router {
+            Router::new()
+                .route("/", any(|| async { "inner handler reached" }))
+                .layer(from_fn(intercept_proppatch))
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_returns_405() {
+            let req = HttpRequest::builder()
+                .method("PROPPATCH")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_allow_header_present() {
+            let req = HttpRequest::builder()
+                .method("PROPPATCH")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+            assert!(resp.headers().contains_key("allow"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod intercept_lock {
+    mod tests {
+        use super::super::*;
+        use axum::{
+            Router, body::Body, http::Request as HttpRequest, middleware::from_fn, routing::any,
+        };
+        use tower::util::ServiceExt;
+
+        fn app() -> Router {
+            Router::new()
+                .route("/", any(|| async { "inner handler reached" }))
+                .layer(from_fn(intercept_lock_unlock))
+        }
+
+        #[tokio::test]
+        async fn test_lock_returns_405() {
+            let req = HttpRequest::builder()
+                .method("LOCK")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        #[tokio::test]
+        async fn test_unlock_returns_405() {
+            let req = HttpRequest::builder()
+                .method("UNLOCK")
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
         }
     }
 }
