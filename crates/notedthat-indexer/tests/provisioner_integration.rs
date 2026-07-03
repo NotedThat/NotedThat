@@ -84,7 +84,10 @@ async fn ensure_collection_is_idempotent() {
         .collection_exists("kb_idempotent-kb_v1")
         .await
         .expect("collection_exists check");
-    assert!(exists, "collection should still exist after idempotent calls");
+    assert!(
+        exists,
+        "collection should still exist after idempotent calls"
+    );
 }
 
 #[tokio::test]
@@ -115,10 +118,7 @@ async fn upsert_and_tombstone_by_filter() {
     payload.insert("byte_end".to_string(), 10_i64.into());
     payload.insert("etag".to_string(), "\"abc123\"".to_string().into());
     payload.insert("mtime".to_string(), 1_700_000_000_i64.into());
-    payload.insert(
-        "heading_path".to_string(),
-        Vec::<String>::new().into(),
-    );
+    payload.insert("heading_path".to_string(), Vec::<String>::new().into());
 
     let vectors = HashMap::from([("dense".to_string(), vec![0.1_f32, 0.2, 0.3, 0.4])]);
     let point = PointStruct::new(1_u64, vectors, payload);
@@ -127,10 +127,7 @@ async fn upsert_and_tombstone_by_filter() {
         .await
         .expect("upsert should succeed");
 
-    let filter = Filter::must([Condition::matches(
-        "object_key",
-        "test.md".to_string(),
-    )]);
+    let filter = Filter::must([Condition::matches("object_key", "test.md".to_string())]);
     raw.delete_points(DeletePointsBuilder::new(collection).points(filter))
         .await
         .expect("delete_points by filter should succeed");
@@ -168,9 +165,15 @@ async fn payload_indexes_created() {
         }
     };
 
-    assert!(schema.contains_key("object_key"), "object_key index missing");
+    assert!(
+        schema.contains_key("object_key"),
+        "object_key index missing"
+    );
     assert!(schema.contains_key("etag"), "etag index missing");
     assert!(schema.contains_key("mtime"), "mtime index missing");
-    assert!(schema.contains_key("heading_path"), "heading_path index missing");
+    assert!(
+        schema.contains_key("heading_path"),
+        "heading_path index missing"
+    );
     assert!(!schema.contains_key("tags"), "tags should NOT be indexed");
 }

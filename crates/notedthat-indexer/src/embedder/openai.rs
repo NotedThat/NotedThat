@@ -99,13 +99,13 @@ impl Embedder for OpenAiCompatibleEmbedder {
                                 returned: parsed.data.len(),
                             });
                         }
-                        if let Some(first) = parsed.data.first() {
-                            if first.embedding.len() != self.config.dim {
-                                return Err(EmbedderError::DimensionMismatch {
-                                    expected: self.config.dim,
-                                    actual: first.embedding.len(),
-                                });
-                            }
+                        if let Some(first) = parsed.data.first()
+                            && first.embedding.len() != self.config.dim
+                        {
+                            return Err(EmbedderError::DimensionMismatch {
+                                expected: self.config.dim,
+                                actual: first.embedding.len(),
+                            });
                         }
                         return Ok(parsed.data.into_iter().map(|d| d.embedding).collect());
                     }
