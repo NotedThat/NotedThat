@@ -15,6 +15,8 @@ are missing or invalid.
 | Variable | Type | Description | Example |
 |----------|------|-------------|---------|
 | `NOTEDTHAT_API_TOKEN` | string (non-empty) | Static Bearer token for API authentication. All `/v1/` requests must present this token in the `Authorization: Bearer` header. | `s3cr3t-token` |
+| `NOTEDTHAT_WEBDAV_USERNAME` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
+| `NOTEDTHAT_WEBDAV_PASSWORD` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
 | `NOTEDTHAT_KBS` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
 | `NOTEDTHAT_S3_REGION` | AWS region string | AWS region for the S3 bucket. Required even when using a custom endpoint. | `us-east-1` |
 | `NOTEDTHAT_S3_ACCESS_KEY_ID` | string | AWS access key ID. No credential chain is consulted; this value is used directly. | `AKIAIOSFODNN7EXAMPLE` |
@@ -27,10 +29,28 @@ These have defaults and can be omitted.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `NOTEDTHAT_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
+| `NOTEDTHAT_WEBDAV_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8081` | Address and port the WebDAV listener binds to. Use `127.0.0.1:8081` to restrict to localhost. |
 | `NOTEDTHAT_S3_ENDPOINT_URL` | URL | (unset, uses AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage, and other S3-compatible stores. |
 | `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `true` or `false` | `false` | Use path-style S3 addressing (`endpoint/bucket/key`) instead of virtual-hosted style (`bucket.endpoint/key`). Set to `true` for SeaweedFS, MinIO, and most self-hosted S3-compatible stores. |
 | `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
 | `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
+
+## Shutdown behaviour
+
+NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT:
+
+1. **Both listeners stop accepting new connections** — the HTTP API listener (port 8080) and the
+   WebDAV listener (port 8081) both stop accepting immediately.
+2. **WebDAV in-flight grace period (60 seconds)** — in-flight WebDAV uploads have up to 60 seconds
+   to complete their storage writes and enqueue index events. This window is hardcoded as
+   `WEBDAV_INFLIGHT_GRACE` and is not configurable.
+3. **Indexer drain (31 seconds)** — the background indexer worker is signalled to stop and given
+   up to 31 seconds to flush its queue. Any events not processed within this window are abandoned.
+
+**Total worst-case shutdown time: approximately 91 seconds** (60 s WebDAV grace + 31 s indexer drain).
+
+Plan your container `terminationGracePeriodSeconds` (Kubernetes) or `stop_grace_period` (Docker
+Compose) accordingly — a value of at least 120 seconds is recommended.
 
 ## Example: local development with SeaweedFS
 
@@ -46,6 +66,9 @@ NOTEDTHAT_S3_REGION=us-east-1
 NOTEDTHAT_S3_ACCESS_KEY_ID=any
 NOTEDTHAT_S3_SECRET_ACCESS_KEY=any
 NOTEDTHAT_S3_FORCE_PATH_STYLE=true
+NOTEDTHAT_WEBDAV_USERNAME=webdav-user-please-change
+NOTEDTHAT_WEBDAV_PASSWORD=webdav-pass-please-change
+# NOTEDTHAT_WEBDAV_LISTEN_ADDR=0.0.0.0:8081  # optional, this is the default
 RUST_LOG=info,notedthat=debug
 ```
 
@@ -82,6 +105,10 @@ Error: duplicate KB slug in NOTEDTHAT_KBS: "notes"
 
 This fail-fast behavior means misconfigured deployments fail loudly at startup rather than
 silently misbehaving at runtime.
+
+WebDAV credentials (`NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`) are required and
+must not be empty strings. Setting either to an empty string is treated the same as leaving it unset
+and causes a non-zero exit before any listener binds.
 
 ## What's not configurable in M2
 
