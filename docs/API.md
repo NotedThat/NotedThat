@@ -670,6 +670,100 @@ curl -X DELETE \
 
 ---
 
+### POST /v1/knowledgebases/{kb_slug}/search
+
+Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RRF fusion) against a knowledge base.
+
+**Authentication**: Requires the static Bearer token (see [Authentication](#authentication)).
+
+**Path parameters**:
+
+| Parameter | Format | Description |
+|-----------|--------|-------------|
+| `kb_slug` | `[a-z0-9-]{1,40}` | Slug of a declared knowledge base |
+
+**Request body** (`application/json`):
+
+```json
+{
+  "query": "string (required, 1–8192 bytes after trim)",
+  "filter": {
+    "object_key_prefix": "docs/rfc/",
+    "mime": "text/markdown",
+    "heading_path_prefix": ["Introduction"],
+    "updated_after": 1700000000,
+    "updated_before": 1800000000,
+    "tags": ["rust"]
+  },
+  "limit": 10
+}
+```
+
+All `filter` fields are optional and AND-composed. `limit` defaults to `10`, is clamped to `[1, 50]`, and a value above 50 is silently clamped (not an error).
+
+**Response body (200 OK)**:
+
+```json
+{
+  "hits": [
+    {
+      "object_key": "docs/rfc/7231.md",
+      "byte_start": 1024,
+      "byte_end": 2048,
+      "heading_path": ["Section 1", "Subsection 1.2"],
+      "score": 0.0163,
+      "preview": "RFC 7231 defines HTTP semantics and content negotiation..."
+    }
+  ]
+}
+```
+
+`hits` is empty (`[]`) when no results match — the response is never `{}` or `{"hits": null}`.
+
+**Status codes and errors**:
+
+| Status | `error` code | When |
+|--------|-------------|------|
+| 200 | — | Success. `hits` may be empty. |
+| 400 | `invalid_request` | Missing or blank `query`; malformed JSON; missing or non-`application/json` Content-Type; `limit=0`; malformed slug format. |
+| 401 | `unauthorized` | Missing or invalid Bearer token. |
+| 404 | `not_found` | `kb_slug` not declared in `NOTEDTHAT_KBS`. |
+| 413 | `payload_too_large` | Request body exceeds 64 KiB. |
+| 500 | `internal_error` | Unexpected server error. |
+| 503 | `backend_unavailable` | Qdrant or embedding service unreachable. |
+
+**Example**:
+
+```bash
+curl -sSf -X POST \
+  -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "install cargo", "limit": 5}' \
+  http://127.0.0.1:8080/v1/knowledgebases/notes/search
+```
+
+**Notes**:
+
+- **Score semantics**: Search returns top-`limit` hits ordered by descending RRF fusion score. Scores are RRF rank values — higher is better. They are **NOT** probabilities or cosine similarities, are **NOT** comparable across queries or knowledge bases, and should **not** be displayed to users as confidence values.
+
+- **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results.
+
+- **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
+
+- **Tags filter**: The `tags` field in `SearchFilter` is reserved shape. Tags are not populated in v1 (D33 defers frontmatter extraction to post-v1). Tag filter values will match nothing until tag extraction ships.
+
+- **`content_hash`**: Stored in the Qdrant payload for idempotent reindex detection but is **not** exposed in `SearchHit`.
+
+- **`object_key_prefix` filter**: Applied **client-side** by the Searcher after Qdrant returns its top-k fused hits. (qdrant-client 1.15 does not expose a native keyword-index prefix matcher.) When this filter is set, the server over-fetches internally (up to 10x your `limit`, capped at 500 hits) and then retains only hits matching your prefix. In the pathological case where your prefix is highly selective and none of the top-500 fused hits match it, the response may contain fewer than `limit` hits (possibly zero). Widen the query or the prefix to recover coverage.
+
+#### Upgrade notes (M4 → M5)
+
+> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /v1/knowledgebases/{kb_slug}/{path}`.
+>
+> The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
+
+---
+
 ## Full route summary
 
 | Method | Path | Auth | Description |
@@ -682,3 +776,4 @@ curl -X DELETE \
 | GET | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Download object; supports `Range`, conditional headers |
 | PUT | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Upload or replace object; supports `If-Match`, `If-None-Match` |
 | DELETE | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Delete object (idempotent); supports `If-Match` |
+| POST | `/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
