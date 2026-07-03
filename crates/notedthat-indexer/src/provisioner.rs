@@ -9,13 +9,23 @@ pub enum ProvisionError {
     /// Error from the local Qdrant wrapper.
     Wrapper(QdrantWrapperError),
     /// Error returned by the Qdrant API.
-    Qdrant { kb: String, source: String },
+    Qdrant {
+        /// Knowledge-base slug.
+        kb: String,
+        /// Error message from Qdrant.
+        source: String,
+    },
     /// Stored manifest embedding configuration does not match current runtime configuration.
     ManifestMismatch {
+        /// Knowledge-base slug.
         kb: String,
+        /// Embedding model from manifest.
         manifest_model: String,
+        /// Embedding dimension from manifest.
         manifest_dim: u32,
+        /// Embedding model from environment.
         env_model: String,
+        /// Embedding dimension from environment.
         env_dim: u32,
     },
 }
@@ -54,7 +64,7 @@ impl From<QdrantWrapperError> for ProvisionError {
     }
 }
 
-/// Provisions Qdrant collection schema for a NotedThat knowledge base.
+/// Provisions Qdrant collection schema for a `NotedThat` knowledge base.
 pub struct QdrantProvisioner {
     client: QdrantClient,
 }

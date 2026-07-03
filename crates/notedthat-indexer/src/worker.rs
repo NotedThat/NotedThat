@@ -54,7 +54,7 @@ impl IndexerWorker {
             tokio::select! {
                 biased;
 
-                _ = self.shutdown.cancelled() => {
+                () = self.shutdown.cancelled() => {
                     let drain = async {
                         while let Some(event) = self.rx.recv().await {
                             self.handle(event).await;
@@ -69,12 +69,11 @@ impl IndexerWorker {
                     break;
                 }
                 maybe_event = self.rx.recv() => {
-                    match maybe_event {
-                        Some(event) => self.handle(event).await,
-                        None => {
-                            tracing::info!(target: "notedthat::indexing", "indexer worker: channel closed, exiting");
-                            break;
-                        }
+                    if let Some(event) = maybe_event {
+                        self.handle(event).await;
+                    } else {
+                        tracing::info!(target: "notedthat::indexing", "indexer worker: channel closed, exiting");
+                        break;
                     }
                 }
             }
@@ -103,6 +102,7 @@ impl IndexerWorker {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_upsert(&self, kb: KbSlug, object_key: ObjectPath) -> Result<(), String> {
         let object_read = match self
             .storage
@@ -283,9 +283,18 @@ fn build_points(
                 "object_key".to_string(),
                 object_key.as_str().to_string().into(),
             );
-            payload.insert("chunk_index".to_string(), (*chunk_index as i64).into());
-            payload.insert("byte_start".to_string(), (chunk.byte_start as i64).into());
-            payload.insert("byte_end".to_string(), (chunk.byte_end as i64).into());
+            payload.insert(
+                "chunk_index".to_string(),
+                i64::try_from(*chunk_index).unwrap_or(i64::MAX).into(),
+            );
+            payload.insert(
+                "byte_start".to_string(),
+                i64::try_from(chunk.byte_start).unwrap_or(i64::MAX).into(),
+            );
+            payload.insert(
+                "byte_end".to_string(),
+                i64::try_from(chunk.byte_end).unwrap_or(i64::MAX).into(),
+            );
             payload.insert("etag".to_string(), etag.to_string().into());
             payload.insert("mtime".to_string(), mtime.into());
             payload.insert(

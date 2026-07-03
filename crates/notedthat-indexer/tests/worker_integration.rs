@@ -1,8 +1,8 @@
-//! E2E integration tests for IndexerWorker.
+//! E2E integration tests for `IndexerWorker`.
 //!
 //! Requires: Docker with qdrant/qdrant:v1.15.4, wiremock (in-process).
 //! Run with:
-//!   cargo test -p notedthat-indexer --test worker_integration -- --ignored
+//!   cargo test -p notedthat-indexer --test `worker_integration` -- --ignored
 
 #![allow(missing_docs)]
 
@@ -34,19 +34,26 @@ use wiremock::{
     matchers::{method, path},
 };
 
+type StorageObject = (Bytes, Option<String>);
+
 struct MockStorage {
-    objects: Mutex<HashMap<(String, String), (Bytes, Option<String>)>>,
+    objects: Mutex<HashMap<(String, String), StorageObject>>,
 }
 
 impl MockStorage {
     fn new() -> Self {
-        Self { objects: Mutex::new(HashMap::new()) }
+        Self {
+            objects: Mutex::new(HashMap::new()),
+        }
     }
 
     fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str) {
         self.objects.lock().unwrap().insert(
             (kb.to_string(), key.to_string()),
-            (Bytes::from(content.to_owned()), Some(content_type.to_owned())),
+            (
+                Bytes::from(content.to_owned()),
+                Some(content_type.to_owned()),
+            ),
         );
     }
 }
@@ -58,7 +65,9 @@ impl Storage for MockStorage {
     }
 
     async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-        Err(StorageError::NotFound { key: ".notedthat/manifest.json".to_string() })
+        Err(StorageError::NotFound {
+            key: ".notedthat/manifest.json".to_string(),
+        })
     }
 
     async fn write_manifest(
@@ -84,7 +93,9 @@ impl Storage for MockStorage {
                 content_type: content_type.clone(),
                 etag: Some("\"test-etag\"".to_string()),
             }),
-            None => Err(StorageError::NotFound { key: path.as_str().to_string() }),
+            None => Err(StorageError::NotFound {
+                key: path.as_str().to_string(),
+            }),
         }
     }
 
@@ -108,7 +119,9 @@ impl Storage for MockStorage {
                 },
                 content_range: None,
             }),
-            None => Err(StorageError::NotFound { key: path.as_str().to_string() }),
+            None => Err(StorageError::NotFound {
+                key: path.as_str().to_string(),
+            }),
         }
     }
 
@@ -124,7 +137,9 @@ impl Storage for MockStorage {
             (kb.as_str().to_string(), path.as_str().to_string()),
             (bytes, content_type.map(str::to_string)),
         );
-        Ok(PutOutcome { etag: Some("\"test-etag\"".to_string()) })
+        Ok(PutOutcome {
+            etag: Some("\"test-etag\"".to_string()),
+        })
     }
 
     async fn delete_object(
@@ -150,9 +165,7 @@ impl Storage for MockStorage {
         let kb_str = kb.as_str().to_string();
         let objects: Vec<ObjectMeta> = guard
             .iter()
-            .filter(|((k, p), _)| {
-                k == &kb_str && prefix.map_or(true, |pfx| p.starts_with(pfx))
-            })
+            .filter(|((k, p), _)| k == &kb_str && prefix.is_none_or(|pfx| p.starts_with(pfx)))
             .take(limit as usize)
             .map(|((_, key), (bytes, ct))| ObjectMeta {
                 key: key.clone(),
@@ -185,7 +198,9 @@ async fn start_qdrant_url() -> (impl std::any::Any, String) {
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
         .map(|i| {
-            let v: Vec<f32> = (0..dim).map(|j| if j == i % dim { 1.0 } else { 0.0 }).collect();
+            let v: Vec<f32> = (0..dim)
+                .map(|j| if j == i % dim { 1.0 } else { 0.0 })
+                .collect();
             serde_json::json!({ "index": i, "embedding": v, "object": "embedding" })
         })
         .collect();
@@ -214,7 +229,14 @@ fn make_worker(
     rx: mpsc::Receiver<IndexEvent>,
     shutdown: CancellationToken,
 ) -> IndexerWorker {
-    IndexerWorker::new(storage as Arc<dyn Storage>, embedder, qdrant, rx, shutdown, 32)
+    IndexerWorker::new(
+        storage as Arc<dyn Storage>,
+        embedder,
+        qdrant,
+        rx,
+        shutdown,
+        32,
+    )
 }
 
 fn kb() -> KbSlug {
@@ -230,7 +252,10 @@ fn coll(kb: &KbSlug) -> String {
 }
 
 fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
-    let cfg = QdrantConfig { url: url.to_string(), api_key: None };
+    let cfg = QdrantConfig {
+        url: url.to_string(),
+        api_key: None,
+    };
     let client = Arc::new(QdrantClient::new(&cfg).unwrap());
     let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
     (client, provisioner)
@@ -257,7 +282,7 @@ async fn count_points(qdrant_url: &str, collection: &str, key: &str) -> usize {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn happy_path_upsert_creates_qdrant_point() {
-    let (_container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -270,7 +295,12 @@ async fn happy_path_upsert_creates_qdrant_point() {
         .await;
 
     let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "hello.md", "# Hello\n\nThis is a test document.", "text/markdown");
+    storage.insert(
+        "test-kb",
+        "hello.md",
+        "# Hello\n\nThis is a test document.",
+        "text/markdown",
+    );
 
     let (tx, rx) = mpsc::channel(100);
     let shutdown = CancellationToken::new();
@@ -301,13 +331,13 @@ async fn happy_path_upsert_creates_qdrant_point() {
     let n = count_points(&qdrant_url, &coll(&kb), "hello.md").await;
     assert!(n >= 1, "expected ≥1 point for hello.md, got {n}");
 
-    drop(_container);
+    drop(container);
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn tombstone_removes_points() {
-    let (_container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -320,7 +350,12 @@ async fn tombstone_removes_points() {
         .await;
 
     let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "doc.md", "# Doc\n\nContent to be tombstoned.", "text/markdown");
+    storage.insert(
+        "test-kb",
+        "doc.md",
+        "# Doc\n\nContent to be tombstoned.",
+        "text/markdown",
+    );
 
     let (tx, rx) = mpsc::channel(100);
     let shutdown = CancellationToken::new();
@@ -344,9 +379,12 @@ async fn tombstone_removes_points() {
     .await
     .unwrap();
 
-    tx.send(IndexEvent::Tombstone { kb: kb.clone(), object_key: opath("doc.md") })
-        .await
-        .unwrap();
+    tx.send(IndexEvent::Tombstone {
+        kb: kb.clone(),
+        object_key: opath("doc.md"),
+    })
+    .await
+    .unwrap();
 
     drop(tx);
     shutdown.cancel();
@@ -355,13 +393,13 @@ async fn tombstone_removes_points() {
     let n = count_points(&qdrant_url, &coll(&kb), "doc.md").await;
     assert_eq!(n, 0, "expected 0 points after tombstone, got {n}");
 
-    drop(_container);
+    drop(container);
 }
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn not_found_on_reread_implicit_tombstone() {
-    let (_container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -399,9 +437,13 @@ async fn not_found_on_reread_implicit_tombstone() {
     assert_eq!(n, 0, "implicit tombstone should produce 0 points, got {n}");
 
     let calls = mock_server.received_requests().await.unwrap_or_default();
-    assert_eq!(calls.len(), 0, "embedder must not be called when object is absent");
+    assert_eq!(
+        calls.len(),
+        0,
+        "embedder must not be called when object is absent"
+    );
 
-    drop(_container);
+    drop(container);
 }
 
 #[tokio::test]
@@ -427,7 +469,7 @@ async fn queue_full_logs_index_queue_full() {
             kb: kb.clone(),
             object_key: opath(&format!("note{i}.md")),
             etag: format!("e{i}"),
-            mtime: i as i64,
+            mtime: i64::from(i),
         })
         .unwrap_or_else(|_| panic!("send {i} should succeed"));
     }
@@ -447,7 +489,7 @@ async fn queue_full_logs_index_queue_full() {
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn graceful_shutdown_drains_queue() {
-    let (_container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant_url().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -487,7 +529,7 @@ async fn graceful_shutdown_drains_queue() {
             kb: kb.clone(),
             object_key: opath(&format!("drain{i}.md")),
             etag: format!("etag-drain-{i}"),
-            mtime: 1_700_000_000 + i as i64,
+            mtime: 1_700_000_000 + i64::from(i),
         })
         .await
         .unwrap();
@@ -508,7 +550,7 @@ async fn graceful_shutdown_drains_queue() {
         assert!(n >= 1, "expected ≥1 point for {key} after drain, got {n}");
     }
 
-    drop(_container);
+    drop(container);
 }
 
 #[tokio::test]

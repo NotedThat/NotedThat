@@ -1,4 +1,4 @@
-//! Async indexing pipeline for NotedThat.
+//! Async indexing pipeline for `NotedThat`.
 //!
 //! See SPECIFICATIONS.md §6.2, §6.3, §6.4, §6.11, §6.12 for context.
 

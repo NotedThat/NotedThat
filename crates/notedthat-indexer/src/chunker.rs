@@ -84,6 +84,7 @@ fn heading_boundaries(raw: &str) -> Vec<HeadingBoundary> {
     let mut active_heading: Option<HeadingBoundary> = None;
 
     for (event, range) in Parser::new(raw).into_offset_iter() {
+        #[allow(clippy::match_same_arms)]
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 active_heading = Some(HeadingBoundary {
@@ -237,7 +238,7 @@ mod tests {
     fn no_empty_chunks() {
         let chunks = chunk("# A\n## B");
         for c in &chunks {
-            assert!(c.byte_start < c.byte_end, "empty chunk found: {:?}", c);
+            assert!(c.byte_start < c.byte_end, "empty chunk found: {c:?}");
         }
     }
 
@@ -296,7 +297,7 @@ mod tests {
 
     #[test]
     fn chunk_is_send_sync_clone_debug() {
-        fn _bounds<T: Send + Sync + Clone + std::fmt::Debug>() {}
-        _bounds::<Chunk>();
+        fn bounds<T: Send + Sync + Clone + std::fmt::Debug>() {}
+        bounds::<Chunk>();
     }
 }

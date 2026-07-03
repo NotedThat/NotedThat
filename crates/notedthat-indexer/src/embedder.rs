@@ -99,7 +99,7 @@ mod tests {
             sent: 2,
             returned: 1,
         };
-        assert!(e.to_string().contains("2") && e.to_string().contains("1"));
+        assert!(e.to_string().contains('2') && e.to_string().contains('1'));
     }
 
     #[test]
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn error_display_retries_exhausted() {
         let e = EmbedderError::RetriesExhausted { attempts: 3 };
-        assert!(e.to_string().contains("3"));
+        assert!(e.to_string().contains('3'));
     }
 
     // Compile-only: EmbedderError is Send + Sync + 'static

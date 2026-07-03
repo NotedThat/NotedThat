@@ -13,15 +13,19 @@ use std::sync::Arc;
 /// Qdrant client configuration, parsed from `NOTEDTHAT_QDRANT_*` env vars.
 #[derive(Debug, Clone)]
 pub struct QdrantConfig {
+    /// Qdrant server URL (e.g., <http://127.0.0.1:6334>).
     pub url: String,
+    /// Optional API key for authentication.
     pub api_key: Option<String>,
 }
 
 /// Errors from the Qdrant wrapper.
 #[derive(Debug, thiserror::Error)]
 pub enum QdrantWrapperError {
+    /// Failed to build the Qdrant client.
     #[error("qdrant client build failed: {0}")]
     ClientBuild(String),
+    /// Qdrant operation failed.
     #[error("qdrant operation failed: {0}")]
     Operation(String),
 }

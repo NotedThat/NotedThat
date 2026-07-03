@@ -18,7 +18,7 @@ pub enum IndexEvent {
         kb: KbSlug,
         /// Object key in the KB bucket.
         object_key: ObjectPath,
-        /// S3 ETag for cache validation.
+        /// S3 `ETag` for cache validation.
         etag: String,
         /// Modification time (Unix timestamp).
         mtime: i64,
