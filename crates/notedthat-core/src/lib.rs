@@ -9,6 +9,7 @@ pub mod error;
 pub mod kb;
 pub mod object_path;
 pub mod range;
+pub mod search;
 pub mod slug;
 pub mod storage;
 
