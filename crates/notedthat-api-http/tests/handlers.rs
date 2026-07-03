@@ -1197,3 +1197,131 @@ async fn put_allows_body_at_exact_limit() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
+
+// ─── HEAD ETag and conditionals ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn head_returns_etag() {
+    let body = "x".repeat(100);
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "head-etag.txt", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(authed_request(
+            "HEAD",
+            format!("/v1/knowledgebases/{KB}/head-etag.txt"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers().get("etag").is_some(),
+        "HEAD must return ETag header"
+    );
+    assert_eq!(resp.headers().get("content-length").unwrap(), "100");
+    let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(body_bytes.is_empty(), "HEAD must return empty body");
+}
+
+#[tokio::test]
+async fn head_ignores_range() {
+    let body = "x".repeat(100);
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "head-range.txt", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/v1/knowledgebases/{KB}/head-range.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=0-9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK, "Range header must be ignored on HEAD");
+    assert_eq!(resp.headers().get("content-length").unwrap(), "100");
+    assert!(
+        resp.headers().get("content-range").is_none(),
+        "HEAD must not emit Content-Range"
+    );
+}
+
+#[tokio::test]
+async fn head_if_none_match_304() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "head-304.txt", "cached content").await,
+        StatusCode::CREATED
+    );
+
+    let head_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "HEAD",
+            format!("/v1/knowledgebases/{KB}/head-304.txt"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(head_resp.status(), StatusCode::OK);
+    let etag = head_resp
+        .headers()
+        .get("etag")
+        .expect("ETag must be present")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/v1/knowledgebases/{KB}/head-304.txt"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(body_bytes.is_empty(), "304 must return empty body");
+}
+
+#[tokio::test]
+async fn head_if_match_412() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "head-412.txt", "some content").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/v1/knowledgebases/{KB}/head-412.txt"))
+                .header(auth().0, auth().1)
+                .header("if-match", "\"wrong-etag\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+}
