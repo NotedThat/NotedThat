@@ -1,5 +1,6 @@
 //! Domain error types: `Error` and `StorageError`.
 
+use crate::search::SearchError;
 use thiserror::Error;
 
 /// Domain error mapped to §6.12 HTTP status codes.
@@ -154,6 +155,21 @@ impl From<StorageError> for Error {
                 Error::RangeNotSatisfiable { complete_length }
             }
             other => Error::Storage(other),
+        }
+    }
+}
+
+impl From<SearchError> for Error {
+    fn from(e: SearchError) -> Self {
+        match e {
+            SearchError::InvalidInput { message } => Error::InvalidInput { message },
+            SearchError::UnknownKb { slug } => Error::NotFound {
+                resource: format!("knowledgebase '{slug}'"),
+            },
+            SearchError::BackendUnavailable { message } => {
+                Error::Storage(StorageError::BackendUnavailable { message })
+            }
+            SearchError::Internal { message } => Error::Config { message },
         }
     }
 }
