@@ -92,3 +92,92 @@ silently misbehaving at runtime.
 - **TLS:** The server speaks plain HTTP. Terminate TLS at a reverse proxy (Traefik, nginx, Caddy).
 - **Multiple tokens:** Only one API token is supported. Per-KB tokens and scopes are planned for
   a later release.
+
+---
+
+## Qdrant
+
+NotedThat uses [Qdrant](https://qdrant.tech/) for vector search indexing (M4+). Qdrant v1.15.2 or later is required for server-side `qdrant/bm25` sparse inference.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `NOTEDTHAT_QDRANT_URL` | Yes | | Qdrant gRPC endpoint (e.g. `http://127.0.0.1:6334`) |
+| `NOTEDTHAT_QDRANT_API_KEY` | No | | API key for authenticated Qdrant instances |
+
+**Example**:
+
+```env
+NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
+# NOTEDTHAT_QDRANT_API_KEY=your-key-here  # optional
+```
+
+---
+
+## Embedding
+
+NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `EMBEDDING_ENDPOINT_URL` | Yes | | Base URL of the OpenAI-compatible endpoint (e.g. `https://api.openai.com`) |
+| `EMBEDDING_MODEL` | Yes | | Model name (e.g. `text-embedding-3-small`, `voyage-3`, `BAAI/bge-m3`) |
+| `EMBEDDING_API_KEY` | Yes | | Bearer token / API key for the endpoint |
+| `EMBEDDING_DIMENSIONS` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
+| `EMBEDDING_BATCH_SIZE` | No | `32` | Number of text chunks per HTTP embedding request |
+| `EMBEDDING_TIMEOUT_MS` | No | `30000` | Per-request HTTP timeout (milliseconds) |
+| `EMBEDDING_MAX_RETRIES` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
+| `EMBEDDING_MAX_INPUT_TOKENS` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
+
+### Examples
+
+**OpenAI** (`text-embedding-3-small`, 1536 dimensions):
+
+```env
+EMBEDDING_ENDPOINT_URL=https://api.openai.com
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_DIMENSIONS=1536
+```
+
+**Voyage AI** (`voyage-3`, 1024 dimensions):
+
+```env
+EMBEDDING_ENDPOINT_URL=https://api.voyageai.com
+EMBEDDING_MODEL=voyage-3
+EMBEDDING_API_KEY=pa-...
+EMBEDDING_DIMENSIONS=1024
+```
+
+**Self-hosted TEI** (Text Embeddings Inference, `BAAI/bge-m3`, 1024 dimensions):
+
+```env
+EMBEDDING_ENDPOINT_URL=http://tei:80
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_API_KEY=any          # TEI doesn't require a key; set to any value
+EMBEDDING_DIMENSIONS=1024
+```
+
+### Changing the embedding model
+
+Changing `EMBEDDING_MODEL` or `EMBEDDING_DIMENSIONS` after initial provisioning will cause the server to fail at startup with a `ManifestMismatch` error. Re-indexing after a model change requires:
+
+1. Stop the server
+2. Delete the Qdrant collection(s) manually
+3. Update env vars
+4. Restart — collections are re-provisioned automatically
+
+---
+
+## Indexing behavior
+
+Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
+
+- Writes commit to S3 first, then enqueue an index event. Search results may be **stale** briefly after a write.
+- Queue capacity is fixed at **1024 events** in v1 (not configurable).
+- If the queue is full, the write still succeeds and `INDEX_QUEUE_FULL` is logged.
+- If Qdrant is unreachable during indexing, `INDEXING_FAILED` is logged and the write still succeeds. The next write of the same object re-enqueues automatically.
+- On graceful shutdown (SIGTERM), the server drains the queue with a **30-second bounded timeout** before stopping.
+
+No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.
+
+See [SPECIFICATIONS.md](../SPECIFICATIONS.md) §6.4 (embeddings), §6.11 (startup provisioning), §6.12 (indexing queue) for full details.
