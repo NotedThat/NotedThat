@@ -1325,3 +1325,432 @@ async fn head_if_match_412() {
 
     assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
 }
+
+// ─── M3 Cross-Cutting Scenarios ──────────────────────────────────────────────
+
+/// End-to-end round trip: PUT → GET → 304 → conditional PUT → GET (new) → conditional DELETE → 404.
+#[tokio::test]
+async fn m3_round_trip() {
+    let a = app();
+
+    // Step 1: PUT object, capture ETag E1
+    let put_resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .header(auth().0, auth().1)
+                .body(Body::from("first body"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+    let e1 = put_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(!e1.is_empty());
+
+    // Step 2: GET → 200, correct body, ETag == E1
+    let get_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    assert_eq!(get_resp.headers().get("etag").unwrap().to_str().unwrap(), e1);
+    let body = to_bytes(get_resp.into_body(), 1024).await.unwrap();
+    assert_eq!(&body[..], b"first body");
+
+    // Step 3: GET with If-None-Match: E1 → 304
+    let resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", &e1)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+
+    // Step 4: conditional PUT with If-Match: E1 + new body → 201, new ETag E2
+    let put2_resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", &e1)
+                .body(Body::from("second body"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put2_resp.status(), StatusCode::CREATED);
+    let e2 = put2_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(e2, e1, "ETag must change when content changes");
+
+    // Step 5: GET → 200, new body, ETag == E2
+    let get2_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get2_resp.status(), StatusCode::OK);
+    assert_eq!(
+        get2_resp.headers().get("etag").unwrap().to_str().unwrap(),
+        e2
+    );
+    let body2 = to_bytes(get2_resp.into_body(), 1024).await.unwrap();
+    assert_eq!(&body2[..], b"second body");
+
+    // Step 6: conditional DELETE with If-Match: E2 → 204
+    let del_resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", &e2)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+    // Step 7: GET → 404
+    let get3_resp = a
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get3_resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Precondition precedence: If-Match passes but If-None-Match: * fires because object exists.
+#[tokio::test]
+async fn m3_precondition_precedence() {
+    let a = app();
+
+    let put_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/v1/knowledgebases/{KB}/prec-precedence.md"),
+            Body::from("data"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+    let e = put_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // If-Match: E (would pass alone), but If-None-Match: * fires because object exists → 412
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/prec-precedence.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", &e)
+                .header("if-none-match", "*")
+                .body(Body::from("new data"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "If-None-Match: * must fire because object exists, even when If-Match passes"
+    );
+}
+
+/// Multi-ETag If-Match list: wrong list → 412; list containing the current ETag → 201.
+#[tokio::test]
+async fn m3_multi_etag_if_match() {
+    let a = app();
+
+    let put_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/v1/knowledgebases/{KB}/multi-etag.md"),
+            Body::from("content"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+    let e = put_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // If-Match list containing no matching ETag → 412
+    let resp_wrong = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/multi-etag.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", "\"wrong1\", \"wrong2\"")
+                .body(Body::from("rejected"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_wrong.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "If-Match list with no matching ETag must return 412"
+    );
+
+    // If-Match list that includes the actual ETag → 201
+    let if_match_with_e = format!("\"wrong1\", {e}, \"wrong2\"");
+    let resp_ok = a
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/multi-etag.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", if_match_with_e.as_str())
+                .body(Body::from("accepted"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_ok.status(),
+        StatusCode::CREATED,
+        "If-Match list containing the current ETag must succeed"
+    );
+}
+
+/// Zero-byte object: PUT 0 bytes, then Range: bytes=0-0 → 416 with Content-Range: bytes */0.
+#[tokio::test]
+async fn m3_zero_byte_object_range_416() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "zero-byte.bin", "").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/zero-byte.bin"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        resp.headers().get("content-range").unwrap(),
+        "bytes */0",
+        "Content-Range must reflect zero-byte object"
+    );
+}
+
+/// Suffix range larger than object → 206 with full body (clamped to object size).
+#[tokio::test]
+async fn m3_suffix_range_clamped_206() {
+    let a = app();
+    let content = "hello world 12345 xxxxx"; // exactly 23 bytes
+    let n = content.len();
+    assert_eq!(
+        put_text(a.clone(), KB, "suffix-clamp.bin", content).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/suffix-clamp.bin"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=-9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        resp.headers().get("content-range").unwrap(),
+        &format!("bytes 0-{}/{}", n - 1, n),
+        "suffix range larger than object must be clamped to full range"
+    );
+    let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(
+        body.len(),
+        n,
+        "clamped suffix range must return the full object body"
+    );
+}
+
+/// Range where start > end → 416 (semantically unsatisfiable even if parseable).
+#[tokio::test]
+async fn m3_range_start_gt_end() {
+    let a = app();
+    let body = "x".repeat(100);
+    assert_eq!(
+        put_text(a.clone(), KB, "range-inverted.bin", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/range-inverted.bin"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=50-10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        "bytes=50-10 (start > end) must return 416"
+    );
+    assert_eq!(
+        resp.headers().get("content-range").unwrap(),
+        "bytes */100"
+    );
+}
+
+/// PUT ETag is consistent across GET and HEAD responses.
+#[tokio::test]
+async fn m3_etag_round_trip() {
+    let a = app();
+
+    let put_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            Body::from("etag round trip content"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+    let put_etag = put_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // GET ETag must match PUT ETag
+    let get_resp = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let get_etag = get_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(get_etag, put_etag, "GET ETag must match PUT ETag");
+
+    // HEAD ETag must also match
+    let head_resp = a
+        .oneshot(authed_request(
+            "HEAD",
+            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(head_resp.status(), StatusCode::OK);
+    let head_etag = head_resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(head_etag, put_etag, "HEAD ETag must match PUT ETag");
+}
+
+/// Malformed HTTP-date in If-Unmodified-Since must not panic; any valid HTTP status is acceptable.
+#[tokio::test]
+async fn m3_malformed_date_if_unmodified_since() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "bad-date.md", "data").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/bad-date.md"))
+                .header(auth().0, auth().1)
+                .header("if-unmodified-since", "not-a-valid-http-date")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    assert!(
+        (200..600).contains(&status),
+        "malformed If-Unmodified-Since must not panic; got {status}"
+    );
+}
