@@ -37,7 +37,10 @@ pub async fn provision_kbs(
 
         let mut manifest = match storage.read_manifest(kb).await {
             Ok(manifest) => {
-                if manifest.kb_slug.as_str() != kb.as_str() {
+                if manifest.kb_slug.as_str() == kb.as_str() {
+                    info!(kb = %kb.as_str(), "manifest OK");
+                    manifest
+                } else {
                     warn!(
                         kb = %kb.as_str(),
                         manifest_kb = %manifest.kb_slug.as_str(),
@@ -46,9 +49,6 @@ pub async fn provision_kbs(
                     let fresh = KbManifest::new_v1(tenant, kb, kb.as_str(), current_unix_ts());
                     storage.write_manifest(kb, &fresh).await?;
                     fresh
-                } else {
-                    info!(kb = %kb.as_str(), "manifest OK");
-                    manifest
                 }
             }
             Err(e) if e.is_not_found() => {
@@ -92,7 +92,7 @@ pub async fn provision_kbs(
                     );
                 }
             }
-            Err(err @ ProvisionError::ManifestMismatch { .. }) => return Err(provision_error(err)),
+            Err(err @ ProvisionError::ManifestMismatch { .. }) => return Err(provision_error(&err)),
             Err(err) => warn!(
                 kb = %kb.as_str(),
                 error = %err,
@@ -103,7 +103,7 @@ pub async fn provision_kbs(
     Ok(())
 }
 
-fn provision_error(err: ProvisionError) -> Error {
+fn provision_error(err: &ProvisionError) -> Error {
     Error::Config {
         message: err.to_string(),
     }
