@@ -4,6 +4,7 @@
 //! (see `embedder::openai`) implements this over HTTP with `reqwest`.
 
 pub mod openai;
+pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 
 use async_trait::async_trait;
 
@@ -79,7 +80,10 @@ mod tests {
 
     #[test]
     fn error_display_http() {
-        let e = EmbedderError::Http { status: 429, body: "rate limited".into() };
+        let e = EmbedderError::Http {
+            status: 429,
+            body: "rate limited".into(),
+        };
         assert!(e.to_string().contains("429"));
     }
 
@@ -91,13 +95,19 @@ mod tests {
 
     #[test]
     fn error_display_count_mismatch() {
-        let e = EmbedderError::CountMismatch { sent: 2, returned: 1 };
+        let e = EmbedderError::CountMismatch {
+            sent: 2,
+            returned: 1,
+        };
         assert!(e.to_string().contains("2") && e.to_string().contains("1"));
     }
 
     #[test]
     fn error_display_dim_mismatch() {
-        let e = EmbedderError::DimensionMismatch { expected: 1024, actual: 512 };
+        let e = EmbedderError::DimensionMismatch {
+            expected: 1024,
+            actual: 512,
+        };
         assert!(e.to_string().contains("1024") && e.to_string().contains("512"));
     }
 
@@ -108,7 +118,11 @@ mod tests {
     }
 
     // Compile-only: EmbedderError is Send + Sync + 'static
-    fn _error_bounds() where EmbedderError: Send + Sync + 'static {}
+    fn _error_bounds()
+    where
+        EmbedderError: Send + Sync + 'static,
+    {
+    }
 
     // Compile-only: Embedder is object-safe
     fn _obj_safe<E: Embedder + ?Sized>() {}
