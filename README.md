@@ -69,6 +69,35 @@ curl -H "Authorization: Bearer dev-token" \
      http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
 ```
 
+### WebDAV
+
+With the server running (steps 1-2 above), also set the WebDAV credentials:
+
+```sh
+export NOTEDTHAT_WEBDAV_USERNAME=webdav-user-please-change
+export NOTEDTHAT_WEBDAV_PASSWORD=webdav-pass-please-change
+```
+
+```sh
+# 7. PROPFIND root (list KBs)
+curl -X PROPFIND -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
+  -H 'Depth: 1' http://127.0.0.1:8081/
+
+# 8. PUT a markdown file via WebDAV
+echo "# Hello WebDAV" | curl -X PUT \
+  -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
+  --data-binary @- \
+  http://127.0.0.1:8081/notes/hello-webdav.md
+
+# 9. GET it back
+curl -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
+  http://127.0.0.1:8081/notes/hello-webdav.md
+
+# 10. DELETE it
+curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
+  http://127.0.0.1:8081/notes/hello-webdav.md
+```
+
 Full environment variable reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
 Full API documentation: [`docs/API.md`](docs/API.md)
