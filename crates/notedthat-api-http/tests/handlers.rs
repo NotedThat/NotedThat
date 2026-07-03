@@ -1250,7 +1250,11 @@ async fn head_ignores_range() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK, "Range header must be ignored on HEAD");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Range header must be ignored on HEAD"
+    );
     assert_eq!(resp.headers().get("content-length").unwrap(), "100");
     assert!(
         resp.headers().get("content-range").is_none(),
@@ -1329,6 +1333,7 @@ async fn head_if_match_412() {
 // ─── M3 Cross-Cutting Scenarios ──────────────────────────────────────────────
 
 /// End-to-end round trip: PUT → GET → 304 → conditional PUT → GET (new) → conditional DELETE → 404.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn m3_round_trip() {
     let a = app();
@@ -1367,7 +1372,10 @@ async fn m3_round_trip() {
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::OK);
-    assert_eq!(get_resp.headers().get("etag").unwrap().to_str().unwrap(), e1);
+    assert_eq!(
+        get_resp.headers().get("etag").unwrap().to_str().unwrap(),
+        e1
+    );
     let body = to_bytes(get_resp.into_body(), 1024).await.unwrap();
     assert_eq!(&body[..], b"first body");
 
@@ -1388,7 +1396,7 @@ async fn m3_round_trip() {
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
 
     // Step 4: conditional PUT with If-Match: E1 + new body → 201, new ETag E2
-    let put2_resp = a
+    let second_put_resp = a
         .clone()
         .oneshot(
             Request::builder()
@@ -1401,8 +1409,8 @@ async fn m3_round_trip() {
         )
         .await
         .unwrap();
-    assert_eq!(put2_resp.status(), StatusCode::CREATED);
-    let e2 = put2_resp
+    assert_eq!(second_put_resp.status(), StatusCode::CREATED);
+    let e2 = second_put_resp
         .headers()
         .get("etag")
         .unwrap()
@@ -1501,7 +1509,7 @@ async fn m3_precondition_precedence() {
     );
 }
 
-/// Multi-ETag If-Match list: wrong list → 412; list containing the current ETag → 201.
+/// Multi-ETag If-Match list: wrong list → 412; list containing the current `ETag` → 201.
 #[tokio::test]
 async fn m3_multi_etag_if_match() {
     let a = app();
@@ -1658,13 +1666,10 @@ async fn m3_range_start_gt_end() {
         StatusCode::RANGE_NOT_SATISFIABLE,
         "bytes=50-10 (start > end) must return 416"
     );
-    assert_eq!(
-        resp.headers().get("content-range").unwrap(),
-        "bytes */100"
-    );
+    assert_eq!(resp.headers().get("content-range").unwrap(), "bytes */100");
 }
 
-/// PUT ETag is consistent across GET and HEAD responses.
+/// PUT `ETag` is consistent across GET and HEAD responses.
 #[tokio::test]
 async fn m3_etag_round_trip() {
     let a = app();
