@@ -534,7 +534,9 @@ async fn m3_get_object_range_suffix_clamped() {
             50,
             "suffix beyond file end should return all bytes"
         ),
-        Err(StorageError::RangeNotSatisfiable { complete_length: 50 }) => {
+        Err(StorageError::RangeNotSatisfiable {
+            complete_length: 50,
+        }) => {
             // Also acceptable per S3 implementation semantics
         }
         Err(e) => panic!("unexpected error on oversized suffix range: {e:?}"),
@@ -693,10 +695,7 @@ async fn m3_put_if_none_match_wildcard_new() {
         .await
         .expect("If-None-Match: * on non-existent object should succeed");
 
-    assert!(
-        outcome.etag.is_some(),
-        "successful PUT should return ETag"
-    );
+    assert!(outcome.etag.is_some(), "successful PUT should return ETag");
 }
 
 #[tokio::test]
