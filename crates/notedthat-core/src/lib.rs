@@ -18,7 +18,7 @@ pub use bucket_name::{
 };
 pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
-pub use kb::{Kb, KbManifest, ObjectMeta};
+pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use object_path::ObjectPath;
 pub use range::{ByteRange, ParsedRanges, RangeParseError, parse_range_header};
 pub use slug::{KbSlug, TenantSlug};

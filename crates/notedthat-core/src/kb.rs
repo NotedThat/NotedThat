@@ -4,6 +4,18 @@ use crate::error::Error;
 use crate::slug::{KbSlug, TenantSlug};
 use serde::{Deserialize, Serialize};
 
+/// Embedding configuration for a knowledge base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestEmbedding {
+    /// The embedding model name (e.g., "text-embedding-3-small").
+    pub model: String,
+    /// Dimensionality of the embedding vectors.
+    pub dimensions: u32,
+    /// Optional hint for the embedding endpoint URL (e.g., for provisioner cross-check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_url_hint: Option<String>,
+}
+
 /// The KB manifest stored as `.notedthat/manifest.json` inside each KB's S3 bucket.
 /// See SPECIFICATIONS.md §6.7 for the full schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -23,6 +35,9 @@ pub struct KbManifest {
     /// Qdrant collection name (reserved for M4 indexer; optional in M2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qdrant_collection: Option<String>,
+    /// Embedding configuration (optional, for provisioner cross-check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<ManifestEmbedding>,
 }
 
 impl KbManifest {
@@ -39,6 +54,7 @@ impl KbManifest {
             display_name: display_name.to_string(),
             created_at,
             qdrant_collection: None,
+            embedding: None,
         }
     }
 
@@ -122,6 +138,7 @@ mod tests {
             display_name: "My Notes".to_string(),
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
+            embedding: None,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let restored: KbManifest = serde_json::from_str(&json).unwrap();
@@ -155,6 +172,7 @@ mod tests {
             display_name: "Notes".to_string(),
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
+            embedding: None,
         };
         assert!(
             manifest.validate().is_err(),
@@ -220,5 +238,66 @@ mod tests {
         assert!(restored.last_modified.is_none());
         assert!(restored.content_type.is_none());
         assert!(restored.etag.is_none());
+    }
+
+    #[test]
+    fn test_kb_manifest_backwards_compat_no_embedding() {
+        let json = serde_json::json!({
+            "notedthat_version": "0.1.0",
+            "manifest_version": 1,
+            "tenant_slug": "default",
+            "kb_slug": "my-notes",
+            "display_name": "My Notes",
+            "created_at": 1_700_000_000_i64
+        });
+        let manifest: KbManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(manifest.manifest_version, 1);
+        assert!(manifest.embedding.is_none(), "embedding should default to None");
+    }
+
+    #[test]
+    fn test_kb_manifest_embedding_round_trip() {
+        let embedding = ManifestEmbedding {
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 1536,
+            endpoint_url_hint: Some("https://api.openai.com/v1/embeddings".to_string()),
+        };
+        let manifest = KbManifest {
+            notedthat_version: "0.1.0".to_string(),
+            manifest_version: 1,
+            tenant_slug: TenantSlug::try_new("default").unwrap(),
+            kb_slug: KbSlug::try_new("my-notes").unwrap(),
+            display_name: "My Notes".to_string(),
+            created_at: 1_700_000_000_i64,
+            qdrant_collection: None,
+            embedding: Some(embedding.clone()),
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let restored: KbManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.embedding, Some(embedding));
+    }
+
+    #[test]
+    fn test_kb_manifest_embedding_endpoint_url_hint_omitted() {
+        let embedding = ManifestEmbedding {
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 1536,
+            endpoint_url_hint: None,
+        };
+        let manifest = KbManifest {
+            notedthat_version: "0.1.0".to_string(),
+            manifest_version: 1,
+            tenant_slug: TenantSlug::try_new("default").unwrap(),
+            kb_slug: KbSlug::try_new("my-notes").unwrap(),
+            display_name: "My Notes".to_string(),
+            created_at: 1_700_000_000_i64,
+            qdrant_collection: None,
+            embedding: Some(embedding),
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(!json.contains("endpoint_url_hint"), "endpoint_url_hint should not be serialized when None");
+        let restored: KbManifest = serde_json::from_str(&json).unwrap();
+        assert!(restored.embedding.is_some());
+        assert!(restored.embedding.as_ref().unwrap().endpoint_url_hint.is_none());
     }
 }
