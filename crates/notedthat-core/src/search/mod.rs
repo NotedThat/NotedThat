@@ -22,4 +22,9 @@ pub use hit::SearchHit;
 mod response;
 pub use response::SearchResponse;
 
+mod request;
+pub use request::{
+    SearchRequest, ValidatedRequest, DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_BYTES, MIN_LIMIT,
+};
+
 // TODO(m5): populated by T3-T8
