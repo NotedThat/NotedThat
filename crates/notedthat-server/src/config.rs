@@ -22,6 +22,10 @@ pub struct Config {
     pub s3: notedthat_storage_s3::S3Config,
     /// Log output format (`NOTEDTHAT_LOG_FORMAT`; `pretty` or `json`).
     pub log_format: LogFormat,
+    /// Qdrant client configuration.
+    pub qdrant: ServerQdrantConfig,
+    /// Embedder configuration.
+    pub embedder: EmbedderConfig,
 }
 
 /// Tracing output format.
@@ -93,6 +97,9 @@ impl Config {
             _ => LogFormat::Pretty,
         };
 
+        let qdrant = ServerQdrantConfig::from_env()?;
+        let embedder = EmbedderConfig::from_env()?;
+
         Ok(Self {
             api_token,
             kbs,
@@ -100,6 +107,115 @@ impl Config {
             listen_addr,
             s3,
             log_format,
+            qdrant,
+            embedder,
+        })
+    }
+}
+
+/// Qdrant client configuration, parsed from env vars.
+#[derive(Debug, Clone)]
+pub struct ServerQdrantConfig {
+    /// Qdrant gRPC/HTTP endpoint (`NOTEDTHAT_QDRANT_URL`; required).
+    pub url: String,
+    /// Optional Qdrant API key (`NOTEDTHAT_QDRANT_API_KEY`).
+    pub api_key: Option<String>,
+}
+
+impl ServerQdrantConfig {
+    /// Parse Qdrant configuration from environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Error::Config { .. })` if `NOTEDTHAT_QDRANT_URL` is missing.
+    pub fn from_env() -> Result<Self, Error> {
+        let url = std::env::var("NOTEDTHAT_QDRANT_URL").map_err(|_| Error::Config {
+            message: "NOTEDTHAT_QDRANT_URL is required".into(),
+        })?;
+        let api_key = std::env::var("NOTEDTHAT_QDRANT_API_KEY").ok();
+        Ok(Self { url, api_key })
+    }
+}
+
+/// Embedder configuration, parsed from env vars.
+#[derive(Debug, Clone)]
+pub struct EmbedderConfig {
+    /// OpenAI-compatible embedding endpoint URL (`EMBEDDING_ENDPOINT_URL`; required).
+    pub endpoint_url: String,
+    /// Embedding model name (`EMBEDDING_MODEL`; required).
+    pub model: String,
+    /// API key for the embedding endpoint (`EMBEDDING_API_KEY`; required).
+    pub api_key: String,
+    /// Output vector dimensions (`EMBEDDING_DIMENSIONS`; required).
+    pub dimensions: u32,
+    /// Number of texts per embedding batch (`EMBEDDING_BATCH_SIZE`; default `32`).
+    pub batch_size: usize,
+    /// HTTP request timeout in milliseconds (`EMBEDDING_TIMEOUT_MS`; default `30000`).
+    pub timeout_ms: u64,
+    /// Maximum number of retries on transient failures (`EMBEDDING_MAX_RETRIES`; default `3`).
+    pub max_retries: u32,
+    /// Maximum tokens per input text (`EMBEDDING_MAX_INPUT_TOKENS`; default `8192`).
+    pub max_input_tokens: usize,
+}
+
+impl EmbedderConfig {
+    /// Parse embedder configuration from environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Error::Config { .. })` if any required variable is missing or invalid.
+    pub fn from_env() -> Result<Self, Error> {
+        let endpoint_url =
+            std::env::var("EMBEDDING_ENDPOINT_URL").map_err(|_| Error::Config {
+                message: "EMBEDDING_ENDPOINT_URL is required".into(),
+            })?;
+        let model = std::env::var("EMBEDDING_MODEL").map_err(|_| Error::Config {
+            message: "EMBEDDING_MODEL is required".into(),
+        })?;
+        let api_key = std::env::var("EMBEDDING_API_KEY").map_err(|_| Error::Config {
+            message: "EMBEDDING_API_KEY is required".into(),
+        })?;
+        let dimensions: u32 = std::env::var("EMBEDDING_DIMENSIONS")
+            .map_err(|_| Error::Config {
+                message: "EMBEDDING_DIMENSIONS is required".into(),
+            })?
+            .parse()
+            .map_err(|e: std::num::ParseIntError| Error::Config {
+                message: format!("EMBEDDING_DIMENSIONS is invalid: {e}"),
+            })?;
+        let batch_size: usize = std::env::var("EMBEDDING_BATCH_SIZE")
+            .unwrap_or_else(|_| "32".to_string())
+            .parse()
+            .map_err(|e: std::num::ParseIntError| Error::Config {
+                message: format!("EMBEDDING_BATCH_SIZE is invalid: {e}"),
+            })?;
+        let timeout_ms: u64 = std::env::var("EMBEDDING_TIMEOUT_MS")
+            .unwrap_or_else(|_| "30000".to_string())
+            .parse()
+            .map_err(|e: std::num::ParseIntError| Error::Config {
+                message: format!("EMBEDDING_TIMEOUT_MS is invalid: {e}"),
+            })?;
+        let max_retries: u32 = std::env::var("EMBEDDING_MAX_RETRIES")
+            .unwrap_or_else(|_| "3".to_string())
+            .parse()
+            .map_err(|e: std::num::ParseIntError| Error::Config {
+                message: format!("EMBEDDING_MAX_RETRIES is invalid: {e}"),
+            })?;
+        let max_input_tokens: usize = std::env::var("EMBEDDING_MAX_INPUT_TOKENS")
+            .unwrap_or_else(|_| "8192".to_string())
+            .parse()
+            .map_err(|e: std::num::ParseIntError| Error::Config {
+                message: format!("EMBEDDING_MAX_INPUT_TOKENS is invalid: {e}"),
+            })?;
+        Ok(Self {
+            endpoint_url,
+            model,
+            api_key,
+            dimensions,
+            batch_size,
+            timeout_ms,
+            max_retries,
+            max_input_tokens,
         })
     }
 }
@@ -108,7 +224,7 @@ impl Config {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 9] = [
+    const ALL_ENV_KEYS: [&str; 19] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_S3_REGION",
@@ -118,10 +234,20 @@ mod tests {
         "NOTEDTHAT_LOG_FORMAT",
         "NOTEDTHAT_S3_ENDPOINT_URL",
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+        "NOTEDTHAT_QDRANT_URL",
+        "NOTEDTHAT_QDRANT_API_KEY",
+        "EMBEDDING_ENDPOINT_URL",
+        "EMBEDDING_MODEL",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_DIMENSIONS",
+        "EMBEDDING_BATCH_SIZE",
+        "EMBEDDING_TIMEOUT_MS",
+        "EMBEDDING_MAX_RETRIES",
+        "EMBEDDING_MAX_INPUT_TOKENS",
     ];
 
     fn run_with_env<F: FnOnce() -> R, R>(overrides: &[(&str, Option<&str>)], f: F) -> R {
-        let mut vars = vec![
+        let mut vars: Vec<(&str, Option<&str>)> = vec![
             ("NOTEDTHAT_API_TOKEN", Some("test-token")),
             ("NOTEDTHAT_KBS", Some("notes,docs")),
             ("NOTEDTHAT_S3_REGION", Some("us-east-1")),
@@ -131,6 +257,16 @@ mod tests {
             ("NOTEDTHAT_LOG_FORMAT", None),
             ("NOTEDTHAT_S3_ENDPOINT_URL", None),
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
+            ("NOTEDTHAT_QDRANT_URL", Some("http://localhost:6334")),
+            ("NOTEDTHAT_QDRANT_API_KEY", None),
+            ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
+            ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
+            ("EMBEDDING_API_KEY", Some("sk-test")),
+            ("EMBEDDING_DIMENSIONS", Some("1536")),
+            ("EMBEDDING_BATCH_SIZE", None),
+            ("EMBEDDING_TIMEOUT_MS", None),
+            ("EMBEDDING_MAX_RETRIES", None),
+            ("EMBEDDING_MAX_INPUT_TOKENS", None),
         ];
 
         for (key, value) in overrides {
@@ -221,6 +357,138 @@ mod tests {
 
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 9);
+        assert_eq!(ALL_ENV_KEYS.len(), 19);
+    }
+
+    #[test]
+    fn qdrant_url_missing_returns_error() {
+        let result = run_with_env(&[("NOTEDTHAT_QDRANT_URL", None)], Config::from_env);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("NOTEDTHAT_QDRANT_URL"),
+            "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn qdrant_api_key_optional() {
+        let cfg = run_with_env(&[("NOTEDTHAT_QDRANT_API_KEY", None)], Config::from_env).unwrap();
+        assert!(
+            cfg.qdrant.api_key.is_none(),
+            "api_key should be None when env var is unset"
+        );
+    }
+
+    #[test]
+    fn qdrant_api_key_set_when_present() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_QDRANT_API_KEY", Some("my-secret-key"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.qdrant.api_key.as_deref(), Some("my-secret-key"));
+    }
+
+    #[test]
+    fn qdrant_url_propagated_to_config() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_QDRANT_URL", Some("http://qdrant.example.com:6334"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.qdrant.url, "http://qdrant.example.com:6334");
+    }
+
+    #[test]
+    fn embedding_endpoint_url_missing() {
+        let result = run_with_env(&[("EMBEDDING_ENDPOINT_URL", None)], Config::from_env);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("EMBEDDING_ENDPOINT_URL"),
+            "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn embedding_model_missing() {
+        let result = run_with_env(&[("EMBEDDING_MODEL", None)], Config::from_env);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("EMBEDDING_MODEL"),
+            "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn embedding_api_key_missing() {
+        let result = run_with_env(&[("EMBEDDING_API_KEY", None)], Config::from_env);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("EMBEDDING_API_KEY"),
+            "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn embedding_dimensions_missing() {
+        let result = run_with_env(&[("EMBEDDING_DIMENSIONS", None)], Config::from_env);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("EMBEDDING_DIMENSIONS"),
+            "error should mention the missing var: {msg}"
+        );
+    }
+
+    #[test]
+    fn embedding_dimensions_invalid() {
+        let result = run_with_env(
+            &[("EMBEDDING_DIMENSIONS", Some("not-a-number"))],
+            Config::from_env,
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("EMBEDDING_DIMENSIONS"),
+            "error should mention the invalid var: {msg}"
+        );
+    }
+
+    #[test]
+    fn embedding_batch_size_default() {
+        let cfg = run_with_env(&[("EMBEDDING_BATCH_SIZE", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.embedder.batch_size, 32);
+    }
+
+    #[test]
+    fn embedding_timeout_ms_default() {
+        let cfg = run_with_env(&[("EMBEDDING_TIMEOUT_MS", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.embedder.timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn embedding_max_retries_default() {
+        let cfg = run_with_env(&[("EMBEDDING_MAX_RETRIES", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.embedder.max_retries, 3);
+    }
+
+    #[test]
+    fn embedding_max_input_tokens_default() {
+        let cfg =
+            run_with_env(&[("EMBEDDING_MAX_INPUT_TOKENS", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.embedder.max_input_tokens, 8192);
+    }
+
+    #[test]
+    fn embedder_fields_propagated_to_config() {
+        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com");
+        assert_eq!(cfg.embedder.model, "text-embedding-3-small");
+        assert_eq!(cfg.embedder.api_key, "sk-test");
+        assert_eq!(cfg.embedder.dimensions, 1536);
     }
 }
