@@ -1,6 +1,6 @@
-//! Cross-surface E2E: WebDAV PUT → HTTP search.
+//! Cross-surface E2E: `WebDAV` PUT → HTTP search.
 //!
-//! Run with: cargo test -p notedthat-server --test webdav_cross_surface_e2e -- --ignored --nocapture
+//! Run with: cargo test -p notedthat-server --test `webdav_cross_surface_e2e` -- --ignored --nocapture
 
 #![allow(missing_docs)]
 
@@ -139,9 +139,10 @@ async fn wait_for_http(url: &str, timeout: Duration) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if tokio::time::Instant::now() > deadline {
-            panic!("HTTP server did not become ready at {url}");
-        }
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "HTTP server did not become ready at {url}"
+        );
         if client
             .get(url)
             .send()
@@ -161,9 +162,10 @@ async fn wait_for_dav_options(base_url: &str, timeout: Duration) {
     // OPTIONS fires before basic_auth_middleware (intercept_options runs first in ServiceBuilder),
     // so no Authorization header is needed for this readiness probe.
     loop {
-        if tokio::time::Instant::now() > deadline {
-            panic!("WebDAV server did not become ready at {base_url}");
-        }
+        assert!(
+            tokio::time::Instant::now() <= deadline,
+            "WebDAV server did not become ready at {base_url}"
+        );
         let ok = client
             .request(reqwest::Method::OPTIONS, format!("{base_url}/"))
             .send()
@@ -196,12 +198,11 @@ async fn poll_search(
             .body(serde_json::json!({"query": phrase, "limit": 5}).to_string())
             .send()
             .await;
-        if let Ok(r) = resp {
-            if let Ok(json) = r.json::<serde_json::Value>().await {
-                if json["hits"].as_array().map(|a| a.len()).unwrap_or(0) > 0 {
-                    return true;
-                }
-            }
+        if let Ok(r) = resp
+            && let Ok(json) = r.json::<serde_json::Value>().await
+            && json["hits"].as_array().map_or(0, Vec::len) > 0
+        {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -226,12 +227,11 @@ async fn poll_search_gone(
             .body(serde_json::json!({"query": phrase, "limit": 5}).to_string())
             .send()
             .await;
-        if let Ok(r) = resp {
-            if let Ok(json) = r.json::<serde_json::Value>().await {
-                if json["hits"].as_array().map(|a| a.len()).unwrap_or(0) == 0 {
-                    return true;
-                }
-            }
+        if let Ok(r) = resp
+            && let Ok(json) = r.json::<serde_json::Value>().await
+            && json["hits"].as_array().map_or(0, Vec::len) == 0
+        {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
