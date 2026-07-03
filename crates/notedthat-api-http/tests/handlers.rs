@@ -640,6 +640,108 @@ async fn delete_missing_object() {
 }
 
 #[tokio::test]
+async fn delete_enqueues_tombstone_on_success() {
+    use notedthat_indexer::IndexEvent;
+
+    let storage = Arc::new(InMemoryStorage::default());
+    let mut kbs = BTreeMap::new();
+    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
+    let state = AppState {
+        storage,
+        declared_kbs: Arc::new(kbs),
+        bearer_token: Arc::new(TOKEN.to_string()),
+        max_body_size: 16 * 1024 * 1024,
+        indexer_tx,
+    };
+    let router = build_router(state);
+
+    assert_eq!(
+        put_text(router.clone(), KB, "to-delete.md", "content").await,
+        StatusCode::CREATED
+    );
+
+    let _upsert_event = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        indexer_rx.recv(),
+    )
+    .await
+    .expect("timeout waiting for upsert event")
+    .expect("channel closed");
+
+    let del_resp = router
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            format!("/v1/knowledgebases/{KB}/to-delete.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+    let event = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        indexer_rx.recv(),
+    )
+    .await
+    .expect("timeout waiting for tombstone event")
+    .expect("channel closed");
+
+    match event {
+        IndexEvent::Tombstone { kb, object_key } => {
+            assert_eq!(kb.as_str(), KB);
+            assert_eq!(object_key.as_str(), "to-delete.md");
+        }
+        _ => panic!("expected Tombstone event, got {:?}", event),
+    }
+}
+
+#[tokio::test]
+async fn delete_enqueues_tombstone_on_not_found() {
+    use notedthat_indexer::IndexEvent;
+
+    let storage = Arc::new(InMemoryStorage::default());
+    let mut kbs = BTreeMap::new();
+    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
+    let state = AppState {
+        storage,
+        declared_kbs: Arc::new(kbs),
+        bearer_token: Arc::new(TOKEN.to_string()),
+        max_body_size: 16 * 1024 * 1024,
+        indexer_tx,
+    };
+    let router = build_router(state);
+
+    let del_resp = router
+        .oneshot(authed_request(
+            "DELETE",
+            format!("/v1/knowledgebases/{KB}/does-not-exist.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+    let event = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        indexer_rx.recv(),
+    )
+    .await
+    .expect("timeout waiting for event")
+    .expect("channel closed");
+
+    match event {
+        IndexEvent::Tombstone { kb, object_key } => {
+            assert_eq!(kb.as_str(), KB);
+            assert_eq!(object_key.as_str(), "does-not-exist.md");
+        }
+        _ => panic!("expected Tombstone event, got {:?}", event),
+    }
+}
+
+#[tokio::test]
 async fn get_default_content_type_for_untyped_put() {
     let a = app();
     assert_eq!(
