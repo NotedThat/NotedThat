@@ -1,6 +1,6 @@
-//! Integration tests for the WebDAV surface against a real SeaweedFS testcontainer.
+//! Integration tests for the `WebDAV` surface against a real `SeaweedFS` testcontainer.
 //!
-//! Run with: cargo test -p notedthat-webdav --test webdav_integration -- --ignored --nocapture
+//! Run with: cargo test -p notedthat-webdav --test `webdav_integration` -- --ignored --nocapture
 
 #![allow(missing_docs)]
 
@@ -182,7 +182,7 @@ async fn test_propfind_root_lists_kbs() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"PROPFIND"), &format!("{url}/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -224,7 +224,7 @@ async fn test_propfind_kb_lists_objects() {
 
     // PROPFIND the KB.
     let resp = client
-        .request(webdav_method(b"PROPFIND"), &format!("{url}/notes/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/notes/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -253,7 +253,7 @@ async fn test_propfind_depth_infinity_returns_501() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"PROPFIND"), &format!("{url}/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "infinity")
         .send()
@@ -581,7 +581,7 @@ async fn test_mkcol_returns_201_no_persistence() {
 
     // MKCOL should succeed (create_dir always returns Ok in v1).
     let mkcol_resp = client
-        .request(webdav_method(b"MKCOL"), &format!("{url}/notes/newfolder/"))
+        .request(webdav_method(b"MKCOL"), format!("{url}/notes/newfolder/"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -591,7 +591,7 @@ async fn test_mkcol_returns_201_no_persistence() {
 
     // PROPFIND /notes/ must NOT list "newfolder" — S3 has no empty-directory primitive.
     let propfind_resp = client
-        .request(webdav_method(b"PROPFIND"), &format!("{url}/notes/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/notes/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -632,7 +632,7 @@ async fn test_single_object_move_succeeds() {
     let move_resp = client
         .request(
             webdav_method(b"MOVE"),
-            &format!("{url}/notes/move-source.md"),
+            format!("{url}/notes/move-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
         .header("Destination", format!("{url}/notes/move-dest.md"))
@@ -692,7 +692,7 @@ async fn test_single_object_copy_succeeds() {
     let copy_resp = client
         .request(
             webdav_method(b"COPY"),
-            &format!("{url}/notes/copy-source.md"),
+            format!("{url}/notes/copy-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
         .header("Destination", format!("{url}/notes/copy-dest.md"))
@@ -741,7 +741,7 @@ async fn test_collection_move_returns_403_no_collection_move() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .request(webdav_method(b"MOVE"), &format!("{url}/notes/"))
+        .request(webdav_method(b"MOVE"), format!("{url}/notes/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Destination", format!("{url}/notes/dest.md"))
         .send()
@@ -784,7 +784,7 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
     let resp = client
         .request(
             webdav_method(b"MOVE"),
-            &format!("{url}/notes/cross-kb-source.md"),
+            format!("{url}/notes/cross-kb-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
         .header("Destination", format!("{url}/scratch/cross-kb-dest.md"))
@@ -814,7 +814,7 @@ async fn test_lock_returns_405() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"LOCK"), &format!("{url}/notes/any-file.md"))
+        .request(webdav_method(b"LOCK"), format!("{url}/notes/any-file.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -837,10 +837,7 @@ async fn test_unlock_returns_405() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(
-            webdav_method(b"UNLOCK"),
-            &format!("{url}/notes/any-file.md"),
-        )
+        .request(webdav_method(b"UNLOCK"), format!("{url}/notes/any-file.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -865,7 +862,7 @@ async fn test_proppatch_returns_405() {
     let resp = client
         .request(
             webdav_method(b"PROPPATCH"),
-            &format!("{url}/notes/any-file.md"),
+            format!("{url}/notes/any-file.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
         .send()
