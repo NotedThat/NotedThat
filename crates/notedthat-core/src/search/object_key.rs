@@ -95,12 +95,18 @@ mod tests {
 
     #[test]
     fn empty_rejected() {
-        assert!(matches!(ObjectKey::try_new(""), Err(Error::InvalidInput { .. })));
+        assert!(matches!(
+            ObjectKey::try_new(""),
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
     #[test]
     fn leading_slash_rejected() {
-        assert!(matches!(ObjectKey::try_new("/foo"), Err(Error::InvalidInput { .. })));
+        assert!(matches!(
+            ObjectKey::try_new("/foo"),
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
     #[test]
