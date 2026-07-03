@@ -158,7 +158,10 @@ impl Storage for S3Storage {
                 info!(bucket = %bucket, "bucket created");
                 Ok(())
             }
-            Err(SdkError::ServiceError(e)) if e.err().is_bucket_already_owned_by_you() => {
+            Err(SdkError::ServiceError(e))
+                if e.err().is_bucket_already_owned_by_you()
+                    || e.err().is_bucket_already_exists() =>
+            {
                 info!(bucket = %bucket, "bucket already exists (owned by us)");
                 Ok(())
             }
