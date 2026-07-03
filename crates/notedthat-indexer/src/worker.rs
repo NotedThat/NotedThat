@@ -341,7 +341,7 @@ fn point_id(object_key: &ObjectPath, chunk_index: usize) -> u64 {
     })
 }
 
-fn collection_name(kb: &KbSlug) -> String {
+pub(crate) fn collection_name(kb: &KbSlug) -> String {
     format!("kb_{}_v1", kb.as_str())
 }
 
