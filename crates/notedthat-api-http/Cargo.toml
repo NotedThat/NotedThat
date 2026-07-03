@@ -32,7 +32,11 @@ thiserror.workspace = true
 [dev-dependencies]
 notedthat-api-http = { path = ".", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+testcontainers = { workspace = true }
+wiremock = { workspace = true }
+qdrant-client = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
