@@ -13,4 +13,7 @@ pub use object_key::ObjectKey;
 mod filter;
 pub use filter::SearchFilter;
 
+mod error;
+pub use error::SearchError;
+
 // TODO(m5): populated by T3-T8
