@@ -7,7 +7,10 @@
 #![allow(missing_docs)]
 
 use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Storage, TenantSlug};
+use notedthat_core::{
+    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Storage, StorageError,
+    TenantSlug,
+};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use testcontainers::{
     GenericImage, ImageExt,
@@ -38,6 +41,19 @@ fn make_config(endpoint: &str) -> S3Config {
         secret_access_key: "any".to_string(),
         force_path_style: true,
     }
+}
+
+fn assert_quoted_lower_hex_etag(etag: &str) {
+    let Some(hex) = etag.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        panic!("ETag should match ^\"[0-9a-f]+\"$: {etag}");
+    };
+    assert!(!hex.is_empty(), "ETag hex payload should not be empty");
+    assert!(
+        hex.bytes()
+            .all(|byte| byte.is_ascii_hexdigit()
+                && (byte.is_ascii_digit() || byte.is_ascii_lowercase())),
+        "ETag should match ^\"[0-9a-f]+\"$: {etag}"
+    );
 }
 
 #[tokio::test]
@@ -149,4 +165,335 @@ async fn integration_manifest_read_write() {
     let read = storage.read_manifest(&kb).await.expect("read_manifest");
     assert_eq!(read.kb_slug.as_str(), "manifest-test");
     assert_eq!(read.manifest_version, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_get_object_full_returns_etag() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-full-get-etag").unwrap();
+    let path = ObjectPath::try_from_str("full-etag.bin").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"0123456789012345678901"),
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put_object");
+
+    let read = storage
+        .get_object(&kb, &path, None, ConditionalHeaders::default())
+        .await
+        .expect("get_object");
+
+    assert!(read.meta.etag.is_some(), "GET should populate ETag");
+    assert_eq!(read.content_range, None);
+    assert_eq!(read.bytes.len(), 22);
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_get_object_range_returns_partial() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-range-get").unwrap();
+    let path = ObjectPath::try_from_str("range.bin").unwrap();
+    let bytes = Bytes::from((0_u8..100).collect::<Vec<_>>());
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            bytes,
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put_object");
+
+    let read = storage
+        .get_object(
+            &kb,
+            &path,
+            Some(vec![ByteRange::FromStart {
+                first: 10,
+                last: 19,
+            }]),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("range get_object");
+
+    assert_eq!(read.content_range, Some("bytes 10-19/100".to_string()));
+    assert_eq!(read.bytes.len(), 10);
+    assert!(read.meta.etag.is_some(), "range GET should populate ETag");
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_put_object_returns_etag() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-put-etag").unwrap();
+    let path = ObjectPath::try_from_str("put-etag.bin").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    let outcome = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"etag please"),
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put_object");
+
+    let etag = outcome.etag.expect("PUT should return ETag");
+    assert_quoted_lower_hex_etag(&etag);
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_put_if_match_wrong_412() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-put-if-match").unwrap();
+    let path = ObjectPath::try_from_str("conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"initial"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("initial put");
+
+    let err = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"replacement"),
+            Some("text/plain"),
+            ConditionalHeaders {
+                if_match: Some("\"wrong-etag\"".to_string()),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect_err("wrong If-Match should fail");
+
+    assert!(matches!(err, StorageError::PreconditionFailed));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_put_if_none_match_wildcard_conflict_412() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-put-if-none-match").unwrap();
+    let path = ObjectPath::try_from_str("conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"initial"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("initial put");
+
+    let err = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"replacement"),
+            Some("text/plain"),
+            ConditionalHeaders {
+                if_none_match: Some("*".to_string()),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect_err("If-None-Match: * should fail when object exists");
+
+    assert!(matches!(err, StorageError::PreconditionFailed));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_get_if_none_match_304() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-get-if-none-match").unwrap();
+    let path = ObjectPath::try_from_str("conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    let put = storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"etag me"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+    let etag = if let Some(etag) = put.etag {
+        etag
+    } else {
+        storage
+            .head_object(&kb, &path, ConditionalHeaders::default())
+            .await
+            .expect("head for etag")
+            .etag
+            .expect("etag from head")
+    };
+
+    let Err(err) = storage
+        .get_object(
+            &kb,
+            &path,
+            None,
+            ConditionalHeaders {
+                if_none_match: Some(etag),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+    else {
+        panic!("matching If-None-Match should return 304");
+    };
+
+    assert!(matches!(err, StorageError::NotModified));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_get_range_416() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-get-range-416").unwrap();
+    let path = ObjectPath::try_from_str("range.bin").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from(vec![b'x'; 100]),
+            Some("application/octet-stream"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let Err(err) = storage
+        .get_object(
+            &kb,
+            &path,
+            Some(vec![ByteRange::FromStart {
+                first: 200,
+                last: 300,
+            }]),
+            ConditionalHeaders::default(),
+        )
+        .await
+    else {
+        panic!("unsatisfiable range should return 416");
+    };
+
+    assert!(matches!(
+        err,
+        StorageError::RangeNotSatisfiable {
+            complete_length: 100
+        }
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_delete_if_match_wrong_412() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-delete-if-match").unwrap();
+    let path = ObjectPath::try_from_str("conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"initial"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let err = storage
+        .delete_object(
+            &kb,
+            &path,
+            ConditionalHeaders {
+                if_match: Some("\"wrong-etag\"".to_string()),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+        .expect_err("wrong If-Match should fail delete");
+
+    assert!(matches!(err, StorageError::PreconditionFailed));
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS testcontainer"]
+async fn m3_get_bad_date() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("m3-get-bad-date").unwrap();
+    let path = ObjectPath::try_from_str("conditional.txt").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure_bucket");
+    storage
+        .put_object(
+            &kb,
+            &path,
+            Bytes::from_static(b"initial"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let Err(err) = storage
+        .get_object(
+            &kb,
+            &path,
+            None,
+            ConditionalHeaders {
+                if_modified_since: Some("not-a-date".to_string()),
+                ..ConditionalHeaders::default()
+            },
+        )
+        .await
+    else {
+        panic!("malformed HTTP-date should return StorageError::Other");
+    };
+
+    assert!(matches!(err, StorageError::Other { .. }));
 }
