@@ -155,6 +155,7 @@ impl QdrantProvisioner {
         for (field, ftype) in [
             ("object_key", FieldType::Keyword),
             ("etag", FieldType::Keyword),
+            ("mime", FieldType::Keyword),
             ("mtime", FieldType::Integer),
             ("heading_path", FieldType::Keyword),
         ] {

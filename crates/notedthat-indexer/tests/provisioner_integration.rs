@@ -158,7 +158,7 @@ async fn payload_indexes_created() {
                 .result
                 .expect("collection info should have a result")
                 .payload_schema;
-            if schema.len() >= 4 || std::time::Instant::now() >= deadline {
+            if schema.len() >= 5 || std::time::Instant::now() >= deadline {
                 break schema;
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -170,6 +170,7 @@ async fn payload_indexes_created() {
         "object_key index missing"
     );
     assert!(schema.contains_key("etag"), "etag index missing");
+    assert!(schema.contains_key("mime"), "mime index missing");
     assert!(schema.contains_key("mtime"), "mtime index missing");
     assert!(
         schema.contains_key("heading_path"),
