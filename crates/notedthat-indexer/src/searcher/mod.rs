@@ -5,9 +5,11 @@
 
 mod filter;
 mod preview;
+mod hybrid;
 
 pub use filter::{PostFilter, TranslatedFilter, translate_filter};
 pub use preview::{truncate_preview, PREVIEW_MAX_CHARS};
+pub use hybrid::HybridSearcher;
 
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
