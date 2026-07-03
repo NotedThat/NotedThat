@@ -41,7 +41,7 @@ pub(crate) fn parse_dav_path(
     path: &DavPath,
     declared_kbs: &BTreeMap<String, KbSlug>,
 ) -> Result<DavTarget, FsError> {
-    let path_str = path.as_url_string();
+    let path_str = std::str::from_utf8(path.as_bytes()).map_err(|_| FsError::NotFound)?;
     let stripped = path_str.trim_start_matches('/');
 
     if stripped.is_empty() {
@@ -58,6 +58,11 @@ pub(crate) fn parse_dav_path(
         return Ok(DavTarget::NonDeclaredKb);
     }
 
+    if rest.is_empty() {
+        return Ok(DavTarget::KbRoot(kb_slug));
+    }
+
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
     if rest.is_empty() {
         return Ok(DavTarget::KbRoot(kb_slug));
     }
@@ -141,14 +146,7 @@ impl DavFileSystem for WebDavStorage {
                 DavTarget::KbRoot(kb) => {
                     Ok(WebDavMetaData::kb(kb.as_str().to_string(), virtual_mtime()))
                 }
-                DavTarget::Object(kb, path) => {
-                    let meta = state
-                        .storage
-                        .head_object(&kb, &path, ConditionalHeaders::default())
-                        .await
-                        .map_err(|err| storage_error_to_fs(&err))?;
-                    Ok(WebDavMetaData::object(meta))
-                }
+                DavTarget::Object(kb, path) => metadata_for_object_or_prefix(state, kb, path).await,
                 DavTarget::NonDeclaredKb => Err(FsError::Forbidden),
             }
         })
@@ -209,6 +207,37 @@ async fn list_entries(
         response,
         prefix.as_deref(),
     )))
+}
+
+async fn metadata_for_object_or_prefix(
+    state: Arc<WebDavState>,
+    kb: KbSlug,
+    path: ObjectPath,
+) -> FsResult<Box<dyn DavMetaData>> {
+    match state
+        .storage
+        .head_object(&kb, &path, ConditionalHeaders::default())
+        .await
+    {
+        Ok(meta) => Ok(WebDavMetaData::object(meta)),
+        Err(err) if err.is_not_found() => {
+            let prefix = format!("{}/", path.as_str());
+            let response = state
+                .storage
+                .list_objects(&kb, Some(&prefix), 1)
+                .await
+                .map_err(|err| storage_error_to_fs(&err))?;
+            if response.objects.is_empty() {
+                Err(FsError::NotFound)
+            } else {
+                Ok(WebDavMetaData::kb(
+                    format!("virtual-{}", path.as_str()),
+                    virtual_mtime(),
+                ))
+            }
+        }
+        Err(err) => Err(storage_error_to_fs(&err)),
+    }
 }
 
 fn root_entries(state: &WebDavState) -> Vec<Box<dyn DavDirEntry>> {
@@ -459,6 +488,20 @@ impl DavFile for StorageReadFile {
                     ConditionalHeaders::default(),
                 )
                 .await
+                .or_else(|err| match err {
+                    StorageError::RangeNotSatisfiable { .. } => Ok(notedthat_core::ObjectRead {
+                        bytes: Bytes::new(),
+                        meta: ObjectMeta {
+                            key: self.path.as_str().to_string(),
+                            size: 0,
+                            last_modified: None,
+                            content_type: None,
+                            etag: None,
+                        },
+                        content_range: None,
+                    }),
+                    other => Err(other),
+                })
                 .map_err(|err| storage_error_to_fs(&err))?;
             let read_len = u64::try_from(object.bytes.len()).map_err(|_| FsError::TooLarge)?;
             self.read_offset = self
@@ -534,6 +577,8 @@ mod tests {
         list_calls: Mutex<Vec<ListCall>>,
         objects: Mutex<Vec<ObjectMeta>>,
         truncated: bool,
+        head_not_found: bool,
+        get_range_not_satisfiable: bool,
     }
 
     impl MockStorage {
@@ -587,10 +632,15 @@ mod tests {
         async fn head_object(
             &self,
             _kb: &KbSlug,
-            _path: &ObjectPath,
+            path: &ObjectPath,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectMeta, StorageError> {
             self.record("head_object");
+            if self.head_not_found {
+                return Err(StorageError::NotFound {
+                    key: path.as_str().to_string(),
+                });
+            }
             Err(unavailable())
         }
 
@@ -602,6 +652,9 @@ mod tests {
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectRead, StorageError> {
             self.record("get_object");
+            if self.get_range_not_satisfiable {
+                return Err(StorageError::RangeNotSatisfiable { complete_length: 0 });
+            }
             Err(unavailable())
         }
 
@@ -731,6 +784,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_parse_dav_path_decodes_percent_encoded_object_path() {
+        let declared = declared_kbs(&["notes"]);
+        let target = parse_dav_path(&dav_path("/notes/hello%20world%25.md"), &declared)
+            .expect("encoded object path parses");
+
+        assert_eq!(
+            target,
+            DavTarget::Object(kb_slug("notes"), object_path("hello world%.md"))
+        );
+    }
+
     #[tokio::test]
     async fn test_parse_dav_path_non_declared_kb_forbidden() {
         let storage = Arc::new(MockStorage::default());
@@ -802,6 +867,73 @@ mod tests {
             }]
         );
         assert_eq!(entry_names(entries), vec!["folder", "alpha.md"]);
+    }
+
+    #[tokio::test]
+    async fn test_read_dir_virtual_folder_uses_decoded_prefix() {
+        let storage = Arc::new(MockStorage::with_objects(vec![object_meta(
+            "hello world/bravo.md",
+        )]));
+        let fs = test_filesystem(storage.clone(), &["notes"]);
+
+        let entries = fs
+            .read_dir(&dav_path("/notes/hello%20world/"), ReadDirMeta::None)
+            .await
+            .expect("virtual folder read_dir succeeds")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("stream succeeds");
+
+        assert_eq!(
+            storage.list_calls(),
+            vec![ListCall {
+                kb: "notes".to_string(),
+                prefix: Some("hello world/".to_string()),
+                limit: 1000,
+            }]
+        );
+        assert_eq!(entry_names(entries), vec!["bravo.md"]);
+    }
+
+    #[tokio::test]
+    async fn test_metadata_virtual_folder_falls_back_to_prefix_listing() {
+        let storage = Arc::new(MockStorage {
+            head_not_found: true,
+            ..MockStorage::with_objects(vec![object_meta("folder/bravo.md")])
+        });
+        let fs = test_filesystem(storage.clone(), &["notes"]);
+
+        let metadata = fs
+            .metadata(&dav_path("/notes/folder"))
+            .await
+            .expect("virtual folder metadata succeeds");
+
+        assert!(metadata.is_dir());
+        assert_eq!(
+            storage.list_calls(),
+            vec![ListCall {
+                kb: "notes".to_string(),
+                prefix: Some("folder/".to_string()),
+                limit: 1,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_bytes_range_not_satisfiable_returns_empty_at_eof() {
+        let storage = Arc::new(MockStorage {
+            get_range_not_satisfiable: true,
+            ..MockStorage::default()
+        });
+        let fs = test_filesystem(storage, &["notes"]);
+        let mut file = fs
+            .open(&dav_path("/notes/file.md"), OpenOptions::default())
+            .await
+            .expect("file opens");
+
+        let bytes = file.read_bytes(1).await.expect("EOF read succeeds");
+
+        assert!(bytes.is_empty());
     }
 
     #[tokio::test]
