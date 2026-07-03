@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 
 use notedthat_core::{KbSlug, TenantSlug};
-use notedthat_server::config::{Config, LogFormat};
+use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use notedthat_storage_s3::S3Config;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -48,6 +48,20 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
             force_path_style: true,
         },
         log_format: LogFormat::Pretty,
+        qdrant: ServerQdrantConfig {
+            url: "http://127.0.0.1:6334".to_string(),
+            api_key: None,
+        },
+        embedder: EmbedderConfig {
+            endpoint_url: "http://127.0.0.1:9999".to_string(),
+            model: "test-model".to_string(),
+            api_key: "test-key".to_string(),
+            dimensions: 3,
+            batch_size: 32,
+            timeout_ms: 30_000,
+            max_retries: 3,
+            max_input_tokens: 8192,
+        },
     }
 }
 
