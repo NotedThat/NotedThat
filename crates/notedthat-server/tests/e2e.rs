@@ -62,10 +62,15 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: "127.0.0.1:0".parse().unwrap(),
-        webdav_username: "webdav-user".to_string(),
-        webdav_password: "webdav-pass".to_string(),
+        webdav_listen_addr: free_dav_addr(),
+        webdav_username: "e2e-webdav-user".to_string(),
+        webdav_password: "e2e-webdav-pass".to_string(),
     }
+}
+
+fn free_dav_addr() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
+    listener.local_addr().expect("local_addr")
 }
 
 async fn free_addr() -> std::net::SocketAddr {
