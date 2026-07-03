@@ -19,4 +19,7 @@ pub use error::SearchError;
 mod hit;
 pub use hit::SearchHit;
 
+mod response;
+pub use response::SearchResponse;
+
 // TODO(m5): populated by T3-T8
