@@ -241,6 +241,149 @@ async fn put_returns_201_with_location() {
 }
 
 #[tokio::test]
+async fn put_returns_etag() {
+    let resp = app()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/v1/knowledgebases/{KB}/etag.md"),
+            Body::from("1234567890123456789012"),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        format!("/v1/knowledgebases/{KB}/etag.md")
+    );
+    let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
+    assert!(!etag.is_empty(), "PUT must return a non-empty ETag");
+}
+
+#[tokio::test]
+async fn put_if_match_correct_returns_new_etag() {
+    let a = app();
+    let first = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/v1/knowledgebases/{KB}/if-match-ok.md"),
+            Body::from("first"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first_etag = first.headers().get("etag").unwrap().to_str().unwrap();
+
+    let second = a
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/if-match-ok.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", first_etag)
+                .body(Body::from("second"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(second.status(), StatusCode::CREATED);
+    let second_etag = second.headers().get("etag").unwrap().to_str().unwrap();
+    assert!(
+        !second_etag.is_empty(),
+        "PUT must return a replacement ETag"
+    );
+    assert_ne!(second_etag, first_etag);
+}
+
+#[tokio::test]
+async fn put_if_match_412() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "if-match-wrong.md", "first").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/if-match-wrong.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", "\"wrong\"")
+                .body(Body::from("second"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn put_if_none_match_wildcard_conflict() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "if-none-match-existing.md", "first").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/if-none-match-existing.md"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", "*")
+                .body(Body::from("second"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn put_if_none_match_wildcard_new() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/if-none-match-new.md"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", "*")
+                .body(Body::from("content"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
+    assert!(!etag.is_empty(), "PUT must return a non-empty ETag");
+}
+
+#[tokio::test]
+async fn put_if_modified_since_is_ignored() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/knowledgebases/{KB}/if-modified-since.md"))
+                .header(auth().0, auth().1)
+                .header("if-modified-since", "Wed, 21 Oct 2015 07:28:00 GMT")
+                .body(Body::from("content"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
 async fn put_percent_encodes_location_for_non_ascii_paths() {
     let resp = app()
         .oneshot(authed_request(
@@ -397,6 +540,104 @@ async fn delete_removes_object() {
 }
 
 #[tokio::test]
+async fn delete_if_match_correct() {
+    use notedthat_api_http::testing::compute_etag;
+
+    let content = "delete-me";
+    let etag = compute_etag(content.as_bytes());
+
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "cond-del.md", content).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/knowledgebases/{KB}/cond-del.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", etag.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn delete_if_match_wrong() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "protected.md", "content").await,
+        StatusCode::CREATED
+    );
+
+    let del_resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/knowledgebases/{KB}/protected.md"))
+                .header(auth().0, auth().1)
+                .header("if-match", "\"wrong-etag\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::PRECONDITION_FAILED);
+
+    let get_resp = a
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/protected.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn delete_ignores_extra_conditionals() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "extra-cond.md", "data").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/knowledgebases/{KB}/extra-cond.md"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", "\"some-etag\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn delete_missing_object() {
+    let resp = app()
+        .oneshot(authed_request(
+            "DELETE",
+            format!("/v1/knowledgebases/{KB}/no-such-file.md"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn get_default_content_type_for_untyped_put() {
     let a = app();
     assert_eq!(
@@ -415,6 +656,188 @@ async fn get_default_content_type_for_untyped_put() {
         resp.headers().get("content-type").unwrap(),
         "application/octet-stream"
     );
+}
+
+#[tokio::test]
+async fn get_returns_etag() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "etag.txt", "hello etag").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/etag.txt"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("etag"));
+}
+
+#[tokio::test]
+async fn get_range_206() {
+    let a = app();
+    let body = "0123456789".repeat(10);
+    assert_eq!(
+        put_text(a.clone(), KB, "range.txt", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/range.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=0-9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        resp.headers().get("content-range").unwrap(),
+        "bytes 0-9/100"
+    );
+    assert_eq!(resp.headers().get("content-length").unwrap(), "10");
+    assert!(resp.headers().contains_key("etag"));
+    let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(response_body.len(), 10);
+    assert_eq!(&response_body[..], b"0123456789");
+}
+
+#[tokio::test]
+async fn get_range_416() {
+    let a = app();
+    let body = "0123456789".repeat(10);
+    assert_eq!(
+        put_text(a.clone(), KB, "range-416.txt", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/range-416.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=200-300")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(resp.headers().get("content-range").unwrap(), "bytes */100");
+    let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(response_body.is_empty());
+}
+
+#[tokio::test]
+async fn get_range_malformed() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/malformed.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=abc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn get_range_unknown_unit() {
+    let a = app();
+    let body = "0123456789".repeat(10);
+    assert_eq!(
+        put_text(a.clone(), KB, "range-unit.txt", &body).await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/range-unit.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "items=0-10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!resp.headers().contains_key("content-range"));
+    let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(response_body.len(), 100);
+}
+
+#[tokio::test]
+async fn get_if_none_match_304() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "conditional-304.txt", "conditional").await,
+        StatusCode::CREATED
+    );
+    let first_get = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}/conditional-304.txt"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    let etag = first_get.headers().get("etag").unwrap().to_str().unwrap();
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/conditional-304.txt"))
+                .header(auth().0, auth().1)
+                .header("if-none-match", etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(response_body.is_empty());
+}
+
+#[tokio::test]
+async fn get_if_match_412() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "conditional-412.txt", "conditional").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/knowledgebases/{KB}/conditional-412.txt"))
+                .header(auth().0, auth().1)
+                .header("if-match", "\"wrong\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
 }
 
 #[tokio::test]

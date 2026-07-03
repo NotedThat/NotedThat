@@ -41,7 +41,8 @@ struct InMemoryInner {
     buckets: HashSet<String>,
 }
 
-fn compute_etag(bytes: &[u8]) -> String {
+/// SHA-256 `ETag` for `bytes` in `"<hex>"` form (public for integration tests).
+pub fn compute_etag(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
 }

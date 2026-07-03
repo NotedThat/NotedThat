@@ -12,9 +12,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath};
+use notedthat_core::{
+    ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath, StorageError, parse_range_header,
+};
 use serde::Deserialize;
 use std::fmt::Write;
+use std::time::{Duration, UNIX_EPOCH};
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -180,20 +183,68 @@ async fn get_object(
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
 
+    let range = match req.headers().get(axum::http::header::RANGE) {
+        None => None,
+        Some(raw) => {
+            let raw_str = raw
+                .to_str()
+                .map_err(|_| err(ApiError::MalformedRange("non-UTF-8 Range header".into())))?;
+            let parsed = parse_range_header(raw_str)
+                .map_err(|_| err(ApiError::MalformedRange(raw_str.to_owned())))?;
+            if parsed.unit == "bytes" && !parsed.ranges.is_empty() {
+                Some(parsed.ranges)
+            } else {
+                None
+            }
+        }
+    };
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
+
     let read = state
         .storage
-        .get_object(&kb, &path, None, ConditionalHeaders::default())
+        .get_object(&kb, &path, range, conditionals)
         .await
-        .map_err(|error| err(ApiError::Storage(error)))?;
+        .map_err(|error| match error {
+            StorageError::NotFound { .. } => err(ApiError::Core(CoreError::NotFound {
+                resource: path.as_str().to_string(),
+            })),
+            other => err(ApiError::from(other)),
+        })?;
     let content_type = read
         .meta
         .content_type
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+        .as_deref()
+        .unwrap_or("application/octet-stream");
 
-    let resp = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", content_type)
-        .header("content-length", read.meta.size.to_string())
+    let status = if read.content_range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    let mut builder = Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_LENGTH, read.bytes.len());
+
+    if let Some(etag) = &read.meta.etag {
+        builder = builder.header(axum::http::header::ETAG, etag.as_str());
+    }
+    if let Some(last_modified) = read
+        .meta
+        .last_modified
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
+    {
+        builder = builder.header(
+            axum::http::header::LAST_MODIFIED,
+            httpdate::fmt_http_date(last_modified),
+        );
+    }
+    if let Some(content_range) = &read.content_range {
+        builder = builder.header(axum::http::header::CONTENT_RANGE, content_range.as_str());
+    }
+
+    let resp = builder
         .body(Body::from(read.bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
 
@@ -234,6 +285,7 @@ async fn put_object(
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let body_bytes: Bytes =
         axum::body::to_bytes(req.into_body(), body_limit_usize(state.max_body_size))
@@ -252,13 +304,13 @@ async fn put_object(
         })));
     }
 
-    let _outcome = commit(
+    let outcome = commit(
         state.storage.as_ref(),
         &kb,
         &path,
         body_bytes,
         content_type.as_deref(),
-        ConditionalHeaders::default(),
+        conditionals,
     )
     .await
     .map_err(&err)?;
@@ -267,9 +319,13 @@ async fn put_object(
         "/v1/knowledgebases/{kb_slug}/{}",
         percent_encode_path(path.as_str())
     );
-    let resp = Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::CREATED)
-        .header("location", location)
+        .header("location", location);
+    if let Some(etag) = &outcome.etag {
+        builder = builder.header(axum::http::header::ETAG, etag.as_str());
+    }
+    let resp = builder
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     Ok(resp)
@@ -280,7 +336,7 @@ async fn delete_object(
     State(state): State<AppState>,
     Path((kb_slug, object_path)): Path<(String, String)>,
     req: Request,
-) -> Result<StatusCode, ApiErrorResponse> {
+) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
     let err = |error: ApiError| ApiErrorResponse {
         error,
@@ -289,13 +345,13 @@ async fn delete_object(
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
-    state
-        .storage
-        .delete_object(&kb, &path, ConditionalHeaders::default())
-        .await
-        .map_err(|error| err(ApiError::Storage(error)))?;
-    Ok(StatusCode::NO_CONTENT)
+    match state.storage.delete_object(&kb, &path, conditionals).await {
+        Ok(()) | Err(StorageError::NotFound { .. }) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(StorageError::PreconditionFailed) => Err(err(ApiError::PreconditionFailed)),
+        Err(e) => Err(err(ApiError::Storage(e))),
+    }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
