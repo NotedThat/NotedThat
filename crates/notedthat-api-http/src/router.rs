@@ -15,9 +15,11 @@ use bytes::Bytes;
 use notedthat_core::{
     ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath, StorageError, parse_range_header,
 };
+use notedthat_indexer::IndexEvent;
 use serde::Deserialize;
 use std::fmt::Write;
 use std::time::{Duration, UNIX_EPOCH};
+use tokio::sync::mpsc::error::TrySendError;
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -312,6 +314,7 @@ async fn put_object(
 
     let outcome = commit(
         state.storage.as_ref(),
+        &state.indexer_tx,
         &kb,
         &path,
         body_bytes,
@@ -354,7 +357,34 @@ async fn delete_object(
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     match state.storage.delete_object(&kb, &path, conditionals).await {
-        Ok(()) | Err(StorageError::NotFound { .. }) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Ok(()) | Err(StorageError::NotFound { .. }) => {
+            // Enqueue Tombstone — both branches return 204
+            // delete_points with empty match is idempotent on Qdrant
+            let event = IndexEvent::Tombstone {
+                kb: kb.clone(),
+                object_key: path.clone(),
+            };
+            match state.indexer_tx.try_send(event) {
+                Ok(()) => {}
+                Err(TrySendError::Full(ev)) => {
+                    tracing::warn!(
+                        target: "notedthat::indexing",
+                        kb = %ev.kb().as_str(),
+                        path = %ev.object_key().as_str(),
+                        "INDEX_QUEUE_FULL"
+                    );
+                }
+                Err(TrySendError::Closed(ev)) => {
+                    tracing::error!(
+                        target: "notedthat::indexing",
+                        kb = %ev.kb().as_str(),
+                        path = %ev.object_key().as_str(),
+                        "INDEX_QUEUE_CLOSED"
+                    );
+                }
+            }
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
         Err(StorageError::PreconditionFailed) => Err(err(ApiError::PreconditionFailed)),
         Err(e) => Err(err(ApiError::Storage(e))),
     }
