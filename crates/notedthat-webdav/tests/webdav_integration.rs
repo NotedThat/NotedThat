@@ -153,7 +153,6 @@ async fn test_request_without_auth_returns_401() {
     let (_container, s3_endpoint) = start_seaweedfs().await;
     let (handle, url, _username, _password) = start_webdav_server(&s3_endpoint).await;
 
-    // GET flows through the auth middleware (OPTIONS is intercepted before auth).
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{url}/notes/anything.md"))
