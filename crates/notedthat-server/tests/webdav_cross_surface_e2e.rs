@@ -159,8 +159,6 @@ async fn wait_for_http(url: &str, timeout: Duration) {
 async fn wait_for_dav_options(base_url: &str, timeout: Duration) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + timeout;
-    // OPTIONS fires before basic_auth_middleware (intercept_options runs first in ServiceBuilder),
-    // so no Authorization header is needed for this readiness probe.
     loop {
         assert!(
             tokio::time::Instant::now() <= deadline,
@@ -168,6 +166,7 @@ async fn wait_for_dav_options(base_url: &str, timeout: Duration) {
         );
         let ok = client
             .request(reqwest::Method::OPTIONS, format!("{base_url}/"))
+            .header("Authorization", basic_auth(WEBDAV_USER, WEBDAV_PASS))
             .send()
             .await
             .map(|r| r.status().as_u16() == 204)
