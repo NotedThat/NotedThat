@@ -80,6 +80,7 @@ COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedtha
 
 USER notedthat:notedthat
 EXPOSE 8080
+EXPOSE 8081
 
 # /healthz is an unauthenticated liveness probe served by notedthat-api-http.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
