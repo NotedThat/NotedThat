@@ -15,6 +15,7 @@ aws-smithy-runtime-api.workspace = true
 aws-smithy-types = "1"
 async-trait.workspace = true
 bytes.workspace = true
+httpdate.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
 tracing.workspace = true
 serde_json.workspace = true
