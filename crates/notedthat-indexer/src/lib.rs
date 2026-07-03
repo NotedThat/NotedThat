@@ -10,4 +10,5 @@ pub mod qdrant;
 pub mod worker;
 
 pub use chunker::{chunk, Chunk, SOFT_CHAR_CAP};
+pub use embedder::{Embedder, EmbedderError};
 pub use event::IndexEvent;
