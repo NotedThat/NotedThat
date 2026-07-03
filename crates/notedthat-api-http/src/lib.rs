@@ -6,7 +6,6 @@ pub mod middleware;
 pub mod router;
 pub mod search_route;
 pub mod state;
-pub mod write_path;
 
 // Exposed under `test-support` feature for integration tests in `tests/*.rs`
 // and under `cfg(test)` for unit tests within `src/`.

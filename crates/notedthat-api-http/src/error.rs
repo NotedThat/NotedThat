@@ -65,6 +65,18 @@ impl From<StorageError> for ApiError {
     }
 }
 
+impl From<notedthat_write::WriteError> for ApiError {
+    fn from(e: notedthat_write::WriteError) -> Self {
+        match e {
+            notedthat_write::WriteError::Storage(e) => Self::Storage(e),
+            notedthat_write::WriteError::TooLarge { size, limit } => {
+                Self::Core(CoreError::PayloadTooLarge { size, limit })
+            }
+            notedthat_write::WriteError::Path(e) => Self::Core(e),
+        }
+    }
+}
+
 /// JSON error response body shape: `{ "error": "code", "message": "...", "request_id": "..." }`.
 #[derive(Serialize)]
 struct ErrorBody<'a> {

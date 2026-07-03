@@ -7,6 +7,7 @@ members = [
   "crates/notedthat-core",
   "crates/notedthat-storage-s3",
   "crates/notedthat-indexer",
+  "crates/notedthat-write",
   "crates/notedthat-api-http",
   "crates/notedthat-webdav",
   "crates/notedthat-mcp",
@@ -24,6 +25,11 @@ authors = ["NotedThat Contributors"]
 
 # Populated in M2. Features left minimal here; crates opt into features they need.
 [workspace.dependencies]
+# Workspace crates
+notedthat-core = { path = "crates/notedthat-core", version = "0.1.0" }
+notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.1.0" }
+notedthat-write = { path = "crates/notedthat-write", version = "0.1.0" }
+
 # Async runtime & primitives
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -35,6 +41,8 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # HTTP layer
 axum = { version = "0.8", default-features = false }
 axum-extra = { version = "0.10", features = ["typed-header"] }
+base64 = "0.22"
+dav-server = { version = "0.11", default-features = false }
 headers = "0.4"
 hex = "0.4"
 httpdate = "1.0"
