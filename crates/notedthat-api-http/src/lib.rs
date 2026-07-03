@@ -4,6 +4,7 @@
 pub mod error;
 pub mod middleware;
 pub mod router;
+pub mod search_route;
 pub mod state;
 pub mod write_path;
 
