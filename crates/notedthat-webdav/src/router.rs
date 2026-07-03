@@ -23,7 +23,6 @@ pub fn build_router(state: WebDavState) -> Router {
     let dav_handler = DavHandler::builder()
         .filesystem(Box::new(WebDavStorage::new(Arc::new(state.clone()))))
         .autoindex(false)
-        // NOTE: no LockSystem is registered; LOCK/UNLOCK stay disabled for v1.
         .build_handler();
 
     let dav_service = move |req: axum::extract::Request| {
