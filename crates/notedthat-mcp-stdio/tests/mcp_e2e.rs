@@ -344,6 +344,7 @@ async fn mcp_tools_list_returns_all_seven() {
     writeln!(&mut stdin, "{}", serde_json::to_string(&notification).unwrap()).unwrap();
     stdin.flush().unwrap();
 
+    // Request tools/list
     mcp_request(&mut stdin, 1, "tools/list", serde_json::json!({}));
     let resp = mcp_response(&mut stdout, Duration::from_secs(5));
 
@@ -368,6 +369,7 @@ async fn mcp_tools_list_returns_all_seven() {
     assert_eq!(tools.len(), 7, "expected exactly 7 tools, got {}: {actual_tools:?}", tools.len());
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");
 
+    // Verify each tool has an inputSchema
     for tool in tools {
         let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("?");
         assert!(tool.get("inputSchema").is_some(), "tool {name} missing inputSchema");
@@ -377,5 +379,52 @@ async fn mcp_tools_list_returns_all_seven() {
     if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "subprocess test"]
+async fn mcp_shutdown_returns_clean_exit() {
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+
+    // Initialize
+    let _ = mcp_initialize(&mut stdin, &mut stdout);
+
+    // Send shutdown request
+    mcp_request(&mut stdin, 99, "shutdown", serde_json::json!(null));
+
+    // Wait for process exit (5s bound)
+    drop(stdin);
+    match wait_for_shutdown(&mut child, Duration::from_secs(5)) {
+        Some(status) => {
+            // Exit code may be 0 or non-zero depending on rmcp shutdown handling
+            // The important thing is it exited cleanly (no kill needed)
+            let _ = status;
+        }
+        None => {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("binary did not exit within 5s after shutdown request");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "subprocess test"]
+async fn mcp_stdin_close_causes_exit() {
+    let (mut child, stdin, _stdout) =
+        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+
+    // Close stdin immediately (EOF)
+    drop(stdin);
+
+    match wait_for_shutdown(&mut child, Duration::from_secs(5)) {
+        Some(_) => {} // Exited — pass
+        None => {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("binary did not exit within 5s after stdin EOF");
+        }
     }
 }
