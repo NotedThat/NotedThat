@@ -306,3 +306,76 @@ async fn mcp_infra_smoke() {
         child.wait().unwrap();
     }
 }
+
+#[tokio::test]
+#[ignore = "subprocess test — run with --ignored"]
+async fn mcp_initialize_returns_valid_response() {
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+
+    let resp = mcp_initialize(&mut stdin, &mut stdout);
+    let result = resp.get("result").expect("expected result field");
+    assert!(result.get("protocolVersion").is_some(), "missing protocolVersion: {result}");
+    assert!(result.get("capabilities").is_some(), "missing capabilities: {result}");
+    assert!(result.get("serverInfo").is_some(), "missing serverInfo: {result}");
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "subprocess test — run with --ignored"]
+async fn mcp_tools_list_returns_all_seven() {
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+
+    // Initialize first (required by MCP protocol)
+    let _ = mcp_initialize(&mut stdin, &mut stdout);
+
+    // Send initialized notification
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    writeln!(&mut stdin, "{}", serde_json::to_string(&notification).unwrap()).unwrap();
+    stdin.flush().unwrap();
+
+    mcp_request(&mut stdin, 1, "tools/list", serde_json::json!({}));
+    let resp = mcp_response(&mut stdout, Duration::from_secs(5));
+
+    let tools = resp
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .expect("expected result.tools array");
+
+    let expected_tools: std::collections::HashSet<&str> = [
+        "list_knowledgebases", "search", "read", "write", "list", "delete", "move",
+    ]
+    .iter()
+    .copied()
+    .collect();
+
+    let actual_tools: std::collections::HashSet<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert_eq!(tools.len(), 7, "expected exactly 7 tools, got {}: {actual_tools:?}", tools.len());
+    assert_eq!(actual_tools, expected_tools, "tool names mismatch");
+
+    for tool in tools {
+        let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        assert!(tool.get("inputSchema").is_some(), "tool {name} missing inputSchema");
+    }
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
