@@ -141,4 +141,33 @@ mod tests {
         };
         assert!(run(&c, args).await.is_err());
     }
+
+    #[tokio::test]
+    async fn read_nested_path_wiremock_red_gate() {
+        // RED GATE: Before the fix, the read tool pre-encodes `docs/rfc/7231.md`
+        // via `encode_object_path` producing `docs%2Frfc%2F7231.md`, then
+        // `v1_url` encodes the `%` again via PATH_SEGMENT push, resulting in
+        // `docs%252Frfc%252F7231.md` on the wire. This mock matches the CORRECT
+        // single-encoded path `/v1/knowledgebases/notes/docs%2Frfc%2F7231.md`.
+        // Before the fix: server.verify() FAILS because the mock is never called.
+        // After the fix (Task 2): this test PASSES.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# RFC 7231"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = ReadArgs {
+            kb: "notes".into(),
+            path: "docs/rfc/7231.md".into(),
+            byte_start: None,
+            byte_end: None,
+        };
+        // Call the tool — before fix this sends the wrong (double-encoded) URL.
+        // We ignore the result; what matters is whether the mock was called.
+        let _ = run(&c, args).await;
+        server.verify().await; // FAILS before fix (mock not matched), PASSES after fix
+    }
 }

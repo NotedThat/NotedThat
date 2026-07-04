@@ -150,4 +150,38 @@ mod tests {
             assert_send_sync_clone::<NotedThatClient>();
         };
     }
+
+    #[test]
+    fn v1_url_encodes_raw_object_path_exactly_once() {
+        // Characterization test: v1_url with raw object path input already encodes
+        // exactly once. This is NOT the red gate — it passes before AND after the fix.
+        // It documents that the v1_url function itself is correct; the bug was
+        // in the tool code pre-encoding before calling v1_url.
+        let c = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
+
+        // Raw nested path → exactly one encoding pass
+        let u = c.v1_url(&["knowledgebases", "notes", "docs/rfc/7231.md"]);
+        let path = u.path();
+        assert_eq!(
+            path,
+            "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
+            "raw nested path should be encoded exactly once"
+        );
+        assert!(
+            !path.contains("%25"),
+            "no double-encoding: %25 must not appear in path: {path}"
+        );
+
+        // Literal percent in input → encoded to %25, never %2525
+        let u2 = c.v1_url(&["knowledgebases", "notes", "a%b.md"]);
+        let path2 = u2.path();
+        assert!(
+            path2.contains("%25b"),
+            "literal % must encode to %25b: {path2}"
+        );
+        assert!(
+            !path2.contains("%2525"),
+            "literal % must not double-encode to %2525: {path2}"
+        );
+    }
 }
