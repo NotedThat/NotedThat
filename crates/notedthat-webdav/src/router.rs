@@ -12,8 +12,8 @@ use tower_http::{
 use crate::{
     filesystem::WebDavStorage,
     middleware::{
-        basic_auth_middleware, intercept_lock_unlock, intercept_options, intercept_proppatch,
-        intercept_write_methods,
+        basic_auth_middleware, intercept_lock_unlock, intercept_options,
+        intercept_propfind_too_large, intercept_proppatch, intercept_write_methods,
     },
     state::WebDavState,
 };
@@ -36,6 +36,10 @@ pub fn build_router(state: WebDavState) -> Router {
             .layer(PropagateRequestIdLayer::x_request_id())
             .layer(from_fn_with_state(state.clone(), basic_auth_middleware))
             .layer(TraceLayer::new_for_http())
+            .layer(from_fn_with_state(
+                state.clone(),
+                intercept_propfind_too_large,
+            ))
             .layer(from_fn_with_state(state, intercept_write_methods))
             .layer(from_fn(intercept_options))
             .layer(from_fn(intercept_proppatch))

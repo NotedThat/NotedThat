@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use tower_http::request_id::RequestId;
 
-use crate::filesystem::DavTarget;
+use crate::filesystem::{DavTarget, PROPFIND_TOO_LARGE_DAV_XML, ensure_propfind_target_within_cap};
 use crate::state::WebDavState;
 
 /// Extract the x-request-id from the request, returning "unknown" if absent.
@@ -122,6 +122,34 @@ pub async fn intercept_lock_unlock(req: Request, next: Next) -> Response {
         return response;
     }
     next.run(req).await
+}
+
+/// Intercept over-large PROPFIND requests before dav-server swallows read_dir errors.
+pub async fn intercept_propfind_too_large(
+    State(state): State<WebDavState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if req.method().as_str() != "PROPFIND" {
+        return next.run(req).await;
+    }
+
+    let Ok(target) = parse_uri_path(req.uri().path(), &state.declared_kbs) else {
+        return next.run(req).await;
+    };
+
+    match ensure_propfind_target_within_cap(&state, &target).await {
+        Err(dav_server::fs::FsError::InsufficientStorage) => (
+            StatusCode::INSUFFICIENT_STORAGE,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/xml; charset=utf-8",
+            )],
+            PROPFIND_TOO_LARGE_DAV_XML,
+        )
+            .into_response(),
+        Ok(()) | Err(_) => next.run(req).await,
+    }
 }
 
 /// Intercept `WebDAV` write methods before `dav-server` so raw HTTP headers remain available.
