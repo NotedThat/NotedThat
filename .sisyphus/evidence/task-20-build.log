@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling notedthat-mcp-stdio v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-mcp-stdio)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.92s
+Exit: 0

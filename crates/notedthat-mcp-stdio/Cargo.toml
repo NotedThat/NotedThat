@@ -22,6 +22,14 @@ anyhow = { workspace = true }
 [dev-dependencies]
 assert_cmd = "2"
 serde_json = { workspace = true }
+notedthat-server = { path = "../notedthat-server" }
+notedthat-core = { path = "../notedthat-core" }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
+testcontainers = { workspace = true }
+wiremock = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "process", "time", "sync"] }
+anyhow = { workspace = true }
 
 [lints]
 workspace = true
