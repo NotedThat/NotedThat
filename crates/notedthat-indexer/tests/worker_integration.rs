@@ -169,6 +169,7 @@ impl Storage for MockStorage {
         kb: &KbSlug,
         prefix: Option<&str>,
         limit: u32,
+        _cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError> {
         let guard = self.objects.lock().unwrap();
         let kb_str = kb.as_str().to_string();
@@ -185,7 +186,7 @@ impl Storage for MockStorage {
             })
             .collect();
         let truncated = objects.len() == limit as usize;
-        Ok(ListResponse { objects, truncated })
+        Ok(ListResponse { objects, truncated, next_cursor: None })
     }
 }
 
