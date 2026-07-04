@@ -1857,3 +1857,74 @@ async fn m3_malformed_date_if_unmodified_since() {
         "malformed If-Unmodified-Since must not panic; got {status}"
     );
 }
+
+// ─── Cursor / Pagination ─────────────────────────────────────────────────────
+
+/// AC5: HTTP API accepts `?cursor=` and returns next pages; last page has `"next_cursor": null`.
+#[tokio::test]
+async fn list_route_cursor_round_trip() {
+    let a = app();
+    for i in 0..5 {
+        assert_eq!(
+            put_text(a.clone(), KB, &format!("cursor-p{i}.md"), &format!("body {i}")).await,
+            StatusCode::CREATED
+        );
+    }
+
+    let mut all_keys: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    let last = loop {
+        let uri = match &cursor {
+            Some(c) => format!("/v1/knowledgebases/{KB}?limit=2&cursor={c}"),
+            None => format!("/v1/knowledgebases/{KB}?limit=2"),
+        };
+        let resp = a
+            .clone()
+            .oneshot(authed_request("GET", uri, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = response_json(resp).await;
+
+        for obj in json["objects"].as_array().unwrap() {
+            all_keys.push(obj["key"].as_str().unwrap().to_string());
+        }
+        cursor = json["next_cursor"].as_str().map(|s| s.to_string());
+        if cursor.is_none() {
+            break json;
+        }
+    };
+
+    assert_eq!(all_keys.len(), 5, "expected 5 total objects across all pages");
+    assert!(
+        last["next_cursor"].is_null(),
+        "last page must have next_cursor: null, got: {:?}",
+        last["next_cursor"]
+    );
+}
+
+/// AC6: Invalid cursor returns HTTP 503 with standard error body shape.
+#[tokio::test]
+async fn list_route_invalid_cursor_is_503() {
+    let resp = app()
+        .oneshot(authed_request(
+            "GET",
+            format!("/v1/knowledgebases/{KB}?cursor=garbage-cursor-that-does-not-exist"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let json = response_json(resp).await;
+    assert_eq!(
+        json["error"],
+        "backend_unavailable",
+        "error field must be 'backend_unavailable', got: {json:?}"
+    );
+    assert!(
+        json["request_id"].is_string(),
+        "response must include a request_id string, got: {json:?}"
+    );
+    assert!(!json["request_id"].as_str().unwrap().is_empty());
+}
