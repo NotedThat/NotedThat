@@ -870,3 +870,105 @@ The following clients require `LOCK` support to save files, which NotedThat does
 Operators upgrading from M5 must set `NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`
 before restarting. The server exits with a non-zero status and a descriptive error message if either
 is missing or empty. See [CONFIGURATION.md](CONFIGURATION.md) for details.
+
+---
+
+## MCP
+
+The MCP (Model Context Protocol) surface wraps the HTTP API described above. It is a thin proxy: every MCP tool call translates to one or more HTTP API requests. The MCP layer **never** accesses storage or the index directly (§5 principle 10).
+
+### Transport
+
+MCP is served by the `notedthat-mcp-stdio` binary over **stdio only** in v1 (D31). HTTP transport is post-v1. Configure your MCP client to launch the binary as a subprocess; see [README.md](../README.md) for setup snippets.
+
+### Tools
+
+All 7 tools are exposed:
+
+#### `list_knowledgebases`
+
+List all knowledge bases declared on the server.
+
+**Arguments**: none
+
+**Response**: `[{ "kb_slug": string }]`
+
+Note: `display_name`, `description`, and `perms` are post-v1 (HTTP list endpoint does not return them yet).
+
+#### `search`
+
+Hybrid semantic + keyword search across a knowledge base.
+
+**Arguments**: `kb` (string), `query` (string), `filters?` (object with `mime?`), `limit?` (u32)
+
+**Response**: `{ "hits": [SearchHit] }` where each `SearchHit` has `object_key`, `byte_start`, `byte_end`, `heading_path`, `score`, `preview`
+
+#### `read`
+
+Read an object by optional byte range.
+
+**Arguments**: `kb` (string), `path` (string), `byte_start?` (u64, inclusive), `byte_end?` (u64, **exclusive**)
+
+**Response**: UTF-8 text content of the object (or byte slice)
+
+**Byte range semantics**: MCP uses zero-based exclusive `byte_end`, while the HTTP `Range` header uses inclusive bounds. The MCP layer converts automatically: `byte_end=10` → `Range: bytes=0-9`.
+
+**Constraints**: `byte_end` requires `byte_start`; `byte_start >= byte_end` is rejected with `invalid_request`.
+
+#### `write`
+
+Create or update an object. Content is UTF-8 text in v1 (binary not supported).
+
+**Arguments**: `kb` (string), `path` (string), `content` (string), `if_match?` (string ETag), `if_none_match?` (string), `mime_type?` (string)
+
+**Response**: `{ "etag": string|null, "location": string|null }`
+
+#### `list`
+
+List objects in a knowledge base under an optional prefix.
+
+**Arguments**: `kb` (string), `prefix?` (string), `limit?` (u32, max 1000), `cursor?` (string)
+
+**Response**: `{ "objects": [ObjectMeta], "truncated": bool, "cursor"?: string }`
+
+#### `delete`
+
+Delete an object. Idempotent — deleting a non-existent object returns success.
+
+**Arguments**: `kb` (string), `path` (string), `if_match?` (string ETag)
+
+**Response**: text confirmation
+
+#### `move`
+
+Move/rename an object within a knowledge base. **Non-atomic** in v1: implemented as GET source → PUT destination → DELETE source. If DELETE fails after PUT succeeds, a descriptive error is returned and the source must be removed manually.
+
+**Arguments**: `kb` (string), `from` (string), `to` (string), `if_match?` (string ETag on source)
+
+**Response**: text confirmation or partial-failure error
+
+### Path Encoding
+
+Object paths are percent-encoded per RFC 3986 before being placed in URLs. The `/` separator within a path is encoded as `%2F`. Example: `docs/rfc/7231.md` → `docs%2Frfc%2F7231.md`.
+
+### Error Codes
+
+All MCP errors carry one of these codes:
+
+| Code | HTTP Status | Meaning |
+|------|-------------|---------|
+| `invalid_request` | 400 | Bad arguments or validation failure |
+| `unauthorized` | 401 | Missing or invalid bearer token |
+| `not_found` | 404 | Knowledge base or object not found |
+| `precondition_failed` | 412 | ETag mismatch (If-Match / If-None-Match) |
+| `payload_too_large` | 413 | Content exceeds server limit (16 MiB) |
+| `range_not_satisfiable` | 416 | Byte range beyond object size |
+| `backend_unavailable` | 503 | S3 or Qdrant unavailable |
+| `internal_error` | 500 | Unexpected server error |
+
+### v1 Limitations
+
+- **stdio only**: HTTP transport is post-v1 (D31)
+- **No Resources**: MCP Resources (`notedthat://<kb>/<path>`) are post-v1 (D37)
+- **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
+- **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
