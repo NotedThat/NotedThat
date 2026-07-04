@@ -10,7 +10,8 @@ mod write;
 
 use crate::client::NotedThatClient;
 use rmcp::{
-    ErrorData as McpError, handler::server::wrapper::Parameters, model::*, tool, tool_router,
+    ErrorData as McpError, handler::server::wrapper::Parameters, model::*, tool, tool_handler,
+    tool_router,
 };
 
 /// MCP tool handler backed by the NotedThat HTTP API.
@@ -75,3 +76,6 @@ impl NotedThatMcp {
         mv::run(&self.client, args.0).await
     }
 }
+
+#[tool_handler]
+impl rmcp::handler::server::ServerHandler for NotedThatMcp {}
