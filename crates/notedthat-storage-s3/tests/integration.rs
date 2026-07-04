@@ -101,7 +101,7 @@ async fn integration_round_trip_put_get_head_delete_list() {
     assert_eq!(&read.bytes[..], b"# Hello");
 
     let list = storage
-        .list_objects(&kb, None, 10)
+        .list_objects(&kb, None, 10, None)
         .await
         .expect("list_objects");
     assert!(
