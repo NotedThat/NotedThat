@@ -1,4 +1,4 @@
-//! HTTP client wrapping reqwest for NotedThat API access.
+//! HTTP client wrapping reqwest for `NotedThat` API access.
 
 use thiserror::Error;
 use url::Url;
@@ -15,9 +15,12 @@ pub enum ConfigError {
     /// The token is empty (after trimming whitespace).
     #[error("token must not be empty")]
     EmptyToken,
+    /// The reqwest HTTP client could not be constructed (e.g. TLS unavailable).
+    #[error("could not build HTTP client: {0}")]
+    ClientBuild(reqwest::Error),
 }
 
-/// Async HTTP client for the NotedThat v1 API.
+/// Async HTTP client for the `NotedThat` v1 API.
 ///
 /// Clone-cheap: clones share the underlying reqwest connection pool.
 #[derive(Clone, Debug)]
@@ -53,7 +56,7 @@ impl NotedThatClient {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("reqwest client construction should not fail");
+            .map_err(ConfigError::ClientBuild)?;
 
         Ok(Self {
             http,
@@ -71,9 +74,9 @@ impl NotedThatClient {
     pub(crate) fn v1_url(&self, path_segments: &[&str]) -> Url {
         let mut url = self.base_url.clone();
         {
-            let mut segments = url
-                .path_segments_mut()
-                .expect("base URL must be able to have path segments");
+        let mut segments = url
+            .path_segments_mut()
+            .unwrap_or_else(|()| unreachable!("validated http/https URL always supports path segments"));
             segments.push("v1");
             for seg in path_segments {
                 segments.push(seg);

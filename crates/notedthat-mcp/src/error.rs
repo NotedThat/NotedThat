@@ -206,7 +206,8 @@ mod tests {
 
     #[tokio::test]
     async fn all_status_codes_map_correctly() {
-        let test_cases: &[(u16, fn(&McpToolError) -> bool)] = &[
+        type StatusCheck = fn(&McpToolError) -> bool;
+        let test_cases: &[(u16, StatusCheck)] = &[
             (400, |e| matches!(e, McpToolError::InvalidRequest(_))),
             (401, |e| matches!(e, McpToolError::Unauthorized)),
             (404, |e| matches!(e, McpToolError::NotFound(_))),
@@ -220,14 +221,14 @@ mod tests {
         for (status, check_fn) in test_cases {
             let server = MockServer::start().await;
 
-            let body = if *status != 416 {
+            let body = if *status == 416 {
+                String::new()
+            } else {
                 serde_json::json!({
                     "error": "test_error",
                     "message": "test message"
                 })
                 .to_string()
-            } else {
-                String::new()
             };
 
             Mock::given(method("GET"))
