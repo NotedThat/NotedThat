@@ -1,7 +1,5 @@
-//! `notedthat-mcp`: MCP tool surface wrapping the NotedThat HTTP API.
+//! `notedthat-mcp`: MCP tool surface wrapping the `NotedThat` HTTP API.
 //! Consumed by `notedthat-mcp-stdio` and any future MCP HTTP transport.
-
-#![allow(dead_code)]
 
 pub mod client;
 pub mod error;

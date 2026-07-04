@@ -14,7 +14,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 /// are NOT RFC 3986 §2.3 unreserved (`A-Z a-z 0-9 - . _ ~`).
 ///
 /// This includes reserved characters like `/`, `?`, `#`, `@`, `:`, etc.,
-/// as well as space and unicode (handled by utf8_percent_encode's byte-level encoding).
+/// as well as space and unicode (handled by `utf8_percent_encode`'s byte-level encoding).
 pub const OBJECT_PATH_ENCODE: &AsciiSet = &CONTROLS
     // Space
     .add(b' ')

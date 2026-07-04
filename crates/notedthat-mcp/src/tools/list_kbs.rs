@@ -1,6 +1,6 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use rmcp::{ErrorData as McpError, model::*};
+use rmcp::{ErrorData as McpError, model::{CallToolResult, ContentBlock}};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
