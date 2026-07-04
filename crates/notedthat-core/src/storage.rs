@@ -27,6 +27,7 @@ pub struct ObjectRead {
 ///
 /// `truncated == next_cursor.is_some()`. A response where `truncated=true` MUST supply a
 /// `next_cursor`; a response where `next_cursor=Some(_)` MUST also set `truncated=true`.
+#[derive(Debug)]
 pub struct ListResponse {
     /// The matching objects, up to the requested `limit`.
     pub objects: Vec<ObjectMeta>,

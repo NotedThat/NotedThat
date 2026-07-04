@@ -314,6 +314,7 @@ impl Storage for InMemoryStorage {
         kb: &KbSlug,
         prefix: Option<&str>,
         limit: u32,
+        cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError> {
         let inner = self.inner.read().await;
         let kb_str = kb.as_str();
@@ -333,12 +334,35 @@ impl Storage for InMemoryStorage {
             .collect();
         matching.sort_by(|a, b| a.key.cmp(&b.key));
 
+        // Apply cursor: cursor is the last returned key; start after it.
+        if let Some(cursor_key) = cursor {
+            // Validate: cursor_key must exist in the KB (it was a real key we returned)
+            let key_exists = matching.iter().any(|obj| obj.key == cursor_key);
+            if !key_exists {
+                return Err(StorageError::BackendUnavailable {
+                    message: "invalid or expired cursor".into(),
+                });
+            }
+            // Skip everything up to and including the cursor key
+            let cursor_pos = matching.iter().position(|obj| obj.key == cursor_key).unwrap();
+            matching = matching.split_off(cursor_pos + 1);
+        }
+
         let limit = limit.min(1000) as usize;
         let truncated = matching.len() > limit;
         matching.truncate(limit);
+
+        // Compute next_cursor: the last key in the returned page, only when truncated
+        let next_cursor = if truncated {
+            matching.last().map(|obj| obj.key.clone())
+        } else {
+            None
+        };
+
         Ok(ListResponse {
             objects: matching,
             truncated,
+            next_cursor,
         })
     }
 }
@@ -522,11 +546,44 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let result = storage.list_objects(&kb, None, 2).await.unwrap();
+        let result = storage.list_objects(&kb, None, 2, None).await.unwrap();
         assert_eq!(result.objects.len(), 2);
         assert!(result.truncated);
         assert_eq!(result.objects[0].key, "0.md");
         assert_eq!(result.objects[1].key, "1.md");
+    }
+
+    #[tokio::test]
+    async fn test_list_invalid_or_expired_cursor_is_backend_unavailable() {
+        let storage = InMemoryStorage::default();
+        let kb = KbSlug::try_new("test").expect("valid slug");
+        // Seed a few objects
+        for i in 0..5u32 {
+            let path = ObjectPath::try_from_str(&format!("doc-{i:04}.md")).expect("valid path");
+            storage
+                .put_object(
+                    &kb,
+                    &path,
+                    bytes::Bytes::from_static(b"content"),
+                    Some("text/markdown"),
+                    ConditionalHeaders::default(),
+                )
+                .await
+                .expect("put succeeded");
+        }
+        // Pass a garbage cursor (not a real key)
+        let result = storage
+            .list_objects(&kb, None, 10, Some("nonexistent-key.md"))
+            .await;
+        match result {
+            Err(StorageError::BackendUnavailable { message }) => {
+                assert!(
+                    message.contains("invalid or expired cursor"),
+                    "expected invalid cursor message, got: {message}"
+                );
+            }
+            other => panic!("expected BackendUnavailable, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

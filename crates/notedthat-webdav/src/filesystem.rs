@@ -569,6 +569,7 @@ mod tests {
         kb: String,
         prefix: Option<String>,
         limit: u32,
+        cursor: Option<String>,
     }
 
     #[derive(Default)]
@@ -577,6 +578,7 @@ mod tests {
         list_calls: Mutex<Vec<ListCall>>,
         objects: Mutex<Vec<ObjectMeta>>,
         truncated: bool,
+        next_cursor: Option<String>,
         head_not_found: bool,
         get_range_not_satisfiable: bool,
     }
@@ -685,6 +687,7 @@ mod tests {
             kb: &KbSlug,
             prefix: Option<&str>,
             limit: u32,
+            cursor: Option<&str>,
         ) -> Result<ListResponse, StorageError> {
             self.record("list_objects");
             self.list_calls
@@ -694,10 +697,12 @@ mod tests {
                     kb: kb.as_str().to_string(),
                     prefix: prefix.map(str::to_string),
                     limit,
+                    cursor: cursor.map(str::to_string),
                 });
             Ok(ListResponse {
                 objects: self.objects.lock().expect("mutex not poisoned").clone(),
                 truncated: self.truncated,
+                next_cursor: self.next_cursor.clone(),
             })
         }
     }

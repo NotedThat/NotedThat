@@ -100,6 +100,7 @@ async fn list_kbs(State(state): State<AppState>) -> impl IntoResponse {
 struct ListQuery {
     prefix: Option<String>,
     limit: Option<u32>,
+    cursor: Option<String>,
 }
 
 /// `GET /v1/knowledgebases/{kb_slug}` — list objects in a KB.
@@ -120,13 +121,14 @@ async fn list_objects(
 
     let result = state
         .storage
-        .list_objects(&kb, q.prefix.as_deref(), limit)
+        .list_objects(&kb, q.prefix.as_deref(), limit, q.cursor.as_deref())
         .await
         .map_err(|error| err(ApiError::Storage(error)))?;
 
     Ok(Json(serde_json::json!({
         "objects": result.objects,
         "truncated": result.truncated,
+        "next_cursor": result.next_cursor,
     })))
 }
 
