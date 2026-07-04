@@ -34,7 +34,7 @@ fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<Chil
     (child, stdin, stdout)
 }
 
-fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: serde_json::Value) {
+fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: &serde_json::Value) {
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -74,7 +74,7 @@ fn mcp_initialize(
         stdin,
         0,
         "initialize",
-        serde_json::json!({
+        &serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": { "name": "test", "version": "0" }
@@ -106,13 +106,13 @@ fn mcp_call_tool(
     stdout: &mut BufReader<ChildStdout>,
     id: u64,
     name: &str,
-    arguments: serde_json::Value,
+    arguments: &serde_json::Value,
 ) -> serde_json::Value {
     mcp_request(
         stdin,
         id,
         "tools/call",
-        serde_json::json!({
+        &serde_json::json!({
             "name": name,
             "arguments": arguments,
         }),
@@ -345,7 +345,7 @@ async fn poll_mcp_search(
             stdout,
             id,
             "search",
-            serde_json::json!({
+            &serde_json::json!({
                 "kb": kb,
                 "query": phrase,
                 "limit": 5,
@@ -377,7 +377,7 @@ async fn poll_mcp_search_gone(
             stdout,
             id,
             "search",
-            serde_json::json!({
+            &serde_json::json!({
                 "kb": kb,
                 "query": phrase,
                 "limit": 5,
@@ -456,7 +456,7 @@ async fn mcp_write_becomes_searchable_via_mcp_search() {
         &mut stdout,
         1,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": path,
             "content": content,
@@ -501,7 +501,7 @@ async fn mcp_delete_removes_from_search() {
         &mut stdout,
         1,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": path,
             "content": content,
@@ -532,7 +532,7 @@ async fn mcp_delete_removes_from_search() {
         &mut stdout,
         2,
         "delete",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": path,
         }),

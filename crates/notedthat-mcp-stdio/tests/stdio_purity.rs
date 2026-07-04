@@ -38,7 +38,7 @@ fn stdout_is_pure_json_rpc() {
     // Verify it's valid JSON-RPC 2.0
     assert!(!line.trim().is_empty(), "stdout must not be empty after initialize");
     let json: serde_json::Value = serde_json::from_str(line.trim())
-        .expect(&format!("stdout must be valid JSON, got: {line:?}"));
+        .unwrap_or_else(|_| panic!("stdout must be valid JSON, got: {line:?}"));
     assert_eq!(json.get("jsonrpc").and_then(|v| v.as_str()), Some("2.0"),
         "must be JSON-RPC 2.0: {json}");
 
@@ -69,20 +69,16 @@ fn binary_exits_on_stdin_eof() {
     let timeout = Duration::from_secs(5);
 
     loop {
-        match child.try_wait().unwrap() {
-            Some(status) => {
-                // Exited — acceptable (any exit code on EOF is fine)
-                let _ = status;
-                return;
-            }
-            None => {
-                if start.elapsed() > timeout {
-                    child.kill().unwrap();
-                    child.wait().unwrap();
-                    panic!("binary did not exit within 5s after stdin EOF");
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
+        if let Some(status) = child.try_wait().unwrap() {
+            // Exited — acceptable (any exit code on EOF is fine)
+            let _ = status;
+            return;
         }
+        if start.elapsed() > timeout {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("binary did not exit within 5s after stdin EOF");
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }

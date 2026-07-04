@@ -40,7 +40,7 @@ pub fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<
     (child, stdin, stdout)
 }
 
-pub fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: serde_json::Value) {
+pub fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: &serde_json::Value) {
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -75,7 +75,7 @@ pub fn mcp_initialize(
         stdin,
         0,
         "initialize",
-        serde_json::json!({
+        &serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": { "name": "test", "version": "0" }
@@ -345,7 +345,7 @@ async fn mcp_tools_list_returns_all_seven() {
     stdin.flush().unwrap();
 
     // Request tools/list
-    mcp_request(&mut stdin, 1, "tools/list", serde_json::json!({}));
+    mcp_request(&mut stdin, 1, "tools/list", &serde_json::json!({}));
     let resp = mcp_response(&mut stdout, Duration::from_secs(5));
 
     let tools = resp
@@ -389,13 +389,13 @@ fn mcp_call_tool(
     stdout: &mut BufReader<ChildStdout>,
     id: u64,
     tool_name: &str,
-    args: serde_json::Value,
+    args: &serde_json::Value,
 ) -> serde_json::Value {
     mcp_request(
         stdin,
         id,
         "tools/call",
-        serde_json::json!({
+        &serde_json::json!({
             "name": tool_name,
             "arguments": args,
         }),
@@ -418,6 +418,7 @@ fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>)
 
 #[tokio::test]
 #[ignore = "requires docker-compose stack"]
+#[allow(clippy::too_many_lines)]
 async fn mcp_write_list_read_delete() {
     let fixture = start_notedthat_server_fixture().await;
     let (mut child, mut stdin, mut stdout) =
@@ -430,7 +431,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         1,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "test-w4.md",
             "content": "# Test\nHello from W4.3",
@@ -447,7 +448,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         2,
         "list",
-        serde_json::json!({ "kb": "notes", "prefix": "test-" }),
+        &serde_json::json!({ "kb": "notes", "prefix": "test-" }),
     );
     assert!(
         list_resp.get("result").is_some(),
@@ -472,7 +473,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         3,
         "read",
-        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
     );
     assert!(
         read_resp.get("result").is_some(),
@@ -492,7 +493,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         4,
         "read",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "test-w4.md",
             "byte_start": 0,
@@ -517,7 +518,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         5,
         "delete",
-        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
     );
     assert!(
         del_resp.get("result").is_some(),
@@ -530,7 +531,7 @@ async fn mcp_write_list_read_delete() {
         &mut stdout,
         6,
         "read",
-        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
     );
     assert!(
         gone_resp.get("error").is_some(),
@@ -563,7 +564,7 @@ async fn mcp_move_happy() {
         &mut stdout,
         1,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "src-move.md",
             "content": "# Move source",
@@ -580,7 +581,7 @@ async fn mcp_move_happy() {
         &mut stdout,
         2,
         "move",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "from": "src-move.md",
             "to": "dst-move.md",
@@ -597,7 +598,7 @@ async fn mcp_move_happy() {
         &mut stdout,
         3,
         "read",
-        serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
     );
     assert!(
         read_dst.get("result").is_some(),
@@ -617,7 +618,7 @@ async fn mcp_move_happy() {
         &mut stdout,
         4,
         "read",
-        serde_json::json!({ "kb": "notes", "path": "src-move.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "src-move.md" }),
     );
     assert!(
         read_src.get("error").is_some(),
@@ -635,7 +636,7 @@ async fn mcp_move_happy() {
         &mut stdout,
         5,
         "delete",
-        serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
     );
     assert!(
         del_resp.get("result").is_some(),
@@ -664,7 +665,7 @@ async fn mcp_read_missing() {
         &mut stdout,
         1,
         "read",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "does-not-exist-w4.md",
         }),
@@ -700,7 +701,7 @@ async fn mcp_write_precondition() {
         &mut stdout,
         1,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "test-precond.md",
             "content": "v1",
@@ -724,7 +725,7 @@ async fn mcp_write_precondition() {
         &mut stdout,
         2,
         "write",
-        serde_json::json!({
+        &serde_json::json!({
             "kb": "notes",
             "path": "test-precond.md",
             "content": "v2",
@@ -747,7 +748,7 @@ async fn mcp_write_precondition() {
         &mut stdout,
         3,
         "delete",
-        serde_json::json!({ "kb": "notes", "path": "test-precond.md" }),
+        &serde_json::json!({ "kb": "notes", "path": "test-precond.md" }),
     );
 
     drop(stdin);
@@ -771,7 +772,7 @@ async fn mcp_bad_token() {
         &mut stdout,
         1,
         "list_knowledgebases",
-        serde_json::json!({}),
+        &serde_json::json!({}),
     );
     assert!(
         resp.get("error").is_some(),
@@ -800,21 +801,18 @@ async fn mcp_shutdown_returns_clean_exit() {
     let _ = mcp_initialize(&mut stdin, &mut stdout);
 
     // Send shutdown request
-    mcp_request(&mut stdin, 99, "shutdown", serde_json::json!(null));
+    mcp_request(&mut stdin, 99, "shutdown", &serde_json::json!(null));
 
     // Wait for process exit (5s bound)
     drop(stdin);
-    match wait_for_shutdown(&mut child, Duration::from_secs(5)) {
-        Some(status) => {
-            // Exit code may be 0 or non-zero depending on rmcp shutdown handling
-            // The important thing is it exited cleanly (no kill needed)
-            let _ = status;
-        }
-        None => {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("binary did not exit within 5s after shutdown request");
-        }
+    if let Some(status) = wait_for_shutdown(&mut child, Duration::from_secs(5)) {
+        // Exit code may be 0 or non-zero depending on rmcp shutdown handling
+        // The important thing is it exited cleanly (no kill needed)
+        let _ = status;
+    } else {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("binary did not exit within 5s after shutdown request");
     }
 }
 
@@ -827,12 +825,10 @@ async fn mcp_stdin_close_causes_exit() {
     // Close stdin immediately (EOF)
     drop(stdin);
 
-    match wait_for_shutdown(&mut child, Duration::from_secs(5)) {
-        Some(_) => {} // Exited — pass
-        None => {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("binary did not exit within 5s after stdin EOF");
-        }
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("binary did not exit within 5s after stdin EOF");
     }
+    // else: exited — pass
 }
