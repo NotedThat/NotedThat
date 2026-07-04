@@ -1,6 +1,6 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::{encode_kb_slug, encode_object_path};
+use crate::path::encode_kb_slug;
 use rmcp::{ErrorData as McpError, model::{CallToolResult, ContentBlock}};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,8 +17,8 @@ pub(super) async fn run(
     args: DeleteArgs,
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
-    let path_enc = encode_object_path(&args.path);
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &path_enc]);
+    // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
+    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client.authorized(client.http.delete(url));
     if let Some(if_match) = args.if_match {
