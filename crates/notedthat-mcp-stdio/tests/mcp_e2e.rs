@@ -382,6 +382,414 @@ async fn mcp_tools_list_returns_all_seven() {
     }
 }
 
+// ─── W4.3+W4.4 Helpers ──────────────────────────────────────────────────────
+
+fn mcp_call_tool(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    mcp_request(
+        stdin,
+        id,
+        "tools/call",
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": args,
+        }),
+    );
+    mcp_response(stdout, Duration::from_secs(10))
+}
+
+fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
+    let _ = mcp_initialize(stdin, stdout);
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    writeln!(stdin, "{}", serde_json::to_string(&notification).unwrap()).unwrap();
+    stdin.flush().unwrap();
+}
+
+// ─── W4.3: Happy-path chain ─────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_write_list_read_delete() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    // 1. Write a note.
+    let write_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "test-w4.md",
+            "content": "# Test\nHello from W4.3",
+        }),
+    );
+    assert!(
+        write_resp.get("result").is_some(),
+        "write should succeed: {write_resp}"
+    );
+
+    // 2. List with prefix — test-w4.md must appear.
+    let list_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "list",
+        serde_json::json!({ "kb": "notes", "prefix": "test-" }),
+    );
+    assert!(
+        list_resp.get("result").is_some(),
+        "list should succeed: {list_resp}"
+    );
+    let list_text = list_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("list content[0].text");
+    let list_val: serde_json::Value =
+        serde_json::from_str(list_text).expect("list response JSON");
+    let objects = list_val["objects"].as_array().expect("objects array");
+    assert!(
+        objects
+            .iter()
+            .any(|o| o["key"].as_str() == Some("test-w4.md")),
+        "test-w4.md not found in listing; objects: {objects:?}"
+    );
+
+    // 3. Read full content — must contain the written text.
+    let read_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+    );
+    assert!(
+        read_resp.get("result").is_some(),
+        "read should succeed: {read_resp}"
+    );
+    let content = read_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("read content[0].text");
+    assert!(
+        content.contains("Hello from W4.3"),
+        "unexpected content: {content:?}"
+    );
+
+    // 4. Ranged read — bytes 0..6 (exclusive) → "# Test".
+    let range_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "read",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "test-w4.md",
+            "byte_start": 0,
+            "byte_end": 6,
+        }),
+    );
+    assert!(
+        range_resp.get("result").is_some(),
+        "ranged read should succeed: {range_resp}"
+    );
+    let slice = range_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("ranged content[0].text");
+    assert!(
+        slice.starts_with("# Test"),
+        "ranged slice mismatch: {slice:?}"
+    );
+
+    // 5. Delete the note.
+    let del_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "delete",
+        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+    );
+    assert!(
+        del_resp.get("result").is_some(),
+        "delete should succeed: {del_resp}"
+    );
+
+    // 6. Read after delete → not_found error.
+    let gone_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        6,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+    );
+    assert!(
+        gone_resp.get("error").is_some(),
+        "read of deleted note should return error: {gone_resp}"
+    );
+    let msg = gone_resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("not_found"),
+        "expected not_found in error message, got: {msg:?}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_move_happy() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    // 1. Write source note.
+    let write_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "src-move.md",
+            "content": "# Move source",
+        }),
+    );
+    assert!(
+        write_resp.get("result").is_some(),
+        "write src should succeed: {write_resp}"
+    );
+
+    // 2. Move src-move.md → dst-move.md.
+    let move_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "move",
+        serde_json::json!({
+            "kb": "notes",
+            "from": "src-move.md",
+            "to": "dst-move.md",
+        }),
+    );
+    assert!(
+        move_resp.get("result").is_some(),
+        "move should succeed: {move_resp}"
+    );
+
+    // 3. Read destination — must contain original content.
+    let read_dst = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+    );
+    assert!(
+        read_dst.get("result").is_some(),
+        "read dst should succeed: {read_dst}"
+    );
+    let dst_content = read_dst["result"]["content"][0]["text"]
+        .as_str()
+        .expect("dst content[0].text");
+    assert!(
+        dst_content.contains("# Move source"),
+        "dst content mismatch: {dst_content:?}"
+    );
+
+    // 4. Read source — must be gone (not_found).
+    let read_src = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "src-move.md" }),
+    );
+    assert!(
+        read_src.get("error").is_some(),
+        "source should be gone after move: {read_src}"
+    );
+    let src_msg = read_src["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        src_msg.contains("not_found"),
+        "expected not_found for source, got: {src_msg:?}"
+    );
+
+    // 5. Cleanup: delete destination.
+    let del_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "delete",
+        serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+    );
+    assert!(
+        del_resp.get("result").is_some(),
+        "delete dst should succeed: {del_resp}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+// ─── W4.4: Error paths ──────────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_read_missing() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    let resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "read",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "does-not-exist-w4.md",
+        }),
+    );
+    assert!(
+        resp.get("error").is_some(),
+        "read of missing object should error: {resp}"
+    );
+    let msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("not_found"),
+        "expected not_found in message, got: {msg:?}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_write_precondition() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    // 1. Initial write — capture the returned etag.
+    let first = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "test-precond.md",
+            "content": "v1",
+        }),
+    );
+    assert!(
+        first.get("result").is_some(),
+        "first write should succeed: {first}"
+    );
+    let result_text = first["result"]["content"][0]["text"]
+        .as_str()
+        .expect("write result content[0].text");
+    let result_val: serde_json::Value =
+        serde_json::from_str(result_text).expect("write result JSON");
+    let etag = result_val["etag"].as_str().unwrap_or("\"initial\"").to_string();
+
+    // 2. Write again with a deliberately wrong If-Match → precondition_failed.
+    let wrong_etag = format!("{etag}-wrong");
+    let second = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "write",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "test-precond.md",
+            "content": "v2",
+            "if_match": wrong_etag,
+        }),
+    );
+    assert!(
+        second.get("error").is_some(),
+        "write with wrong if_match should error: {second}"
+    );
+    let msg = second["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("precondition_failed"),
+        "expected precondition_failed, got: {msg:?}"
+    );
+
+    // Cleanup.
+    let _ = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "delete",
+        serde_json::json!({ "kb": "notes", "path": "test-precond.md" }),
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_bad_token() {
+    let fixture = start_notedthat_server_fixture().await;
+    // Intentionally pass a wrong token — every tool call should be rejected.
+    let (mut child, mut stdin, mut stdout) =
+        spawn_mcp_stdio(&fixture.http_url, "wrong-token");
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    let resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "list_knowledgebases",
+        serde_json::json!({}),
+    );
+    assert!(
+        resp.get("error").is_some(),
+        "bad token should produce an error: {resp}"
+    );
+    let msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("unauthorized"),
+        "expected unauthorized in message, got: {msg:?}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
 #[tokio::test]
 #[ignore = "subprocess test"]
 async fn mcp_shutdown_returns_clean_exit() {
