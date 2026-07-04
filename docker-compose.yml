@@ -15,13 +15,17 @@ services:
   seaweedfs:
     image: chrislusf/seaweedfs:4.18
     container_name: notedthat-seaweedfs
-    command: server -s3 -filer -dir=/data
+    # 4.x rejects requests without an S3 identity — even "any/any" — so we
+    # feed a static config granting Admin to the dev credentials in .env.
+    # See docker/seaweedfs-s3-config.json.
+    command: server -s3 -s3.config=/etc/seaweedfs/s3-config.json -filer -dir=/data
     ports:
       - "127.0.0.1:8333:8333"   # S3 API
       - "127.0.0.1:8888:8888"   # Filer HTTP
       - "127.0.0.1:9333:9333"   # Master status/UI
     volumes:
       - seaweedfs-data:/data
+      - ./docker/seaweedfs-s3-config.json:/etc/seaweedfs/s3-config.json:ro
     healthcheck:
       # The S3 endpoint returns 405 on empty GET, so probe the master instead —
       # /cluster/status returns 200 only once the whole server stack is up.
@@ -32,11 +36,10 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-  # Included so local dev matches the intended production topology. The indexer
-  # crate is a placeholder in M2/M3 — nothing calls Qdrant yet, but wiring will
-  # land in a future milestone.
+  # v1.15.2+ required for server-side `qdrant/bm25` sparse inference
+  # (see docs/CONFIGURATION.md §Qdrant).
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:v1.15.4
     container_name: notedthat-qdrant
     ports:
       - "127.0.0.1:6333:6333"   # HTTP
@@ -55,8 +58,8 @@ services:
     image: notedthat-server:local
     container_name: notedthat-server
     ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:${NOTEDTHAT_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${NOTEDTHAT_WEBDAV_PORT:-8081}:8081"
     environment:
       NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
       NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
@@ -71,6 +74,11 @@ services:
       NOTEDTHAT_WEBDAV_USERNAME: ${NOTEDTHAT_WEBDAV_USERNAME:-webdav-user-please-change}
       NOTEDTHAT_WEBDAV_PASSWORD: ${NOTEDTHAT_WEBDAV_PASSWORD:-webdav-pass-please-change}
       NOTEDTHAT_WEBDAV_LISTEN_ADDR: 0.0.0.0:8081
+      NOTEDTHAT_QDRANT_URL: http://qdrant:6334
+      EMBEDDING_ENDPOINT_URL: ${EMBEDDING_ENDPOINT_URL:?set in .env — see docs/CONFIGURATION.md}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:?set in .env — see docs/CONFIGURATION.md}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?set in .env — see docs/CONFIGURATION.md}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:?set in .env — see docs/CONFIGURATION.md}
     depends_on:
       seaweedfs:
         condition: service_healthy
