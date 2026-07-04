@@ -52,6 +52,42 @@ NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT
 Plan your container `terminationGracePeriodSeconds` (Kubernetes) or `stop_grace_period` (Docker
 Compose) accordingly — a value of at least 120 seconds is recommended.
 
+## WebDAV operational notes
+
+### WebDAV PROPFIND on large knowledge bases
+
+WebDAV `PROPFIND` on large knowledge bases walks the storage cursor server-side, making multiple paginated requests to the storage backend before returning a single `207 Multi-Status` response.
+
+**Reverse-proxy timeout:** For knowledge bases with more than 1 000 objects, set your reverse proxy's read timeout to at least 120 seconds:
+
+- **nginx:** `proxy_read_timeout 120s;`
+- **Traefik:** `readTimeout = "120s"` in the service configuration
+- **Caddy:** `read_timeout 120s` in the reverse proxy directive
+
+**v1 safety cap (`PROPFIND_MAX_ENTRIES = 10 000`):** To avoid memory exhaustion and proxy timeouts on very large knowledge bases, PROPFIND is capped at 10 000 objects per response. This is a hardcoded v1 operational hedge — it is not a correctness guarantee for knowledge bases larger than 10 000 objects.
+
+When a PROPFIND would return more than 10 000 objects, the server instead returns:
+
+```
+HTTP 507 Insufficient Storage
+Content-Type: application/xml; charset=utf-8
+
+<?xml version="1.0" encoding="utf-8"?>
+<D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error">
+  <nt:propfind-too-large/>
+</D:error>
+```
+
+The `<nt:propfind-too-large/>` element uses a custom XML namespace URI `urn:notedthat:error` (this is used as an XML namespace identifier only, not a formal IANA-registered URN per RFC 8141). This is compliant with RFC 4918 §17, which requires that new WebDAV condition elements live outside the `DAV:` namespace.
+
+When the cap is hit, the server also logs `PROPFIND_TRUNCATED` so operators are not silently surprised.
+
+**Recommended action for clients receiving 507:**
+- Split the knowledge base into smaller units (each under 10 000 objects), or
+- Use the HTTP cursor API (`GET /v1/knowledgebases/{kb_slug}?cursor=...`) for programmatic access to large knowledge bases.
+
+Post-v1 versions may raise or remove the cap.
+
 ## Example: local development with SeaweedFS
 
 Copy this block and export the variables in your shell, or save it as `.env` and load it with
