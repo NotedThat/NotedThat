@@ -23,6 +23,21 @@ use std::{
 
 use crate::{metadata::WebDavMetaData, state::WebDavState};
 
+/// Maximum number of objects returned by a single WebDAV PROPFIND in v1.
+///
+/// This is a hardcoded v1 safety hedge against memory and reverse-proxy timeout risk
+/// (KBs can have 1k–100k documents; unbounded enumeration would risk OOM and 60s proxy
+/// timeouts on large KBs). Clients that receive HTTP 507 should split their KB or wait
+/// for post-v1 server-side streaming. The cap does not guarantee correctness for KBs
+/// larger than 10,000 objects — such KBs must use the HTTP cursor API directly.
+pub(crate) const PROPFIND_MAX_ENTRIES: u32 = 10_000;
+
+/// Exact DAV XML body returned when a WebDAV PROPFIND exceeds the v1 object cap.
+pub(crate) const PROPFIND_TOO_LARGE_DAV_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error">
+  <nt:propfind-too-large/>
+</D:error>"#;
+
 /// Parsed target represented by a `DavPath`.
 #[derive(Debug, PartialEq)]
 pub(crate) enum DavTarget {
@@ -189,24 +204,81 @@ async fn list_entries(
     kb: KbSlug,
     prefix: Option<String>,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
-    let response = state
-        .storage
-        .list_objects(&kb, prefix.as_deref(), 1000, None)
-        .await
-        .map_err(|err| storage_error_to_fs(&err))?;
-
-    if response.truncated {
-        tracing::warn!(
-            kb = %kb,
-            prefix = prefix.as_deref().unwrap_or(""),
-            "PROPFIND_TRUNCATED"
-        );
-    }
+    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref()).await?;
+    let response = ListResponse {
+        objects,
+        truncated: false,
+        next_cursor: None,
+    };
 
     Ok(stream_entries(entries_from_list(
         response,
         prefix.as_deref(),
     )))
+}
+
+pub(crate) async fn ensure_propfind_target_within_cap(
+    state: &WebDavState,
+    target: &DavTarget,
+) -> FsResult<()> {
+    match target {
+        DavTarget::Root | DavTarget::NonDeclaredKb => Ok(()),
+        DavTarget::KbRoot(kb) => collect_propfind_objects(state, kb, None).await.map(|_| ()),
+        DavTarget::Object(kb, path) => match state
+            .storage
+            .head_object(kb, path, ConditionalHeaders::default())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) if err.is_not_found() => {
+                let prefix = format!("{}/", path.as_str());
+                collect_propfind_objects(state, kb, Some(&prefix))
+                    .await
+                    .map(|_| ())
+            }
+            Err(err) => Err(storage_error_to_fs(&err)),
+        },
+    }
+}
+
+async fn collect_propfind_objects(
+    state: &WebDavState,
+    kb: &KbSlug,
+    prefix: Option<&str>,
+) -> FsResult<Vec<ObjectMeta>> {
+    let mut all_objects = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let object_count = u32::try_from(all_objects.len()).unwrap_or(u32::MAX);
+        let remaining_cap = PROPFIND_MAX_ENTRIES.saturating_sub(object_count);
+        let page_limit = remaining_cap.saturating_add(1).min(1000);
+        let response = state
+            .storage
+            .list_objects(kb, prefix, page_limit, cursor.as_deref())
+            .await
+            .map_err(|err| storage_error_to_fs(&err))?;
+
+        for object in response.objects {
+            if all_objects.len() >= PROPFIND_MAX_ENTRIES as usize {
+                tracing::warn!(
+                    kb = %kb,
+                    prefix = prefix.unwrap_or(""),
+                    cap = PROPFIND_MAX_ENTRIES,
+                    "PROPFIND_TRUNCATED"
+                );
+                return Err(FsError::InsufficientStorage);
+            }
+            all_objects.push(object);
+        }
+
+        cursor = response.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    Ok(all_objects)
 }
 
 async fn metadata_for_object_or_prefix(
@@ -557,12 +629,17 @@ fn apply_seek_delta(base: u64, delta: i64) -> FsResult<u64> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Method, Request, StatusCode},
+    };
     use futures::TryStreamExt as _;
     use notedthat_core::{
         KbManifest, ObjectRead, PutOutcome, Storage, StorageError, storage::ListResponse,
     };
     use std::sync::Mutex;
     use tokio::sync::mpsc;
+    use tower::ServiceExt as _;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct ListCall {
@@ -572,10 +649,17 @@ mod tests {
         cursor: Option<String>,
     }
 
+    struct MockListPage {
+        cursor: Option<String>,
+        objects: Vec<ObjectMeta>,
+        next_cursor: Option<String>,
+    }
+
     #[derive(Default)]
     struct MockStorage {
         calls: Mutex<Vec<&'static str>>,
         list_calls: Mutex<Vec<ListCall>>,
+        pages: Mutex<Vec<MockListPage>>,
         objects: Mutex<Vec<ObjectMeta>>,
         truncated: bool,
         next_cursor: Option<String>,
@@ -587,6 +671,13 @@ mod tests {
         fn with_objects(objects: Vec<ObjectMeta>) -> Self {
             Self {
                 objects: Mutex::new(objects),
+                ..Self::default()
+            }
+        }
+
+        fn with_pages(pages: Vec<MockListPage>) -> Self {
+            Self {
+                pages: Mutex::new(pages),
                 ..Self::default()
             }
         }
@@ -699,6 +790,20 @@ mod tests {
                     limit,
                     cursor: cursor.map(str::to_string),
                 });
+            if let Some(page) = self
+                .pages
+                .lock()
+                .expect("mutex not poisoned")
+                .iter()
+                .find(|page| page.cursor.as_deref() == cursor)
+            {
+                return Ok(ListResponse {
+                    objects: page.objects.clone(),
+                    truncated: page.next_cursor.is_some(),
+                    next_cursor: page.next_cursor.clone(),
+                });
+            }
+
             Ok(ListResponse {
                 objects: self.objects.lock().expect("mutex not poisoned").clone(),
                 truncated: self.truncated,
@@ -732,6 +837,28 @@ mod tests {
         }
     }
 
+    fn object_metas(count: usize) -> Vec<ObjectMeta> {
+        (0..count)
+            .map(|index| object_meta(&format!("file-{index:05}.md")))
+            .collect()
+    }
+
+    fn propfind_pages(total: usize) -> Vec<MockListPage> {
+        object_metas(total)
+            .chunks(1000)
+            .enumerate()
+            .map(|(index, chunk)| {
+                let next_index = index + 1;
+                let next_cursor = (next_index * 1000 < total).then(|| format!("page-{next_index}"));
+                MockListPage {
+                    cursor: (index > 0).then(|| format!("page-{index}")),
+                    objects: chunk.to_vec(),
+                    next_cursor,
+                }
+            })
+            .collect()
+    }
+
     fn test_state(
         storage: Arc<dyn Storage>,
         declared_kbs: BTreeMap<String, KbSlug>,
@@ -752,6 +879,18 @@ mod tests {
 
     fn dav_path(value: &str) -> DavPath {
         DavPath::new(value).expect("valid DAV path")
+    }
+
+    fn propfind_request(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
+            .uri(uri)
+            .header("Authorization", "Basic dXNlcjpwYXNz")
+            .header("Depth", "1")
+            .body(Body::from(
+                r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#,
+            ))
+            .expect("valid PROPFIND request")
     }
 
     fn entry_names(entries: Vec<Box<dyn DavDirEntry>>) -> Vec<String> {
@@ -900,6 +1039,80 @@ mod tests {
             }]
         );
         assert_eq!(entry_names(entries), vec!["bravo.md"]);
+    }
+
+    #[tokio::test]
+    async fn propfind_walks_cursor_pages() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1500)));
+        let fs = test_filesystem(storage.clone(), &["notes"]);
+
+        let entries = fs
+            .read_dir(&dav_path("/notes"), ReadDirMeta::None)
+            .await
+            .expect("KB root read_dir succeeds")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("stream succeeds");
+
+        assert_eq!(entries.len(), 1500);
+        assert_eq!(
+            storage.list_calls(),
+            vec![
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: None,
+                    limit: 1000,
+                    cursor: None,
+                },
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: None,
+                    limit: 1000,
+                    cursor: Some("page-1".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn propfind_exactly_10000_returns_207() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_000)));
+        let state = test_state(storage, declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request("/notes/"))
+            .await
+            .expect("PROPFIND request succeeds");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
+
+        assert_eq!(status, StatusCode::MULTI_STATUS);
+        assert_eq!(body.matches("<D:response>").count(), 10_001);
+        assert!(body.contains("file-09999.md"));
+    }
+
+    #[tokio::test]
+    async fn propfind_over_10000_returns_507() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_001)));
+        let state = test_state(storage, declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request("/notes/"))
+            .await
+            .expect("PROPFIND request succeeds");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
+
+        assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(body, PROPFIND_TOO_LARGE_DAV_XML);
     }
 
     #[tokio::test]
