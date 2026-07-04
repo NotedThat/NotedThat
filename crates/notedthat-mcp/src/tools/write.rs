@@ -141,4 +141,31 @@ mod tests {
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
     }
+
+    #[tokio::test]
+    async fn nested_path_is_encoded_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .insert_header("ETag", "\"abc123\"")
+                    .insert_header("Location", "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = WriteArgs {
+            kb: "notes".into(),
+            path: "docs/rfc/7231.md".into(),
+            content: "# RFC 7231".into(),
+            if_match: None,
+            if_none_match: None,
+            mime_type: Some("text/markdown".into()),
+        };
+        let result = run(&c, args).await.unwrap();
+        assert!(!result.content.is_empty());
+        server.verify().await;
+    }
 }

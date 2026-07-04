@@ -189,4 +189,47 @@ mod tests {
         assert!(msg.contains("b.md"), "message: {msg}");
         assert!(!msg.contains("SECRET_REQ"), "request_id leaked: {msg}");
     }
+
+    #[tokio::test]
+    async fn nested_from_and_to_paths_are_encoded_once() {
+        let server = MockServer::start().await;
+        // GET source: from = "docs/rfc/7231.md" → encoded once as docs%2Frfc%2F7231.md
+        Mock::given(method("GET"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/markdown")
+                    .insert_header("ETag", "\"etag1\"")
+                    .set_body_bytes(b"# RFC 7231".to_vec()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        // PUT destination: to = "archive/rfc/7231.md" → encoded once as archive%2Frfc%2F7231.md
+        Mock::given(method("PUT"))
+            .and(path("/v1/knowledgebases/notes/archive%2Frfc%2F7231.md"))
+            .respond_with(
+                ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        // DELETE source: from = "docs/rfc/7231.md" → encoded once as docs%2Frfc%2F7231.md
+        Mock::given(method("DELETE"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = MoveArgs {
+            kb: "notes".into(),
+            from: "docs/rfc/7231.md".into(),
+            to: "archive/rfc/7231.md".into(),
+            if_match: None,
+        };
+        let result = run(&c, args).await.unwrap();
+        assert!(!result.content.is_empty());
+        server.verify().await;
+    }
 }
