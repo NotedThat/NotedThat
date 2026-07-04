@@ -79,4 +79,24 @@ mod tests {
         };
         assert!(run(&c, args).await.is_err());
     }
+
+    #[tokio::test]
+    async fn nested_path_is_encoded_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = DeleteArgs {
+            kb: "notes".into(),
+            path: "docs/rfc/7231.md".into(),
+            if_match: Some("\"etag1\"".into()),
+        };
+        let result = run(&c, args).await.unwrap();
+        assert!(!result.content.is_empty());
+        server.verify().await;
+    }
 }

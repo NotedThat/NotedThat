@@ -170,4 +170,25 @@ mod tests {
         let _ = run(&c, args).await;
         server.verify().await; // FAILS before fix (mock not matched), PASSES after fix
     }
+
+    #[tokio::test]
+    async fn nested_path_is_encoded_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# RFC 7231"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = ReadArgs {
+            kb: "notes".into(),
+            path: "docs/rfc/7231.md".into(),
+            byte_start: None,
+            byte_end: None,
+        };
+        let result = run(&c, args).await.unwrap();
+        assert!(!result.content.is_empty());
+        server.verify().await;
+    }
 }
