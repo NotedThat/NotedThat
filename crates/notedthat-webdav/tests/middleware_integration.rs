@@ -102,10 +102,12 @@ impl Storage for MockStorage {
         _kb: &KbSlug,
         _prefix: Option<&str>,
         _limit: u32,
+        _cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError> {
         Ok(ListResponse {
             objects: vec![],
             truncated: false,
+            next_cursor: None,
         })
     }
 }

@@ -266,6 +266,7 @@ mod tests {
             _kb: &KbSlug,
             _prefix: Option<&str>,
             _limit: u32,
+            _cursor: Option<&str>,
         ) -> Result<ListResponse, StorageError> {
             Err(unavailable())
         }
