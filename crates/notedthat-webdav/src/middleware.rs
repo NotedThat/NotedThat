@@ -203,7 +203,7 @@ fn parse_uri_path(
 
 fn dav_error_body(condition: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:"><D:{condition}/></D:error>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error"><nt:{condition}/></D:error>"#
     )
 }
 
