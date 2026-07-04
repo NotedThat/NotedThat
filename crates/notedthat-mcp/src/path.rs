@@ -6,7 +6,7 @@
 //! We encode everything except RFC 3986 §2.3 unreserved characters:
 //! `A-Z a-z 0-9 - . _ ~`
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 /// Characters to percent-encode in object paths.
 ///
@@ -92,7 +92,10 @@ mod tests {
 
     #[test]
     fn multisegment_path_slashes_encoded() {
-        assert_eq!(encode_object_path("docs/rfc/7231.md"), "docs%2Frfc%2F7231.md");
+        assert_eq!(
+            encode_object_path("docs/rfc/7231.md"),
+            "docs%2Frfc%2F7231.md"
+        );
     }
 
     #[test]

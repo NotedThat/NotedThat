@@ -449,7 +449,9 @@ impl Storage for S3Storage {
             resp.next_continuation_token().map(str::to_string)
         } else {
             if resp.next_continuation_token().is_some() {
-                tracing::warn!("backend returned NextContinuationToken with is_truncated=false; ignoring");
+                tracing::warn!(
+                    "backend returned NextContinuationToken with is_truncated=false; ignoring"
+                );
             }
             None
         };
@@ -476,7 +478,11 @@ impl Storage for S3Storage {
             })
             .collect();
 
-        Ok(ListResponse { objects, truncated, next_cursor })
+        Ok(ListResponse {
+            objects,
+            truncated,
+            next_cursor,
+        })
     }
 }
 

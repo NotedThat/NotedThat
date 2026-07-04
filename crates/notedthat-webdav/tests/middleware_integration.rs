@@ -396,7 +396,7 @@ async fn move_with_cross_kb_destination_returns_403() {
     let body = body_string(resp).await;
     assert!(
         body.contains("cannot-modify-source"),
-        "expected <D:cannot-modify-source/> in body, got: {body}"
+        "expected <nt:cannot-modify-source/> in body, got: {body}"
     );
 }
 
@@ -433,7 +433,7 @@ async fn move_cross_server_returns_502() {
     let body = body_string(resp).await;
     assert!(
         body.contains("destination-different-server"),
-        "expected <D:destination-different-server/> in body, got: {body}"
+        "expected <nt:destination-different-server/> in body, got: {body}"
     );
 }
 

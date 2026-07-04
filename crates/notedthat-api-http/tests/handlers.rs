@@ -1866,7 +1866,13 @@ async fn list_route_cursor_round_trip() {
     let a = app();
     for i in 0..5 {
         assert_eq!(
-            put_text(a.clone(), KB, &format!("cursor-p{i}.md"), &format!("body {i}")).await,
+            put_text(
+                a.clone(),
+                KB,
+                &format!("cursor-p{i}.md"),
+                &format!("body {i}")
+            )
+            .await,
             StatusCode::CREATED
         );
     }
@@ -1896,7 +1902,11 @@ async fn list_route_cursor_round_trip() {
         }
     };
 
-    assert_eq!(all_keys.len(), 5, "expected 5 total objects across all pages");
+    assert_eq!(
+        all_keys.len(),
+        5,
+        "expected 5 total objects across all pages"
+    );
     assert!(
         last["next_cursor"].is_null(),
         "last page must have next_cursor: null, got: {:?}",
@@ -1918,8 +1928,7 @@ async fn list_route_invalid_cursor_is_503() {
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let json = response_json(resp).await;
     assert_eq!(
-        json["error"],
-        "backend_unavailable",
+        json["error"], "backend_unavailable",
         "error field must be 'backend_unavailable', got: {json:?}"
     );
     assert!(

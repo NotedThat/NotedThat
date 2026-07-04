@@ -74,9 +74,9 @@ impl NotedThatClient {
     pub(crate) fn v1_url(&self, path_segments: &[&str]) -> Url {
         let mut url = self.base_url.clone();
         {
-        let mut segments = url
-            .path_segments_mut()
-            .unwrap_or_else(|()| unreachable!("validated http/https URL always supports path segments"));
+            let mut segments = url.path_segments_mut().unwrap_or_else(|()| {
+                unreachable!("validated http/https URL always supports path segments")
+            });
             segments.push("v1");
             for seg in path_segments {
                 segments.push(seg);
@@ -163,8 +163,7 @@ mod tests {
         let u = c.v1_url(&["knowledgebases", "notes", "docs/rfc/7231.md"]);
         let path = u.path();
         assert_eq!(
-            path,
-            "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
+            path, "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
             "raw nested path should be encoded exactly once"
         );
         assert!(

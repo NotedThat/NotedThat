@@ -33,14 +33,22 @@ fn stdout_is_pure_json_rpc() {
 
     // Read response with timeout
     let mut line = String::new();
-    reader.read_line(&mut line).expect("failed to read line from stdout");
+    reader
+        .read_line(&mut line)
+        .expect("failed to read line from stdout");
 
     // Verify it's valid JSON-RPC 2.0
-    assert!(!line.trim().is_empty(), "stdout must not be empty after initialize");
+    assert!(
+        !line.trim().is_empty(),
+        "stdout must not be empty after initialize"
+    );
     let json: serde_json::Value = serde_json::from_str(line.trim())
         .unwrap_or_else(|_| panic!("stdout must be valid JSON, got: {line:?}"));
-    assert_eq!(json.get("jsonrpc").and_then(|v| v.as_str()), Some("2.0"),
-        "must be JSON-RPC 2.0: {json}");
+    assert_eq!(
+        json.get("jsonrpc").and_then(|v| v.as_str()),
+        Some("2.0"),
+        "must be JSON-RPC 2.0: {json}"
+    );
 
     // Clean up
     drop(stdin);

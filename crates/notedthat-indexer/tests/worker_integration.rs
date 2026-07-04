@@ -186,7 +186,11 @@ impl Storage for MockStorage {
             })
             .collect();
         let truncated = objects.len() == limit as usize;
-        Ok(ListResponse { objects, truncated, next_cursor: None })
+        Ok(ListResponse {
+            objects,
+            truncated,
+            next_cursor: None,
+        })
     }
 }
 
