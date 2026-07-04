@@ -530,6 +530,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_cursor_collects_1500_without_duplicates() {
+        let storage = InMemoryStorage::default();
+        let kb = KbSlug::try_new("test").expect("valid slug");
+        // Seed 1500 objects with lexicographically-sortable keys
+        for i in 0..1500u32 {
+            let path = ObjectPath::try_from_str(&format!("doc-{i:04}.md")).expect("valid path");
+            storage
+                .put_object(
+                    &kb,
+                    &path,
+                    bytes::Bytes::from_static(b"content"),
+                    Some("text/markdown"),
+                    ConditionalHeaders::default(),
+                )
+                .await
+                .expect("put succeeded");
+        }
+        // Loop using cursor API until exhausted
+        let mut all_keys: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut call_count = 0usize;
+        loop {
+            let resp = storage
+                .list_objects(&kb, None, 100, cursor.as_deref())
+                .await
+                .expect("list succeeded");
+            call_count += 1;
+            all_keys.extend(resp.objects.iter().map(|o| o.key.clone()));
+            cursor = resp.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        // AC1: total unique keys == 1500 and call count == 15
+        assert_eq!(call_count, 15, "expected exactly 15 paginated calls");
+        assert_eq!(all_keys.len(), 1500, "expected 1500 total keys collected");
+        // AC2: collected order equals sorted order
+        let mut sorted_keys = all_keys.clone();
+        sorted_keys.sort();
+        assert_eq!(all_keys, sorted_keys, "keys must be in lexicographic order");
+        // AC3: no duplicates
+        use std::collections::HashSet;
+        let unique: HashSet<_> = all_keys.iter().collect();
+        assert_eq!(unique.len(), 1500, "no duplicate keys across pages");
+        // AC4: the loop exited because next_cursor was None (not truncated=false workaround)
+        // (call_count == 15 with 1500/100 pages satisfies this)
+    }
+
+    #[tokio::test]
     async fn etag_deterministic() {
         let storage = InMemoryStorage::default();
         let kb = kb();
