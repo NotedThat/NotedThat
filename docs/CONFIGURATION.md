@@ -208,3 +208,16 @@ Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.
 
 See [SPECIFICATIONS.md](../SPECIFICATIONS.md) §6.4 (embeddings), §6.11 (startup provisioning), §6.12 (indexing queue) for full details.
+
+---
+
+## MCP stdio client (`notedthat-mcp-stdio`)
+
+The `notedthat-mcp-stdio` binary is configured exclusively via environment variables. It refuses to start if either variable is missing, empty (after trimming whitespace), or if `NOTEDTHAT_URL` is not a valid http/https URL.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NOTEDTHAT_URL` | Yes | HTTP base URL of the running `notedthat-server` (e.g., `http://localhost:8080`). Trailing slash is stripped automatically. |
+| `NOTEDTHAT_TOKEN` | Yes | Bearer token matching the server's `NOTEDTHAT_API_TOKEN`. Whitespace is trimmed; empty-after-trim is rejected. |
+
+Note: `NOTEDTHAT_TOKEN` (MCP client) is distinct from the server-side `NOTEDTHAT_API_TOKEN`. The MCP client sends `NOTEDTHAT_TOKEN` as a `Bearer` header to the server, which validates it against `NOTEDTHAT_API_TOKEN`.
