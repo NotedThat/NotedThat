@@ -1,6 +1,6 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::{encode_kb_slug, encode_object_path};
+use crate::path::encode_kb_slug;
 use rmcp::{ErrorData as McpError, model::{CallToolResult, ContentBlock}};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -18,10 +18,8 @@ pub(super) async fn run(
     args: MoveArgs,
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
-    let from_enc = encode_object_path(&args.from);
-    let to_enc = encode_object_path(&args.to);
-
-    let get_url = client.v1_url(&["knowledgebases", &kb_enc, &from_enc]);
+    // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
+    let get_url = client.v1_url(&["knowledgebases", &kb_enc, &args.from]);
     let mut get_req = client.authorized(client.http.get(get_url));
     if let Some(ref if_match) = args.if_match {
         get_req = get_req.header("If-Match", if_match.as_str());
@@ -45,7 +43,7 @@ pub(super) async fn run(
         .map_err(McpToolError::Transport)
         .map_err(McpError::from)?;
 
-    let put_url = client.v1_url(&["knowledgebases", &kb_enc, &to_enc]);
+    let put_url = client.v1_url(&["knowledgebases", &kb_enc, &args.to]);
     let mut put_req = client.authorized(client.http.put(put_url)).body(body_bytes);
     if let Some(ct) = content_type {
         put_req = put_req.header("Content-Type", ct);
@@ -53,7 +51,7 @@ pub(super) async fn run(
     let put_resp = put_req.send().await.map_err(McpToolError::Transport)?;
     map_response(put_resp).await.map_err(McpError::from)?;
 
-    let del_url = client.v1_url(&["knowledgebases", &kb_enc, &from_enc]);
+    let del_url = client.v1_url(&["knowledgebases", &kb_enc, &args.from]);
     let mut del_req = client.authorized(client.http.delete(del_url));
     if let Some(etag) = source_etag {
         del_req = del_req.header("If-Match", etag);

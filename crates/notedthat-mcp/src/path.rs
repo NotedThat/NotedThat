@@ -56,6 +56,12 @@ pub const OBJECT_PATH_ENCODE: &AsciiSet = &CONTROLS
 /// (`A-Z a-z 0-9 - . _ ~`). This means `/` within the path IS encoded
 /// to `%2F`, preserving the full path as a single URL segment.
 ///
+/// # Warning
+/// Do **NOT** pass the output of this function to [`crate::client::NotedThatClient::v1_url`].
+/// `v1_url` uses `url::Url::path_segments_mut().push()` which percent-encodes its input,
+/// so composing the two will double-encode `%` → `%25` (e.g. `%2F` → `%252F`).
+/// Use this function only for manual URL string construction outside of `v1_url`.
+///
 /// # Example
 /// ```
 /// use notedthat_mcp::path::encode_object_path;
