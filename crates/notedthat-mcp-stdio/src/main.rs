@@ -1,4 +1,4 @@
-//! `notedthat-mcp-stdio`: MCP-over-stdio transport for NotedThat.
+//! `notedthat-mcp-stdio`: MCP-over-stdio transport for `NotedThat`.
 //!
 //! Reads `NOTEDTHAT_URL` and `NOTEDTHAT_TOKEN` from the environment,
 //! validates them, and serves MCP tools over stdio JSON-RPC.
