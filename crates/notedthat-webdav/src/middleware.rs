@@ -11,6 +11,7 @@ use notedthat_core::{
     ConditionalHeaders, KbSlug, ObjectPath, StorageError, extract_basic_from_header,
     verify_basic_credentials,
 };
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use tower_http::request_id::RequestId;
 
@@ -138,11 +139,18 @@ pub async fn intercept_write_methods(
     }
 }
 
+fn decode_uri_path(uri_path: &str) -> Result<Cow<'_, str>, ()> {
+    percent_encoding::percent_decode_str(uri_path)
+        .decode_utf8()
+        .map_err(|_| ())
+}
+
 fn parse_uri_path(
     uri_path: &str,
     declared_kbs: &BTreeMap<String, KbSlug>,
 ) -> Result<DavTarget, ()> {
-    let stripped = uri_path.trim_start_matches('/');
+    let decoded = decode_uri_path(uri_path)?;
+    let stripped = decoded.trim_start_matches('/');
     if stripped.is_empty() {
         return Ok(DavTarget::Root);
     }
@@ -1386,6 +1394,189 @@ mod intercept_write_methods {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::FORBIDDEN);
             assert!(response_body(resp).await.contains("no-collection-move"));
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_stores_decoded_key() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/Untitled%201.canvas")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            // The key should be stored DECODED as "Untitled 1.canvas", not encoded as "Untitled%201.canvas"
+            assert!(
+                storage.get_stored("notes", "Untitled 1.canvas").is_some(),
+                "expected decoded key 'Untitled 1.canvas' to be stored"
+            );
+            assert!(
+                storage.get_stored("notes", "Untitled%201.canvas").is_none(),
+                "encoded key 'Untitled%201.canvas' must not be stored"
+            );
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_multi_segment() {
+            // Multi-segment path with percent-encoded directory name proves decode-before-split:
+            // %20 in "my%20folder" must be decoded before the path is split on '/'
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/my%20folder/notes.md")
+                        .header("content-type", "text/markdown")
+                        .body(Body::from("# Notes"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            assert!(
+                storage.get_stored("notes", "my folder/notes.md").is_some(),
+                "expected decoded multi-segment key 'my folder/notes.md'"
+            );
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_unicode() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/%E6%97%A5%E6%9C%AC%E8%AA%9E.md")
+                        .header("content-type", "text/markdown")
+                        .body(Body::from("# Japanese"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            assert!(
+                storage.get_stored("notes", "日本語.md").is_some(),
+                "expected decoded unicode key '日本語.md'"
+            );
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_reserved_chars() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/file%23with%3Fchars.md")
+                        .header("content-type", "text/markdown")
+                        .body(Body::from("# Reserved"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            assert!(
+                storage.get_stored("notes", "file#with?chars.md").is_some(),
+                "expected decoded key 'file#with?chars.md'"
+            );
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_non_utf8_returns_400() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/%FF%FE.md")
+                        .header("content-type", "text/markdown")
+                        .body(Body::from("# Bad"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            // Non-UTF-8 percent sequences must be rejected with 400
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            // Consistent with existing write-method 400s: no x-request-id header
+            assert!(
+                resp.headers().get("x-request-id").is_none(),
+                "write-method 400 must not include x-request-id"
+            );
+            // Nothing was stored
+            assert!(storage.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn encoded_destination_move_decodes_key() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert(
+                "notes",
+                "source.md",
+                Bytes::from_static(b"source content"),
+                "\"etag-source\"",
+            );
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("MOVE")
+                        .uri("/notes/source.md")
+                        .header("destination", "/notes/renamed%20file.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            // Destination key must be decoded
+            assert!(
+                storage.get_stored("notes", "renamed file.md").is_some(),
+                "expected decoded destination key 'renamed file.md'"
+            );
+            // Source must be gone (MOVE deletes source)
+            assert!(
+                storage.get_stored("notes", "source.md").is_none(),
+                "MOVE source should be deleted"
+            );
+        }
+
+        #[tokio::test]
+        async fn encoded_destination_copy_decodes_key() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert(
+                "notes",
+                "source.md",
+                Bytes::from_static(b"source content"),
+                "\"etag-source\"",
+            );
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("COPY")
+                        .uri("/notes/source.md")
+                        .header("destination", "/notes/renamed%20file.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            // Destination key must be decoded
+            assert!(
+                storage.get_stored("notes", "renamed file.md").is_some(),
+                "expected decoded destination key 'renamed file.md'"
+            );
+            // Source must still exist (COPY keeps source)
+            assert!(
+                storage.get_stored("notes", "source.md").is_some(),
+                "COPY source should still exist"
+            );
         }
     }
 }
