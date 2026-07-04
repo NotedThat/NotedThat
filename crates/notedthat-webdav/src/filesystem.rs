@@ -191,7 +191,7 @@ async fn list_entries(
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
     let response = state
         .storage
-        .list_objects(&kb, prefix.as_deref(), 1000)
+        .list_objects(&kb, prefix.as_deref(), 1000, None)
         .await
         .map_err(|err| storage_error_to_fs(&err))?;
 
@@ -224,7 +224,7 @@ async fn metadata_for_object_or_prefix(
             let prefix = format!("{}/", path.as_str());
             let response = state
                 .storage
-                .list_objects(&kb, Some(&prefix), 1)
+                .list_objects(&kb, Some(&prefix), 1, None)
                 .await
                 .map_err(|err| storage_error_to_fs(&err))?;
             if response.objects.is_empty() {
@@ -869,6 +869,7 @@ mod tests {
                 kb: "notes".to_string(),
                 prefix: None,
                 limit: 1000,
+                cursor: None,
             }]
         );
         assert_eq!(entry_names(entries), vec!["folder", "alpha.md"]);
@@ -895,6 +896,7 @@ mod tests {
                 kb: "notes".to_string(),
                 prefix: Some("hello world/".to_string()),
                 limit: 1000,
+                cursor: None,
             }]
         );
         assert_eq!(entry_names(entries), vec!["bravo.md"]);
@@ -920,6 +922,7 @@ mod tests {
                 kb: "notes".to_string(),
                 prefix: Some("folder/".to_string()),
                 limit: 1,
+                cursor: None,
             }]
         );
     }

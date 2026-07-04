@@ -515,6 +515,7 @@ mod basic_auth {
                 _kb: &KbSlug,
                 _prefix: Option<&str>,
                 _limit: u32,
+                _cursor: Option<&str>,
             ) -> Result<ListResponse, StorageError> {
                 Err(unavailable())
             }
@@ -1004,6 +1005,7 @@ mod intercept_write_methods {
                 _kb: &KbSlug,
                 _prefix: Option<&str>,
                 _limit: u32,
+                _cursor: Option<&str>,
             ) -> Result<ListResponse, StorageError> {
                 Err(unavailable())
             }
