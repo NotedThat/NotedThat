@@ -344,7 +344,10 @@ impl Storage for InMemoryStorage {
                 });
             }
             // Skip everything up to and including the cursor key
-            let cursor_pos = matching.iter().position(|obj| obj.key == cursor_key).unwrap();
+            let cursor_pos = matching
+                .iter()
+                .position(|obj| obj.key == cursor_key)
+                .unwrap();
             matching = matching.split_off(cursor_pos + 1);
         }
 

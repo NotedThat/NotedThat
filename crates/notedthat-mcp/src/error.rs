@@ -47,9 +47,11 @@ impl From<McpToolError> for ErrorData {
             McpToolError::Unauthorized => {
                 ErrorData::new(ErrorCode::INVALID_PARAMS, "unauthorized", None)
             }
-            McpToolError::NotFound(msg) => {
-                ErrorData::new(ErrorCode::RESOURCE_NOT_FOUND, format!("not_found: {msg}"), None)
-            }
+            McpToolError::NotFound(msg) => ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!("not_found: {msg}"),
+                None,
+            ),
             McpToolError::PreconditionFailed => {
                 ErrorData::new(ErrorCode::INVALID_PARAMS, "precondition_failed", None)
             }
@@ -65,12 +67,16 @@ impl From<McpToolError> for ErrorData {
             McpToolError::InternalError(msg) => {
                 ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None)
             }
-            McpToolError::Transport(e) => {
-                ErrorData::new(ErrorCode::INTERNAL_ERROR, format!("transport error: {e}"), None)
-            }
-            McpToolError::Serialization(e) => {
-                ErrorData::new(ErrorCode::INTERNAL_ERROR, format!("serialization error: {e}"), None)
-            }
+            McpToolError::Transport(e) => ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("transport error: {e}"),
+                None,
+            ),
+            McpToolError::Serialization(e) => ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("serialization error: {e}"),
+                None,
+            ),
         }
     }
 }
@@ -124,7 +130,7 @@ pub(crate) async fn map_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     #[test]
     fn all_error_variants_convert_to_error_data() {
@@ -149,8 +155,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(
-                ResponseTemplate::new(416)
-                    .insert_header("Content-Range", "bytes */1000"),
+                ResponseTemplate::new(416).insert_header("Content-Range", "bytes */1000"),
                 // IMPORTANT: no body set — this proves we don't try to read one
             )
             .mount(&server)
@@ -174,14 +179,11 @@ mod tests {
     async fn request_id_dropped_from_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(404)
-                    .set_body_json(serde_json::json!({
-                        "error": "not_found",
-                        "message": "kb x missing",
-                        "request_id": "REQ_ABC_SECRET"
-                    })),
-            )
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "not_found",
+                "message": "kb x missing",
+                "request_id": "REQ_ABC_SECRET"
+            })))
             .mount(&server)
             .await;
 
@@ -233,8 +235,7 @@ mod tests {
 
             Mock::given(method("GET"))
                 .respond_with(if *status == 416 {
-                    ResponseTemplate::new(*status)
-                        .insert_header("Content-Range", "bytes */100")
+                    ResponseTemplate::new(*status).insert_header("Content-Range", "bytes */100")
                 } else {
                     ResponseTemplate::new(*status).set_body_string(body)
                 })

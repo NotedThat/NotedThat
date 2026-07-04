@@ -315,9 +315,18 @@ async fn mcp_initialize_returns_valid_response() {
 
     let resp = mcp_initialize(&mut stdin, &mut stdout);
     let result = resp.get("result").expect("expected result field");
-    assert!(result.get("protocolVersion").is_some(), "missing protocolVersion: {result}");
-    assert!(result.get("capabilities").is_some(), "missing capabilities: {result}");
-    assert!(result.get("serverInfo").is_some(), "missing serverInfo: {result}");
+    assert!(
+        result.get("protocolVersion").is_some(),
+        "missing protocolVersion: {result}"
+    );
+    assert!(
+        result.get("capabilities").is_some(),
+        "missing capabilities: {result}"
+    );
+    assert!(
+        result.get("serverInfo").is_some(),
+        "missing serverInfo: {result}"
+    );
 
     drop(stdin);
     if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
@@ -341,7 +350,12 @@ async fn mcp_tools_list_returns_all_seven() {
         "method": "notifications/initialized",
         "params": {}
     });
-    writeln!(&mut stdin, "{}", serde_json::to_string(&notification).unwrap()).unwrap();
+    writeln!(
+        &mut stdin,
+        "{}",
+        serde_json::to_string(&notification).unwrap()
+    )
+    .unwrap();
     stdin.flush().unwrap();
 
     // Request tools/list
@@ -355,7 +369,13 @@ async fn mcp_tools_list_returns_all_seven() {
         .expect("expected result.tools array");
 
     let expected_tools: std::collections::HashSet<&str> = [
-        "list_knowledgebases", "search", "read", "write", "list", "delete", "move",
+        "list_knowledgebases",
+        "search",
+        "read",
+        "write",
+        "list",
+        "delete",
+        "move",
     ]
     .iter()
     .copied()
@@ -366,13 +386,21 @@ async fn mcp_tools_list_returns_all_seven() {
         .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
         .collect();
 
-    assert_eq!(tools.len(), 7, "expected exactly 7 tools, got {}: {actual_tools:?}", tools.len());
+    assert_eq!(
+        tools.len(),
+        7,
+        "expected exactly 7 tools, got {}: {actual_tools:?}",
+        tools.len()
+    );
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");
 
     // Verify each tool has an inputSchema
     for tool in tools {
         let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-        assert!(tool.get("inputSchema").is_some(), "tool {name} missing inputSchema");
+        assert!(
+            tool.get("inputSchema").is_some(),
+            "tool {name} missing inputSchema"
+        );
     }
 
     drop(stdin);
@@ -421,8 +449,7 @@ fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>)
 #[allow(clippy::too_many_lines)]
 async fn mcp_write_list_read_delete() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
     mcp_session_init(&mut stdin, &mut stdout);
 
     // 1. Write a note.
@@ -457,8 +484,7 @@ async fn mcp_write_list_read_delete() {
     let list_text = list_resp["result"]["content"][0]["text"]
         .as_str()
         .expect("list content[0].text");
-    let list_val: serde_json::Value =
-        serde_json::from_str(list_text).expect("list response JSON");
+    let list_val: serde_json::Value = serde_json::from_str(list_text).expect("list response JSON");
     let objects = list_val["objects"].as_array().expect("objects array");
     assert!(
         objects
@@ -554,8 +580,7 @@ async fn mcp_write_list_read_delete() {
 #[ignore = "requires docker-compose stack"]
 async fn mcp_move_happy() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
     mcp_session_init(&mut stdin, &mut stdout);
 
     // 1. Write source note.
@@ -656,8 +681,7 @@ async fn mcp_move_happy() {
 #[ignore = "requires docker-compose stack"]
 async fn mcp_read_missing() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
     mcp_session_init(&mut stdin, &mut stdout);
 
     let resp = mcp_call_tool(
@@ -691,8 +715,7 @@ async fn mcp_read_missing() {
 #[ignore = "requires docker-compose stack"]
 async fn mcp_write_precondition() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
     mcp_session_init(&mut stdin, &mut stdout);
 
     // 1. Initial write — capture the returned etag.
@@ -716,7 +739,10 @@ async fn mcp_write_precondition() {
         .expect("write result content[0].text");
     let result_val: serde_json::Value =
         serde_json::from_str(result_text).expect("write result JSON");
-    let etag = result_val["etag"].as_str().unwrap_or("\"initial\"").to_string();
+    let etag = result_val["etag"]
+        .as_str()
+        .unwrap_or("\"initial\"")
+        .to_string();
 
     // 2. Write again with a deliberately wrong If-Match → precondition_failed.
     let wrong_etag = format!("{etag}-wrong");
@@ -763,8 +789,7 @@ async fn mcp_write_precondition() {
 async fn mcp_bad_token() {
     let fixture = start_notedthat_server_fixture().await;
     // Intentionally pass a wrong token — every tool call should be rejected.
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio(&fixture.http_url, "wrong-token");
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, "wrong-token");
     mcp_session_init(&mut stdin, &mut stdout);
 
     let resp = mcp_call_tool(
@@ -819,8 +844,7 @@ async fn mcp_shutdown_returns_clean_exit() {
 #[tokio::test]
 #[ignore = "subprocess test"]
 async fn mcp_stdin_close_causes_exit() {
-    let (mut child, stdin, _stdout) =
-        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+    let (mut child, stdin, _stdout) = spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
 
     // Close stdin immediately (EOF)
     drop(stdin);

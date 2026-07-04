@@ -15,7 +15,10 @@ fn missing_url_exits_nonzero() {
         .unwrap();
     assert!(!output.status.success(), "should exit non-zero");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("NOTEDTHAT_URL"), "stderr must mention var: {stderr}");
+    assert!(
+        stderr.contains("NOTEDTHAT_URL"),
+        "stderr must mention var: {stderr}"
+    );
     assert!(output.stdout.is_empty(), "stdout must be empty");
 }
 
@@ -28,7 +31,10 @@ fn empty_url_exits_nonzero() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("NOTEDTHAT_URL"), "stderr must mention var: {stderr}");
+    assert!(
+        stderr.contains("NOTEDTHAT_URL"),
+        "stderr must mention var: {stderr}"
+    );
     assert!(output.stdout.is_empty());
 }
 
@@ -41,7 +47,10 @@ fn whitespace_token_exits_nonzero() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("NOTEDTHAT_TOKEN"), "stderr must mention var: {stderr}");
+    assert!(
+        stderr.contains("NOTEDTHAT_TOKEN"),
+        "stderr must mention var: {stderr}"
+    );
     assert!(output.stdout.is_empty());
 }
 

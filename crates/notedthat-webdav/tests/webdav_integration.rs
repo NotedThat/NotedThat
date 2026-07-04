@@ -728,7 +728,7 @@ async fn test_single_object_copy_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
-// 17. MOVE of KB root (collection) returns 403 + <D:no-collection-move/>
+// 17. MOVE of KB root (collection) returns 403 + <nt:no-collection-move/>
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -751,14 +751,14 @@ async fn test_collection_move_returns_403_no_collection_move() {
     let body = resp.text().await.expect("body text");
     assert!(
         body.contains("no-collection-move"),
-        "XML error must contain <D:no-collection-move/>; body: {body}"
+        "XML error must contain <nt:no-collection-move/>; body: {body}"
     );
 
     handle.abort();
 }
 
 // ---------------------------------------------------------------------------
-// 18. MOVE across KBs returns 403 + <D:cannot-modify-source/>
+// 18. MOVE across KBs returns 403 + <nt:cannot-modify-source/>
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -795,7 +795,7 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
     let body = resp.text().await.expect("body text");
     assert!(
         body.contains("cannot-modify-source"),
-        "XML error must contain <D:cannot-modify-source/>; body: {body}"
+        "XML error must contain <nt:cannot-modify-source/>; body: {body}"
     );
 
     handle.abort();

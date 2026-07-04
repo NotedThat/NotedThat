@@ -5,7 +5,7 @@
 //!
 //! **Stdout is reserved for JSON-RPC.** All log output goes to stderr.
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use notedthat_mcp::{NotedThatMcp, client::NotedThatClient};
 use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::EnvFilter;
@@ -17,8 +17,8 @@ async fn main() -> Result<()> {
     let url = require_env("NOTEDTHAT_URL")?;
     let token = require_env("NOTEDTHAT_TOKEN")?;
 
-    let client = NotedThatClient::new(&url, &token)
-        .context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?;
+    let client =
+        NotedThatClient::new(&url, &token).context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?;
 
     tracing::info!(
         target: "notedthat_mcp_stdio",
@@ -48,8 +48,7 @@ fn init_logging() {
 
 /// Read an environment variable, trim whitespace, reject empty-after-trim.
 fn require_env(name: &str) -> Result<String> {
-    let v = std::env::var(name)
-        .map_err(|_| anyhow::anyhow!("{name} is required but not set"))?;
+    let v = std::env::var(name).map_err(|_| anyhow::anyhow!("{name} is required but not set"))?;
     let trimmed = v.trim();
     if trimmed.is_empty() {
         bail!("{name} is required but is empty");

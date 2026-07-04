@@ -1,7 +1,10 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
-use rmcp::{ErrorData as McpError, model::{CallToolResult, ContentBlock}};
+use rmcp::{
+    ErrorData as McpError,
+    model::{CallToolResult, ContentBlock},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

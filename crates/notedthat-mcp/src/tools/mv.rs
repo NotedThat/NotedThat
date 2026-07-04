@@ -1,7 +1,10 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
-use rmcp::{ErrorData as McpError, model::{CallToolResult, ContentBlock}};
+use rmcp::{
+    ErrorData as McpError,
+    model::{CallToolResult, ContentBlock},
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -208,9 +211,7 @@ mod tests {
         // PUT destination: to = "archive/rfc/7231.md" → encoded once as archive%2Frfc%2F7231.md
         Mock::given(method("PUT"))
             .and(path("/v1/knowledgebases/notes/archive%2Frfc%2F7231.md"))
-            .respond_with(
-                ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""),
-            )
+            .respond_with(ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""))
             .expect(1)
             .mount(&server)
             .await;
