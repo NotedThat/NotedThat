@@ -22,12 +22,23 @@ pub struct ObjectRead {
 }
 
 /// The result of a LIST operation.
+///
+/// # Invariant
+///
+/// `truncated == next_cursor.is_some()`. A response where `truncated=true` MUST supply a
+/// `next_cursor`; a response where `next_cursor=Some(_)` MUST also set `truncated=true`.
 pub struct ListResponse {
     /// The matching objects, up to the requested `limit`.
     pub objects: Vec<ObjectMeta>,
     /// `true` if the backend indicated more objects exist beyond `limit`.
-    /// Cursor/continuation is deferred to M4.
     pub truncated: bool,
+    /// Opaque backend continuation token. Present exactly when `truncated=true`.
+    ///
+    /// Pass this value unchanged as `cursor` on the next `list_objects` call to retrieve the
+    /// next page. Clients MUST NOT parse, validate, or store this value beyond the immediate
+    /// next request. Invalid or expired tokens cause the backend to return
+    /// `StorageError::BackendUnavailable`.
+    pub next_cursor: Option<String>,
 }
 
 /// Return value from [`Storage::put_object`]. Carries the `ETag` of the stored object.
@@ -113,12 +124,20 @@ pub trait Storage: Send + Sync {
     /// List objects in the KB, optionally filtered by a prefix.
     ///
     /// Results are capped at `limit` (default 100, max 1000).
-    /// Cursor/continuation tokens are deferred to M4.
+    ///
+    /// Pass `cursor = None` on the first call. On subsequent calls, pass the opaque
+    /// `next_cursor` value from the previous [`ListResponse`] unchanged. An invalid or
+    /// expired cursor causes the backend to return `StorageError::BackendUnavailable`.
+    ///
+    /// # Invariant
+    ///
+    /// Every returned `ListResponse` satisfies `truncated == next_cursor.is_some()`.
     async fn list_objects(
         &self,
         kb: &KbSlug,
         prefix: Option<&str>,
         limit: u32,
+        cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError>;
 }
 
