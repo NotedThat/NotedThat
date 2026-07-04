@@ -31,6 +31,17 @@ cargo fmt --all
 cargo run -p notedthat-mcp-stdio
 ```
 
+## Installing the MCP stdio wrapper
+
+`notedthat-mcp-stdio` is the subprocess an MCP client (opencode, Claude Desktop, Cursor, Zed) spawns to talk to the server. To keep an MCP client wired up against a local build, install the binary somewhere on `PATH`. The Makefile has two paths, both writing to `$HOME/.local/bin/notedthat-mcp-stdio`:
+
+```sh
+make mcp-stdio             # cargo install from source — reflects your working tree
+make mcp-stdio-from-image  # docker cp from notedthat-server:local — fast, requires a built image
+```
+
+Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install elsewhere. See `make help` for the full listing.
+
 ## Test Conventions
 
 - **Unit tests**: inline `#[cfg(test)] mod tests { ... }` in the same source file.
