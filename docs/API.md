@@ -87,7 +87,7 @@ All error responses use the same JSON envelope:
   without `Content-Length` are still capped at 16 MiB during body collection.
 - **List default:** 100 objects per call.
 - **List maximum:** 1,000 objects per call (pass `?limit=1000`).
-- **Pagination:** If `truncated` is `true`, there is no way to fetch the next page in v1.
+- **Pagination:** Use the `next_cursor` field from the response as the `?cursor=` query parameter on the next request to fetch subsequent pages.
 
 ---
 
@@ -327,17 +327,26 @@ List objects in a knowledge base. Supports optional prefix filtering and a resul
 
 **Query parameters:**
 
-| Parameter | Type | Default | Max | Description |
-|-----------|------|---------|-----|-------------|
-| `prefix` | string | (none) | | Only return objects whose key starts with this string |
-| `limit` | integer | 100 | 1000 | Maximum number of objects to return |
+| Parameter | Type   | Default | Description |
+|-----------|--------|---------|-------------|
+| `prefix`  | string | —       | Return only objects whose key begins with this string |
+| `limit`   | number | 100     | Maximum objects per page (1–1000) |
+| `cursor`  | string | —       | Opaque continuation token from a previous response's `next_cursor` field. Clients MUST NOT parse or construct this value. |
 
 **Response:**
 
 | Status | Body |
 |--------|------|
-| 200 OK | `{"objects": [...], "truncated": bool}` |
+| 200 OK | `{"objects": [...], "truncated": bool, "next_cursor": string|null}` |
 | 404 Not Found | `{"error": "not_found", ...}` |
+
+**Response body fields:**
+
+| Field         | Type             | Description |
+|---------------|------------------|-------------|
+| `objects`     | array of objects | Matching objects (key, size, last_modified, content_type, etag) |
+| `truncated`   | boolean          | `true` when more objects exist beyond this page |
+| `next_cursor` | string or null   | Opaque continuation token for the next page. Pass as `?cursor=` on the next request. `null` on the final page. |
 
 Each object in the array has:
 
@@ -380,9 +389,61 @@ curl -H "Authorization: Bearer $TOKEN" \
       "content_type": "text/markdown"
     }
   ],
-  "truncated": false
+  "truncated": false,
+  "next_cursor": null
 }
 ```
+
+### Pagination example
+
+Page 1 (first request — no cursor):
+
+```sh
+curl -H "Authorization: Bearer <token>" \
+  "https://example.com/v1/knowledgebases/notes?limit=100"
+```
+
+Response body (truncated — more pages exist):
+
+```json
+{
+  "objects": [...],
+  "truncated": true,
+  "next_cursor": "CgBkb2MtMDA5OS5tZA=="
+}
+```
+
+Page 2 (pass `next_cursor` as `cursor`):
+
+```sh
+curl -H "Authorization: Bearer <token>" \
+  "https://example.com/v1/knowledgebases/notes?limit=100&cursor=CgBkb2MtMDA5OS5tZA=="
+```
+
+Final page (no more results):
+
+```json
+{
+  "objects": [...],
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+### Invalid or expired cursor
+
+Passing a cursor that is invalid, expired, or otherwise not recognized by the backend returns:
+
+```
+HTTP 503 Service Unavailable
+{"error": "backend_unavailable", "message": "...", "request_id": "..."}
+```
+
+The cursor format is opaque and owned by the storage backend. NotedThat does not validate cursor strings; it passes them through unchanged. Clients that receive a 503 should re-fetch from the beginning (cursor=None).
+
+### Live listing semantics (non-snapshot)
+
+Cursors are for immediate continuation of a live listing, not a stable snapshot. Writes/deletes between page N and page N+1 may cause the specific object at page-boundary positions to appear on both pages, disappear, or shift ordering. Clients that need snapshot semantics must implement their own snapshot layer.
 
 ---
 
@@ -815,9 +876,22 @@ Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` / `NOTEDTHAT_WE
 | `LOCK` | 405 | No lock system in v1 (D17). Finder and Office require LOCK to save — see Known-broken clients. |
 | `UNLOCK` | 405 | Same as LOCK. |
 | `PROPPATCH` | 405 | No custom DAV properties in v1. |
-| Collection `MOVE` / `COPY` | 403 + `<D:no-collection-move/>` | S3 has no atomic collection rename. |
-| Cross-KB `MOVE` / `COPY` | 403 + `<D:cannot-modify-source/>` | KBs are isolated storage namespaces. |
-| Cross-server `MOVE` / `COPY` | 502 + `<D:destination-different-server/>` | Per RFC 4918 §9.9.2. |
+| Collection `MOVE` / `COPY` | 403 + `<nt:no-collection-move/>` | S3 has no atomic collection rename. |
+| Cross-KB `MOVE` / `COPY` | 403 + `<nt:cannot-modify-source/>` | KBs are isolated storage namespaces. |
+| Cross-server `MOVE` / `COPY` | 502 + `<nt:destination-different-server/>` | Per RFC 4918 §9.9.2. |
+
+### WebDAV custom error conditions
+
+NotedThat emits custom WebDAV error conditions under the **custom XML namespace URI** `urn:notedthat:error` (used as an XML namespace identifier only; the `notedthat` NID is not registered as a formal URN namespace with IANA per RFC 8141 — RFC 4918 §16 requires only that the namespace be non-`DAV:`). Condition names are in the `nt:` prefix bound to this namespace.
+
+Current custom conditions:
+
+| Condition | HTTP status | Trigger |
+|-----------|-------------|---------|
+| `nt:destination-different-server` | 502 | MOVE/COPY Destination header points to a different server |
+| `nt:cannot-modify-source` | 403 | MOVE/COPY would modify the source KB, which is read-only |
+| `nt:no-collection-move` | 403 | MOVE of a collection (directory) is not supported |
+| `nt:propfind-too-large` | 507 | PROPFIND enumeration would exceed the 10 000-object v1 cap |
 
 ### v1 quirks
 
