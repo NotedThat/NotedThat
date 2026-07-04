@@ -98,6 +98,115 @@ curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
   http://127.0.0.1:8081/notes/hello-webdav.md
 ```
 
+### MCP (Claude Desktop, Cursor, Zed)
+
+With the server running (steps 1-2 above), configure your MCP client to launch `notedthat-mcp-stdio` as a subprocess.
+
+> **v1 note**: MCP HTTP transport is post-v1 (D31). MCP Resources are post-v1 (D37).
+
+#### Install options
+
+**Docker (recommended)**:
+
+```json
+{
+  "mcpServers": {
+    "notedthat": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i",
+               "--entrypoint", "/usr/local/bin/notedthat-mcp-stdio",
+               "-e", "NOTEDTHAT_URL",
+               "-e", "NOTEDTHAT_TOKEN",
+               "notedthat:dev"],
+      "env": {
+        "NOTEDTHAT_URL": "http://host.docker.internal:8080",
+        "NOTEDTHAT_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+**cargo install**:
+
+```bash
+cargo install notedthat-mcp-stdio
+```
+
+```json
+{
+  "mcpServers": {
+    "notedthat": {
+      "command": "notedthat-mcp-stdio",
+      "env": {
+        "NOTEDTHAT_URL": "http://localhost:8080",
+        "NOTEDTHAT_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+#### Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "notedthat": {
+      "command": "notedthat-mcp-stdio",
+      "env": {
+        "NOTEDTHAT_URL": "http://localhost:8080",
+        "NOTEDTHAT_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop after saving.
+
+#### Cursor
+
+Add to Cursor's settings (`.cursor/mcp.json` or via Settings → MCP):
+
+```json
+{
+  "mcpServers": {
+    "notedthat": {
+      "command": "notedthat-mcp-stdio",
+      "env": {
+        "NOTEDTHAT_URL": "http://localhost:8080",
+        "NOTEDTHAT_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+#### Zed
+
+Add to Zed settings (`~/.config/zed/settings.json`):
+
+```json
+{
+  "assistant": {
+    "mcp_servers": {
+      "notedthat": {
+        "command": {
+          "path": "notedthat-mcp-stdio",
+          "env": {
+            "NOTEDTHAT_URL": "http://localhost:8080",
+            "NOTEDTHAT_TOKEN": "your-token-here"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 Full environment variable reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
 Full API documentation: [`docs/API.md`](docs/API.md)
