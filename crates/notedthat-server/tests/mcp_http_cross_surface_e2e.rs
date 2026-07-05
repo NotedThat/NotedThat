@@ -663,6 +663,7 @@ async fn mcp_http_write_search_identity() {
 
 #[tokio::test]
 #[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+#[allow(clippy::too_many_lines)]
 async fn mcp_http_write_stdio_search_identity() {
     // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
     let (_seaweed, s3_url) = start_seaweedfs().await;
@@ -812,7 +813,10 @@ async fn mcp_http_write_stdio_search_identity() {
 
 #[tokio::test]
 #[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+#[allow(clippy::too_many_lines)]
 async fn mcp_http_auth_and_sse_refusal() {
+    const EXACT_SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
+
     // Given: all three server listeners configured on random loopback ports.
     let (_seaweed, s3_url) = start_seaweedfs().await;
     let (_qdrant, qdrant_url) = start_qdrant().await;
@@ -853,8 +857,6 @@ async fn mcp_http_auth_and_sse_refusal() {
         .build()
         .expect("failed to build reqwest client");
 
-    const EXACT_SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
-
     let resp = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -886,7 +888,7 @@ async fn mcp_http_auth_and_sse_refusal() {
     let resp = client
         .post(&sse_url)
         .header("Content-Type", "application/json")
-        .body(r#"{}"#)
+        .body(r"{}")
         .send()
         .await
         .expect("POST /sse failed");
@@ -959,10 +961,12 @@ async fn mcp_http_auth_and_sse_refusal() {
 
 #[tokio::test]
 #[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+#[allow(clippy::too_many_lines)]
 async fn mcp_resources_list_and_read() {
     use std::collections::HashSet;
 
     const KBS: &[&str] = &["alpha", "beta", "gamma"];
+    const MAX_PAGES: u32 = 30;
     const OBJECTS_PER_KB: usize = 150;
     const BINARY_KB: &str = "alpha";
     const BINARY_KEY: &str = "binary-data.bin";
@@ -1058,7 +1062,6 @@ async fn mcp_resources_list_and_read() {
     let mut all_uris: Vec<String> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut page_count: u32 = 0;
-    const MAX_PAGES: u32 = 30;
 
     loop {
         page_count += 1;
