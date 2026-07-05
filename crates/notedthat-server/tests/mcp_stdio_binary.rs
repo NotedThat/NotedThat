@@ -13,7 +13,7 @@ fn mcp_stdio_binary_is_available() {
     //
     // Or build it explicitly and reference the target path:
     //   target/debug/notedthat-mcp-stdio
-    
+
     // Verify the binary target exists in the workspace
     // The test runs from the workspace root, so use relative path
     let stdio_crate = std::path::Path::new("../notedthat-mcp-stdio");
@@ -22,7 +22,7 @@ fn mcp_stdio_binary_is_available() {
         "notedthat-mcp-stdio crate must exist at {}",
         stdio_crate.display()
     );
-    
+
     // Verify Cargo.toml has the binary target
     let cargo_toml = stdio_crate.join("Cargo.toml");
     let content = std::fs::read_to_string(&cargo_toml)
