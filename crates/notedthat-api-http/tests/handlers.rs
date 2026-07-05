@@ -1896,7 +1896,7 @@ async fn list_route_cursor_round_trip() {
         for obj in json["objects"].as_array().unwrap() {
             all_keys.push(obj["key"].as_str().unwrap().to_string());
         }
-        cursor = json["next_cursor"].as_str().map(|s| s.to_string());
+        cursor = json["next_cursor"].as_str().map(ToString::to_string);
         if cursor.is_none() {
             break json;
         }

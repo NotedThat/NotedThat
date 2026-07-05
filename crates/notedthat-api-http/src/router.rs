@@ -150,6 +150,13 @@ async fn head_object(
     let path = parse_path(&object_path).map_err(&err)?;
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
+    // Scope-OUT: Conditional writes (`If-Match`, `If-None-Match`) that succeed at
+    // S3 but return 503 at the indexer queue leave a naive retry in a state
+    // where S3 may return 412 because the object now exists or its ETag changed.
+    // Clients using conditional headers MUST detect the 503 → 412 sequence and
+    // either accept the ghost state or use a stronger consistency mechanism. v1
+    // does not provide automatic replay/repair for conditional-write ghost
+    // states.
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let meta = state
@@ -407,4 +414,162 @@ fn percent_encode_path(path: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use notedthat_core::Storage;
+    use notedthat_indexer::IndexEvent;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    const KB: &str = "notes";
+    const TOKEN: &str = "test-token-abc";
+
+    #[tokio::test]
+    async fn test_conditional_put_503_then_naive_retry_412_keeps_object_stored() {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let object_path = ObjectPath::try_from_str("cond.md").unwrap();
+        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        indexer_tx
+            .try_send(IndexEvent::Upsert {
+                kb: kb.clone(),
+                object_key: ObjectPath::try_from_str("queued.md").unwrap(),
+                etag: "etag".to_string(),
+                mtime: 0,
+            })
+            .unwrap();
+
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb.clone());
+        let state = AppState {
+            storage: storage.clone(),
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        };
+        let router = build_router(state);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header("if-none-match", "*")
+                    .body(Body::from(Bytes::from_static(b"first content")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "5");
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"error\":\"backend_unavailable\""));
+        assert!(body.contains("object stored; indexer queue full — retry to re-enqueue"));
+
+        let stored = storage
+            .get_object(&kb, &object_path, None, ConditionalHeaders::default())
+            .await
+            .unwrap();
+        assert_eq!(stored.bytes, Bytes::from_static(b"first content"));
+
+        let retry = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header("if-none-match", "*")
+                    .body(Body::from(Bytes::from_static(b"second content")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(retry.status(), StatusCode::PRECONDITION_FAILED);
+        assert!(retry.headers().get("retry-after").is_none());
+
+        let stored = storage
+            .get_object(&kb, &object_path, None, ConditionalHeaders::default())
+            .await
+            .unwrap();
+        assert_eq!(stored.bytes, Bytes::from_static(b"first content"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_returns_delete_specific_503_body_when_indexer_backpressure() {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let object_path = ObjectPath::try_from_str("to-delete.md").unwrap();
+        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(b"content"),
+                Some("text/plain"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        indexer_tx
+            .try_send(IndexEvent::Upsert {
+                kb: kb.clone(),
+                object_key: ObjectPath::try_from_str("queued.md").unwrap(),
+                etag: "etag".to_string(),
+                mtime: 0,
+            })
+            .unwrap();
+
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb.clone());
+        let state = AppState {
+            storage: storage.clone(),
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        };
+        let router = build_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/knowledgebases/{KB}/to-delete.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "5");
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"error\":\"backend_unavailable\""));
+        assert!(
+            body.contains("\"message\":\"deleted from storage; retry to clear from search index\"")
+        );
+        assert!(!body.contains("object stored; indexer queue full — retry to re-enqueue"));
+
+        let deleted = storage
+            .get_object(&kb, &object_path, None, ConditionalHeaders::default())
+            .await;
+        assert!(matches!(deleted, Err(StorageError::NotFound { .. })));
+    }
 }

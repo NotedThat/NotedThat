@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::http::StatusCode;
-use axum::http::header::CONTENT_RANGE;
+use axum::http::header::{CONTENT_RANGE, RETRY_AFTER};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{Error as CoreError, StorageError};
 use serde::Serialize;
@@ -13,6 +13,12 @@ pub enum ApiError {
     /// The request lacked valid Bearer credentials.
     #[error("unauthorized")]
     Unauthorized,
+    /// Indexer queue was full while enqueueing an upsert (PUT/COPY).
+    #[error("indexer upsert backpressure")]
+    IndexerBackpressureUpsert,
+    /// Indexer queue was full while enqueueing a tombstone (DELETE).
+    #[error("indexer tombstone backpressure")]
+    IndexerBackpressureTombstone,
     /// A domain error from `notedthat-core`.
     #[error(transparent)]
     Core(#[from] CoreError),
@@ -73,6 +79,12 @@ impl From<notedthat_write::WriteError> for ApiError {
                 Self::Core(CoreError::PayloadTooLarge { size, limit })
             }
             notedthat_write::WriteError::Path(e) => Self::Core(e),
+            notedthat_write::WriteError::IndexerBackpressureUpsert => {
+                Self::IndexerBackpressureUpsert
+            }
+            notedthat_write::WriteError::IndexerBackpressureTombstone => {
+                Self::IndexerBackpressureTombstone
+            }
         }
     }
 }
@@ -109,6 +121,9 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            Self::IndexerBackpressureUpsert | Self::IndexerBackpressureTombstone => {
+                (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
+            }
             Self::Core(CoreError::InvalidInput { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
@@ -197,6 +212,36 @@ impl IntoResponse for ApiErrorResponse {
             return StatusCode::NOT_MODIFIED.into_response();
         }
 
+        match &self.error {
+            ApiError::IndexerBackpressureUpsert => {
+                let body = ErrorBody {
+                    error: "backend_unavailable",
+                    message: "object stored; indexer queue full — retry to re-enqueue".to_string(),
+                    request_id: self.request_id,
+                };
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(RETRY_AFTER, "5")],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            ApiError::IndexerBackpressureTombstone => {
+                let body = ErrorBody {
+                    error: "backend_unavailable",
+                    message: "deleted from storage; retry to clear from search index".to_string(),
+                    request_id: self.request_id,
+                };
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(RETRY_AFTER, "5")],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+
         // All other variants return a JSON error body.
         let (status, code) = self.error.status_and_code();
         let message = self.error.to_string();
@@ -223,6 +268,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use notedthat_write::WriteError;
 
     #[tokio::test]
     async fn test_unauthorized_status_and_body() {
@@ -274,6 +320,58 @@ mod tests {
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["request_id"], "my-req-id");
+    }
+
+    #[tokio::test]
+    async fn test_indexer_backpressure_upsert_503_body_and_retry_after() {
+        let resp = ApiErrorResponse {
+            error: ApiError::IndexerBackpressureUpsert,
+            request_id: "rid".to_string(),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "backend_unavailable");
+        assert_eq!(
+            json["message"],
+            "object stored; indexer queue full — retry to re-enqueue"
+        );
+        assert_eq!(json["request_id"], "rid");
+    }
+
+    #[tokio::test]
+    async fn test_indexer_backpressure_tombstone_503_body_and_retry_after() {
+        let resp = ApiErrorResponse {
+            error: ApiError::IndexerBackpressureTombstone,
+            request_id: "rid".to_string(),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "backend_unavailable");
+        assert_eq!(
+            json["message"],
+            "deleted from storage; retry to clear from search index"
+        );
+        assert_eq!(json["request_id"], "rid");
+    }
+
+    #[test]
+    fn test_from_write_error_indexer_backpressure() {
+        assert!(matches!(
+            ApiError::from(WriteError::IndexerBackpressureUpsert),
+            ApiError::IndexerBackpressureUpsert
+        ));
+        assert!(matches!(
+            ApiError::from(WriteError::IndexerBackpressureTombstone),
+            ApiError::IndexerBackpressureTombstone
+        ));
     }
 
     // ─── New variant tests ────────────────────────────────────────────────────
