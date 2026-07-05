@@ -160,31 +160,29 @@ impl Config {
             });
         }
 
-        let mcp_http_allowed_origins = match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS")
-            .as_deref()
-        {
-            Ok(s) if !s.trim().is_empty() => s
-                .split(',')
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .collect(),
-            _ => vec!["null".to_string()],
-        };
+        let mcp_http_allowed_origins =
+            match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS").as_deref() {
+                Ok(s) if !s.trim().is_empty() => s
+                    .split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect(),
+                _ => vec!["null".to_string()],
+            };
 
-        let mcp_http_allowed_hosts = match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS")
-            .as_deref()
-        {
-            Ok(s) if !s.trim().is_empty() => s
-                .split(',')
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .collect(),
-            _ => vec![
-                "127.0.0.1".to_string(),
-                "localhost".to_string(),
-                "::1".to_string(),
-            ],
-        };
+        let mcp_http_allowed_hosts =
+            match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS").as_deref() {
+                Ok(s) if !s.trim().is_empty() => s
+                    .split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect(),
+                _ => vec![
+                    "127.0.0.1".to_string(),
+                    "localhost".to_string(),
+                    "::1".to_string(),
+                ],
+            };
 
         Ok(Self {
             api_token,
@@ -711,22 +709,31 @@ mod tests {
 
         #[test]
         fn mcp_http_enabled_false() {
-            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false"))], Config::from_env)
-                .unwrap();
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false"))],
+                Config::from_env,
+            )
+            .unwrap();
             assert!(!cfg.mcp_http_enabled);
         }
 
         #[test]
         fn mcp_http_enabled_zero() {
-            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("0"))], Config::from_env)
-                .unwrap();
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("0"))],
+                Config::from_env,
+            )
+            .unwrap();
             assert!(!cfg.mcp_http_enabled);
         }
 
         #[test]
         fn mcp_http_enabled_true_by_default() {
-            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true"))], Config::from_env)
-                .unwrap();
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true"))],
+                Config::from_env,
+            )
+            .unwrap();
             assert!(cfg.mcp_http_enabled);
         }
 
@@ -788,7 +795,10 @@ mod tests {
         #[test]
         fn mcp_http_single_origin() {
             let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some("https://example.com"))],
+                &[(
+                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                    Some("https://example.com"),
+                )],
                 Config::from_env,
             )
             .unwrap();
@@ -873,10 +883,7 @@ mod tests {
                 Config::from_env,
             )
             .unwrap();
-            assert_eq!(
-                cfg.mcp_http_allowed_hosts,
-                vec!["example.com", "other.com"]
-            );
+            assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com", "other.com"]);
         }
 
         #[test]
@@ -889,10 +896,7 @@ mod tests {
                 Config::from_env,
             )
             .unwrap();
-            assert_eq!(
-                cfg.mcp_http_allowed_hosts,
-                vec!["example.com", "other.com"]
-            );
+            assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com", "other.com"]);
         }
 
         #[test]
