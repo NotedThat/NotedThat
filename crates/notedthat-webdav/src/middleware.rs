@@ -167,36 +167,65 @@ pub async fn intercept_write_methods(
     }
 }
 
-fn decode_uri_path(uri_path: &str) -> Result<Cow<'_, str>, ()> {
-    percent_encoding::percent_decode_str(uri_path)
+fn decode_uri_segment(raw_segment: &str) -> Result<Cow<'_, str>, ()> {
+    percent_encoding::percent_decode_str(raw_segment)
         .decode_utf8()
         .map_err(|_| ())
+}
+
+fn validate_decoded_segment(decoded: &str) -> bool {
+    !decoded.is_empty()
+        && !decoded.contains('/')
+        && decoded != "."
+        && decoded != ".."
+        && !decoded.contains('\\')
+        && !decoded.contains('\0')
 }
 
 fn parse_uri_path(
     uri_path: &str,
     declared_kbs: &BTreeMap<String, KbSlug>,
 ) -> Result<DavTarget, ()> {
-    let decoded = decode_uri_path(uri_path)?;
-    let stripped = decoded.trim_start_matches('/');
-    if stripped.is_empty() {
+    let raw_path = uri_path.strip_prefix('/').unwrap_or(uri_path);
+    if raw_path.is_empty() {
         return Ok(DavTarget::Root);
     }
 
-    let (kb_part, rest) = stripped.split_once('/').unwrap_or((stripped, ""));
-    let Ok(kb_slug) = KbSlug::try_new(kb_part) else {
+    let (kb_raw, rest_raw) = raw_path.split_once('/').unwrap_or((raw_path, ""));
+    let kb_decoded = decode_uri_segment(kb_raw)?;
+    if !validate_decoded_segment(&kb_decoded) {
+        return Err(());
+    }
+
+    let Ok(kb_slug) = KbSlug::try_new(kb_decoded.as_ref()) else {
         return Err(());
     };
 
-    if !declared_kbs.contains_key(kb_part) {
+    if !declared_kbs.contains_key(kb_decoded.as_ref()) {
         return Ok(DavTarget::NonDeclaredKb);
     }
 
-    if rest.is_empty() {
+    if rest_raw.is_empty() {
         return Ok(DavTarget::KbRoot(kb_slug));
     }
 
-    ObjectPath::try_from_str(rest)
+    let decoded_parts = rest_raw
+        .split('/')
+        .map(|raw_segment| {
+            let decoded = decode_uri_segment(raw_segment)?;
+            if !validate_decoded_segment(&decoded) {
+                return Err(());
+            }
+            Ok(decoded)
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    let decoded_rest = decoded_parts
+        .iter()
+        .map(|segment| segment.as_ref())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    ObjectPath::try_from_str(&decoded_rest)
         .map(|path| DavTarget::Object(kb_slug, path))
         .map_err(|_| ())
 }
@@ -323,6 +352,9 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         Some(destination) => destination.to_string(),
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
+    if dest_header.contains('#') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let Ok(dest_uri) = dest_header.parse::<Uri>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -1455,8 +1487,8 @@ mod intercept_write_methods {
 
         #[tokio::test]
         async fn encoded_uri_put_multi_segment() {
-            // Multi-segment path with percent-encoded directory name proves decode-before-split:
-            // %20 in "my%20folder" must be decoded before the path is split on '/'
+            // Multi-segment path with percent-encoded directory name proves split-before-decode:
+            // raw '/' separates segments, then %20 in "my%20folder" decodes within that segment.
             let storage = Arc::new(MockStorage::default());
             let resp = app(storage.clone())
                 .oneshot(
@@ -1474,6 +1506,147 @@ mod intercept_write_methods {
                 storage.get_stored("notes", "my folder/notes.md").is_some(),
                 "expected decoded multi-segment key 'my folder/notes.md'"
             );
+        }
+
+        #[tokio::test]
+        async fn encoded_uri_put_literal_percent_round_trips() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage.clone())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/file%25.md")
+                        .header("content-type", "text/markdown")
+                        .body(Body::from("# Percent"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert!(resp.status().is_success());
+            assert!(
+                storage.get_stored("notes", "file%.md").is_some(),
+                "expected decoded literal percent key 'file%.md'"
+            );
+            assert!(
+                storage.get_stored("notes", "file%25.md").is_none(),
+                "encoded key 'file%25.md' must not be stored"
+            );
+        }
+
+        #[tokio::test]
+        async fn edge_case_uri_segment_decoding_matrix() {
+            struct Case {
+                name: &'static str,
+                raw_uri: &'static str,
+                should_succeed: bool,
+                stored_key: Option<&'static str>,
+            }
+
+            let cases = [
+                Case {
+                    name: "reject_empty_middle_segment",
+                    raw_uri: "/notes//file.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "reject_double_leading_slash",
+                    raw_uri: "//notes/file.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "reject_decoded_slash_in_segment",
+                    raw_uri: "/notes/%2Ffile.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "reject_decoded_parent_segment",
+                    raw_uri: "/notes/%2E%2E/foo.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "allow_leading_dot_filename",
+                    raw_uri: "/notes/%2Efoo.md",
+                    should_succeed: true,
+                    stored_key: Some(".foo.md"),
+                },
+                Case {
+                    name: "reject_decoded_backslash",
+                    raw_uri: "/notes/file%5Cbad.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "reject_decoded_nul",
+                    raw_uri: "/notes/file%00.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+                Case {
+                    name: "allow_literal_percent_filename",
+                    raw_uri: "/notes/file%25.md",
+                    should_succeed: true,
+                    stored_key: Some("file%.md"),
+                },
+                Case {
+                    name: "allow_query_not_part_of_path",
+                    raw_uri: "/notes/file%3Fname.md?ignored=1",
+                    should_succeed: true,
+                    stored_key: Some("file?name.md"),
+                },
+                Case {
+                    name: "reject_decoded_slash_in_middle_segment",
+                    raw_uri: "/notes/segment%2Fwith-slash/file.md",
+                    should_succeed: false,
+                    stored_key: None,
+                },
+            ];
+
+            for case in cases {
+                let storage = Arc::new(MockStorage::default());
+                let resp = app(storage.clone())
+                    .oneshot(
+                        HttpRequest::builder()
+                            .method("PUT")
+                            .uri(case.raw_uri)
+                            .header("content-type", "text/markdown")
+                            .body(Body::from(case.name))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+
+                if case.should_succeed {
+                    assert!(
+                        resp.status().is_success(),
+                        "{} should succeed, got {}",
+                        case.name,
+                        resp.status()
+                    );
+                    let stored_key = case.stored_key.expect("success case stores a key");
+                    assert!(
+                        storage.get_stored("notes", stored_key).is_some(),
+                        "{} should store decoded key {stored_key:?}",
+                        case.name
+                    );
+                } else {
+                    assert_eq!(
+                        resp.status(),
+                        StatusCode::BAD_REQUEST,
+                        "{} should reject malformed segment",
+                        case.name
+                    );
+                    assert!(
+                        storage.calls().is_empty(),
+                        "{} must not hit storage",
+                        case.name
+                    );
+                }
+            }
         }
 
         #[tokio::test]
@@ -1607,6 +1780,31 @@ mod intercept_write_methods {
                 storage.get_stored("notes", "source.md").is_some(),
                 "COPY source should still exist"
             );
+        }
+
+        #[tokio::test]
+        async fn destination_with_fragment_returns_400_before_uri_parse() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert(
+                "notes",
+                "source.md",
+                Bytes::from_static(b"source content"),
+                "\"etag-source\"",
+            );
+            let resp = app(storage)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("MOVE")
+                        .uri("/notes/source.md")
+                        .header("host", "localhost")
+                        .header("destination", "http://localhost/notes/file.md#fragment")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
     }
 }
