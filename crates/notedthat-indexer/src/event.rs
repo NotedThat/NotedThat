@@ -9,7 +9,7 @@ use notedthat_core::{KbSlug, ObjectPath};
 /// A single indexing side-effect enqueued after a successful storage operation.
 ///
 /// Best-effort per D38: producers use `try_send`; on queue-full the event is
-/// dropped with an `INDEX_QUEUE_FULL` log and the write still succeeds.
+/// surfaced by the write path as `WriteError::IndexerBackpressureUpsert` / `WriteError::IndexerBackpressureTombstone` / HTTP 503, while downstream embedder/Qdrant failures remain async best-effort.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexEvent {
     /// Object was written to S3; re-read and upsert into Qdrant.

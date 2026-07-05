@@ -25,7 +25,7 @@ Three logical layers:
 | D1 | Deployment shape | **Multi-tenant SaaS architecture; single-tenant in practice.** All isolation primitives exist from day one, but we ship with a single active tenant. |
 | D2 | Isolation model | **Bucket-per-KB + collection-per-KB.** Each knowledgebase gets its own S3 bucket and its own Qdrant collection. Storage adapter is trait-based so a shared-bucket / prefix-per-KB fallback can be added later (§8.4) but is not built now. |
 | D3 | Content model | **Markdown-first.** Markdown is the primary citizen; other MIME types are second-class fallback. |
-| D4 | Write→search consistency | **Async best-effort.** Writes return fast; indexing happens in the background. **Job internals are NOT exposed** to API/MCP/WebDAV callers. |
+| D4 | Write→search consistency | **Async best-effort.** Writes return fast; indexing happens in the background. **Job internals are NOT exposed** to API/MCP/WebDAV callers. Queue-full is the one narrowing of the best-effort contract: it surfaces as a transient error (HTTP 503) so the client can retry, because the object is stored but not searchable. |
 | D5 | Scale target | **1k–100k documents per KB.** Design for this range; do not over-engineer for millions. |
 | D6 | Byte-range reads | **First-class capability.** API and MCP forward S3-style `Range`/`Content-Range` semantics. Search chunks also carry `byte_start`/`byte_end` so a search hit dereferences to an exact byte-range read. |
 | D7 | Access surface capabilities | **API, MCP, and WebDAV are all read-write.** All three surfaces can create, read, update, and delete objects. |
@@ -59,7 +59,7 @@ Three logical layers:
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D36 | Multipart upload | Switch to S3 multipart above **32 MiB** total size; part size **8 MiB** (matches `aws-sdk-s3` defaults). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D37 | MCP Resources | **`[POST-v1]` Confirmed on the roadmap.** Expose `notedthat://<kb_slug>/<path>` as browsable MCP Resources for clients like Claude Desktop and MCP Inspector. Lands with MCP HTTP transport (D31) or shortly after. |
-| D38 | Indexing queue (v1) | **Simple best-effort in-process queue.** Writes commit to S3 first, enqueue an indexing event to a bounded in-memory channel, then return. If the queue is full or the embedder/Qdrant path fails, log the failure and mark the object stale/missing in search until a later write or future reindex. No durable queue, no job IDs, no caller-visible indexing status in v1. |
+| D38 | Indexing queue (v1) | **Simple best-effort in-process queue.** Writes commit to S3 first, enqueue an indexing event to a bounded in-memory channel, then return. If the queue is full, return operation-specific `WriteError::IndexerBackpressureUpsert` or `WriteError::IndexerBackpressureTombstone` → HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 first; the client should retry to re-enqueue the indexing event. Log `INDEX_QUEUE_FULL`. If the embedder or Qdrant path fails downstream of the queue, log `INDEXING_FAILED` and mark the object stale/missing in search until a later write or future reindex. No durable queue, no job IDs, no caller-visible indexing status in v1. |
 | D39 | Startup provisioning (v1) | **Fail fast.** At startup, parse `NOTEDTHAT_KBS`, validate every slug, ensure each S3 bucket, manifest, and Qdrant collection exists, and exit non-zero if any declared KB cannot be provisioned or validated. No partial startup with missing KBs in v1. |
 | D40 | Path normalization (v1) | **Simple object-path rules.** Object paths are UTF-8 strings normalized by stripping one leading `/`, rejecting empty file paths, rejecting `.` / `..` segments, rejecting backslashes, preserving case, and using `/` as the only separator. Directories are virtual prefixes; only object bytes are stored. |
 | D41 | Pagination (v1) | **Simple limits.** `list` uses S3 lexicographic order and an opaque continuation cursor passed through from the storage adapter. `search` is top-k only: `limit` controls the number of hits; no search pagination/cursor in v1. |
@@ -444,7 +444,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 #### Indexing queue
 - Write path: S3 commit succeeds first, then enqueue `{kb, object_key, etag, mtime}` onto a bounded in-memory channel.
 - Queue capacity: fixed implementation constant in v1 (recommended `1024` events); env tuning post-v1.
-- If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return write success anyway.
+- If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return `WriteError::IndexerBackpressureUpsert` for upserts or `WriteError::IndexerBackpressureTombstone` for tombstones, which the HTTP API and WebDAV surfaces map to HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 before the enqueue attempt; the client should retry to re-enqueue the indexing event.
 - Embedder or Qdrant failures are logged as `INDEXING_FAILED`; callers do not receive job IDs or indexing status.
 - Search may be stale in v1. A later write to the same object re-enqueues it.
 

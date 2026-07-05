@@ -237,13 +237,36 @@ Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 
 - Writes commit to S3 first, then enqueue an index event. Search results may be **stale** briefly after a write.
 - Queue capacity is fixed at **1024 events** in v1 (not configurable).
-- If the queue is full, the write still succeeds and `INDEX_QUEUE_FULL` is logged.
+- If the queue is full, the object is stored to S3 but the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` and `INDEX_QUEUE_FULL` is logged. The client should retry to re-enqueue the indexing event.
+- **Conditional writes under backpressure: retry semantics interact with 412.** A conditional `PUT`/`DELETE` using `If-Match` or `If-None-Match` can complete the S3 mutation and then return HTTP 503 because the indexer queue is full. A naive retry with the same conditional headers may then return HTTP 412 `precondition_failed` because the object now exists or its ETag changed. Clients that use conditional headers must treat a 503 → 412 sequence as a possible stored-but-not-indexed ghost state and either accept that state or use a stronger consistency mechanism; v1 does not automatically replay or repair it.
 - If Qdrant is unreachable during indexing, `INDEXING_FAILED` is logged and the write still succeeds. The next write of the same object re-enqueues automatically.
 - On graceful shutdown (SIGTERM), the server drains the queue with a **30-second bounded timeout** before stopping.
 
 No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.
 
 See [SPECIFICATIONS.md](../SPECIFICATIONS.md) §6.4 (embeddings), §6.11 (startup provisioning), §6.12 (indexing queue) for full details.
+
+---
+
+## Indexer backpressure
+
+**HTTP 503 on write operations**
+If write requests return HTTP 503 with `"error": "backend_unavailable"`, the internal indexing queue is full. The object was successfully stored; only the search index update is delayed. Clients should retry with exponential backoff. Repeated 503s indicate the embedder or Qdrant is processing slower than the write rate — investigate embedder throughput and Qdrant ingestion latency. Queue capacity is fixed in v1; tuning is post-v1.
+
+DELETE 503 semantics:
+- The object IS deleted from S3 (storage)
+- The Qdrant index still contains the object
+- Search will return the object until either (a) the client retries DELETE, or (b) a later re-index operation
+
+MOVE 503 comes in two flavors; the response body distinguishes which failure occurred and what the client should do:
+- Destination index event failed: the destination object IS stored, the destination search-index upsert is missing, and the source is unchanged. Retry MOVE to re-enqueue the destination index event; the destination write is idempotent.
+- Source tombstone failed: the destination object IS stored, the source object IS deleted from S3, and the source search-index tombstone is missing. Search may return stale entries for the source path whose object_key now 404s. Because v1 has no public reindex endpoint and retrying the whole MOVE will 404 on GET(src), treat the 503 as final for storage state and monitor search-quality until a retry/reindex path exists.
+
+Since v1 has no public reindex endpoint (D42), operators should treat repeated DELETE or MOVE-tombstone 503 with no retry/reindex path as a search-quality issue requiring monitoring. Clients SHOULD implement retry-with-backoff for DELETE, matching PUT.
+
+Conditional writes under backpressure: retry semantics interact with 412. Conditional writes (`If-Match`, `If-None-Match`) that succeed at S3 but return 503 at the indexer queue leave a naive retry in a state where S3 may return 412 because the object now exists or its ETag changed. Clients using conditional headers MUST detect the 503 → 412 sequence and either accept the ghost state or use a stronger consistency mechanism.
+
+The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three write surfaces (HTTP API, WebDAV, MCP-via-HTTP) surface this the same way: HTTP 503, error code `backend_unavailable`, and (for HTTP API + WebDAV) `Retry-After: 5`.
 
 ---
 
