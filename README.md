@@ -102,7 +102,15 @@ curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
 
 With the server running (steps 1-2 above), configure your MCP client to launch `notedthat-mcp-stdio` as a subprocess.
 
-> **v1 note**: MCP HTTP transport is post-v1 (D31). MCP Resources are post-v1 (D37).
+#### Remote MCP hosting
+
+NotedThat also exposes an HTTP MCP endpoint for remote clients that support the MCP HTTP transport:
+
+- **Endpoint**: `POST /mcp` on port 8082 (configurable via `NOTEDTHAT_MCP_HTTP_BIND`)
+- **Auth**: `Authorization: Bearer <NOTEDTHAT_API_TOKEN>` (same token as the HTTP API)
+- **Note**: public deployments require HTTPS termination at a reverse proxy before exposing this port
+
+See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protocol docs.
 
 #### Install options
 
