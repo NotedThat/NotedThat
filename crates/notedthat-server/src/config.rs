@@ -32,6 +32,14 @@ pub struct Config {
     pub webdav_username: String,
     /// `WebDAV` Basic authentication password (`NOTEDTHAT_WEBDAV_PASSWORD`; required).
     pub webdav_password: String,
+    /// Socket address the MCP HTTP server binds to (`NOTEDTHAT_MCP_HTTP_BIND`; default `0.0.0.0:8082`).
+    pub mcp_http_bind: SocketAddr,
+    /// Whether the MCP HTTP listener is enabled (`NOTEDTHAT_MCP_HTTP_ENABLED`; default `true`).
+    pub mcp_http_enabled: bool,
+    /// Allowed origins for MCP HTTP CORS (`NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS`; empty → `["null"]`).
+    pub mcp_http_allowed_origins: Vec<String>,
+    /// Allowed hosts for MCP HTTP Host header validation (`NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`; empty → `["127.0.0.1", "localhost", "::1"]`).
+    pub mcp_http_allowed_hosts: Vec<String>,
 }
 
 /// Tracing output format.
@@ -133,6 +141,51 @@ impl Config {
                 message: format!("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid: {e}"),
             })?;
 
+        let mcp_http_enabled = match std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref() {
+            Ok("false") | Ok("0") => false,
+            _ => true,
+        };
+
+        let mcp_http_bind = std::env::var("NOTEDTHAT_MCP_HTTP_BIND")
+            .unwrap_or_else(|_| "0.0.0.0:8082".to_string())
+            .parse::<SocketAddr>()
+            .map_err(|e| Error::Config {
+                message: format!("NOTEDTHAT_MCP_HTTP_BIND is invalid: {e}"),
+            })?;
+
+        // Fail-fast: if MCP HTTP is enabled and API token is empty/whitespace, reject startup.
+        if mcp_http_enabled && api_token.trim().is_empty() {
+            return Err(Error::Config {
+                message: "NOTEDTHAT_API_TOKEN must not be empty when MCP HTTP is enabled".into(),
+            });
+        }
+
+        let mcp_http_allowed_origins = match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS")
+            .as_deref()
+        {
+            Ok(s) if !s.trim().is_empty() => s
+                .split(',')
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect(),
+            _ => vec!["null".to_string()],
+        };
+
+        let mcp_http_allowed_hosts = match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS")
+            .as_deref()
+        {
+            Ok(s) if !s.trim().is_empty() => s
+                .split(',')
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect(),
+            _ => vec![
+                "127.0.0.1".to_string(),
+                "localhost".to_string(),
+                "::1".to_string(),
+            ],
+        };
+
         Ok(Self {
             api_token,
             kbs,
@@ -145,6 +198,10 @@ impl Config {
             webdav_listen_addr,
             webdav_username,
             webdav_password,
+            mcp_http_bind,
+            mcp_http_enabled,
+            mcp_http_allowed_origins,
+            mcp_http_allowed_hosts,
         })
     }
 }
@@ -259,7 +316,7 @@ impl EmbedderConfig {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 22] = [
+    const ALL_ENV_KEYS: [&str; 26] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_S3_REGION",
@@ -274,6 +331,10 @@ mod tests {
         "NOTEDTHAT_WEBDAV_USERNAME",
         "NOTEDTHAT_WEBDAV_PASSWORD",
         "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
+        "NOTEDTHAT_MCP_HTTP_BIND",
+        "NOTEDTHAT_MCP_HTTP_ENABLED",
+        "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+        "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -300,6 +361,10 @@ mod tests {
             ("NOTEDTHAT_WEBDAV_USERNAME", Some("webdav-user")),
             ("NOTEDTHAT_WEBDAV_PASSWORD", Some("webdav-pass")),
             ("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None),
+            ("NOTEDTHAT_MCP_HTTP_BIND", None),
+            ("NOTEDTHAT_MCP_HTTP_ENABLED", None),
+            ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
+            ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -492,7 +557,7 @@ mod tests {
 
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 22);
+        assert_eq!(ALL_ENV_KEYS.len(), 26);
     }
 
     #[test]
@@ -627,5 +692,254 @@ mod tests {
         assert_eq!(cfg.embedder.model, "text-embedding-3-small");
         assert_eq!(cfg.embedder.api_key, "sk-test");
         assert_eq!(cfg.embedder.dimensions, 1536);
+    }
+
+    mod mcp_http {
+        use super::*;
+
+        #[test]
+        fn mcp_http_defaults() {
+            let cfg = run_with_env(&[], Config::from_env).unwrap();
+            assert_eq!(cfg.mcp_http_bind.to_string(), "0.0.0.0:8082");
+            assert!(cfg.mcp_http_enabled);
+            assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
+            assert_eq!(
+                cfg.mcp_http_allowed_hosts,
+                vec!["127.0.0.1", "localhost", "::1"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_enabled_false() {
+            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false"))], Config::from_env)
+                .unwrap();
+            assert!(!cfg.mcp_http_enabled);
+        }
+
+        #[test]
+        fn mcp_http_enabled_zero() {
+            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("0"))], Config::from_env)
+                .unwrap();
+            assert!(!cfg.mcp_http_enabled);
+        }
+
+        #[test]
+        fn mcp_http_enabled_true_by_default() {
+            let cfg = run_with_env(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true"))], Config::from_env)
+                .unwrap();
+            assert!(cfg.mcp_http_enabled);
+        }
+
+        #[test]
+        fn mcp_http_enabled_any_other_value_is_true() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("anything"))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert!(cfg.mcp_http_enabled);
+        }
+
+        #[test]
+        fn mcp_http_custom_bind_addr() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_BIND", Some("127.0.0.1:9999"))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(cfg.mcp_http_bind.to_string(), "127.0.0.1:9999");
+        }
+
+        #[test]
+        fn mcp_http_invalid_bind_addr() {
+            let result = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_BIND", Some("not-an-addr"))],
+                Config::from_env,
+            );
+            assert!(result.is_err());
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("NOTEDTHAT_MCP_HTTP_BIND is invalid")
+            );
+        }
+
+        #[test]
+        fn mcp_http_empty_origins_defaults_to_null() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some(""))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
+        }
+
+        #[test]
+        fn mcp_http_whitespace_origins_defaults_to_null() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some("   "))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
+        }
+
+        #[test]
+        fn mcp_http_single_origin() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some("https://example.com"))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(cfg.mcp_http_allowed_origins, vec!["https://example.com"]);
+        }
+
+        #[test]
+        fn mcp_http_multiple_origins_comma_separated() {
+            let cfg = run_with_env(
+                &[(
+                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                    Some("https://example.com,https://other.com"),
+                )],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_origins,
+                vec!["https://example.com", "https://other.com"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_origins_with_whitespace_trimmed() {
+            let cfg = run_with_env(
+                &[(
+                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                    Some("  https://example.com  ,  https://other.com  "),
+                )],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_origins,
+                vec!["https://example.com", "https://other.com"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_empty_hosts_defaults_to_loopback() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some(""))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_hosts,
+                vec!["127.0.0.1", "localhost", "::1"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_whitespace_hosts_defaults_to_loopback() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("   "))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_hosts,
+                vec!["127.0.0.1", "localhost", "::1"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_single_host() {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("example.com"))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com"]);
+        }
+
+        #[test]
+        fn mcp_http_multiple_hosts_comma_separated() {
+            let cfg = run_with_env(
+                &[(
+                    "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+                    Some("example.com,other.com"),
+                )],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_hosts,
+                vec!["example.com", "other.com"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_hosts_with_whitespace_trimmed() {
+            let cfg = run_with_env(
+                &[(
+                    "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+                    Some("  example.com  ,  other.com  "),
+                )],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_http_allowed_hosts,
+                vec!["example.com", "other.com"]
+            );
+        }
+
+        #[test]
+        fn mcp_http_enabled_with_empty_token_fails() {
+            let result = run_with_env(
+                &[
+                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true")),
+                    ("NOTEDTHAT_API_TOKEN", Some("")),
+                ],
+                Config::from_env,
+            );
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("NOTEDTHAT_API_TOKEN"),
+                "error should mention NOTEDTHAT_API_TOKEN: {msg}"
+            );
+        }
+
+        #[test]
+        fn mcp_http_enabled_with_whitespace_token_fails() {
+            let result = run_with_env(
+                &[
+                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true")),
+                    ("NOTEDTHAT_API_TOKEN", Some("   ")),
+                ],
+                Config::from_env,
+            );
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("NOTEDTHAT_API_TOKEN"),
+                "error should mention NOTEDTHAT_API_TOKEN: {msg}"
+            );
+        }
+
+        #[test]
+        fn mcp_http_disabled_with_empty_token_succeeds() {
+            let cfg = run_with_env(
+                &[
+                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false")),
+                    ("NOTEDTHAT_API_TOKEN", Some("test-token")),
+                ],
+                Config::from_env,
+            )
+            .unwrap();
+            assert!(!cfg.mcp_http_enabled);
+        }
     }
 }

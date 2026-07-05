@@ -118,6 +118,14 @@ fn test_config_with_webdav(
         webdav_listen_addr: dav_addr,
         webdav_username: WEBDAV_USER.to_string(),
         webdav_password: WEBDAV_PASS.to_string(),
+        mcp_http_bind: dav_addr,
+        mcp_http_enabled: true,
+        mcp_http_allowed_origins: vec!["null".to_string()],
+        mcp_http_allowed_hosts: vec![
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "::1".to_string(),
+        ],
     }
 }
 
