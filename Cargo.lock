@@ -2198,6 +2198,7 @@ name = "notedthat-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "notedthat-core",
  "percent-encoding",
  "reqwest",
@@ -2244,6 +2245,7 @@ dependencies = [
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
+ "notedthat-mcp",
  "notedthat-mcp-stdio",
  "notedthat-storage-s3",
  "notedthat-webdav",
