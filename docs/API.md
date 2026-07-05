@@ -996,9 +996,42 @@ is missing or empty. See [CONFIGURATION.md](CONFIGURATION.md) for details.
 
 The MCP (Model Context Protocol) surface wraps the HTTP API described above. It is a thin proxy: every MCP tool call translates to one or more HTTP API requests. The MCP layer **never** accesses storage or the index directly (§5 principle 10).
 
-### Transport
+### Transports
 
-MCP is served by the `notedthat-mcp-stdio` binary over **stdio only** in v1 (D31). HTTP transport is post-v1. Configure your MCP client to launch the binary as a subprocess; see [README.md](../README.md) for setup snippets.
+NotedThat supports two MCP transports: stdio (M7) and streamable HTTP (M8).
+
+#### stdio transport
+
+MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your MCP client to launch the binary as a subprocess; see [README.md](../README.md) for setup snippets.
+
+#### Streamable HTTP transport
+
+MCP is also available over HTTP at a dedicated listener (default `0.0.0.0:8082`). Configure the bind address with `NOTEDTHAT_MCP_HTTP_BIND`.
+
+**Endpoint:** `POST /mcp`
+
+**Authentication:** Bearer token, same credential as the HTTP API:
+
+```
+Authorization: Bearer <NOTEDTHAT_API_TOKEN>
+```
+
+The server operates in **stateless JSON-response mode**: each `POST /mcp` request is a complete, self-contained JSON-RPC exchange. No session state is retained between requests.
+
+**SSE refusal:** The legacy SSE transport is not supported. The following requests return `405 Method Not Allowed`:
+
+- `GET /mcp`
+- `DELETE /mcp`
+- `POST /sse`
+- `GET /sse` and any path under `/sse/`
+
+The 405 response body is always:
+
+```json
+{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}
+```
+
+**HTTPS requirement:** Bearer tokens must not travel over plaintext HTTP on untrusted networks. Terminate TLS at a reverse proxy (nginx, Caddy, Traefik) before exposing the MCP HTTP listener to the internet. Bearer over plaintext HTTP is only acceptable on loopback or private trusted links (e.g., `127.0.0.1` in a local dev setup).
 
 ### Tools
 
@@ -1066,6 +1099,51 @@ Move/rename an object within a knowledge base. **Non-atomic** in v1: implemented
 
 **Response**: text confirmation or partial-failure error
 
+### Resources
+
+NotedThat exposes MCP Resources so clients can browse and read objects without calling tools directly. Resources are advertised in the `initialize` response under `capabilities.resources`. There is no `subscribe` or `listChanged` support in v1.
+
+#### URI scheme
+
+```
+notedthat://<kb_slug>/<percent-encoded object_key>
+```
+
+Examples:
+
+```
+notedthat://notes/hello.md
+notedthat://notes/2024%2Fjanuary%2Fmeeting-notes.md
+notedthat://scratch/Untitled%201.canvas
+```
+
+The object key is percent-encoded exactly once. The `/` separator within a key is encoded as `%2F`.
+
+#### Listing resources
+
+`resources/list` returns a flat listing across all declared knowledge bases. Results are paginated using an opaque base64 cursor that tracks position across KB boundaries. Pass the returned `nextCursor` value back as the `cursor` parameter on the next call. The server never silently truncates: if more results exist, `nextCursor` is always present.
+
+`Resource.name` equals the object key. No `title`, `description`, or annotations are set.
+
+#### Reading resources
+
+`resources/read` accepts `{ "uri": "notedthat://..." }` and returns the object contents:
+
+- **Text resources** (valid UTF-8): `TextResourceContents` with the detected MIME type.
+- **Binary resources** (non-UTF-8 bytes): `BlobResourceContents` with base64-encoded data and `mimeType: "application/octet-stream"`.
+
+MIME detection by extension:
+
+| Extension | MIME type |
+|-----------|-----------|
+| `.md`, `.markdown` | `text/markdown` |
+| `.txt` | `text/plain` |
+| `.png` | `image/png` |
+| `.jpg`, `.jpeg` | `image/jpeg` |
+| anything else | `application/octet-stream` |
+
+**Byte ranges** are not available through `resources/read` (which takes only `{ uri }`). Use the `read` tool with `byte_start` and `byte_end` arguments to fetch a slice of an object.
+
 ### Path Encoding
 
 Object paths are percent-encoded per RFC 3986 before being placed in URLs. The `/` separator within a path is encoded as `%2F`. Example: `docs/rfc/7231.md` → `docs%2Frfc%2F7231.md`.
@@ -1087,7 +1165,7 @@ All MCP errors carry one of these codes:
 
 ### v1 Limitations
 
-- **stdio only**: HTTP transport is post-v1 (D31)
-- **No Resources**: MCP Resources (`notedthat://<kb>/<path>`) are post-v1 (D37)
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
+- **No subscribe or listChanged**: Resources capability is advertised without these fields; clients must poll `resources/list` for updates
+- **No per-KB access control**: `NOTEDTHAT_API_TOKEN` is a single shared secret; there is no JWT or per-KB visibility in v1
