@@ -1,11 +1,14 @@
 #![allow(missing_docs)]
 
+use std::process::Stdio;
 use std::time::Duration;
 use testcontainers::{
     GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
 };
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -13,6 +16,7 @@ use wiremock::{
 
 const API_TOKEN: &str = "e2e-test-token";
 const EXPECTED_M7_TOOLS: &str = "list_knowledgebases,search,read,write,list,delete,move";
+const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
 // S3 gateway rejects all signed requests. target path is the FIRST arg in with_copy_to.
@@ -262,10 +266,144 @@ async fn mcp_call_tool(
 }
 
 fn mcp_json_content(response: &serde_json::Value) -> serde_json::Value {
+    if !response["result"]["structuredContent"].is_null() {
+        return response["result"]["structuredContent"].clone();
+    }
+
     let text = response["result"]["content"][0]["text"]
         .as_str()
-        .expect("MCP tool result must contain JSON text content");
+        .unwrap_or_else(|| panic!("MCP tool result must contain JSON content: {response}"));
     serde_json::from_str(text).expect("MCP JSON content must parse")
+}
+
+fn search_hit_identity(hit: &serde_json::Value) -> (String, u64, u64) {
+    let object_key = hit["object_key"]
+        .as_str()
+        .expect("search hit should include object_key")
+        .to_string();
+    let byte_start = hit["byte_start"]
+        .as_u64()
+        .expect("search hit should include byte_start");
+    let byte_end = hit["byte_end"]
+        .as_u64()
+        .expect("search hit should include byte_end");
+    (object_key, byte_start, byte_end)
+}
+
+fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let mut child = Command::new(MCP_STDIO_BIN)
+        .env("NOTEDTHAT_URL", url)
+        .env("NOTEDTHAT_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn notedthat-mcp-stdio");
+    let stdin = child
+        .stdin
+        .take()
+        .expect("stdio child stdin should be piped");
+    let stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .expect("stdio child stdout should be piped"),
+    );
+    (child, stdin, stdout)
+}
+
+async fn stdio_mcp_request(
+    stdin: &mut ChildStdin,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    let mut line = serde_json::to_string(&request).unwrap();
+    line.push('\n');
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .expect("failed to write stdio MCP request");
+    stdin
+        .flush()
+        .await
+        .expect("failed to flush stdio MCP stdin");
+}
+
+async fn stdio_mcp_initialized(stdin: &mut ChildStdin) {
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    let mut line = serde_json::to_string(&notification).unwrap();
+    line.push('\n');
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .expect("failed to write stdio MCP initialized notification");
+    stdin
+        .flush()
+        .await
+        .expect("failed to flush stdio MCP stdin");
+}
+
+async fn stdio_mcp_response(stdout: &mut BufReader<ChildStdout>) -> serde_json::Value {
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(10), stdout.read_line(&mut line))
+        .await
+        .expect("timed out reading stdio MCP stdout")
+        .expect("failed to read from stdio MCP stdout");
+    assert!(
+        !line.trim().is_empty(),
+        "stdio MCP stdout returned an empty line"
+    );
+    let response: serde_json::Value = serde_json::from_str(line.trim())
+        .unwrap_or_else(|_| panic!("stdio MCP response must be JSON: {line:?}"));
+    assert_eq!(
+        response.get("jsonrpc").and_then(serde_json::Value::as_str),
+        Some("2.0"),
+        "stdio MCP response must be JSON-RPC 2.0: {response}"
+    );
+    response
+}
+
+async fn stdio_mcp_call_tool(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    stdio_mcp_request(
+        stdin,
+        id,
+        "tools/call",
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": arguments,
+        }),
+    )
+    .await;
+    stdio_mcp_response(stdout).await
+}
+
+async fn stop_stdio_child(child: &mut Child, stdin: ChildStdin) {
+    drop(stdin);
+    if child
+        .try_wait()
+        .expect("failed to poll stdio child")
+        .is_none()
+    {
+        child.start_kill().expect("failed to kill stdio child");
+        child.wait().await.expect("failed to wait for stdio child");
+    }
 }
 
 async fn poll_mcp_search_hit(
@@ -520,6 +658,155 @@ async fn mcp_http_write_search_identity() {
         "search hit byte range should be non-empty: {hit}"
     );
 
+    server_handle.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn mcp_http_write_stdio_search_identity() {
+    // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
+    let (_seaweed, s3_url) = start_seaweedfs().await;
+    let (_qdrant, qdrant_url) = start_qdrant().await;
+    let mock_embedder = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_embedder)
+        .await;
+
+    let http_addr = free_addr().await;
+    let dav_addr = free_addr().await;
+    let mcp_addr = free_addr().await;
+    let config = test_config_with_mcp_http(
+        http_addr,
+        dav_addr,
+        mcp_addr,
+        &s3_url,
+        &qdrant_url,
+        &mock_embedder.uri(),
+    );
+
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run(config)
+            .await
+            .expect("server run failed");
+    });
+
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{mcp_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+
+    let client = reqwest::Client::new();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let phrase = format!("notedthat_m8_http_write_stdio_search_unique_{nonce}");
+    let content = format!("# MCP HTTP to stdio identity\n\n{phrase}\n");
+
+    let initialize = mcp_request(
+        &client,
+        &mcp_url,
+        0,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "notedthat-e2e", "version": "0" }
+        }),
+    )
+    .await;
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize should succeed before tools/call: {initialize}"
+    );
+
+    let write_response = mcp_call_tool(
+        &client,
+        &mcp_url,
+        1,
+        "write",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "e2e.md",
+            "content": content,
+            "mime_type": "text/markdown",
+        }),
+    )
+    .await;
+    assert!(
+        write_response.get("result").is_some(),
+        "MCP HTTP write should succeed: {write_response}"
+    );
+
+    // When: HTTP search confirms indexing, then stdio search queries the same HTTP API.
+    let found_hit = poll_mcp_search_hit(&client, &mcp_url, &phrase, Duration::from_secs(40)).await;
+    let embedder_requests = mock_embedder.received_requests().await.unwrap_or_default();
+    eprintln!(
+        "embedder wiremock hits before MCP search assertion: {}",
+        embedder_requests.len()
+    );
+    for (index, request) in embedder_requests.iter().enumerate() {
+        eprintln!(
+            "embedder wiremock hit {index}: method={} path={} body={}",
+            request.method,
+            request.url.path(),
+            String::from_utf8_lossy(&request.body),
+        );
+    }
+
+    let http_hit = found_hit.expect("MCP HTTP search should return the written phrase within 40 s");
+    let http_identity = search_hit_identity(&http_hit);
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&http_url, API_TOKEN);
+    stdio_mcp_request(
+        &mut stdin,
+        0,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "notedthat-e2e-stdio", "version": "0" }
+        }),
+    )
+    .await;
+    let stdio_initialize = stdio_mcp_response(&mut stdout).await;
+    assert!(
+        stdio_initialize.get("result").is_some(),
+        "stdio initialize should succeed: {stdio_initialize}"
+    );
+    stdio_mcp_initialized(&mut stdin).await;
+
+    let stdio_search = stdio_mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "search",
+        serde_json::json!({
+            "kb": "notes",
+            "query": phrase,
+            "limit": 5,
+        }),
+    )
+    .await;
+    let stdio_result = mcp_json_content(&stdio_search);
+    let stdio_hit = stdio_result["hits"]
+        .as_array()
+        .and_then(|hits| {
+            hits.iter()
+                .find(|hit| hit["object_key"].as_str() == Some("e2e.md"))
+        })
+        .unwrap_or_else(|| panic!("stdio search should return e2e.md hit: {stdio_result}"));
+    let stdio_identity = search_hit_identity(stdio_hit);
+
+    // Then: both MCP surfaces report the same object and byte coordinate identity.
+    assert_eq!(
+        stdio_identity, http_identity,
+        "stdio search identity should exactly match MCP HTTP search identity; http_hit={http_hit}, stdio_hit={stdio_hit}"
+    );
+
+    stop_stdio_child(&mut child, stdin).await;
     server_handle.abort();
 }
 

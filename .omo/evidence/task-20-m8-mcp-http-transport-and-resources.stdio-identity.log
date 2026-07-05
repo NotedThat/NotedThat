@@ -1,0 +1,31 @@
+warning: missing documentation for the crate
+  --> crates/notedthat-server/build.rs:1:1
+   |
+ 1 | / use std::path::PathBuf;
+ 2 | |
+ 3 | | fn main() {
+ 4 | |     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+...  |
+19 | |     );
+20 | | }
+   | |_^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for the crate
+ --> crates/notedthat-mcp-stdio/src/lib.rs:2:58
+  |
+2 | // This allows the binary to be used as a dev-dependency
+  |                                                         ^
+  |
+  = note: requested on the command line with `-W missing-docs`
+
+
+running 1 test
+embedder wiremock hits before MCP search assertion: 3
+embedder wiremock hit 0: method=POST path=/v1/embeddings body={"model":"test-model","input":["notedthat_m8_http_write_stdio_search_unique_1783261234119421325"]}
+embedder wiremock hit 1: method=POST path=/v1/embeddings body={"model":"test-model","input":["# MCP HTTP to stdio identity\n\nnotedthat_m8_http_write_stdio_search_unique_1783261234119421325\n"]}
+embedder wiremock hit 2: method=POST path=/v1/embeddings body={"model":"test-model","input":["notedthat_m8_http_write_stdio_search_unique_1783261234119421325"]}
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 22.78s
+
