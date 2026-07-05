@@ -591,6 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_cursor_collects_1500_without_duplicates() {
+        use std::collections::HashSet;
         let storage = InMemoryStorage::default();
         let kb = KbSlug::try_new("test").expect("valid slug");
         // Seed 1500 objects with lexicographically-sortable keys
@@ -631,7 +632,6 @@ mod tests {
         sorted_keys.sort();
         assert_eq!(all_keys, sorted_keys, "keys must be in lexicographic order");
         // AC3: no duplicates
-        use std::collections::HashSet;
         let unique: HashSet<_> = all_keys.iter().collect();
         assert_eq!(unique.len(), 1500, "no duplicate keys across pages");
         // AC4: the loop exited because next_cursor was None (not truncated=false workaround)
