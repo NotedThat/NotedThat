@@ -118,6 +118,66 @@ fn test_config_with_mcp_http(
     }
 }
 
+fn test_config_with_kbs_and_mcp_http(
+    kbs: &[&str],
+    http_addr: std::net::SocketAddr,
+    dav_addr: std::net::SocketAddr,
+    mcp_addr: std::net::SocketAddr,
+    s3_url: &str,
+    qdrant_url: &str,
+    embedder_url: &str,
+) -> notedthat_server::config::Config {
+    use notedthat_core::{KbSlug, TenantSlug};
+    use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+    use notedthat_storage_s3::S3Config;
+    use std::collections::BTreeMap;
+
+    let mut kb_map = BTreeMap::new();
+    for kb in kbs {
+        kb_map.insert((*kb).to_string(), KbSlug::try_new(*kb).unwrap());
+    }
+
+    Config {
+        api_token: API_TOKEN.to_string(),
+        kbs: kb_map,
+        tenant_slug: TenantSlug::default(),
+        listen_addr: http_addr,
+        s3: S3Config {
+            endpoint_url: Some(s3_url.to_string()),
+            region: "us-east-1".to_string(),
+            access_key_id: "any".to_string(),
+            secret_access_key: "any".to_string(),
+            force_path_style: true,
+        },
+        log_format: LogFormat::Pretty,
+        qdrant: ServerQdrantConfig {
+            url: qdrant_url.to_string(),
+            api_key: None,
+        },
+        embedder: EmbedderConfig {
+            endpoint_url: embedder_url.to_string(),
+            model: "test-model".to_string(),
+            api_key: "test-key".to_string(),
+            dimensions: 4,
+            batch_size: 32,
+            timeout_ms: 30_000,
+            max_retries: 3,
+            max_input_tokens: 8192,
+        },
+        webdav_listen_addr: dav_addr,
+        webdav_username: "e2e-webdav-user".to_string(),
+        webdav_password: "e2e-webdav-pass".to_string(),
+        mcp_http_bind: mcp_addr,
+        mcp_http_enabled: true,
+        mcp_http_allowed_origins: vec!["null".to_string()],
+        mcp_http_allowed_hosts: vec![
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "::1".to_string(),
+        ],
+    }
+}
+
 async fn free_addr() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -609,6 +669,264 @@ async fn mcp_http_auth_and_sse_refusal() {
         resp.status().as_u16(),
         403,
         "POST /mcp with disallowed Host must return 403"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn mcp_resources_list_and_read() {
+    use std::collections::HashSet;
+
+    const KBS: &[&str] = &["alpha", "beta", "gamma"];
+    const OBJECTS_PER_KB: usize = 150;
+    const BINARY_KB: &str = "alpha";
+    const BINARY_KEY: &str = "binary-data.bin";
+
+    let (_seaweed, s3_url) = start_seaweedfs().await;
+    let (_qdrant, qdrant_url) = start_qdrant().await;
+    let mock_embedder = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_embedder)
+        .await;
+
+    let http_addr = free_addr().await;
+    let dav_addr = free_addr().await;
+    let mcp_addr = free_addr().await;
+    let config = test_config_with_kbs_and_mcp_http(
+        KBS,
+        http_addr,
+        dav_addr,
+        mcp_addr,
+        &s3_url,
+        &qdrant_url,
+        &mock_embedder.uri(),
+    );
+
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run(config)
+            .await
+            .expect("server run failed");
+    });
+
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{mcp_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(30)).await;
+
+    let client = reqwest::Client::new();
+
+    let mut seeded_uris: HashSet<String> = HashSet::new();
+    let mut req_id: u64 = 0;
+    for kb in KBS {
+        for i in 0..OBJECTS_PER_KB {
+            req_id += 1;
+            let resp = mcp_request(
+                &client,
+                &mcp_url,
+                req_id,
+                "tools/call",
+                serde_json::json!({
+                    "name": "write",
+                    "arguments": {
+                        "kb": kb,
+                        "path": format!("obj-{i:04}.md"),
+                        "content": format!("# Object {i}\n\nThis is object {i} in knowledge base {kb}."),
+                        "mime_type": "text/markdown"
+                    }
+                }),
+            )
+            .await;
+            assert!(
+                resp["error"].is_null(),
+                "MCP write returned JSON-RPC error for {kb}/obj-{i:04}.md: {resp}"
+            );
+            assert!(
+                !resp["result"]["isError"].as_bool().unwrap_or(false),
+                "MCP write returned a tool-level error for {kb}/obj-{i:04}.md: {resp}"
+            );
+            seeded_uris.insert(format!("notedthat://{kb}/obj-{i:04}.md"));
+        }
+    }
+
+    // The MCP write tool accepts only UTF-8 strings, so binary content is seeded
+    // directly through the HTTP API.
+    let binary_bytes: Vec<u8> = vec![0x00, 0xFF, 0xFE, 0xAB, 0xCD, 0xEF, 0x01, 0x80];
+    let binary_put = client
+        .put(format!(
+            "{http_url}/v1/knowledgebases/{BINARY_KB}/{BINARY_KEY}"
+        ))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "application/octet-stream")
+        .body(binary_bytes)
+        .send()
+        .await
+        .expect("PUT binary blob to HTTP API failed");
+    assert!(
+        binary_put.status().is_success(),
+        "binary blob PUT must succeed, got {}",
+        binary_put.status()
+    );
+    seeded_uris.insert(format!("notedthat://{BINARY_KB}/{BINARY_KEY}"));
+
+    let mut all_uris: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut page_count: u32 = 0;
+    const MAX_PAGES: u32 = 30;
+
+    loop {
+        page_count += 1;
+        assert!(
+            page_count <= MAX_PAGES,
+            "resources/list cursor loop exceeded {MAX_PAGES} pages — probable infinite-loop bug"
+        );
+
+        req_id += 1;
+        let params = match &cursor {
+            Some(c) => serde_json::json!({ "cursor": c }),
+            None => serde_json::json!({}),
+        };
+        let resp = mcp_request(&client, &mcp_url, req_id, "resources/list", params).await;
+        assert!(
+            resp["error"].is_null(),
+            "resources/list returned JSON-RPC error on page {page_count}: {resp}"
+        );
+
+        let resources = resp["result"]["resources"]
+            .as_array()
+            .expect("resources/list result.resources must be a JSON array");
+
+        for resource in resources {
+            let uri = resource["uri"]
+                .as_str()
+                .expect("each resource must have a string 'uri' field")
+                .to_string();
+            all_uris.push(uri);
+        }
+
+        cursor = resp["result"]["nextCursor"].as_str().map(String::from);
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let uri_set: HashSet<&str> = all_uris.iter().map(String::as_str).collect();
+
+    assert_eq!(
+        uri_set.len(),
+        all_uris.len(),
+        "resources/list returned {} duplicate URI(s) ({} unique out of {} total across {} pages)",
+        all_uris.len() - uri_set.len(),
+        uri_set.len(),
+        all_uris.len(),
+        page_count
+    );
+
+    assert!(
+        all_uris.len() >= seeded_uris.len(),
+        "resources/list returned {} URIs but {} were seeded — drop detected",
+        all_uris.len(),
+        seeded_uris.len()
+    );
+
+    for seeded_uri in &seeded_uris {
+        assert!(
+            uri_set.contains(seeded_uri.as_str()),
+            "seeded URI missing from resources/list result: {seeded_uri}"
+        );
+    }
+
+    for uri in &all_uris {
+        assert!(
+            uri.starts_with("notedthat://"),
+            "every resource URI must start with notedthat://: {uri}"
+        );
+        let (kb_part, obj_part) = uri
+            .strip_prefix("notedthat://")
+            .and_then(|s| s.split_once('/'))
+            .unwrap_or_else(|| panic!("resource URI must have <kb>/<key> after scheme: {uri}"));
+        assert!(
+            KBS.contains(&kb_part),
+            "URI KB slug {kb_part:?} must be one of {KBS:?}: {uri}"
+        );
+        assert!(!obj_part.is_empty(), "URI object key must not be empty: {uri}");
+    }
+
+    let md_uri = "notedthat://alpha/obj-0000.md";
+    req_id += 1;
+    let read_md = mcp_request(
+        &client,
+        &mcp_url,
+        req_id,
+        "resources/read",
+        serde_json::json!({ "uri": md_uri }),
+    )
+    .await;
+    assert!(
+        read_md["error"].is_null(),
+        "resources/read for markdown URI must not return a JSON-RPC error: {read_md}"
+    );
+    let md_contents = read_md["result"]["contents"]
+        .as_array()
+        .expect("resources/read result.contents must be a JSON array");
+    assert_eq!(
+        md_contents.len(),
+        1,
+        "resources/read for a markdown object must return exactly 1 content item"
+    );
+    let md_item = &md_contents[0];
+    assert_eq!(
+        md_item["mimeType"].as_str(),
+        Some("text/markdown"),
+        "markdown resource must carry text/markdown MIME type: {md_item}"
+    );
+    assert!(
+        md_item["text"].as_str().is_some(),
+        "markdown resource must have a 'text' field (TextResourceContents): {md_item}"
+    );
+    assert!(
+        md_item["blob"].is_null(),
+        "markdown resource must not have a 'blob' field: {md_item}"
+    );
+
+    let bin_uri = format!("notedthat://{BINARY_KB}/{BINARY_KEY}");
+    req_id += 1;
+    let read_bin = mcp_request(
+        &client,
+        &mcp_url,
+        req_id,
+        "resources/read",
+        serde_json::json!({ "uri": bin_uri }),
+    )
+    .await;
+    assert!(
+        read_bin["error"].is_null(),
+        "resources/read for binary URI must not return a JSON-RPC error: {read_bin}"
+    );
+    let bin_contents = read_bin["result"]["contents"]
+        .as_array()
+        .expect("resources/read result.contents must be a JSON array");
+    assert_eq!(
+        bin_contents.len(),
+        1,
+        "resources/read for a binary object must return exactly 1 content item"
+    );
+    let bin_item = &bin_contents[0];
+    assert_eq!(
+        bin_item["mimeType"].as_str(),
+        Some("application/octet-stream"),
+        "binary resource must carry application/octet-stream MIME type: {bin_item}"
+    );
+    assert!(
+        bin_item["blob"].as_str().is_some(),
+        "binary resource must have a 'blob' (base64) field (BlobResourceContents): {bin_item}"
+    );
+    assert!(
+        bin_item["text"].is_null(),
+        "binary resource must not have a 'text' field: {bin_item}"
     );
 
     server_handle.abort();
