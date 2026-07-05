@@ -142,7 +142,7 @@ impl Config {
             })?;
 
         let mcp_http_enabled = match std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref() {
-            Ok("false") | Ok("0") => false,
+            Ok("false" | "0") => false,
             _ => true,
         };
 
