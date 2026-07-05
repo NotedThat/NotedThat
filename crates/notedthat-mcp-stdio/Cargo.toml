@@ -7,6 +7,9 @@ repository.workspace = true
 description = "MCP-over-stdio transport adapter for NotedThat"
 readme = "README.md"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "notedthat-mcp-stdio"
 path = "src/main.rs"
