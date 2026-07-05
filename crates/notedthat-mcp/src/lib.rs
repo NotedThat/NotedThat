@@ -3,7 +3,10 @@
 
 pub mod client;
 pub mod error;
+/// Streamable HTTP transport adapter for the MCP tool handler.
+pub mod http;
 pub mod path;
 /// MCP tool router and per-tool HTTP adapters.
 pub mod tools;
+pub use http::{McpHttpService, McpHttpServiceConfig, McpHttpServiceConfigError};
 pub use tools::NotedThatMcp;
