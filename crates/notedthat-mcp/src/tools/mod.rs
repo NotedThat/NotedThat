@@ -10,8 +10,11 @@ mod write;
 
 use crate::client::NotedThatClient;
 use rmcp::{
-    ErrorData as McpError, handler::server::wrapper::Parameters, model::CallToolResult, tool,
-    tool_handler, tool_router,
+    ErrorData as McpError,
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, ListResourcesResult, PaginatedRequestParams},
+    service::{RequestContext, RoleServer},
+    tool, tool_handler, tool_router,
 };
 
 /// MCP tool handler backed by the `NotedThat` HTTP API.
@@ -78,7 +81,19 @@ impl NotedThatMcp {
 }
 
 #[tool_handler]
-impl rmcp::handler::server::ServerHandler for NotedThatMcp {}
+impl rmcp::handler::server::ServerHandler for NotedThatMcp {
+    async fn list_resources(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        crate::resources_list::list_resources(
+            &self.client,
+            request.and_then(|params| params.cursor),
+        )
+        .await
+    }
+}
 
 #[cfg(test)]
 mod send_sync_tests {
