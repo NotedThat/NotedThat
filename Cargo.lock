@@ -2243,6 +2243,7 @@ dependencies = [
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
+ "notedthat-mcp-stdio",
  "notedthat-storage-s3",
  "notedthat-webdav",
  "reqwest",
