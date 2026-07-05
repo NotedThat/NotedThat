@@ -20,6 +20,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+mod mcp_http;
+
+#[cfg(test)]
+#[path = "run/mcp_http_listener.rs"]
+mod mcp_http_listener;
+
 /// Grace period for in-flight `WebDAV` uploads after shutdown signal.
 /// Runs BEFORE the existing 31-second indexer drain.
 pub const WEBDAV_INFLIGHT_GRACE: Duration = Duration::from_secs(60);
@@ -129,10 +135,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let (state, dav_state, indexer_shutdown, worker_handle) =
         build_infrastructure(config.clone()).await?;
 
-    // Bind BOTH listeners before serving either (G11: atomic startup failure).
+    // Bind every enabled listener before serving any of them (G11: atomic startup failure).
+    // HTTP binds first because the MCP listener talks back through the actual HTTP API socket.
     let http_listener = TcpListener::bind(config.listen_addr)
         .await
         .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
+    let internal_api_url = mcp_http::internal_http_api_url(http_listener.local_addr()?);
     let dav_listener = TcpListener::bind(config.webdav_listen_addr)
         .await
         .with_context(|| {
@@ -141,10 +149,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 config.webdav_listen_addr
             )
         })?;
+    let mcp_listener = mcp_http::bind_listener(&config).await?;
 
     info!(
         http = %config.listen_addr,
         dav = %config.webdav_listen_addr,
+        mcp = ?mcp_listener.as_ref().and_then(|listener| listener.local_addr().ok()),
         "notedthat-server listening"
     );
 
@@ -155,6 +165,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let dav_shutdown = shutdown_token.clone();
     let shutdown_on_http_error = shutdown_token.clone();
     let shutdown_on_dav_error = shutdown_token.clone();
+    let mcp_shutdown = shutdown_token.child_token();
+    let mcp_serve = match mcp_listener {
+        Some(listener) => {
+            let mcp_app = mcp_http::build_router(&config, &internal_api_url, mcp_shutdown.clone())?;
+            Some(
+                axum::serve(listener, mcp_app)
+                    .with_graceful_shutdown(async move { mcp_shutdown.cancelled().await }),
+            )
+        }
+        None => None,
+    };
+    let shutdown_on_mcp_error = shutdown_token.clone();
 
     let http_serve = axum::serve(http_listener, http_app)
         .with_graceful_shutdown(async move { http_shutdown.cancelled().await });
@@ -180,15 +202,37 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
         result
     });
+    let mcp_handle = mcp_serve.map(|serve| {
+        tokio::spawn(async move {
+            let result = serve.await.context("MCP HTTP listener failed");
+            if result.is_err() {
+                shutdown_on_mcp_error.cancel();
+            }
+            result
+        })
+    });
 
-    let serve_result = tokio::try_join!(http_handle, dav_handle);
-    shutdown_trigger.abort();
-    let (http_result, dav_result) = serve_result.context("server task join failed")?;
-    http_result?;
-    dav_result?;
+    match mcp_handle {
+        Some(mcp_handle) => {
+            let serve_result = tokio::try_join!(http_handle, dav_handle, mcp_handle);
+            shutdown_trigger.abort();
+            let (http_result, dav_result, mcp_result) =
+                serve_result.context("server task join failed")?;
+            http_result?;
+            dav_result?;
+            mcp_result?;
+        }
+        None => {
+            let serve_result = tokio::try_join!(http_handle, dav_handle);
+            shutdown_trigger.abort();
+            let (http_result, dav_result) = serve_result.context("server task join failed")?;
+            http_result?;
+            dav_result?;
+        }
+    }
 
     tracing::info!(
-        "both listeners quiesced; waiting {}s for in-flight WebDAV uploads",
+        "listeners quiesced; waiting {}s for in-flight WebDAV uploads",
         WEBDAV_INFLIGHT_GRACE.as_secs()
     );
     tokio::time::sleep(WEBDAV_INFLIGHT_GRACE).await;
