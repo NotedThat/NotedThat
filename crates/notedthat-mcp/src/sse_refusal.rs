@@ -9,8 +9,7 @@
 //! The exact JSON body is: `{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}`
 
 /// The exact JSON body for SSE refusal responses.
-const SSE_REFUSAL_BODY: &str =
-    r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
+const SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
 
 /// Check if a request should be refused (legacy SSE or unsupported method on /mcp).
 ///
@@ -22,7 +21,7 @@ const SSE_REFUSAL_BODY: &str =
 /// - Any path starting with /sse/
 pub fn should_refuse_request(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/mcp") | ("DELETE", "/mcp") | ("POST", "/sse") | ("GET", "/sse") => true,
+        ("GET" | "DELETE", "/mcp") | ("POST" | "GET", "/sse") => true,
         (_, p) if p.starts_with("/sse/") => true,
         _ => false,
     }
@@ -34,7 +33,7 @@ pub fn refusal_body() -> &'static [u8] {
 }
 
 #[cfg(test)]
-mod sse_refusal {
+mod tests {
     use super::*;
 
     #[test]
@@ -105,7 +104,7 @@ mod sse_refusal {
             .as_object()
             .unwrap()
             .keys()
-            .map(|k| k.as_str())
+            .map(String::as_str)
             .collect();
 
         assert_eq!(keys.len(), 2, "body should have exactly 2 keys");

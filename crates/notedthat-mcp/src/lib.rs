@@ -9,9 +9,9 @@ pub mod error;
 pub mod http;
 pub mod path;
 mod resources_list;
-pub mod sse_refusal;
 /// MCP `resources/read` implementation for `notedthat://` object URIs.
 pub mod resources_read;
+pub mod sse_refusal;
 /// MCP tool router and per-tool HTTP adapters.
 pub mod tools;
 pub use http::{McpHttpService, McpHttpServiceConfig, McpHttpServiceConfigError};

@@ -1,3 +1,8 @@
+//! Build script for `notedthat-server`.
+//!
+//! Exports `CARGO_BIN_EXE_notedthat-mcp-stdio` so integration tests can locate
+//! the `notedthat-mcp-stdio` binary from a cross-package dev-dependency.
+
 use std::path::PathBuf;
 
 fn main() {
