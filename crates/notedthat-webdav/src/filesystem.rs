@@ -23,7 +23,7 @@ use std::{
 
 use crate::{metadata::WebDavMetaData, state::WebDavState};
 
-/// Maximum number of objects returned by a single WebDAV PROPFIND in v1.
+/// Maximum number of objects returned by a single `WebDAV` PROPFIND in v1.
 ///
 /// This is a hardcoded v1 safety hedge against memory and reverse-proxy timeout risk
 /// (KBs can have 1k–100k documents; unbounded enumeration would risk OOM and 60s proxy
@@ -32,7 +32,7 @@ use crate::{metadata::WebDavMetaData, state::WebDavState};
 /// larger than 10,000 objects — such KBs must use the HTTP cursor API directly.
 pub(crate) const PROPFIND_MAX_ENTRIES: u32 = 10_000;
 
-/// Exact DAV XML body returned when a WebDAV PROPFIND exceeds the v1 object cap.
+/// Exact DAV XML body returned when a `WebDAV` PROPFIND exceeds the v1 object cap.
 pub(crate) const PROPFIND_TOO_LARGE_DAV_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error">
   <nt:propfind-too-large/>

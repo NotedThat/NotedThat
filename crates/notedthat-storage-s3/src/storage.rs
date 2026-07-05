@@ -498,7 +498,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    /// Test that list_objects accepts cursor parameter and passes it through.
+    /// Test that `list_objects` accepts cursor parameter and passes it through.
     /// This is a compile-time test to verify the signature is correct.
     #[test]
     fn list_objects_signature_accepts_cursor() {
@@ -524,10 +524,10 @@ mod tests {
     }
 
     /// Test that the logic correctly handles the S3 quirk:
-    /// is_truncated=false but NextContinuationToken is present.
+    /// `is_truncated=false` but `NextContinuationToken` is present.
     ///
-    /// Expected behavior: warn and ignore the token, return next_cursor=None.
-    /// This is verified at integration level via SeaweedFS in tests/integration.rs.
+    /// Expected behavior: warn and ignore the token, return `next_cursor=None`.
+    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
     #[test]
     fn list_objects_ignores_token_when_not_truncated_doc() {
         // Integration test scenario:
@@ -541,10 +541,10 @@ mod tests {
     }
 
     /// Test that the logic correctly handles the S3 quirk:
-    /// is_truncated=true but NextContinuationToken is missing.
+    /// `is_truncated=true` but `NextContinuationToken` is missing.
     ///
-    /// Expected behavior: fail closed with BackendUnavailable.
-    /// This is verified at integration level via SeaweedFS in tests/integration.rs.
+    /// Expected behavior: fail closed with `BackendUnavailable`.
+    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
     #[test]
     fn list_objects_truncated_without_token_is_backend_unavailable_doc() {
         // Integration test scenario:
