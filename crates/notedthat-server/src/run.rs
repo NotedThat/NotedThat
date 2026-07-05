@@ -212,23 +212,20 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         })
     });
 
-    match mcp_handle {
-        Some(mcp_handle) => {
-            let serve_result = tokio::try_join!(http_handle, dav_handle, mcp_handle);
-            shutdown_trigger.abort();
-            let (http_result, dav_result, mcp_result) =
-                serve_result.context("server task join failed")?;
-            http_result?;
-            dav_result?;
-            mcp_result?;
-        }
-        None => {
-            let serve_result = tokio::try_join!(http_handle, dav_handle);
-            shutdown_trigger.abort();
-            let (http_result, dav_result) = serve_result.context("server task join failed")?;
-            http_result?;
-            dav_result?;
-        }
+    if let Some(mcp_handle) = mcp_handle {
+        let serve_result = tokio::try_join!(http_handle, dav_handle, mcp_handle);
+        shutdown_trigger.abort();
+        let (http_result, dav_result, mcp_result) =
+            serve_result.context("server task join failed")?;
+        http_result?;
+        dav_result?;
+        mcp_result?;
+    } else {
+        let serve_result = tokio::try_join!(http_handle, dav_handle);
+        shutdown_trigger.abort();
+        let (http_result, dav_result) = serve_result.context("server task join failed")?;
+        http_result?;
+        dav_result?;
     }
 
     tracing::info!(

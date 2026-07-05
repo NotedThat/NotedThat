@@ -58,6 +58,7 @@ impl Config {
     ///
     /// Returns `Err(Error::Config { .. })` if any required variable is missing
     /// or if any value is invalid (empty token, bad slug, duplicate slug, etc.).
+    #[allow(clippy::too_many_lines)]
     pub fn from_env() -> Result<Self, Error> {
         let api_token = std::env::var("NOTEDTHAT_API_TOKEN").map_err(|_| Error::Config {
             message: "NOTEDTHAT_API_TOKEN is required".into(),
@@ -141,10 +142,7 @@ impl Config {
                 message: format!("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid: {e}"),
             })?;
 
-        let mcp_http_enabled = match std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref() {
-            Ok("false" | "0") => false,
-            _ => true,
-        };
+        let mcp_http_enabled = !matches!(std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref(), Ok("false" | "0"));
 
         let mcp_http_bind = std::env::var("NOTEDTHAT_MCP_HTTP_BIND")
             .unwrap_or_else(|_| "0.0.0.0:8082".to_string())
