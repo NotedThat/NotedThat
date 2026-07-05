@@ -47,7 +47,7 @@ pub(crate) fn build_router(
         cancellation_token,
     )
     .context("failed to build MCP HTTP service config")?;
-    let mcp_service = McpHttpService::new(client, mcp_config);
+    let mcp_service = McpHttpService::new(client, &mcp_config);
     let token = config.api_token.clone();
     Ok(axum::Router::new()
         .route_service("/mcp", mcp_service.into_service())
