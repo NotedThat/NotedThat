@@ -270,6 +270,90 @@ The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three
 
 ---
 
+## MCP HTTP listener
+
+NotedThat (M8+) includes a built-in MCP-over-HTTP listener that exposes the same tools and resources as the stdio transport, but over streamable HTTP. It runs as a third listener alongside the HTTP API (port 8080) and WebDAV (port 8081).
+
+### MCP HTTP environment variables
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `NOTEDTHAT_MCP_HTTP_ENABLED` | `true` or `false` | `true` | Whether to start the MCP HTTP listener. When `false`, the listener is not bound and `/readyz` does not check it. |
+| `NOTEDTHAT_MCP_HTTP_BIND` | `host:port` (SocketAddr) | `0.0.0.0:8082` | Address and port the MCP HTTP listener binds to. Use `127.0.0.1:8082` to restrict to localhost. |
+| `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` | comma-separated strings | (unset) | Allowed `Origin` header values. When unset or empty, defaults to `["null"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
+| `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
+
+`NOTEDTHAT_API_TOKEN` is reused for MCP HTTP Bearer authentication. Every request to the MCP HTTP listener must present this token in an `Authorization: Bearer` header. If `NOTEDTHAT_MCP_HTTP_ENABLED` is `true` and `NOTEDTHAT_API_TOKEN` is empty or whitespace-only, the server exits at startup with a non-zero status.
+
+### Disabled listener behavior
+
+When `NOTEDTHAT_MCP_HTTP_ENABLED=false`:
+
+- No socket is bound on port 8082 (or whatever `NOTEDTHAT_MCP_HTTP_BIND` specifies).
+- `/readyz` returns `{"status":"ok"}` without probing or requiring the MCP listener.
+- All other listeners (HTTP API, WebDAV) start normally.
+
+### Origin and Host allow-list semantics
+
+The empty-string default is intentionally safe. Leaving `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` or `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` unset does **not** mean "allow all" — it means "loopback only":
+
+- **Origins:** unset or empty → `["null"]`. This matches requests from `null` origin (local file or same-host loopback) and rejects cross-origin browser requests.
+- **Hosts:** unset or empty → `["127.0.0.1", "localhost", "::1"]`. This rejects requests with a `Host` header pointing at a public hostname.
+
+Setting either variable to a non-empty comma-separated list replaces the loopback default with your explicit allowlist. Values are trimmed of whitespace.
+
+```sh
+# Allow two specific origins
+NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS=https://app.example.com,https://staging.example.com
+
+# Allow a public hostname in addition to localhost
+NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=localhost,mcp.example.com
+```
+
+### HTTPS requirement for public deployments
+
+The MCP HTTP listener speaks plain HTTP. Bearer tokens sent over plaintext HTTP are acceptable only on loopback or private trusted links (e.g., within a container network or VPN).
+
+For any public-facing deployment, terminate TLS at a reverse proxy before traffic reaches the MCP listener:
+
+- **nginx:** `proxy_pass http://127.0.0.1:8082;` behind an `ssl` server block
+- **Traefik:** route the MCP service through a TLS entrypoint
+- **Caddy:** `reverse_proxy 127.0.0.1:8082` inside a `tls` site block
+
+Do not expose port 8082 directly to the internet without TLS termination.
+
+### MCP endpoint
+
+The MCP HTTP listener mounts the streamable HTTP transport at `POST /mcp`. Legacy SSE paths (`GET /mcp`, `POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body directing clients to use `POST /mcp`.
+
+### Example: MCP HTTP with loopback defaults
+
+```sh
+# MCP HTTP is enabled by default; these are the implicit values
+NOTEDTHAT_MCP_HTTP_ENABLED=true
+NOTEDTHAT_MCP_HTTP_BIND=0.0.0.0:8082
+# NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS not set -> ["null"]
+# NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS not set -> ["127.0.0.1","localhost","::1"]
+```
+
+### Example: disable MCP HTTP
+
+```sh
+NOTEDTHAT_MCP_HTTP_ENABLED=false
+```
+
+### Example: public MCP HTTP behind a reverse proxy
+
+```sh
+NOTEDTHAT_MCP_HTTP_ENABLED=true
+NOTEDTHAT_MCP_HTTP_BIND=127.0.0.1:8082
+NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS=https://mcp.example.com
+NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=mcp.example.com
+# Reverse proxy terminates TLS and forwards to 127.0.0.1:8082
+```
+
+---
+
 ## MCP stdio client (`notedthat-mcp-stdio`)
 
 The `notedthat-mcp-stdio` binary is configured exclusively via environment variables. It refuses to start if either variable is missing, empty (after trimming whitespace), or if `NOTEDTHAT_URL` is not a valid http/https URL.
