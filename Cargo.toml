@@ -31,7 +31,7 @@ notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.1.0" }
 notedthat-write = { path = "crates/notedthat-write", version = "0.1.0" }
 
 # MCP
-rmcp = { version = "2.1.0", features = ["server", "macros", "schemars", "transport-io"] }
+rmcp = { version = "2.1.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 schemars = { version = "1.2", features = ["derive"] }
 percent-encoding = "2"
 url = "2"
