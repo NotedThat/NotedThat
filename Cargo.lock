@@ -2198,6 +2198,7 @@ name = "notedthat-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum 0.8.9",
  "base64",
  "notedthat-core",
  "percent-encoding",
@@ -2209,6 +2210,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tower 0.5.3",
  "tracing",
  "url",
  "wiremock",
