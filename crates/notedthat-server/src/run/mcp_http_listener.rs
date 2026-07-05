@@ -85,3 +85,18 @@ fn internal_http_api_url_uses_actual_bound_socket() {
     assert_eq!(internal_http_api_url(wildcard_v6), "http://[::1]:49124");
     assert_eq!(internal_http_api_url(concrete), "http://192.0.2.10:49125");
 }
+
+#[tokio::test]
+async fn disabled_mcp_http_listener_returns_none() {
+    // Given: MCP HTTP is disabled in config.
+    let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
+    config.mcp_http_enabled = false;
+
+    // When: the MCP listener is bound.
+    let listener = bind_listener(&config)
+        .await
+        .expect("bind_listener should succeed");
+
+    // Then: no listener is returned (MCP HTTP is skipped).
+    assert!(listener.is_none());
+}
