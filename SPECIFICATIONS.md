@@ -52,13 +52,13 @@ Three logical layers:
 | D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
 | D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other backends (§8.1) are supported at deployer-choice; NotedThat itself makes no runtime distinction. |
-| D31 | MCP transport (v1) | **stdio only in v1.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport (streamable) is post-v1. |
+| D31 | MCP transport (v1) | **stdio only in v1; streamable HTTP added in M8.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport (streamable) shipped in M8: `notedthat-server` binds a third listener (`NOTEDTHAT_MCP_HTTP_BIND`, default `0.0.0.0:8082`) serving stateless JSON-response MCP at `POST /mcp` with Bearer auth. Legacy SSE paths return 405. |
 | D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared in env vars** — no admin API, no CLI in v1. A `NOTEDTHAT_KBS` env var lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
 | D33 | Frontmatter handling (v1) | **Fully raw.** Frontmatter is not parsed, skipped, mapped, or interpreted in v1. If a markdown file starts with YAML/TOML/JSON frontmatter, those bytes are treated as ordinary markdown text for chunking, indexing, and byte offsets. Frontmatter-aware tag extraction and payload mapping are `[POST-v1]`. |
 | D34 | WebDAV FakeLs | **`[POST-v1]`** Not enabled in v1. Consequence: WebDAV clients that require `LOCK` before `PUT` (macOS Finder for saving, some Office suites, some mobile Files apps) will treat the mount as read-only or refuse to save. Read-only browsing works. API + MCP writes are unaffected. Add `FakeLs` when a real client scenario demands it. |
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D36 | Multipart upload | Switch to S3 multipart above **32 MiB** total size; part size **8 MiB** (matches `aws-sdk-s3` defaults). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
-| D37 | MCP Resources | **`[POST-v1]` Confirmed on the roadmap.** Expose `notedthat://<kb_slug>/<path>` as browsable MCP Resources for clients like Claude Desktop and MCP Inspector. Lands with MCP HTTP transport (D31) or shortly after. |
+| D37 | MCP Resources | **Shipped in M8.** Expose `notedthat://<kb_slug>/<percent-encoded path>` as browsable MCP Resources for clients like Claude Desktop and MCP Inspector. Flat listing via `resources/list` with an opaque base64 M8 cursor across KB boundaries. No `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents` base64-encoded. Landed alongside MCP HTTP transport (D31) in M8. |
 | D38 | Indexing queue (v1) | **Simple best-effort in-process queue.** Writes commit to S3 first, enqueue an indexing event to a bounded in-memory channel, then return. If the queue is full, return operation-specific `WriteError::IndexerBackpressureUpsert` or `WriteError::IndexerBackpressureTombstone` → HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 first; the client should retry to re-enqueue the indexing event. Log `INDEX_QUEUE_FULL`. If the embedder or Qdrant path fails downstream of the queue, log `INDEXING_FAILED` and mark the object stale/missing in search until a later write or future reindex. No durable queue, no job IDs, no caller-visible indexing status in v1. |
 | D39 | Startup provisioning (v1) | **Fail fast.** At startup, parse `NOTEDTHAT_KBS`, validate every slug, ensure each S3 bucket, manifest, and Qdrant collection exists, and exit non-zero if any declared KB cannot be provisioned or validated. No partial startup with missing KBs in v1. |
 | D40 | Path normalization (v1) | **Simple object-path rules.** Object paths are UTF-8 strings normalized by stripping one leading `/`, rejecting empty file paths, rejecting `.` / `..` segments, rejecting backslashes, preserving case, and using `/` as the only separator. Directories are virtual prefixes; only object bytes are stored. |
@@ -375,9 +375,9 @@ All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args
 | `delete(kb, path, if_match?)` | Delete object |
 | `move(kb, from, to, if_match?)` | Rename/move object |
 
-Resources: expose `notedthat://<kb_slug>/<path>` as MCP Resources for browsable clients — **`[POST-v1]`**. Tools first; Resources added later.
+Resources: expose `notedthat://<kb_slug>/<percent-encoded path>` as MCP Resources for browsable clients — **shipped in M8** (D37). Flat listing with opaque base64 cursor across KB boundaries; no `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents`.
 
-Transports: **stdio only in v1** (D31), via the `notedthat-mcp-stdio` binary (D29). Streamable HTTP transport added post-v1 if remote MCP hosting matters.
+Transports: **stdio in v1** (D31), via the `notedthat-mcp-stdio` binary (D29). **Streamable HTTP added in M8** (D31): `notedthat-server` binds a third listener at `POST /mcp` with Bearer auth, stateless JSON-response mode, and 405 refusal of legacy SSE paths.
 
 ### 6.11 Repository layout `[DECIDED — D28]`
 
@@ -403,7 +403,7 @@ Dep graph:
 - `notedthat-api-http` — depends on core + storage + indexer
 - `notedthat-webdav` — depends on core + an HTTP client to the local API
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
-- `notedthat-server` — depends on api-http + webdav; runs HTTP API + WebDAV listeners in v1 (MCP HTTP post-v1)
+- `notedthat-server` — depends on api-http + webdav + **notedthat-mcp** (deliberate M8 extension, plan §W1.3); runs three coordinated listeners: HTTP API + WebDAV + MCP HTTP
 - `notedthat-mcp-stdio` — depends on notedthat-mcp only
 
 Per D10, `notedthat-server` is the main artifact. `notedthat-mcp-stdio` ships in the same Docker image and separately as an installable (`cargo install notedthat-mcp-stdio`).
@@ -507,9 +507,9 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - KB deletion + open WebDAV mount — moot for v1 (D32).
 
 ### 7.2 MCP micro-decisions (closed for v1)
-- ✅ Resources: post-v1 (D37).
-- ✅ HTTP transport: post-v1 (D31).
-- Legacy SSE MCP transport: don't implement — deprecated in the MCP spec.
+- ✅ Resources: shipped in M8 (D37). Flat `notedthat://` URIs, opaque base64 cursor, no subscribe/listChanged.
+- ✅ HTTP transport: shipped in M8 (D31). Stateless JSON-response streamable HTTP at `POST /mcp`; Bearer auth reuses `NOTEDTHAT_API_TOKEN`.
+- ✅ Legacy SSE MCP transport: not implemented — deprecated in the MCP spec; GET/DELETE /mcp and POST/GET /sse return 405.
 
 ### 7.3 Non-functional targets `[OPEN]`
 - Search P50/P95 latency budget? — set with data once search ships.
@@ -521,7 +521,7 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - **WebDAV**: `FakeLs` for save-workflow clients (D34).
 - **KB lifecycle**: delete + rename (D32).
 - **Content**: frontmatter parsing → payload mapping (D33).
-- **MCP**: HTTP transport (D31), Resources (D37).
+- **MCP**: `subscribe`/`listChanged` Resources capability (post-v1); per-KB access control for Resources.
 - **Tuning**: env-var overrides for upload buffer / multipart thresholds (D35, D36).
 - **Storage**: full-rebuild-from-S3 as a first-class operation.
 
