@@ -1,6 +1,17 @@
 use crate::config::Config;
 use anyhow::Context;
-use notedthat_mcp::{McpHttpService, McpHttpServiceConfig, client::NotedThatClient};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+};
+use notedthat_mcp::{
+    McpHttpService, McpHttpServiceConfig,
+    auth::require_bearer_auth,
+    client::NotedThatClient,
+    sse_refusal::{refusal_body, should_refuse_request},
+};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -37,7 +48,23 @@ pub(crate) fn build_router(
     )
     .context("failed to build MCP HTTP service config")?;
     let mcp_service = McpHttpService::new(client, mcp_config);
-    Ok(axum::Router::new().route_service("/mcp", mcp_service.into_service()))
+    let token = config.api_token.clone();
+    Ok(axum::Router::new()
+        .route_service("/mcp", mcp_service.into_service())
+        .route_layer(middleware::from_fn_with_state(token, require_bearer_auth))
+        .layer(middleware::from_fn(sse_refusal_check)))
+}
+
+async fn sse_refusal_check(request: Request<Body>, next: Next) -> Response {
+    if should_refuse_request(request.method().as_str(), request.uri().path()) {
+        Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header("content-type", "application/json")
+            .body(Body::from(refusal_body().to_vec()))
+            .expect("SSE refusal response is infallible")
+    } else {
+        next.run(request).await
+    }
 }
 
 pub(crate) fn internal_http_api_url(addr: SocketAddr) -> String {

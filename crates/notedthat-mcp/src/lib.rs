@@ -9,6 +9,7 @@ pub mod error;
 pub mod http;
 pub mod path;
 mod resources_list;
+pub mod sse_refusal;
 /// MCP `resources/read` implementation for `notedthat://` object URIs.
 pub mod resources_read;
 /// MCP tool router and per-tool HTTP adapters.
