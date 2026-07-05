@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 rmcp = { workspace = true }
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,6 +29,7 @@ notedthat-core = { workspace = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true }
 
 [lints]
 workspace = true
