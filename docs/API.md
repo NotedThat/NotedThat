@@ -807,7 +807,7 @@ curl -sSf -X POST \
 
 - **Score semantics**: Search returns top-`limit` hits ordered by descending RRF fusion score. Scores are RRF rank values — higher is better. They are **NOT** probabilities or cosine similarities, are **NOT** comparable across queries or knowledge bases, and should **not** be displayed to users as confidence values.
 
-- **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results.
+- **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results. **Exception**: if the indexing queue is full, the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` (not ordinary async lag) — the object is stored but not yet searchable, and the client should retry to re-enqueue the indexing event.
 
 - **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
 

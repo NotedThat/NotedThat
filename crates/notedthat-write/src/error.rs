@@ -19,6 +19,12 @@ pub enum WriteError {
     /// Path/domain validation failure.
     #[error(transparent)]
     Path(CoreError),
+    /// Indexer queue was full while enqueueing an upsert.
+    #[error("indexer queue full during upsert")]
+    IndexerBackpressureUpsert,
+    /// Indexer queue was full while enqueueing a tombstone.
+    #[error("indexer queue full during tombstone")]
+    IndexerBackpressureTombstone,
 }
 
 impl From<StorageError> for WriteError {

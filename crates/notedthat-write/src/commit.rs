@@ -43,7 +43,20 @@ pub async fn commit(
         etag: outcome.etag.clone().unwrap_or_default(),
         mtime: current_unix_seconds(),
     };
-    log_try_send(indexer_tx.try_send(event));
+    match indexer_tx.try_send(event) {
+        Ok(()) => {}
+        Err(TrySendError::Full(ev)) => {
+            tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
+            let _ = ev;
+            return Err(WriteError::IndexerBackpressureUpsert);
+        }
+        Err(TrySendError::Closed(ev)) => {
+            tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
+            let _ = ev;
+            // Closed = indexer worker ended (shutdown OR panic). v1 preserves success-with-error-log
+            // until post-v1 worker liveness detection is added.
+        }
+    }
 
     Ok(outcome)
 }
@@ -65,31 +78,21 @@ pub async fn commit_delete(
         kb: kb.clone(),
         object_key: path.clone(),
     };
-    log_try_send(indexer_tx.try_send(event));
-
-    Ok(())
-}
-
-fn log_try_send(result: Result<(), TrySendError<IndexEvent>>) {
-    match result {
+    match indexer_tx.try_send(event) {
         Ok(()) => {}
         Err(TrySendError::Full(ev)) => {
-            tracing::warn!(
-                target: "notedthat::indexing",
-                kb = %ev.kb().as_str(),
-                path = %ev.object_key().as_str(),
-                "INDEX_QUEUE_FULL"
-            );
+            tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
+            let _ = ev;
+            return Err(WriteError::IndexerBackpressureTombstone);
         }
+        // Closed means the indexer worker task ended via shutdown OR panic; v1 deliberately preserves success-with-error-log so writes are not blocked by a crashed worker, and post-v1 worker liveness detection will revisit this.
         Err(TrySendError::Closed(ev)) => {
-            tracing::error!(
-                target: "notedthat::indexing",
-                kb = %ev.kb().as_str(),
-                path = %ev.object_key().as_str(),
-                "INDEX_QUEUE_CLOSED"
-            );
+            tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
+            let _ = ev;
         }
     }
+
+    Ok(())
 }
 
 fn current_unix_seconds() -> i64 {
@@ -105,7 +108,7 @@ mod tests {
     use async_trait::async_trait;
     use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
     #[derive(Default)]
@@ -205,6 +208,10 @@ mod tests {
         ObjectPath::try_from_str("test.md").expect("valid path")
     }
 
+    fn path_named(value: &str) -> ObjectPath {
+        ObjectPath::try_from_str(value).expect("valid path")
+    }
+
     #[tokio::test]
     async fn successful_put_enqueues_event() {
         let storage = TestStorage::default();
@@ -232,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_queue_returns_write_success() {
+    async fn full_queue_returns_indexer_backpressure() {
         let storage = TestStorage::default();
         let kb = kb();
         let path = path();
@@ -259,9 +266,115 @@ mod tests {
         )
         .await;
 
+        let err = outcome.unwrap_err();
         assert!(
-            outcome.is_ok(),
-            "write should succeed even if queue is full"
+            matches!(err, WriteError::IndexerBackpressureUpsert),
+            "expected IndexerBackpressureUpsert, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn burst_write_returns_backpressure_after_capacity() {
+        let storage = Arc::new(TestStorage::default());
+        let kb = kb();
+        let path_a = path_named("a.md");
+        let path_b = path_named("b.md");
+        let path_c = path_named("c.md");
+        let (indexer_tx, _rx) = mpsc::channel::<IndexEvent>(2);
+
+        let first = commit(
+            storage.as_ref(),
+            &indexer_tx,
+            &kb,
+            &path_a,
+            Bytes::from_static(b"# A"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await;
+        let second = commit(
+            storage.as_ref(),
+            &indexer_tx,
+            &kb,
+            &path_b,
+            Bytes::from_static(b"# B"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await;
+        let third = commit(
+            storage.as_ref(),
+            &indexer_tx,
+            &kb,
+            &path_c,
+            Bytes::from_static(b"# C"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await;
+
+        assert!(first.is_ok(), "first write should fill queue slot one");
+        assert!(second.is_ok(), "second write should fill queue slot two");
+        let err = third.unwrap_err();
+        assert!(
+            matches!(err, WriteError::IndexerBackpressureUpsert),
+            "expected IndexerBackpressureUpsert, got {err:?}"
+        );
+        assert!(
+            storage
+                .objects
+                .lock()
+                .expect("mutex not poisoned")
+                .contains_key("test-kb/c.md"),
+            "stored object should remain after enqueue backpressure"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_delete_full_queue_returns_backpressure() {
+        let storage = TestStorage::default();
+        let kb = kb();
+        let path = path_named("delete.md");
+        storage
+            .put_object(
+                &kb,
+                &path,
+                Bytes::from_static(b"# Delete"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("prepopulate object");
+        let (indexer_tx, _rx) = mpsc::channel(1);
+        let dummy_event = IndexEvent::Tombstone {
+            kb: kb.clone(),
+            object_key: path.clone(),
+        };
+        indexer_tx
+            .try_send(dummy_event)
+            .expect("first send should succeed");
+
+        let outcome = commit_delete(
+            &storage,
+            &indexer_tx,
+            &kb,
+            &path,
+            ConditionalHeaders::default(),
+        )
+        .await;
+
+        let err = outcome.unwrap_err();
+        assert!(
+            matches!(err, WriteError::IndexerBackpressureTombstone),
+            "expected IndexerBackpressureTombstone, got {err:?}"
+        );
+        assert!(
+            !storage
+                .objects
+                .lock()
+                .expect("mutex not poisoned")
+                .contains_key("test-kb/delete.md"),
+            "deleted object should remain deleted after enqueue backpressure"
         );
     }
 
