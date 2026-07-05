@@ -79,3 +79,16 @@ impl NotedThatMcp {
 
 #[tool_handler]
 impl rmcp::handler::server::ServerHandler for NotedThatMcp {}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_handler_is_send_sync() {
+        const _: fn() = || {
+            fn assert_send_sync<T: Send + Sync>() {}
+            assert_send_sync::<NotedThatMcp>();
+        };
+    }
+}
