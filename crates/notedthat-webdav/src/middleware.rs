@@ -124,7 +124,7 @@ pub async fn intercept_lock_unlock(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Intercept over-large PROPFIND requests before dav-server swallows read_dir errors.
+/// Intercept over-large PROPFIND requests before dav-server swallows `read_dir` errors.
 pub async fn intercept_propfind_too_large(
     State(state): State<WebDavState>,
     req: Request,
@@ -221,7 +221,7 @@ fn parse_uri_path(
         .collect::<Result<Vec<_>, ()>>()?;
     let decoded_rest = decoded_parts
         .iter()
-        .map(|segment| segment.as_ref())
+        .map(AsRef::as_ref)
         .collect::<Vec<_>>()
         .join("/");
 
@@ -234,6 +234,95 @@ fn dav_error_body(condition: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error"><nt:{condition}/></D:error>"#
     )
+}
+
+/// HTTP 503 response for `WriteError::IndexerBackpressureUpsert`.
+/// Body mirrors the HTTP API `backend_unavailable` shape so `WebDAV` clients
+/// see the same semantics as HTTP clients.
+fn backpressure_response() -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"backend_unavailable","message":"object stored; indexer queue full — retry to re-enqueue"}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+/// HTTP 503 response for `WriteError::IndexerBackpressureTombstone` (DELETE).
+fn delete_backpressure_response() -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"backend_unavailable","message":"deleted from storage; retry to clear from search index"}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+fn move_destination_backpressure_response(_req_id: &str) -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"backend_unavailable","message":"destination write succeeded but destination index event failed; source unchanged. Retry MOVE to re-enqueue destination index event."}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+fn copy_destination_backpressure_response() -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"backend_unavailable","message":"destination write succeeded but destination index event failed. Retry COPY to re-enqueue destination index event."}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+fn move_source_tombstone_backpressure_response(_req_id: &str) -> Response {
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"backend_unavailable","message":"destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Retry MOVE to re-enqueue the source tombstone; the destination write is idempotent."}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
 }
 
 async fn handle_put(state: WebDavState, req: Request) -> Response {
@@ -302,6 +391,7 @@ async fn handle_put(state: WebDavState, req: Request) -> Response {
         Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
             StatusCode::PRECONDITION_FAILED.into_response()
         }
+        Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => backpressure_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -331,6 +421,9 @@ async fn handle_delete(state: WebDavState, req: Request) -> Response {
         Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
             StatusCode::PRECONDITION_FAILED.into_response()
         }
+        Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
+            delete_backpressure_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -343,6 +436,7 @@ async fn handle_copy(state: WebDavState, req: Request) -> Response {
     handle_copy_or_move(state, req, false).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bool) -> Response {
     let dest_header = match req
         .headers()
@@ -413,7 +507,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         .await
         .is_ok();
     let content_type = src_data.meta.content_type.clone();
-    let Ok(outcome) = notedthat_write::commit(
+    let outcome = match notedthat_write::commit(
         state.storage.as_ref(),
         &state.indexer_tx,
         &dst_kb,
@@ -423,18 +517,43 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         ConditionalHeaders::default(),
     )
     .await
-    else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    {
+        Ok(outcome) => outcome,
+        Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => {
+            return if delete_source {
+                move_destination_backpressure_response("")
+            } else {
+                copy_destination_backpressure_response()
+            };
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if delete_source {
-        let _ = notedthat_write::commit_delete(
+        // NOTE: Intentional fail-visible partial-completion semantics. Destination write already
+        // succeeded and source storage delete already succeeded, but the source search tombstone
+        // is missing. 503 tells the client the search index may contain a stale source entry
+        // until retry/reindex. Since v1 has no reindex endpoint and retrying the whole MOVE
+        // will 404 on GET(src), this propagates the failure visibly.
+        match notedthat_write::commit_delete(
             state.storage.as_ref(),
             &state.indexer_tx,
             &src_kb,
             &src_obj,
             ConditionalHeaders::default(),
         )
-        .await;
+        .await
+        {
+            Ok(()) => {}
+            Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
+                return move_source_tombstone_backpressure_response("");
+            }
+            Err(_) => {
+                // Other commit_delete errors after a successful destination write: the source
+                // object is already deleted from storage. Return 500 to signal an unexpected
+                // failure in the source-tombstone step.
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
     }
     response_with_optional_etag(
         if dst_exists {
@@ -1084,6 +1203,13 @@ mod intercept_write_methods {
 
         fn test_state(storage: Arc<MockStorage>) -> WebDavState {
             let (indexer_tx, _rx) = mpsc::channel(1024);
+            test_state_with_indexer_tx(storage, indexer_tx)
+        }
+
+        fn test_state_with_indexer_tx(
+            storage: Arc<MockStorage>,
+            indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
+        ) -> WebDavState {
             let storage: Arc<dyn Storage> = storage;
             WebDavState {
                 username: Arc::new("user".to_string()),
@@ -1101,6 +1227,22 @@ mod intercept_write_methods {
                     test_state(storage),
                     intercept_write_methods,
                 ))
+        }
+
+        fn app_with_indexer_tx(
+            storage: Arc<MockStorage>,
+            indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
+        ) -> Router {
+            Router::new()
+                .fallback(any(|| async { "inner handler reached" }))
+                .layer(from_fn_with_state(
+                    test_state_with_indexer_tx(storage, indexer_tx),
+                    intercept_write_methods,
+                ))
+        }
+
+        fn object_path(value: &str) -> ObjectPath {
+            ObjectPath::try_from(value).expect("valid object path")
         }
 
         async fn response_body(resp: Response) -> String {
@@ -1232,6 +1374,38 @@ mod intercept_write_methods {
         }
 
         #[tokio::test]
+        async fn test_put_returns_503_with_retry_after_when_indexer_backpressure() {
+            let storage = Arc::new(MockStorage::default());
+            let (indexer_tx, _rx) = mpsc::channel(1);
+            indexer_tx
+                .try_send(notedthat_indexer::IndexEvent::Upsert {
+                    kb: kb_slug("notes"),
+                    object_key: object_path("queued.md"),
+                    etag: "\"queued\"".to_string(),
+                    mtime: 0,
+                })
+                .expect("queue accepts the prefilled event");
+
+            let resp = app_with_indexer_tx(storage.clone(), indexer_tx)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("PUT")
+                        .uri("/notes/x.md")
+                        .body(Body::from("x"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+            let body = response_body(resp).await;
+            assert!(body.contains("backend_unavailable"));
+            assert!(body.contains("object stored"));
+            assert!(storage.get_stored("notes", "x.md").is_some());
+        }
+
+        #[tokio::test]
         async fn test_delete_idempotent_returns_204() {
             let storage = Arc::new(MockStorage::default());
             let first = app(storage.clone())
@@ -1274,6 +1448,38 @@ mod intercept_write_methods {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        }
+
+        #[tokio::test]
+        async fn test_delete_returns_503_with_retry_after_when_indexer_backpressure() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "y.md", Bytes::from_static(b"y"), "\"old\"");
+            let (indexer_tx, _rx) = mpsc::channel(1);
+            indexer_tx
+                .try_send(notedthat_indexer::IndexEvent::Tombstone {
+                    kb: kb_slug("notes"),
+                    object_key: object_path("queued.md"),
+                })
+                .expect("queue accepts the prefilled event");
+
+            let resp = app_with_indexer_tx(storage.clone(), indexer_tx)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("DELETE")
+                        .uri("/notes/y.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+            let body = response_body(resp).await;
+            assert!(body.contains("backend_unavailable"));
+            assert!(body.contains("deleted from storage; retry to clear from search index"));
+            assert!(!body.contains("object stored; indexer queue full — retry to re-enqueue"));
+            assert!(storage.get_stored("notes", "y.md").is_none());
         }
 
         #[tokio::test]
@@ -1389,6 +1595,113 @@ mod intercept_write_methods {
             );
             assert!(storage.get_stored("notes", "source.md").is_some());
             assert!(storage.get_stored("notes", "copy.md").is_some());
+        }
+
+        #[tokio::test]
+        async fn test_copy_or_move_maps_destination_indexer_backpressure_to_503() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+            let (indexer_tx, _rx) = mpsc::channel(1);
+            indexer_tx
+                .try_send(notedthat_indexer::IndexEvent::Upsert {
+                    kb: kb_slug("notes"),
+                    object_key: object_path("queued.md"),
+                    etag: "\"queued\"".to_string(),
+                    mtime: 0,
+                })
+                .expect("queue accepts the prefilled event");
+
+            let resp = app_with_indexer_tx(storage.clone(), indexer_tx)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("COPY")
+                        .uri("/notes/src.md")
+                        .header("destination", "/notes/dst.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+            let body = response_body(resp).await;
+            assert!(body.contains("backend_unavailable"));
+            assert!(
+                body.contains("destination write succeeded but destination index event failed")
+            );
+            assert!(storage.get_stored("notes", "dst.md").is_some());
+            assert!(storage.get_stored("notes", "src.md").is_some());
+        }
+
+        #[tokio::test]
+        async fn test_move_returns_503_when_destination_upsert_backpressured() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+            let (indexer_tx, _rx) = mpsc::channel(1);
+            indexer_tx
+                .try_send(notedthat_indexer::IndexEvent::Upsert {
+                    kb: kb_slug("notes"),
+                    object_key: object_path("queued.md"),
+                    etag: "\"queued\"".to_string(),
+                    mtime: 0,
+                })
+                .expect("queue accepts the prefilled event");
+
+            let resp = app_with_indexer_tx(storage.clone(), indexer_tx)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("MOVE")
+                        .uri("/notes/src.md")
+                        .header("destination", "/notes/dst.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+            assert!(response_body(resp).await.contains(
+                "destination write succeeded but destination index event failed; source unchanged. Retry MOVE to re-enqueue destination index event."
+            ));
+            assert!(storage.get_stored("notes", "dst.md").is_some());
+            assert!(storage.get_stored("notes", "src.md").is_some());
+        }
+
+        #[tokio::test]
+        async fn test_move_returns_503_when_source_tombstone_backpressured_after_destination_put() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+            let (indexer_tx, _rx) = mpsc::channel(2);
+            indexer_tx
+                .try_send(notedthat_indexer::IndexEvent::Upsert {
+                    kb: kb_slug("notes"),
+                    object_key: object_path("queued.md"),
+                    etag: "\"queued\"".to_string(),
+                    mtime: 0,
+                })
+                .expect("queue accepts the prefilled event");
+
+            let resp = app_with_indexer_tx(storage.clone(), indexer_tx)
+                .oneshot(
+                    HttpRequest::builder()
+                        .method("MOVE")
+                        .uri("/notes/src.md")
+                        .header("destination", "/notes/dst.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
+            assert!(response_body(resp).await.contains(
+                "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Retry MOVE to re-enqueue the source tombstone; the destination write is idempotent."
+            ));
+            assert!(storage.get_stored("notes", "dst.md").is_some());
+            assert!(storage.get_stored("notes", "src.md").is_none());
         }
 
         #[tokio::test]
@@ -1535,6 +1848,7 @@ mod intercept_write_methods {
         }
 
         #[tokio::test]
+        #[allow(clippy::too_many_lines)]
         async fn edge_case_uri_segment_decoding_matrix() {
             struct Case {
                 name: &'static str,
