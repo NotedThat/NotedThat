@@ -80,7 +80,7 @@ pub struct McpHttpService {
 
 impl McpHttpService {
     /// Create a stateless JSON-response Streamable HTTP service.
-    pub fn new(client: NotedThatClient, config: McpHttpServiceConfig) -> Self {
+    pub fn new(client: NotedThatClient, config: &McpHttpServiceConfig) -> Self {
         let streamable_config = config.streamable_http_config();
         let service_factory = move || Ok(NotedThatMcp::new(client.clone()));
         let inner = StreamableHttpService::new(
@@ -124,7 +124,7 @@ mod mcp_http_service {
         let config = test_config(token);
 
         // When: the MCP HTTP service is created.
-        let service = McpHttpService::new(test_client(), config);
+        let service = McpHttpService::new(test_client(), &config);
 
         // Then: rmcp receives the caller-supplied allow-lists.
         assert_eq!(
@@ -144,7 +144,7 @@ mod mcp_http_service {
         let config = test_config(token);
 
         // When: the MCP HTTP service is created.
-        let service = McpHttpService::new(test_client(), config);
+        let service = McpHttpService::new(test_client(), &config);
 
         // Then: stateful mode is disabled and JSON responses are enabled.
         assert!(!service.config().stateful_mode);
@@ -156,7 +156,7 @@ mod mcp_http_service {
         // Given: a cancellation token owned by the caller.
         let token = CancellationToken::new();
         let config = test_config(token.clone());
-        let service = McpHttpService::new(test_client(), config);
+        let service = McpHttpService::new(test_client(), &config);
 
         // When: the caller cancels the original token.
         token.cancel();
@@ -197,7 +197,7 @@ mod mcp_http_service {
         // Given: a constructed wrapper.
         let token = CancellationToken::new();
         let config = test_config(token);
-        let service = McpHttpService::new(test_client(), config);
+        let service = McpHttpService::new(test_client(), &config);
 
         // When: callers request the underlying rmcp service.
         let inner = service.into_service();

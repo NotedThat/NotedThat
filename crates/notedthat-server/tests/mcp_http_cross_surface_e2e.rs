@@ -898,11 +898,7 @@ async fn mcp_http_auth_and_sse_refusal() {
         "POST /sse body must be exact SSE refusal JSON"
     );
 
-    let resp = client
-        .get(&mcp_url)
-        .send()
-        .await
-        .expect("GET /mcp failed");
+    let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
     let status = resp.status().as_u16();
     let body = resp.text().await.expect("failed to read GET /mcp body");
     assert_eq!(status, 405, "GET /mcp must return 405; body: {body:?}");
@@ -1139,7 +1135,10 @@ async fn mcp_resources_list_and_read() {
             KBS.contains(&kb_part),
             "URI KB slug {kb_part:?} must be one of {KBS:?}: {uri}"
         );
-        assert!(!obj_part.is_empty(), "URI object key must not be empty: {uri}");
+        assert!(
+            !obj_part.is_empty(),
+            "URI object key must not be empty: {uri}"
+        );
     }
 
     let md_uri = "notedthat://alpha/obj-0000.md";

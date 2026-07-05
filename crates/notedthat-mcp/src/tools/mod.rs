@@ -228,7 +228,11 @@ mod resources_shared {
         let result =
             crate::resources_read::read_resource(&client(&server.uri()), "notedthat://kb/note.md")
                 .await;
-        assert!(result.is_ok(), "resources/read must succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "resources/read must succeed: {:?}",
+            result.err()
+        );
     }
 
     /// `resources/list` is callable and delegates to `crate::resources_list::list_resources`.

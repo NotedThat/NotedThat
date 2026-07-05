@@ -8,6 +8,7 @@ use rmcp::{
     ErrorData as McpError,
     model::{ErrorCode, ReadResourceResult, ResourceContents},
 };
+use std::path::Path;
 use url::Url;
 
 const OCTET_STREAM: &str = "application/octet-stream";
@@ -105,17 +106,16 @@ fn invalid_params(message: impl Into<String>) -> McpError {
 }
 
 fn detect_mime_type(object_key: &str) -> &'static str {
-    let lower = object_key.to_ascii_lowercase();
-    if lower.ends_with(".md") {
-        "text/markdown"
-    } else if lower.ends_with(".txt") {
-        "text/plain"
-    } else if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else {
-        OCTET_STREAM
+    let ext = Path::new(object_key)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => OCTET_STREAM,
     }
 }
 
