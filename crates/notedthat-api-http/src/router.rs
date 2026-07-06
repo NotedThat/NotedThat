@@ -17,7 +17,7 @@ use notedthat_core::{
     parse_line_range_header, parse_range_header,
 };
 use notedthat_write::PatchMode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use std::time::{Duration, UNIX_EPOCH};
 use tower::ServiceBuilder;
@@ -29,6 +29,8 @@ use uuid::Uuid;
 
 /// Maximum body size for PUT requests: 16 MiB (D35).
 pub const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
+const REPLACE_IF_MATCH_ERROR: &str =
+    "If-Match is required for POST replace and must be a single strong ETag";
 
 /// A [`MakeRequestId`] implementation that generates `UUIDv7` request IDs.
 #[derive(Clone, Copy, Default)]
@@ -62,7 +64,8 @@ pub fn build_router(state: AppState) -> Router {
                 .head(head_object)
                 .put(put_object)
                 .delete(delete_object)
-                .patch(patch_object.layer(DefaultBodyLimit::disable())),
+                .patch(patch_object.layer(DefaultBodyLimit::disable()))
+                .post(post_object.layer(DefaultBodyLimit::disable())),
         )
         .layer(
             ServiceBuilder::new()
@@ -105,6 +108,21 @@ struct ListQuery {
     prefix: Option<String>,
     limit: Option<u32>,
     cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReplaceBody {
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
+
+#[derive(Serialize)]
+struct ReplaceResponse {
+    etag: String,
+    match_count: u64,
+    total_bytes: u64,
 }
 
 /// `GET /v1/knowledgebases/{kb_slug}` — list objects in a KB.
@@ -558,6 +576,152 @@ async fn patch_object(
     Ok(builder
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+}
+
+/// Dispatcher for POST on the object catch-all. Only `replace/<target-path>` is a defined
+/// action; every other POST returns 404 `not_found`.
+async fn post_object(
+    State(state): State<AppState>,
+    Path((kb_slug, object_path)): Path<(String, String)>,
+    req: Request,
+) -> Result<Response, ApiErrorResponse> {
+    let request_id = extract_request_id(&req);
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
+
+    let Some(target_path) = object_path.strip_prefix("replace/") else {
+        return Err(err(ApiError::Core(CoreError::NotFound {
+            resource: format!(
+                "POST on '{object_path}' is not a defined action (supported actions: 'replace/<path>')"
+            ),
+        })));
+    };
+
+    replace_object(State(state), kb_slug, target_path.to_string(), req).await
+}
+
+async fn replace_object(
+    State(state): State<AppState>,
+    kb_slug: String,
+    object_path: String,
+    req: Request,
+) -> Result<Response, ApiErrorResponse> {
+    let request_id = extract_request_id(&req);
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
+
+    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(&err)?;
+    let json_cap_u64 = state
+        .max_patchable_size
+        .saturating_mul(2)
+        .saturating_add(4096);
+
+    let content_length = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if let Some(content_length) = content_length
+        && content_length > json_cap_u64
+    {
+        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
+            size: content_length,
+            limit: json_cap_u64,
+        })));
+    }
+
+    let conditionals = replace_conditionals(&req).map_err(&err)?;
+    let body_bytes: Bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(json_cap_u64))
+        .await
+        .map_err(|_| {
+            err(ApiError::Core(CoreError::PayloadTooLarge {
+                size: json_cap_u64.saturating_add(1),
+                limit: json_cap_u64,
+            }))
+        })?;
+
+    if body_bytes.len() as u64 > json_cap_u64 {
+        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
+            size: body_bytes.len() as u64,
+            limit: json_cap_u64,
+        })));
+    }
+
+    let body = serde_json::from_slice::<ReplaceBody>(&body_bytes).map_err(|error| {
+        err(ApiError::Core(CoreError::InvalidInput {
+            message: format!("malformed replace JSON body: {error}"),
+        }))
+    })?;
+    if body.old_string.is_empty() {
+        return Err(err(ApiError::Core(CoreError::InvalidInput {
+            message: "old_string must be non-empty".into(),
+        })));
+    }
+
+    let outcome = notedthat_write::replace(
+        state.storage.as_ref(),
+        &state.indexer_tx,
+        notedthat_write::ReplaceRequest {
+            kb: &kb,
+            path: &path,
+            old_string: &body.old_string,
+            new_string: &body.new_string,
+            replace_all: body.replace_all,
+            caller_conditionals: conditionals,
+            max_patchable_size: state.max_patchable_size,
+            caller_content_type: None,
+        },
+    )
+    .await
+    .map_err(|e| err(ApiError::from(e)))?;
+
+    let meta = state
+        .storage
+        .head_object(&kb, &path, ConditionalHeaders::default())
+        .await
+        .map_err(|e| err(ApiError::from(e)))?;
+    let etag = outcome.put_outcome.etag.or(meta.etag).unwrap_or_default();
+    let response = ReplaceResponse {
+        etag: etag.clone(),
+        match_count: outcome.match_count,
+        total_bytes: meta.size,
+    };
+    let content_location = format!(
+        "/v1/knowledgebases/{kb_slug}/{}",
+        percent_encode_path(path.as_str())
+    );
+
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_LOCATION, content_location),
+            (axum::http::header::ETAG, etag),
+        ],
+        Json(response),
+    )
+        .into_response())
+}
+
+fn replace_conditionals(req: &Request) -> Result<ConditionalHeaders, ApiError> {
+    let if_match = req
+        .headers()
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|value| value.to_str().ok());
+    if if_match.is_none()
+        || if_match == Some("*")
+        || if_match.is_some_and(|value| value.contains(','))
+    {
+        return Err(ApiError::Core(CoreError::InvalidInput {
+            message: REPLACE_IF_MATCH_ERROR.into(),
+        }));
+    }
+
+    Ok(ConditionalHeaders::from_header_map(req.headers()))
 }
 
 fn patch_mode_from_headers(
@@ -1389,6 +1553,207 @@ mod tests {
 
     const KB: &str = "notes";
     const TOKEN: &str = "test-token-abc";
+
+    fn router() -> axum::Router {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        build_router(AppState {
+            storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            max_patchable_size: MAX_BODY_BYTES,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        })
+    }
+
+    async fn put_object(router: axum::Router, path: &str, body: &'static [u8]) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "text/markdown")
+                    .body(Body::from(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn put_object_etag(router: axum::Router, path: &str, body: &'static [u8]) -> String {
+        let response = put_object(router, path, body).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn get_object(router: axum::Router, path: &str) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn post_replace(
+        router: axum::Router,
+        path: &str,
+        if_match: &str,
+        body: &'static [u8],
+    ) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .body(Body::from(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_on_replace_prefixed_path_still_reads_object_via_catch_all() {
+        let router = router();
+        put_object_etag(router.clone(), "replace/foo.md", b"hi").await;
+
+        let response = get_object(router, "replace/foo.md").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(&body[..], b"hi");
+    }
+
+    #[tokio::test]
+    async fn patch_on_replace_prefixed_path_still_reaches_patch_object() {
+        let router = router();
+        let etag = put_object_etag(router.clone(), "replace/bar.md", b"old\n").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/bar.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_RANGE, "lines 1-1/*")
+                    .header(axum::http::header::IF_MATCH, etag)
+                    .body(Body::from(Bytes::from_static(b"new\n")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_and_delete_on_replace_prefixed_path_still_work() {
+        let router = router();
+        let put = put_object(router.clone(), "replace/delete.md", b"gone").await;
+
+        assert_eq!(put.status(), StatusCode::CREATED);
+        let delete = router
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/delete.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn post_on_non_replace_path_returns_404_not_found() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/foo.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "not_found");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("supported actions: 'replace/<path>'")
+        );
+    }
+
+    #[tokio::test]
+    async fn post_on_replace_prefixed_path_dispatches_to_replace_handler() {
+        let router = router();
+        let etag = put_object_etag(router.clone(), "target.md", b"hello world").await;
+
+        let response = post_replace(
+            router,
+            "target.md",
+            &etag,
+            br#"{"old_string":"world","new_string":"planet"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["match_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn post_on_replace_replace_path_targets_the_replace_prefixed_object() {
+        let router = router();
+        let etag = put_object_etag(router.clone(), "replace/nested.md", b"foo bar").await;
+
+        let response = post_replace(
+            router.clone(),
+            "replace/nested.md",
+            &etag,
+            br#"{"old_string":"bar","new_string":"baz"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["match_count"], 1);
+        let get = get_object(router, "replace/nested.md").await;
+        let body = to_bytes(get.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(&body[..], b"foo baz");
+    }
 
     #[tokio::test]
     async fn test_conditional_put_503_then_naive_retry_412_keeps_object_stored() {

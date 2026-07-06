@@ -1,0 +1,44 @@
+COMMAND: cargo test -p notedthat-api-http --lib error::tests::replace_
+   Compiling notedthat-api-http v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-api-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.65s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 13 tests
+test error::tests::replace_if_match_star_returns_400 ... ok
+test error::tests::replace_malformed_json_body_returns_400 ... ok
+test error::tests::replace_all_true_multiple_matches_returns_200_with_count_2 ... ok
+test error::tests::replace_ambiguous_returns_422_with_match_count ... ok
+test error::tests::replace_multi_value_if_match_returns_400 ... ok
+test error::tests::replace_indexer_backpressure_returns_503_with_retry_after ... ok
+test error::tests::replace_empty_old_string_returns_400 ... ok
+test error::tests::replace_missing_if_match_returns_400_invalid_request ... ok
+test error::tests::replace_missing_old_string_field_returns_400 ... ok
+test error::tests::replace_no_match_returns_422_no_match ... ok
+test error::tests::replace_post_splice_size_over_cap_returns_413 ... ok
+test error::tests::replace_stale_etag_returns_412 ... ok
+test error::tests::replace_single_match_happy_returns_200_with_etag_and_match_count ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+
+COMMAND: cargo test -p notedthat-api-http --lib replace_prefixed
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 5 tests
+test router::tests::get_on_replace_prefixed_path_still_reads_object_via_catch_all ... ok
+test router::tests::put_and_delete_on_replace_prefixed_path_still_work ... ok
+test router::tests::patch_on_replace_prefixed_path_still_reaches_patch_object ... ok
+test router::tests::post_on_replace_prefixed_path_dispatches_to_replace_handler ... ok
+test router::tests::post_on_replace_replace_path_targets_the_replace_prefixed_object ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+
+COMMAND: cargo test -p notedthat-api-http --lib post_on_non_replace_path_returns_404_not_found
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 1 test
+test router::tests::post_on_non_replace_path_returns_404_not_found ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s
+
