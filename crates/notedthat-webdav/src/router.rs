@@ -13,7 +13,8 @@ use crate::{
     filesystem::WebDavStorage,
     middleware::{
         basic_auth_middleware, intercept_lock_unlock, intercept_options,
-        intercept_propfind_too_large, intercept_proppatch, intercept_write_methods,
+        intercept_propfind_too_large, intercept_proppatch, intercept_read_methods,
+        intercept_write_methods,
     },
     state::WebDavState,
 };
@@ -40,6 +41,7 @@ pub fn build_router(state: WebDavState) -> Router {
                 state.clone(),
                 intercept_propfind_too_large,
             ))
+            .layer(from_fn_with_state(state.clone(), intercept_read_methods))
             .layer(from_fn_with_state(state, intercept_write_methods))
             .layer(from_fn(intercept_options))
             .layer(from_fn(intercept_proppatch))

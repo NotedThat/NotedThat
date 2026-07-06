@@ -452,3 +452,34 @@ async fn options_without_auth_returns_401() {
         "OPTIONS without auth must return 401"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Read-method path normalization (RED gate)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_methods_reject_encoded_dotdot_get() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/notes/%2e%2e/scratch/secret.md")
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn read_methods_reject_encoded_dotdot_propfind() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri("/notes/%2e%2e/scratch/")
+        .header("Authorization", good_auth())
+        .header("Depth", "1")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
