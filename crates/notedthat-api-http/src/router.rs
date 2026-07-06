@@ -5,6 +5,7 @@ use crate::middleware::{auth_middleware, extract_request_id};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::handler::Handler;
 use axum::http::{HeaderName, StatusCode};
 use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
@@ -12,9 +13,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
 use notedthat_core::{
-    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError,
+    ByteRange, ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError,
     parse_line_range_header, parse_range_header,
 };
+use notedthat_write::PatchMode;
 use serde::Deserialize;
 use std::fmt::Write;
 use std::time::{Duration, UNIX_EPOCH};
@@ -59,7 +61,8 @@ pub fn build_router(state: AppState) -> Router {
             get(get_object)
                 .head(head_object)
                 .put(put_object)
-                .delete(delete_object),
+                .delete(delete_object)
+                .patch(patch_object.layer(DefaultBodyLimit::disable())),
         )
         .layer(
             ServiceBuilder::new()
@@ -438,6 +441,131 @@ async fn put_object(
     Ok(resp)
 }
 
+async fn patch_object(
+    State(state): State<AppState>,
+    Path((kb_slug, object_path)): Path<(String, String)>,
+    req: Request,
+) -> Result<Response, ApiErrorResponse> {
+    let request_id = extract_request_id(&req);
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.clone(),
+    };
+
+    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(&err)?;
+
+    let content_length = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if let Some(content_length) = content_length
+        && content_length > state.max_patchable_size
+    {
+        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
+            size: content_length,
+            limit: state.max_patchable_size,
+        })));
+    }
+
+    if let Some(if_match) = req
+        .headers()
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        && (if_match == "*" || if_match.contains(','))
+    {
+        return Err(err(ApiError::Core(CoreError::InvalidInput {
+            message: "If-Match: * and multi-value If-Match not supported on PATCH in v1; provide a single strong ETag".into(),
+        })));
+    }
+
+    let content_range_header = req
+        .headers()
+        .get(axum::http::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let nt_patch_mode = req
+        .headers()
+        .get(axum::http::HeaderName::from_static("nt-patch-mode"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_lowercase);
+    let content_type = req
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
+
+    let body_bytes: Bytes =
+        axum::body::to_bytes(req.into_body(), body_limit_usize(state.max_patchable_size))
+            .await
+            .map_err(|_| {
+                err(ApiError::Core(CoreError::PayloadTooLarge {
+                    size: state.max_patchable_size + 1,
+                    limit: state.max_patchable_size,
+                }))
+            })?;
+
+    if body_bytes.len() as u64 > state.max_patchable_size {
+        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
+            size: body_bytes.len() as u64,
+            limit: state.max_patchable_size,
+        })));
+    }
+
+    let patch_mode = match (nt_patch_mode.as_deref(), content_range_header.as_deref()) {
+        (Some("append"), None) => PatchMode::Append {
+            body: body_bytes.clone(),
+        },
+        (Some("append"), Some(_)) => {
+            return Err(err(ApiError::Core(CoreError::InvalidInput {
+                message: "NT-Patch-Mode: append is mutually exclusive with Content-Range".into(),
+            })));
+        }
+        (None, Some(content_range)) => parse_patch_content_range(content_range, body_bytes.clone())
+            .map_err(|message| err(ApiError::Core(CoreError::InvalidInput { message })))?,
+        (None, None) => {
+            return Err(err(ApiError::Core(CoreError::InvalidInput {
+                message: "PATCH requires either Content-Range or NT-Patch-Mode: append".into(),
+            })));
+        }
+        (Some(mode), _) => {
+            return Err(err(ApiError::Core(CoreError::InvalidInput {
+                message: format!("Unknown NT-Patch-Mode value: {mode}; only 'append' is supported"),
+            })));
+        }
+    };
+
+    let outcome = notedthat_write::patch(
+        state.storage.as_ref(),
+        &state.indexer_tx,
+        &kb,
+        &path,
+        patch_mode,
+        conditionals,
+        state.max_patchable_size,
+        content_type.as_deref(),
+    )
+    .await
+    .map_err(|e| err(ApiError::from(e)))?;
+
+    let location = format!(
+        "/v1/knowledgebases/{kb_slug}/{}",
+        percent_encode_path(path.as_str())
+    );
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::LOCATION, location);
+    if let Some(etag) = &outcome.etag {
+        builder = builder.header(axum::http::header::ETAG, etag.as_str());
+    }
+
+    Ok(builder
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+}
+
 /// `DELETE /v1/knowledgebases/{kb_slug}/{*object_path}` — delete an object (idempotent).
 async fn delete_object(
     State(state): State<AppState>,
@@ -487,6 +615,44 @@ fn body_limit_usize(max_body_size: u64) -> usize {
     usize::try_from(max_body_size.saturating_add(1)).unwrap_or(usize::MAX)
 }
 
+fn parse_patch_content_range(content_range: &str, body: Bytes) -> Result<PatchMode, String> {
+    let (unit, range_part) = content_range
+        .split_once(' ')
+        .ok_or_else(|| format!("malformed Content-Range: {content_range}"))?;
+    let (range_str, _total) = range_part
+        .split_once('/')
+        .ok_or_else(|| format!("malformed Content-Range: {content_range}"))?;
+
+    match unit {
+        "bytes" => {
+            let (start, end) = range_str
+                .split_once('-')
+                .ok_or_else(|| format!("malformed Content-Range bytes range: {range_str}"))?;
+            let first = start
+                .parse::<u64>()
+                .map_err(|_| format!("invalid byte range start: {start}"))?;
+            let last = end
+                .parse::<u64>()
+                .map_err(|_| format!("invalid byte range end: {end}"))?;
+            Ok(PatchMode::Bytes {
+                range: ByteRange::FromStart { first, last },
+                body,
+            })
+        }
+        "lines" => {
+            let line_range = parse_line_range_header(&format!("lines={range_str}"))
+                .map_err(|_| format!("malformed Content-Range lines range: {range_str}"))?;
+            Ok(PatchMode::Lines {
+                range: line_range,
+                body,
+            })
+        }
+        other => Err(format!(
+            "Content-Range unit must be 'bytes' or 'lines', got: {other}"
+        )),
+    }
+}
+
 fn percent_encode_path(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for &byte in path.as_bytes() {
@@ -500,6 +666,240 @@ fn percent_encode_path(path: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod patch_route {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use notedthat_core::Storage;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    const KB: &str = "notes";
+    const OBJECT_PATH: &str = "patch.md";
+    const TOKEN: &str = "test-token-abc";
+
+    async fn router_with_object(
+        initial_body: &'static [u8],
+        max_patchable_size: u64,
+    ) -> (axum::Router, String) {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let object_path = ObjectPath::try_from_str(OBJECT_PATH).unwrap();
+        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        let outcome = storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from_static(initial_body),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        let router = build_router(AppState {
+            storage,
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            max_patchable_size,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        });
+
+        (router, outcome.etag.unwrap())
+    }
+
+    async fn patch_request(
+        router: axum::Router,
+        header_name: &'static str,
+        header_value: &str,
+        if_match: Option<&str>,
+        body: Bytes,
+    ) -> Response {
+        let mut builder = Request::builder()
+            .method("PATCH")
+            .uri(format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}"))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .header(header_name, header_value);
+        if let Some(etag) = if_match {
+            builder = builder.header(axum::http::header::IF_MATCH, etag);
+        }
+
+        router
+            .oneshot(builder.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn assert_error_code(response: Response, expected_status: StatusCode, expected: &str) {
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], expected);
+    }
+
+    #[tokio::test]
+    async fn bytes_content_range_returns_ok_with_etag_and_location() {
+        let (router, etag) = router_with_object(b"0123456789abcdefghij", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "bytes 0-9/*",
+            Some(&etag),
+            Bytes::from_static(b"ABCDEFGHIJ"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(axum::http::header::ETAG).is_some());
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            &format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}")
+        );
+    }
+
+    #[tokio::test]
+    async fn lines_content_range_returns_ok() {
+        let (router, etag) = router_with_object(b"one\ntwo\nthree\nfour\n", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "lines 2-3/*",
+            Some(&etag),
+            Bytes::from_static(b"TWO\nTHREE\n"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn append_mode_without_if_match_returns_ok() {
+        let (router, _etag) = router_with_object(b"one\n", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "nt-patch-mode",
+            "append",
+            None,
+            Bytes::from_static(b"two\n"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn append_mode_with_if_match_returns_ok() {
+        let (router, etag) = router_with_object(b"one\n", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "nt-patch-mode",
+            "append",
+            Some(&etag),
+            Bytes::from_static(b"two\n"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bytes_content_range_without_if_match_returns_invalid_request() {
+        let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "bytes 0-1/*",
+            None,
+            Bytes::from_static(b"AB"),
+        )
+        .await;
+
+        assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+    }
+
+    #[tokio::test]
+    async fn if_match_star_returns_invalid_request() {
+        let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "bytes 0-1/*",
+            Some("*"),
+            Bytes::from_static(b"AB"),
+        )
+        .await;
+
+        assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+    }
+
+    #[tokio::test]
+    async fn multi_value_if_match_returns_invalid_request() {
+        let (router, etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "bytes 0-1/*",
+            Some(&format!("{etag}, \"other\"")),
+            Bytes::from_static(b"AB"),
+        )
+        .await;
+
+        assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+    }
+
+    #[tokio::test]
+    async fn nonexistent_object_returns_not_found() {
+        let (router, etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/knowledgebases/{KB}/missing.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header("content-range", "bytes 0-1/*")
+                    .header(axum::http::header::IF_MATCH, etag)
+                    .body(Body::from(Bytes::from_static(b"AB")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_error_code(response, StatusCode::NOT_FOUND, "not_found").await;
+    }
+
+    #[tokio::test]
+    async fn body_larger_than_max_patchable_size_returns_payload_too_large() {
+        let (router, _etag) = router_with_object(b"one\n", 4).await;
+
+        let response = patch_request(
+            router,
+            "nt-patch-mode",
+            "append",
+            None,
+            Bytes::from_static(b"abcde"),
+        )
+        .await;
+
+        assert_error_code(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+    }
 }
 
 #[cfg(test)]
