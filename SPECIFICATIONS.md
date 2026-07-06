@@ -68,6 +68,7 @@ Three logical layers:
 | D44 | HTTP API route shape | **Routes under `/v1/knowledgebases/{kb_slug}/{path}`** where `{path}` is a percent-encoded (URL-encoded) object key — a single URL segment. Any `/` within an object key becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`, etc. Single-segment matching avoids multi-segment wildcard routing and eliminates any KB-vs-object boundary ambiguity. KB discovery via `GET /v1/knowledgebases`. Health endpoints (`/healthz`, `/readyz`) are unauthenticated and unversioned. The `v1` prefix reserves the option for a breaking API version later without disturbing WebDAV (D23) or MCP (D25). WebDAV keeps its native multi-segment path semantics; the HTTP API and WebDAV share the logical KB+object model but not the URL wire format. See §6.13 for the concrete route surface. |
 | D45 | Line-range reads | **First-class line-range read capability.** HTTP GET accepts `Range: lines=<first>-<last>` (1-based inclusive) and returns 206 + `Content-Range: lines <first>-<last>/<total>` + `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end). MCP `read` gains `line_start`/`line_end` args (mutually exclusive with `byte_start`/`byte_end`). Line index recomputed per request (no sidecar in v1; see §7.2). Backend byte-range semantics unchanged. |
 | D46 | Partial writes (PATCH) | **First-class partial-write capability via HTTP PATCH.** New route `PATCH /v1/knowledgebases/{kb_slug}/{path}`. Modes: `Content-Range: bytes <first>-<last>/*` OR `Content-Range: lines <first>-<last>/*` (Insert form `lines <N>-<N-1>/*`) OR `NT-Patch-Mode: append` (mutually exclusive with `Content-Range`). `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for append (server uses head_etag internally — single round-trip). `If-Match: *` and multi-value `If-Match` REJECTED with 400 (v1 clarity). Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` — NOT caller's If-Match). Bounded 2× retry on GET or PUT PreconditionFailed. Post-splice size cap `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). `IndexEvent::Upsert` unchanged. MCP gains `edit` + `append` tools. WebDAV surface unchanged. PATCH correctness note: requires backend to enforce `If-Match` atomically on PUT — see §8.1. |
+| D47 | String-based edits | **Content-based edit endpoint.** MCP `replace(old_string, new_string, if_match, replace_all?)` + `POST /v1/knowledgebases/{kb_slug}/replace/{*path}`. Server-side exact-byte UTF-8 substring search; splices under `If-Match` with the same two-ETag CAS pattern as PATCH (D46). Zero matches → 422 `no_match`; multiple matches with `replace_all=false` → 422 `ambiguous_match { match_count }`; both leave storage byte-identical. `replace_all=true` replaces every non-overlapping occurrence left-to-right in one splice. Post-splice size cap reuses `NOTEDTHAT_MAX_PATCHABLE_SIZE`. WebDAV unchanged. Complements offset-based PATCH (D46); does not replace it. |
 
 ---
 
@@ -365,7 +366,7 @@ Env vars (v2 additions):
 
 ### 6.10 MCP tool surface `[DECIDED — D25]`
 
-All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check). 9 tools total.
+All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check). 10 tools total.
 
 | Tool | Purpose |
 |---|---|
@@ -376,8 +377,9 @@ All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
 | `delete(kb, path, if_match?)` | Delete object |
 | `move(kb, from, to, if_match?)` | Rename/move object |
-| `edit(kb, path, line_start, line_end, content, if_match)` | Line-range PATCH; mandatory If-Match |
+| `edit(kb, path, line_start?, line_end?, byte_start?, byte_end?, content, if_match)` | Byte-range or line-range PATCH; mandatory If-Match. Provide `line_start`/`line_end` for line mode or `byte_start`/`byte_end` for byte mode (mutually exclusive). Byte mode requires strict `byte_start < byte_end`; byte-mode insert is not supported in v1. |
 | `append(kb, path, content, if_match?)` | Append to EOF; if_match optional (server obtains ETag internally — single round-trip) |
+| `replace(kb, path, old_string, new_string, if_match, replace_all?)` | Content-based server-side substring replace with mandatory If-Match; 422 `no_match` / `ambiguous_match` on non-unique matches (D47) |
 
 Resources: expose `notedthat://<kb_slug>/<percent-encoded path>` as MCP Resources for browsable clients — **shipped in M8** (D37). Flat listing with opaque base64 cursor across KB boundaries; no `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents`.
 
