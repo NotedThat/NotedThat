@@ -79,4 +79,34 @@ mod tests {
             "no body limit layer on WebDAV router"
         );
     }
+
+    #[test]
+    fn test_intercept_read_methods_slotted_between_propfind_and_write() {
+        let source = include_str!("router.rs");
+        let build_start = source
+            .find("pub fn build_router")
+            .expect("build_router must exist");
+        let tests_start = source
+            .find("#[cfg(test)]")
+            .expect("test module marker must exist");
+        assert!(
+            build_start < tests_start,
+            "build_router must appear before the test module"
+        );
+        let stack = &source[build_start..tests_start];
+        let propfind_pos = stack
+            .find("intercept_propfind_too_large")
+            .expect("intercept_propfind_too_large must be wired inside build_router");
+        let read_pos = stack
+            .find("intercept_read_methods")
+            .expect("intercept_read_methods must be wired inside build_router");
+        let write_pos = stack
+            .find("intercept_write_methods")
+            .expect("intercept_write_methods must be wired inside build_router");
+        assert!(
+            propfind_pos < read_pos && read_pos < write_pos,
+            "layer order must be propfind_too_large -> read_methods -> write_methods, got \
+             propfind_pos={propfind_pos}, read_pos={read_pos}, write_pos={write_pos}"
+        );
+    }
 }
