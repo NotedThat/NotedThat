@@ -1,0 +1,38 @@
+   Compiling notedthat-api-http v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-api-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.86s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 30 tests
+test error::tests::line_range_error::patch_line_out_of_range_maps_to_line_range_not_satisfiable ... ok
+test error::tests::test_from_storage_error_not_modified ... ok
+test error::tests::test_from_storage_error_other_wrapped ... ok
+test error::tests::test_from_storage_error_precondition_failed ... ok
+test error::tests::test_from_storage_error_range_not_satisfiable ... ok
+test error::tests::line_range_error::byte_range_not_satisfiable_omits_line_byte_header ... ok
+test error::tests::test_from_write_error_indexer_backpressure ... ok
+test error::tests::line_range_error::line_range_not_satisfiable_returns_dual_headers_and_empty_body ... ok
+test error::tests::line_range_error::malformed_line_range_returns_json_400 ... ok
+test error::tests::test_ambiguous_match_body_includes_match_count ... ok
+test error::tests::test_from_write_error_patch_invalid_range ... ok
+test error::tests::test_from_write_error_patch_line_out_of_range ... ok
+test error::tests::test_from_write_error_patch_too_large ... ok
+test error::tests::test_from_write_error_replace_ambiguous ... ok
+test error::tests::test_from_write_error_replace_no_match ... ok
+test error::tests::test_indexer_backpressure_tombstone_503_body_and_retry_after ... ok
+test error::tests::test_malformed_range_400 ... ok
+test error::tests::test_indexer_backpressure_upsert_503_body_and_retry_after ... ok
+test error::tests::test_no_match_body_omits_match_count ... ok
+test error::tests::test_not_found_status ... ok
+test error::tests::test_not_modified_304_empty_body ... ok
+test error::tests::test_payload_too_large_status ... ok
+test error::tests::test_precondition_failed_body_shape_unchanged ... ok
+test error::tests::test_range_not_satisfiable_416_content_range_header ... ok
+test error::tests::test_precondition_failed_412 ... ok
+test error::tests::test_storage_not_modified_304_empty_body ... ok
+test error::tests::test_storage_range_not_satisfiable_416_content_range_header ... ok
+test error::tests::line_range_error::out_of_range_line_get_returns_dual_headers_and_empty_body ... ok
+test error::tests::test_request_id_in_body ... ok
+test error::tests::test_unauthorized_status_and_body ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.00s
+
