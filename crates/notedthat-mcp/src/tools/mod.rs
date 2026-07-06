@@ -210,18 +210,19 @@ mod resources_shared {
     // ── Tool count contract ──────────────────────────────────────────────────
 
     #[test]
-    fn tools_list_returns_exactly_nine_m9_tools() {
+    fn tools_list_returns_exactly_ten_m9_tools() {
         let h = handler("http://localhost:8080");
         let m9 = [
-            "list_knowledgebases",
-            "search",
-            "read",
-            "write",
-            "edit",
             "append",
-            "list",
             "delete",
+            "edit",
+            "list",
+            "list_knowledgebases",
             "move",
+            "read",
+            "replace",
+            "search",
+            "write",
         ];
         for name in m9 {
             assert!(
@@ -234,11 +235,11 @@ mod resources_shared {
             "nonexistent tools must not be registered"
         );
 
-        // Verify TOTAL count is exactly 9 by checking that no additional tools exist.
+        // Verify TOTAL count is exactly 10 by checking that no additional tools exist.
         // This catches accidental tool registrations that would break the contract.
+        // "edit_string" resolved by #39 as top-level `replace` tool (no longer deferred).
         let deferred_tools = [
-            "edit_bytes",   // deferred per issue #38
-            "edit_string",  // deferred per issue #38
+            "edit_bytes",   // deferred per issue #40 (byte args added to the unified `edit` tool instead of a separate name)
             "append_bytes", // not in spec
             "delete_bytes", // not in spec
             "write_bytes",  // not in spec
@@ -246,7 +247,7 @@ mod resources_shared {
         for name in deferred_tools {
             assert!(
                 h.get_tool(name).is_none(),
-                "deferred tool {name:?} must not be registered (would make count > 9)"
+                "deferred tool {name:?} must not be registered (would make count > 10)"
             );
         }
     }
