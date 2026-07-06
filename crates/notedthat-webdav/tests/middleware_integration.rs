@@ -734,3 +734,95 @@ async fn read_matrix_propfind_double_slash_root() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
 }
+
+
+#[tokio::test]
+async fn get_legitimate_object_not_rejected() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/notes/hello.md")
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "legitimate GET must not be rejected by intercept_read_methods"
+    );
+}
+
+#[tokio::test]
+async fn propfind_root_not_rejected() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri("/")
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::MULTI_STATUS,
+        "PROPFIND / must return 207 listing declared KBs"
+    );
+}
+
+#[tokio::test]
+async fn propfind_kb_root_not_rejected() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri("/notes/")
+        .header("Authorization", good_auth())
+        .header("Depth", "1")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "PROPFIND on KB root must not be rejected by intercept_read_methods"
+    );
+}
+
+#[tokio::test]
+async fn propfind_collection_prefix_trailing_slash_returns_207() {
+    // LOAD-BEARING: validates that validate_read_uri_path tolerates ONE trailing /
+    // A PROPFIND on a folder-like collection path (e.g. /notes/folder/) must
+    // NOT be rejected by intercept_read_methods with 400.
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri("/notes/folder/")
+        .header("Authorization", good_auth())
+        .header("Depth", "1")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "PROPFIND on collection path with trailing slash must NOT be rejected by intercept_read_methods"
+    );
+}
+
+#[tokio::test]
+async fn head_collection_prefix_trailing_slash_not_rejected() {
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::HEAD)
+        .uri("/notes/folder/")
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "HEAD on collection path with trailing slash must not be rejected by intercept_read_methods"
+    );
+}
