@@ -343,6 +343,14 @@ async fn serve_line_range_read(
         );
     }
 
+    let content_range_value = idx.content_range_string(&line_range);
+    builder = builder.header("Content-Range", content_range_value);
+
+    let inclusive_end = byte_range.end.saturating_sub(1);
+    let x_content_range_bytes =
+        format!("{}-{}/{}", byte_range.start, inclusive_end, idx.total_bytes);
+    builder = builder.header("X-Content-Range-Bytes", x_content_range_bytes);
+
     Ok(builder
         .body(Body::from(sliced))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
@@ -602,6 +610,69 @@ mod line_range_get {
         assert_eq!(response.status(), StatusCode::OK);
         let actual = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         assert_eq!(actual, Bytes::from(body));
+    }
+
+    mod headers {
+        use super::*;
+
+        fn ten_line_markdown() -> String {
+            (1..=10).map(|line| format!("line {line:02}\n")).collect()
+        }
+
+        #[tokio::test]
+        async fn returns_line_and_byte_content_ranges_when_closed_range_requested() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=2-4").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(
+                response.headers().get("Content-Range").unwrap(),
+                "lines 2-4/10"
+            );
+            assert_eq!(
+                response.headers().get("X-Content-Range-Bytes").unwrap(),
+                "8-31/80"
+            );
+        }
+
+        #[tokio::test]
+        async fn returns_slice_content_length_when_closed_range_requested() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=2-4").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.headers().get("content-length").unwrap(), "24");
+        }
+
+        #[tokio::test]
+        async fn returns_zero_length_and_empty_byte_range_when_insert_range_requested() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=5-4").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.headers().get("content-length").unwrap(), "0");
+            assert_eq!(
+                response.headers().get("Content-Range").unwrap(),
+                "lines 5-4/10"
+            );
+            assert_eq!(
+                response.headers().get("X-Content-Range-Bytes").unwrap(),
+                "32-31/80"
+            );
+        }
+
+        #[tokio::test]
+        async fn omits_line_byte_range_header_when_byte_range_requested() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "bytes=0-9").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert!(response.headers().get("X-Content-Range-Bytes").is_none());
+        }
     }
 }
 
