@@ -1,0 +1,22 @@
+   Compiling notedthat-mcp v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.90s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_mcp-483f5dd0c36d9d84)
+
+running 14 tests
+test tools::edit::tests::half_a_byte_pair_returns_invalid_request_no_http_call ... ok
+test tools::edit::tests::byte_start_greater_than_byte_end_returns_invalid_request_no_http_call ... ok
+test tools::edit::tests::both_line_and_byte_pairs_return_invalid_request_no_http_call ... ok
+test tools::edit::tests::byte_start_equals_byte_end_returns_invalid_request_no_http_call ... ok
+test tools::edit::tests::neither_pair_returns_invalid_request_no_http_call ... ok
+test tools::edit::tests::reverse_range_that_is_not_insert_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::line_start_zero_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::insert_point_encoding_sends_reversed_adjacent_line_range ... ok
+test tools::edit::tests::ok_response_returns_etag ... ok
+test tools::edit::tests::precondition_failed_returns_error ... ok
+test tools::edit::tests::byte_mode_happy_path_sends_content_range_bytes_100_199 ... ok
+test tools::edit::tests::byte_mode_delete_empty_body ... ok
+test tools::edit::tests::byte_end_off_by_one_conversion_regression ... ok
+test tools::edit::tests::sends_patch_with_line_range_and_if_match_headers ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 98 filtered out; finished in 0.03s
+
