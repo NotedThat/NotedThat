@@ -485,6 +485,28 @@ async fn read_methods_reject_encoded_dotdot_propfind() {
 }
 
 #[tokio::test]
+async fn propfind_traversal_rejected_before_size_cap() {
+    // This test verifies that intercept_read_methods (path validation)
+    // runs BEFORE intercept_propfind_too_large (size cap).
+    // A bad-path PROPFIND must return 400 (from intercept_read_methods),
+    // NOT 207 or 507 (which would indicate wrong layer ordering).
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri("/notes/%2e%2e/scratch/")
+        .header("Authorization", good_auth())
+        .header("Depth", "1")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "bad-path PROPFIND must return 400 from intercept_read_methods, not from dav-server or size-cap layer"
+    );
+}
+
+#[tokio::test]
 async fn read_matrix_get_dotdot_declared() {
     let app = build_router(make_state());
     let uri = "/notes/../secret.md";
