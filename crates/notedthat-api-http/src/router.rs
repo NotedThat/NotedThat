@@ -12,7 +12,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bytes::Bytes;
 use notedthat_core::{
-    ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath, StorageError, parse_range_header,
+    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError,
+    parse_line_range_header, parse_range_header,
 };
 use serde::Deserialize;
 use std::fmt::Write;
@@ -202,6 +203,7 @@ async fn get_object(
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let range = match req.headers().get(axum::http::header::RANGE) {
         None => None,
@@ -211,14 +213,23 @@ async fn get_object(
                 .map_err(|_| err(ApiError::MalformedRange("non-UTF-8 Range header".into())))?;
             let parsed = parse_range_header(raw_str)
                 .map_err(|_| err(ApiError::MalformedRange(raw_str.to_owned())))?;
-            if parsed.unit == "bytes" && !parsed.ranges.is_empty() {
+            if parsed.unit == "lines" {
+                return serve_line_range_read(
+                    &state,
+                    &kb,
+                    &path,
+                    raw_str,
+                    conditionals,
+                    &request_id,
+                )
+                .await;
+            } else if parsed.unit == "bytes" && !parsed.ranges.is_empty() {
                 Some(parsed.ranges)
             } else {
                 None
             }
         }
     };
-    let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let read = state
         .storage
@@ -269,6 +280,72 @@ async fn get_object(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
 
     Ok(resp)
+}
+
+async fn serve_line_range_read(
+    state: &AppState,
+    kb: &KbSlug,
+    path: &ObjectPath,
+    raw_range: &str,
+    conditionals: ConditionalHeaders,
+    request_id: &str,
+) -> Result<Response, ApiErrorResponse> {
+    let err = |error: ApiError| ApiErrorResponse {
+        error,
+        request_id: request_id.to_string(),
+    };
+
+    let line_range = parse_line_range_header(raw_range)
+        .map_err(|_| err(ApiError::MalformedRange(raw_range.to_owned())))?;
+    let read = state
+        .storage
+        .get_object(kb, path, None, conditionals)
+        .await
+        .map_err(|error| match error {
+            StorageError::NotFound { .. } => err(ApiError::Core(CoreError::NotFound {
+                resource: path.as_str().to_string(),
+            })),
+            other => err(ApiError::from(other)),
+        })?;
+
+    let idx = LineIndex::from_bytes(&read.bytes);
+    let byte_range = idx.byte_range(&line_range).ok_or_else(|| {
+        err(ApiError::MalformedRange(format!(
+            "line range not satisfiable: {raw_range}"
+        )))
+    })?;
+    let sliced = read
+        .bytes
+        .slice(byte_range.start as usize..byte_range.end as usize);
+    let content_type = read
+        .meta
+        .content_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+
+    let mut builder = Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_LENGTH, sliced.len());
+
+    if let Some(etag) = &read.meta.etag {
+        builder = builder.header(axum::http::header::ETAG, etag.as_str());
+    }
+    if let Some(last_modified) = read
+        .meta
+        .last_modified
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
+    {
+        builder = builder.header(
+            axum::http::header::LAST_MODIFIED,
+            httpdate::fmt_http_date(last_modified),
+        );
+    }
+
+    Ok(builder
+        .body(Body::from(sliced))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
 }
 
 /// `PUT /v1/knowledgebases/{kb_slug}/{*object_path}` — upload an object.
@@ -417,6 +494,118 @@ fn percent_encode_path(path: &str) -> String {
 }
 
 #[cfg(test)]
+mod line_range_get {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use notedthat_core::Storage;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    const KB: &str = "notes";
+    const TOKEN: &str = "test-token-abc";
+
+    fn twenty_line_markdown() -> String {
+        (1..=20).map(|line| format!("line {line:02}\n")).collect()
+    }
+
+    fn markdown_lines(first: u32, last: u32) -> String {
+        (first..=last)
+            .map(|line| format!("line {line:02}\n"))
+            .collect()
+    }
+
+    async fn router_with_markdown_object(body: String) -> axum::Router {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let object_path = ObjectPath::try_from_str("ranges.md").unwrap();
+        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        storage
+            .put_object(
+                &kb,
+                &object_path,
+                Bytes::from(body),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        build_router(AppState {
+            storage,
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            max_patchable_size: MAX_BODY_BYTES,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        })
+    }
+
+    async fn get_ranges_md(router: axum::Router, range: &str) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::RANGE, range)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn returns_first_five_lines_when_closed_range_requested() {
+        let router = router_with_markdown_object(twenty_line_markdown()).await;
+
+        let response = get_ranges_md(router, "lines=1-5").await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(body, Bytes::from(markdown_lines(1, 5)));
+    }
+
+    #[tokio::test]
+    async fn returns_last_three_lines_when_suffix_range_requested() {
+        let router = router_with_markdown_object(twenty_line_markdown()).await;
+
+        let response = get_ranges_md(router, "lines=-3").await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(body, Bytes::from(markdown_lines(18, 20)));
+    }
+
+    #[tokio::test]
+    async fn returns_empty_body_when_insert_range_requested() {
+        let router = router_with_markdown_object(twenty_line_markdown()).await;
+
+        let response = get_ranges_md(router, "lines=5-4").await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_full_body_when_unknown_range_unit_requested() {
+        let body = twenty_line_markdown();
+        let router = router_with_markdown_object(body.clone()).await;
+
+        let response = get_ranges_md(router, "items=0-5").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let actual = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(actual, Bytes::from(body));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
@@ -452,6 +641,7 @@ mod tests {
             declared_kbs: Arc::new(kbs),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
+            max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
         };
@@ -540,6 +730,7 @@ mod tests {
             declared_kbs: Arc::new(kbs),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
+            max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
         };
