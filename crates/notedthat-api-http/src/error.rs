@@ -65,6 +65,15 @@ pub enum ApiError {
         /// Total byte count in the object.
         byte_total: u64,
     },
+    /// A single-replace operation found no occurrence of `old_string`.
+    #[error("no match found for old_string")]
+    ReplaceNoMatch,
+    /// A single-replace operation found multiple occurrences of `old_string`.
+    #[error("multiple matches found ({count}); use replace_all to replace them all")]
+    ReplaceAmbiguous {
+        /// Number of occurrences found.
+        count: u64,
+    },
 }
 
 /// Promote specific `StorageError` variants to top-level `ApiError` variants so
@@ -108,6 +117,10 @@ impl From<notedthat_write::WriteError> for ApiError {
             notedthat_write::WriteError::PatchInvalidRange { message } => {
                 Self::Core(CoreError::InvalidInput { message })
             }
+            notedthat_write::WriteError::ReplaceNoMatch => Self::ReplaceNoMatch,
+            notedthat_write::WriteError::ReplaceAmbiguous { count } => {
+                Self::ReplaceAmbiguous { count }
+            }
         }
     }
 }
@@ -118,6 +131,14 @@ struct ErrorBody<'a> {
     error: &'a str,
     message: String,
     request_id: String,
+}
+
+#[derive(Serialize)]
+struct ReplaceAmbiguousBody<'a> {
+    error: &'a str,
+    message: String,
+    request_id: String,
+    match_count: u64,
 }
 
 /// An [`ApiError`] paired with a `request_id` string so the JSON body and the
@@ -168,6 +189,8 @@ impl ApiError {
             Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
             }
+            Self::ReplaceNoMatch => (StatusCode::UNPROCESSABLE_ENTITY, "no_match"),
+            Self::ReplaceAmbiguous { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "ambiguous_match"),
             Self::Core(CoreError::BucketNameTooLong { .. } | CoreError::Config { .. }) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
             }
@@ -281,6 +304,15 @@ impl IntoResponse for ApiErrorResponse {
                     Json(body),
                 )
                     .into_response();
+            }
+            ApiError::ReplaceAmbiguous { count } => {
+                let body = ReplaceAmbiguousBody {
+                    error: "ambiguous_match",
+                    message: self.error.to_string(),
+                    request_id: self.request_id,
+                    match_count: *count,
+                };
+                return (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response();
             }
             _ => {}
         }
@@ -452,6 +484,73 @@ mod tests {
         let (status, code) = api_err.status_and_code();
         assert_eq!(status.as_u16(), 400);
         assert_eq!(code, "invalid_request");
+    }
+
+    #[test]
+    fn test_from_write_error_replace_no_match() {
+        let api_err = ApiError::from(WriteError::ReplaceNoMatch);
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 422);
+        assert_eq!(code, "no_match");
+    }
+
+    #[test]
+    fn test_from_write_error_replace_ambiguous() {
+        let api_err = ApiError::from(WriteError::ReplaceAmbiguous { count: 3 });
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 422);
+        assert_eq!(code, "ambiguous_match");
+    }
+
+    #[tokio::test]
+    async fn test_ambiguous_match_body_includes_match_count() {
+        let resp = ApiErrorResponse {
+            error: ApiError::ReplaceAmbiguous { count: 3 },
+            request_id: "req-1".into(),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "ambiguous_match");
+        assert_eq!(json["match_count"], 3);
+        assert_eq!(json["request_id"], "req-1");
+    }
+
+    #[tokio::test]
+    async fn test_no_match_body_omits_match_count() {
+        let resp = ApiErrorResponse {
+            error: ApiError::ReplaceNoMatch,
+            request_id: "req-1".into(),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "no_match");
+        assert!(json.get("match_count").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_precondition_failed_body_shape_unchanged() {
+        let resp = ApiErrorResponse {
+            error: ApiError::PreconditionFailed,
+            request_id: "req-1".into(),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let object = json.as_object().unwrap();
+        assert_eq!(object.len(), 3);
+        assert!(object.contains_key("error"));
+        assert!(object.contains_key("message"));
+        assert!(object.contains_key("request_id"));
     }
 
     // ─── New variant tests ────────────────────────────────────────────────────
