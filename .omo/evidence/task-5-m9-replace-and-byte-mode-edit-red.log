@@ -1,0 +1,64 @@
+   Compiling notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_write-74c2c42523a222bc)
+
+running 7 tests
+test replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints ... FAILED
+test replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline ... FAILED
+test replace::tests::empty_new_string_deletes_in_place ... FAILED
+test replace::tests::replace_all_true_across_three_non_overlapping_matches ... FAILED
+test replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count ... FAILED
+test replace::tests::single_match_happy_replaces_once ... FAILED
+test replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched ... FAILED
+
+failures:
+
+---- replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints stdout ----
+
+thread 'replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints' (1138873) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline stdout ----
+
+thread 'replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline' (1138871) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- replace::tests::empty_new_string_deletes_in_place stdout ----
+
+thread 'replace::tests::empty_new_string_deletes_in_place' (1138872) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::replace_all_true_across_three_non_overlapping_matches stdout ----
+
+thread 'replace::tests::replace_all_true_across_three_non_overlapping_matches' (1138875) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count stdout ----
+
+thread 'replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count' (1138874) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::single_match_happy_replaces_once stdout ----
+
+thread 'replace::tests::single_match_happy_replaces_once' (1138876) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched stdout ----
+
+thread 'replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched' (1138877) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+
+failures:
+    replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline
+    replace::tests::empty_new_string_deletes_in_place
+    replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints
+    replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count
+    replace::tests::replace_all_true_across_three_non_overlapping_matches
+    replace::tests::single_match_happy_replaces_once
+    replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched
+
+test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p notedthat-write --lib`

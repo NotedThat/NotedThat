@@ -1,0 +1,13 @@
+RED is intentional for T5.
+
+Command:
+  cargo test -p notedthat-write --lib replace::tests
+
+Observed result:
+  7 replace::tests failed.
+
+Reason:
+  All failures panic at crates/notedthat-write/src/replace.rs inside the placeholder replace() stub:
+  not implemented: replace() not yet implemented — see T7
+
+This confirms the tests compile and fail because production replace() behavior is not implemented yet, not because of import/type/test harness errors.
