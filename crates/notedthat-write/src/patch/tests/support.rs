@@ -242,15 +242,19 @@ pub(super) async fn run_patch(
     max_size: u64,
 ) -> Result<(PutOutcome, mpsc::Receiver<IndexEvent>), WriteError> {
     let (indexer_tx, rx) = mpsc::channel(8);
+    let kb = kb();
+    let path = path();
     let outcome = patch(
         storage,
         &indexer_tx,
-        &kb(),
-        &path(),
-        patch_mode,
-        caller_conditionals,
-        max_size,
-        None,
+        PatchRequest {
+            kb: &kb,
+            path: &path,
+            patch_mode,
+            caller_conditionals,
+            max_patchable_size: max_size,
+            caller_content_type: None,
+        },
     )
     .await?;
     Ok((outcome, rx))

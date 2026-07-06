@@ -126,6 +126,7 @@ fn test_config_with_webdav(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        max_patchable_size: 10 * 1024 * 1024,
     }
 }
 

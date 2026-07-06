@@ -25,7 +25,7 @@ pub enum WriteError {
     /// Indexer queue was full while enqueueing a tombstone.
     #[error("indexer queue full during tombstone")]
     IndexerBackpressureTombstone,
-    /// Object body exceeds the NOTEDTHAT_MAX_PATCHABLE_SIZE limit before or after splice.
+    /// Object body exceeds the `NOTEDTHAT_MAX_PATCHABLE_SIZE` limit before or after splice.
     #[error("patch payload too large: {size} bytes (limit {limit})")]
     PatchTooLarge {
         /// Actual byte size.

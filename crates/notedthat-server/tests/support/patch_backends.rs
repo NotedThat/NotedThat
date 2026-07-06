@@ -1,30 +1,25 @@
 use notedthat_core::{KbSlug, TenantSlug};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use notedthat_storage_s3::S3Config;
-use reqwest::StatusCode;
 use std::collections::BTreeMap;
-use std::time::Duration;
 use testcontainers::{
     GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
 };
-use tokio::task::JoinHandle;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::path};
 
-pub const API_TOKEN: &str = "e2e-test-token";
-pub const TWENTY_LINE_FIXTURE: &str = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\n";
-pub const LINES_1_TO_5: &str = "line 1\nline 2\nline 3\nline 4\nline 5\n";
-pub const LINES_2_TO_4: &str = "line 2\nline 3\nline 4\n";
-pub const LINES_18_TO_20: &str = "line 18\nline 19\nline 20\n";
+use super::API_TOKEN;
+
 const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
 
-pub struct RunningServer {
-    pub client: reqwest::Client,
-    pub base_url: String,
-    pub mcp_url: String,
-    pub kb: String,
-    server_handle: JoinHandle<()>,
+pub(super) struct RuntimeParts {
+    pub(super) config: Config,
+    pub(super) kb: String,
+    pub(super) guards: BackendGuards,
+}
+
+pub(super) struct BackendGuards {
     _seaweed: Box<dyn std::any::Any + Send>,
     _qdrant: Box<dyn std::any::Any + Send>,
     _embedder: MockServer,
@@ -44,102 +39,44 @@ struct BackendUrls<'a> {
     embedder: &'a str,
 }
 
-impl RunningServer {
-    async fn start(kb: String) -> Self {
-        let (seaweed, s3_url) = start_seaweedfs().await;
-        let (qdrant, qdrant_url) = start_qdrant().await;
-        let embedder = MockServer::start().await;
+pub(super) async fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
+    let (seaweed, s3_url) = start_seaweedfs().await;
+    let (qdrant, qdrant_url) = start_qdrant().await;
+    let embedder = MockServer::start().await;
 
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-            .mount(&embedder)
-            .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&embedder)
+        .await;
 
-        let listeners = ListenerAddrs {
-            http: free_addr().await,
-            dav: free_addr().await,
-            mcp: free_addr().await,
-        };
-        let embedder_url = embedder.uri();
-        let backends = BackendUrls {
+    let listeners = ListenerAddrs {
+        http: free_addr().await,
+        dav: free_addr().await,
+        mcp: free_addr().await,
+    };
+    let kb = unique_kb();
+    let embedder_url = embedder.uri();
+    let config = test_config(
+        &kb,
+        listeners,
+        BackendUrls {
             s3: &s3_url,
             qdrant: &qdrant_url,
             embedder: &embedder_url,
-        };
-        let config = test_config(&kb, listeners, backends);
-        let base_url = format!("http://{}", config.listen_addr);
-        let mcp_url = format!("http://{}/mcp", config.mcp_http_bind);
-        let server_handle = tokio::spawn(async move {
-            notedthat_server::run::run(config)
-                .await
-                .expect("server run failed");
-        });
+        },
+        max_patchable_size,
+    );
 
-        wait_for_http(&format!("{base_url}/healthz"), Duration::from_secs(10)).await;
-
-        Self {
-            client: reqwest::Client::new(),
-            base_url,
-            mcp_url,
-            kb,
-            server_handle,
+    RuntimeParts {
+        config,
+        kb,
+        guards: BackendGuards {
             _seaweed: Box::new(seaweed),
             _qdrant: Box::new(qdrant),
             _embedder: embedder,
-        }
+        },
     }
-
-    pub async fn put_fixture(&self) {
-        let response = self
-            .client
-            .put(format!(
-                "{}/v1/knowledgebases/{}/hello.md",
-                self.base_url, self.kb
-            ))
-            .header("Authorization", format!("Bearer {API_TOKEN}"))
-            .header("Content-Type", "text/markdown")
-            .body(TWENTY_LINE_FIXTURE)
-            .send()
-            .await
-            .expect("PUT fixture failed");
-        assert_eq!(response.status(), StatusCode::CREATED);
-    }
-
-    pub async fn get_hello_with_range(&self, range: &str) -> reqwest::Response {
-        self.client
-            .get(format!(
-                "{}/v1/knowledgebases/{}/hello.md",
-                self.base_url, self.kb
-            ))
-            .header("Authorization", format!("Bearer {API_TOKEN}"))
-            .header("Range", range)
-            .send()
-            .await
-            .expect("GET line range failed")
-    }
-}
-
-impl Drop for RunningServer {
-    fn drop(&mut self) {
-        self.server_handle.abort();
-    }
-}
-
-pub async fn fixture_server() -> RunningServer {
-    let server = RunningServer::start(unique_kb()).await;
-    server.put_fixture().await;
-    server
-}
-
-pub fn assert_content_range_bytes(response: &reqwest::Response, expected: &str) {
-    let header = response
-        .headers()
-        .get("x-content-range-bytes")
-        .expect("X-Content-Range-Bytes header should be present")
-        .to_str()
-        .expect("X-Content-Range-Bytes should be valid ASCII");
-    assert_eq!(header, expected);
 }
 
 async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
@@ -172,7 +109,12 @@ async fn start_qdrant() -> (impl std::any::Any + Send, String) {
     (container, format!("http://127.0.0.1:{port}"))
 }
 
-fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) -> Config {
+fn test_config(
+    kb: &str,
+    listeners: ListenerAddrs,
+    backends: BackendUrls<'_>,
+    max_patchable_size: u64,
+) -> Config {
     let mut kbs = BTreeMap::new();
     kbs.insert(
         kb.to_string(),
@@ -217,19 +159,19 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
             "localhost".to_string(),
             "::1".to_string(),
         ],
-        max_patchable_size: 10 * 1024 * 1024,
+        max_patchable_size,
     }
 }
 
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
-    let data: Vec<serde_json::Value> = (0..count)
+    let data = (0..count)
         .map(|i| {
             let embedding: Vec<f32> = (0..dim)
-                .map(|j| if j == i % dim { 1.0_f32 } else { 0.0_f32 })
+                .map(|j| if j == i % dim { 1.0 } else { 0.0 })
                 .collect();
             serde_json::json!({"index": i, "embedding": embedding, "object": "embedding"})
         })
-        .collect();
+        .collect::<Vec<_>>();
     serde_json::json!({"object": "list", "data": data})
 }
 
@@ -242,31 +184,10 @@ async fn free_addr() -> std::net::SocketAddr {
     addr
 }
 
-async fn wait_for_http(url: &str, timeout: Duration) {
-    let client = reqwest::Client::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        assert!(
-            tokio::time::Instant::now() <= deadline,
-            "HTTP server did not become ready at {url}"
-        );
-        if client
-            .get(url)
-            .send()
-            .await
-            .map(|response| response.status().is_success())
-            .unwrap_or(false)
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
 fn unique_kb() -> String {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time should be after unix epoch")
         .as_nanos();
-    format!("notes-{nonce}")
+    format!("patch-{nonce}")
 }

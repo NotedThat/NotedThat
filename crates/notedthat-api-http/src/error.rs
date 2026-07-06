@@ -86,7 +86,8 @@ impl From<notedthat_write::WriteError> for ApiError {
     fn from(e: notedthat_write::WriteError) -> Self {
         match e {
             notedthat_write::WriteError::Storage(e) => Self::Storage(e),
-            notedthat_write::WriteError::TooLarge { size, limit } => {
+            notedthat_write::WriteError::TooLarge { size, limit }
+            | notedthat_write::WriteError::PatchTooLarge { size, limit } => {
                 Self::Core(CoreError::PayloadTooLarge { size, limit })
             }
             notedthat_write::WriteError::Path(e) => Self::Core(e),
@@ -95,9 +96,6 @@ impl From<notedthat_write::WriteError> for ApiError {
             }
             notedthat_write::WriteError::IndexerBackpressureTombstone => {
                 Self::IndexerBackpressureTombstone
-            }
-            notedthat_write::WriteError::PatchTooLarge { size, limit } => {
-                Self::Core(CoreError::PayloadTooLarge { size, limit })
             }
             notedthat_write::WriteError::PatchLineOutOfRange {
                 total_lines,
@@ -159,7 +157,9 @@ impl ApiError {
             Self::Core(CoreError::MalformedRange(_)) | Self::MalformedRange(_) => {
                 (StatusCode::BAD_REQUEST, "malformed_range")
             }
-            Self::LineRangeNotSatisfiable { .. } => {
+            Self::LineRangeNotSatisfiable { .. }
+            | Self::Core(CoreError::RangeNotSatisfiable { .. })
+            | Self::RangeNotSatisfiable { .. } => {
                 (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
             }
             Self::Core(CoreError::NotModified) | Self::NotModified => {
@@ -167,10 +167,6 @@ impl ApiError {
             }
             Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
-            }
-            Self::Core(CoreError::RangeNotSatisfiable { .. })
-            | Self::RangeNotSatisfiable { .. } => {
-                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
             }
             Self::Core(CoreError::BucketNameTooLong { .. } | CoreError::Config { .. }) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
@@ -576,7 +572,11 @@ mod tests {
         const TOKEN: &str = "test-token-abc";
 
         fn twenty_line_markdown() -> String {
-            (1..=20).map(|line| format!("line {line:02}\n")).collect()
+            let mut body = String::new();
+            for line in 1..=20 {
+                std::fmt::Write::write_fmt(&mut body, format_args!("line {line:02}\n")).unwrap();
+            }
+            body
         }
 
         fn router() -> axum::Router {

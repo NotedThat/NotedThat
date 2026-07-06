@@ -1,4 +1,4 @@
-//! E2E integration tests for line-range GET against real SeaweedFS + Qdrant testcontainers.
+//! E2E integration tests for line-range GET against real `SeaweedFS` + Qdrant testcontainers.
 //!
 //! Requires Docker. Run with:
 //! ```sh

@@ -20,7 +20,7 @@ pub struct EditArgs {
     pub line_end: u64,
     /// Replacement content.
     pub content: String,
-    /// Required ETag from a previous GET or write (concurrency control).
+    /// Required `ETag` from a previous GET or write (concurrency control).
     pub if_match: String,
 }
 
