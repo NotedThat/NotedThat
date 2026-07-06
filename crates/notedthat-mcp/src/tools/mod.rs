@@ -7,6 +7,8 @@ mod list;
 mod list_kbs;
 mod mv;
 mod read;
+/// MCP replace tool stub and RED wire contract tests.
+pub mod replace;
 mod search;
 mod write;
 

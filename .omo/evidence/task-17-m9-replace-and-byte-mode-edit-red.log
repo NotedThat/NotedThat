@@ -1,0 +1,77 @@
+   Compiling notedthat-mcp v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.23s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_mcp-483f5dd0c36d9d84)
+
+running 7 tests
+test tools::replace::tests::missing_old_string_invalid_arg_returns_invalid_request_no_http_call ... ok
+test tools::replace::tests::no_match_422_response_returns_no_match_error ... FAILED
+test tools::replace::tests::replace_all_true_forwards_the_flag ... FAILED
+test tools::replace::tests::nested_path_is_encoded_once ... FAILED
+test tools::replace::tests::single_match_happy_sends_post_with_json_body_and_if_match ... FAILED
+test tools::replace::tests::precondition_failed_returns_error ... FAILED
+test tools::replace::tests::ambiguous_match_422_response_returns_ambiguous_match_with_count ... FAILED
+
+failures:
+
+---- tools::replace::tests::no_match_422_response_returns_no_match_error stdout ----
+
+thread 'tools::replace::tests::no_match_422_response_returns_no_match_error' (1247843) panicked at crates/notedthat-mcp/src/tools/replace.rs:130:9:
+expected NoMatch-shaped error, got: ErrorData { code: ErrorCode(-32602), message: "replace tool not implemented yet", data: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tools::replace::tests::replace_all_true_forwards_the_flag stdout ----
+
+thread 'tools::replace::tests::replace_all_true_forwards_the_flag' (1247845) panicked at /home/steve/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wiremock-0.6.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+	Expected range of matching incoming requests: == 1
+	Number of matched incoming requests: 0
+
+The server did not receive any request.
+
+---- tools::replace::tests::nested_path_is_encoded_once stdout ----
+
+thread 'tools::replace::tests::nested_path_is_encoded_once' (1247842) panicked at /home/steve/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wiremock-0.6.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+	Expected range of matching incoming requests: == 1
+	Number of matched incoming requests: 0
+
+The server did not receive any request.
+
+---- tools::replace::tests::single_match_happy_sends_post_with_json_body_and_if_match stdout ----
+
+thread 'tools::replace::tests::single_match_happy_sends_post_with_json_body_and_if_match' (1247846) panicked at /home/steve/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wiremock-0.6.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+	Expected range of matching incoming requests: == 1
+	Number of matched incoming requests: 0
+
+The server did not receive any request.
+
+---- tools::replace::tests::precondition_failed_returns_error stdout ----
+
+thread 'tools::replace::tests::precondition_failed_returns_error' (1247844) panicked at crates/notedthat-mcp/src/tools/replace.rs:229:9:
+assertion `left == right` failed
+  left: "replace tool not implemented yet"
+ right: "precondition_failed"
+
+---- tools::replace::tests::ambiguous_match_422_response_returns_ambiguous_match_with_count stdout ----
+
+thread 'tools::replace::tests::ambiguous_match_422_response_returns_ambiguous_match_with_count' (1247840) panicked at crates/notedthat-mcp/src/tools/replace.rs:154:9:
+expected AmbiguousMatch-shaped error with count, got: ErrorData { code: ErrorCode(-32602), message: "replace tool not implemented yet", data: None }
+
+
+failures:
+    tools::replace::tests::ambiguous_match_422_response_returns_ambiguous_match_with_count
+    tools::replace::tests::nested_path_is_encoded_once
+    tools::replace::tests::no_match_422_response_returns_no_match_error
+    tools::replace::tests::precondition_failed_returns_error
+    tools::replace::tests::replace_all_true_forwards_the_flag
+    tools::replace::tests::single_match_happy_sends_post_with_json_body_and_if_match
+
+test result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p notedthat-mcp --lib`
+
+[command-exit-code] 101
