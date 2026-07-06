@@ -24,6 +24,33 @@ pub enum ByteRange {
     },
 }
 
+/// Line range spec. All bounds are 1-based inclusive line semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineRange {
+    /// `lines=first-last` (both bounds present, inclusive)
+    FromStart {
+        /// The first line number (inclusive, 1-based).
+        first: u64,
+        /// The last line number (inclusive, 1-based).
+        last: u64,
+    },
+    /// `lines=first-` (no upper bound; from first to end)
+    FromStartOpen {
+        /// The first line number (inclusive, 1-based).
+        first: u64,
+    },
+    /// `lines=-length` (last N lines)
+    Suffix {
+        /// The number of lines from the end.
+        length: u64,
+    },
+    /// `lines=before-before-1` (zero-width insert at `before`)
+    Insert {
+        /// The line number to insert before (1-based).
+        before: u64,
+    },
+}
+
 /// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedRanges {
@@ -97,6 +124,18 @@ impl ByteRange {
     }
 }
 
+impl LineRange {
+    /// Return this range in single-range HTTP header form.
+    pub fn to_http_string(&self) -> String {
+        match self {
+            Self::FromStart { first, last } => format!("lines={first}-{last}"),
+            Self::FromStartOpen { first } => format!("lines={first}-"),
+            Self::Suffix { length } => format!("lines=-{length}"),
+            Self::Insert { before } => format!("lines={before}-{}", before - 1),
+        }
+    }
+}
+
 /// Parse an RFC 7233 §2.1 `Range:` header value.
 pub fn parse_range_header(value: &str) -> Result<ParsedRanges, RangeParseError> {
     if value.is_empty() {
@@ -160,6 +199,59 @@ fn parse_u64(component: &str, spec: &str) -> Result<u64, RangeParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod line_range {
+        use super::*;
+
+        #[test]
+        fn constructs_each_variant() {
+            assert_eq!(
+                LineRange::FromStart { first: 1, last: 10 },
+                LineRange::FromStart { first: 1, last: 10 }
+            );
+            assert_eq!(
+                LineRange::FromStartOpen { first: 7 },
+                LineRange::FromStartOpen { first: 7 }
+            );
+            assert_eq!(
+                LineRange::Suffix { length: 3 },
+                LineRange::Suffix { length: 3 }
+            );
+            assert_eq!(
+                LineRange::Insert { before: 5 },
+                LineRange::Insert { before: 5 }
+            );
+        }
+
+        #[test]
+        fn from_start_to_http_string() {
+            assert_eq!(
+                LineRange::FromStart { first: 1, last: 10 }.to_http_string(),
+                "lines=1-10"
+            );
+        }
+
+        #[test]
+        fn insert_to_http_string() {
+            assert_eq!(
+                LineRange::Insert { before: 5 }.to_http_string(),
+                "lines=5-4"
+            );
+        }
+
+        #[test]
+        fn suffix_to_http_string() {
+            assert_eq!(LineRange::Suffix { length: 3 }.to_http_string(), "lines=-3");
+        }
+
+        #[test]
+        fn is_send_sync_clone() {
+            let _: fn() = || {
+                fn f<T: Send + Sync + Clone>() {}
+                f::<LineRange>();
+            };
+        }
+    }
 
     #[test]
     fn parse_closed_range() {
