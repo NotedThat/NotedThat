@@ -847,6 +847,26 @@ curl -sSf -X POST \
 NotedThat exposes a WebDAV read-write surface on a second listener (default `0.0.0.0:8081`).
 Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` / `NOTEDTHAT_WEBDAV_PASSWORD`).
 
+### Path normalization and traversal rejection
+
+All WebDAV methods (GET, HEAD, PROPFIND, PUT, DELETE, MOVE, COPY) reject requests
+whose URI path contains `.`, `..`, empty segments (from `//`), or percent-encoded
+equivalents (`%2e%2e`, `%2f`, `%5c`) with **400 Bad Request**. This applies uniformly
+to both read and write methods, closing the traversal path described in D40. A single
+trailing `/` on a collection path is permitted (e.g. `PROPFIND /notes/folder/` returns
+207). All other traversal or path-injection shapes return 400 with no response body.
+
+| Shape | Example URI | GET | HEAD | PROPFIND | PUT | DELETE | MOVE/COPY |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `..` (dot-dot) | `/notes/../secret.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+| `%2e%2e` (encoded `..`) | `/notes/%2e%2e/secret.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+| `.` (single dot) | `/notes/./hello.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+| empty segment | `/notes//hello.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+| `%2f` (encoded `/`) | `/notes/foo%2fbar.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+| `%5c` (encoded `\`) | `/notes/foo%5cbar.md` | 400 | 400 | 400 | 400 | 400 | 400 |
+
+See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
+
 ### URL layout
 
 | Path | Meaning |
