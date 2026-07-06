@@ -1,3 +1,5 @@
+#![expect(dead_code, reason = "replace helpers are shared by forthcoming E2E cases")]
+
 #[path = "patch_backends.rs"]
 mod patch_backends;
 
@@ -109,6 +111,44 @@ impl PatchServer {
         }
         request.send().await.expect("PATCH append failed")
     }
+
+    pub async fn replace_json(
+        &self,
+        path: &str,
+        if_match: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Response {
+        let url = format!(
+            "{}/v1/knowledgebases/{}/replace/{}",
+            self.base_url, self.kb, path
+        );
+        let body = serde_json::json!({
+            "old_string": old_string,
+            "new_string": new_string,
+            "replace_all": replace_all,
+        });
+        self.client
+            .post(url)
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Content-Type", "application/json")
+            .header("If-Match", if_match)
+            .body(body.to_string())
+            .send()
+            .await
+            .expect("replace request should return")
+    }
+
+    pub async fn head_text_status(&self, path: &str) -> StatusCode {
+        self.client
+            .head(self.object_url(path))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .send()
+            .await
+            .expect("head request should return")
+            .status()
+    }
 }
 
 impl Drop for PatchServer {
@@ -133,6 +173,33 @@ pub async fn assert_error_code(response: Response, status: StatusCode, code: &st
         .await
         .expect("error response should be JSON");
     assert_eq!(json["error"], code);
+}
+
+pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -> String {
+    assert_eq!(resp.status(), StatusCode::OK, "replace should return 200");
+    let etag_header = resp
+        .headers()
+        .get("etag")
+        .expect("etag header should be present")
+        .to_str()
+        .expect("etag should be valid str")
+        .to_owned();
+    let body: serde_json::Value = resp.json().await.expect("json body");
+    assert_eq!(
+        body["match_count"].as_u64(),
+        Some(expected_match_count),
+        "match_count mismatch"
+    );
+    assert!(
+        body["total_bytes"].is_number(),
+        "total_bytes should be a number"
+    );
+    assert_eq!(
+        body["etag"].as_str().map(str::to_owned),
+        Some(etag_header.clone()),
+        "etag body == header"
+    );
+    etag_header
 }
 
 pub async fn mcp_request(
