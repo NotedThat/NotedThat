@@ -24,6 +24,15 @@ pub enum McpToolError {
     /// 416 — Range header not satisfiable (RFC 7233 §4.4 — body is EMPTY).
     #[error("range_not_satisfiable")]
     RangeNotSatisfiable,
+    /// Replacement old_string did not occur in the target text.
+    #[error("no match found for old_string: {0}")]
+    NoMatch(String),
+    /// Replacement old_string occurred multiple times without replace_all.
+    #[error("multiple matches ({count}); use replace_all to replace them all")]
+    AmbiguousMatch {
+        /// Number of matches found for the replacement old_string.
+        count: u64,
+    },
     /// 503 — backend (S3 / Qdrant) unavailable.
     #[error("backend_unavailable")]
     BackendUnavailable,
@@ -61,6 +70,16 @@ impl From<McpToolError> for ErrorData {
             McpToolError::RangeNotSatisfiable => {
                 ErrorData::new(ErrorCode::INVALID_PARAMS, "range_not_satisfiable", None)
             }
+            McpToolError::NoMatch(old_string) => ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("no match found for old_string: {old_string}"),
+                None,
+            ),
+            McpToolError::AmbiguousMatch { count } => ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("multiple matches ({count}); use replace_all to replace them all"),
+                None,
+            ),
             McpToolError::BackendUnavailable => {
                 ErrorData::new(ErrorCode::INTERNAL_ERROR, "backend_unavailable", None)
             }
@@ -142,12 +161,32 @@ mod tests {
             McpToolError::PreconditionFailed,
             McpToolError::PayloadTooLarge,
             McpToolError::RangeNotSatisfiable,
+            McpToolError::NoMatch("hello".into()),
+            McpToolError::AmbiguousMatch { count: 3 },
             McpToolError::BackendUnavailable,
             McpToolError::InternalError("boom".into()),
         ];
         for e in cases {
             let _ed: ErrorData = e.into();
         }
+    }
+
+    #[test]
+    fn no_match_display_and_ambiguous_display() {
+        // Given: tool errors for replacement matching failures
+        let no_match = McpToolError::NoMatch("hello".into());
+        let ambiguous = McpToolError::AmbiguousMatch { count: 3 };
+
+        // When: errors are rendered for MCP tool responses
+        let no_match_display = no_match.to_string();
+        let ambiguous_display = ambiguous.to_string();
+
+        // Then: each variant exposes its distinct tool-level message
+        assert_eq!(no_match_display, "no match found for old_string: hello");
+        assert_eq!(
+            ambiguous_display,
+            "multiple matches (3); use replace_all to replace them all"
+        );
     }
 
     #[tokio::test]
