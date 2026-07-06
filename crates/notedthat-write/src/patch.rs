@@ -7,9 +7,10 @@ use notedthat_core::{
 };
 use notedthat_indexer::IndexEvent;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
+
+mod indexing;
 
 /// Specifies how an object's bytes should be spliced.
 #[derive(Debug, Clone)]
@@ -50,97 +51,103 @@ pub async fn patch(
     max_patchable_size: u64,
     caller_content_type: Option<&str>,
 ) -> Result<PutOutcome, WriteError> {
+    const MAX_ATTEMPTS: u32 = 3;
+
     validate_caller_if_match(&patch_mode, &caller_conditionals)?;
 
-    let meta = storage
-        .head_object(kb, path, ConditionalHeaders::default())
-        .await?;
-    check_caller_precondition(&patch_mode, &caller_conditionals, meta.etag.as_deref())?;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
 
-    if meta.size > max_patchable_size {
-        return Err(WriteError::PatchTooLarge {
-            size: meta.size,
-            limit: max_patchable_size,
-        });
-    }
+        let meta = storage
+            .head_object(kb, path, ConditionalHeaders::default())
+            .await?;
+        check_caller_precondition(&patch_mode, &caller_conditionals, meta.etag.as_deref())?;
 
-    let head_etag = meta
-        .etag
-        .clone()
-        .ok_or_else(|| WriteError::PatchInvalidRange {
-            message: "backend did not return ETag on HEAD".into(),
-        })?;
-
-    let get_conditionals = ConditionalHeaders {
-        if_match: Some(head_etag.clone()),
-        ..ConditionalHeaders::default()
-    };
-    let read = storage.get_object(kb, path, None, get_conditionals).await?;
-    let read_len = bytes_len_u64(read.bytes.len())?;
-    let (byte_range, new_len) = splice_plan(&patch_mode, &read.bytes, read_len)?;
-
-    if new_len > max_patchable_size {
-        return Err(WriteError::PatchTooLarge {
-            size: new_len,
-            limit: max_patchable_size,
-        });
-    }
-
-    let new_bytes = match (&patch_mode, byte_range) {
-        (PatchMode::Bytes { body, .. } | PatchMode::Lines { body, .. }, Some(br)) => {
-            let start = usize::try_from(br.start).map_err(|_| WriteError::PatchInvalidRange {
-                message: "splice start does not fit usize".into(),
-            })?;
-            let end = usize::try_from(br.end).map_err(|_| WriteError::PatchInvalidRange {
-                message: "splice end does not fit usize".into(),
-            })?;
-            splice_bytes(&read.bytes, start..end, body.clone())
-        }
-        (PatchMode::Append { body }, None) => {
-            let mut buf = BytesMut::with_capacity(capacity_from_u64(new_len)?);
-            buf.extend_from_slice(&read.bytes);
-            buf.extend_from_slice(body);
-            buf.freeze()
-        }
-        (PatchMode::Bytes { .. } | PatchMode::Lines { .. }, None)
-        | (PatchMode::Append { .. }, Some(_)) => {
-            return Err(WriteError::PatchInvalidRange {
-                message: "internal patch mode/range contradiction".into(),
+        if meta.size > max_patchable_size {
+            return Err(WriteError::PatchTooLarge {
+                size: meta.size,
+                limit: max_patchable_size,
             });
         }
-    };
 
-    let put_conditionals = ConditionalHeaders {
-        if_match: Some(head_etag),
-        ..ConditionalHeaders::default()
-    };
-    let content_type = caller_content_type
-        .or(read.meta.content_type.as_deref())
-        .unwrap_or("application/octet-stream");
-    let outcome = storage
-        .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
-        .await?;
+        let head_etag = meta
+            .etag
+            .clone()
+            .ok_or_else(|| WriteError::PatchInvalidRange {
+                message: "backend did not return ETag on HEAD".into(),
+            })?;
 
-    let event = IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: path.clone(),
-        etag: outcome.etag.clone().unwrap_or_default(),
-        mtime: current_unix_seconds(),
-    };
-    match indexer_tx.try_send(event) {
-        Ok(()) => {}
-        Err(TrySendError::Full(ev)) => {
-            tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
-            let _ = ev;
-            return Err(WriteError::IndexerBackpressureUpsert);
+        let get_conditionals = ConditionalHeaders {
+            if_match: Some(head_etag.clone()),
+            ..ConditionalHeaders::default()
+        };
+        let read = match storage.get_object(kb, path, None, get_conditionals).await {
+            Ok(read) => read,
+            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
+                tracing::debug!(target: "notedthat::patch", kb = %kb, path = %path, attempt, stage = "get", "PATCH_RETRY_PRECONDITION");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+        let read_len = bytes_len_u64(read.bytes.len())?;
+        let (byte_range, new_len) = splice_plan(&patch_mode, &read.bytes, read_len)?;
+
+        if new_len > max_patchable_size {
+            return Err(WriteError::PatchTooLarge {
+                size: new_len,
+                limit: max_patchable_size,
+            });
         }
-        Err(TrySendError::Closed(ev)) => {
-            tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
-            let _ = ev;
-        }
+
+        let new_bytes = match (&patch_mode, byte_range) {
+            (PatchMode::Bytes { body, .. } | PatchMode::Lines { body, .. }, Some(br)) => {
+                let start =
+                    usize::try_from(br.start).map_err(|_| WriteError::PatchInvalidRange {
+                        message: "splice start does not fit usize".into(),
+                    })?;
+                let end = usize::try_from(br.end).map_err(|_| WriteError::PatchInvalidRange {
+                    message: "splice end does not fit usize".into(),
+                })?;
+                splice_bytes(&read.bytes, start..end, body.clone())
+            }
+            (PatchMode::Append { body }, None) => {
+                let mut buf = BytesMut::with_capacity(capacity_from_u64(new_len)?);
+                buf.extend_from_slice(&read.bytes);
+                buf.extend_from_slice(body);
+                buf.freeze()
+            }
+            (PatchMode::Bytes { .. } | PatchMode::Lines { .. }, None)
+            | (PatchMode::Append { .. }, Some(_)) => {
+                return Err(WriteError::PatchInvalidRange {
+                    message: "internal patch mode/range contradiction".into(),
+                });
+            }
+        };
+
+        let put_conditionals = ConditionalHeaders {
+            if_match: Some(head_etag),
+            ..ConditionalHeaders::default()
+        };
+        let content_type = caller_content_type
+            .or(read.meta.content_type.as_deref())
+            .unwrap_or("application/octet-stream");
+        let outcome = match storage
+            .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
+                tracing::debug!(target: "notedthat::patch", kb = %kb, path = %path, attempt, stage = "put", "PATCH_RETRY_PRECONDITION");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+
+        indexing::enqueue_patch_upsert(indexer_tx, kb, path, &outcome)?;
+
+        return Ok(outcome);
     }
-
-    Ok(outcome)
 }
 
 pub(crate) fn splice_bytes(src: &Bytes, byte_range: std::ops::Range<usize>, body: Bytes) -> Bytes {
@@ -269,15 +276,9 @@ fn line_range_bounds(range: &LineRange) -> (u64, u64) {
     }
 }
 
-fn current_unix_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
+    mod retry;
     pub mod skeleton;
     mod support;
 }

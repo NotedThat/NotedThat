@@ -15,6 +15,22 @@ struct StoredObject {
 #[derive(Default)]
 pub(super) struct TestStorage {
     objects: Mutex<HashMap<String, StoredObject>>,
+    calls: Mutex<Calls>,
+    script: Mutex<Script>,
+}
+
+#[derive(Default)]
+pub(super) struct Calls {
+    pub(super) head: u32,
+    pub(super) get: u32,
+    pub(super) put: u32,
+}
+
+#[derive(Default)]
+pub(super) struct Script {
+    pub(super) get_failures_remaining: u32,
+    pub(super) put_failures_remaining: u32,
+    pub(super) advance_etag_on_put_failure: bool,
 }
 
 #[async_trait]
@@ -41,6 +57,7 @@ impl Storage for TestStorage {
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
+        self.calls.lock().expect("mutex not poisoned").head += 1;
         let object = self.object(kb, path)?;
         Self::check_if_match(&conditionals, &object.etag)?;
         Ok(Self::meta(path, &object))
@@ -53,8 +70,15 @@ impl Storage for TestStorage {
         _range: Option<Vec<ByteRange>>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
+        self.calls.lock().expect("mutex not poisoned").get += 1;
         let object = self.object(kb, path)?;
         Self::check_if_match(&conditionals, &object.etag)?;
+        let mut script = self.script.lock().expect("mutex not poisoned");
+        if script.get_failures_remaining > 0 {
+            script.get_failures_remaining -= 1;
+            return Err(StorageError::PreconditionFailed);
+        }
+        drop(script);
         Ok(ObjectRead {
             bytes: object.body.clone(),
             meta: Self::meta(path, &object),
@@ -70,6 +94,7 @@ impl Storage for TestStorage {
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
+        self.calls.lock().expect("mutex not poisoned").put += 1;
         let key = key(kb, path);
         let mut objects = self.objects.lock().expect("mutex not poisoned");
         let current = objects.get(&key).map(|object| object.etag.as_str());
@@ -80,6 +105,16 @@ impl Storage for TestStorage {
         {
             return Err(StorageError::PreconditionFailed);
         }
+        let mut script = self.script.lock().expect("mutex not poisoned");
+        if script.put_failures_remaining > 0 {
+            script.put_failures_remaining -= 1;
+            if script.advance_etag_on_put_failure {
+                let object = objects.get_mut(&key).expect("object exists");
+                object.etag = "etag2".to_string();
+            }
+            return Err(StorageError::PreconditionFailed);
+        }
+        drop(script);
         let etag = "etag2".to_string();
         objects.insert(
             key,
@@ -119,6 +154,16 @@ impl TestStorage {
         storage
     }
 
+    pub(super) fn with_script(body: &'static [u8], script: Script) -> Self {
+        let storage = Self {
+            objects: Mutex::new(HashMap::new()),
+            calls: Mutex::new(Calls::default()),
+            script: Mutex::new(script),
+        };
+        storage.insert(Bytes::from_static(body), "etag1");
+        storage
+    }
+
     pub(super) fn body(&self) -> Bytes {
         self.objects
             .lock()
@@ -127,6 +172,15 @@ impl TestStorage {
             .expect("object exists")
             .body
             .clone()
+    }
+
+    pub(super) fn calls(&self) -> Calls {
+        let calls = self.calls.lock().expect("mutex not poisoned");
+        Calls {
+            head: calls.head,
+            get: calls.get,
+            put: calls.put,
+        }
     }
 
     fn insert(&self, body: Bytes, etag: &str) {
