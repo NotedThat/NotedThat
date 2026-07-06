@@ -29,6 +29,7 @@ fn make_app() -> axum::Router {
         declared_kbs: Arc::new(declared_kbs()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
     };
@@ -42,6 +43,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
         declared_kbs: Arc::new(declared_kbs()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: mock,
     };

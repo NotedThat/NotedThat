@@ -261,6 +261,7 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher,
     };
@@ -297,6 +298,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
     };

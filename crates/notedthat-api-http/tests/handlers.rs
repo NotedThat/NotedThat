@@ -30,6 +30,7 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
+        max_patchable_size: max_body_size,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
     };
@@ -653,6 +654,7 @@ async fn delete_enqueues_tombstone_on_success() {
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
     };
@@ -706,6 +708,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
         declared_kbs: Arc::new(kbs),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
     };
