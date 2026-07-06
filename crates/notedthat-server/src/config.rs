@@ -142,7 +142,10 @@ impl Config {
                 message: format!("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid: {e}"),
             })?;
 
-        let mcp_http_enabled = !matches!(std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref(), Ok("false" | "0"));
+        let mcp_http_enabled = !matches!(
+            std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref(),
+            Ok("false" | "0")
+        );
 
         let mcp_http_bind = std::env::var("NOTEDTHAT_MCP_HTTP_BIND")
             .unwrap_or_else(|_| "0.0.0.0:8082".to_string())

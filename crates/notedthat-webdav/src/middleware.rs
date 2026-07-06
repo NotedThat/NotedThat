@@ -256,7 +256,7 @@ fn parse_uri_path(
 
 /// Read-side path validation: enforces D40 strict per-segment rules on EVERY
 /// segment (including segments after a non-declared first KB slug — otherwise
-/// `parse_uri_path`'s early `Ok(NonDeclaredKb)` return at line 204-206
+/// `parse_uri_path`'s early `Ok(NonDeclaredKb)` return for unknown slugs
 /// would silently skip validation for the rest of the path, letting
 /// `/unknown/%2e%2e/notes/hello.md` reach `dav-server`), and tolerates exactly
 /// ONE trailing `/` on legitimate collection paths (e.g. `/notes/folder/`).
