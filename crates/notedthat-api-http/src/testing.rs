@@ -458,6 +458,7 @@ pub fn test_app_state_with_default_channel(
         declared_kbs,
         bearer_token,
         max_body_size,
+        max_patchable_size: max_body_size,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
     }
@@ -480,6 +481,7 @@ pub fn test_app_state_with_channel(
             declared_kbs,
             bearer_token,
             max_body_size,
+            max_patchable_size: max_body_size,
             indexer_tx,
             searcher: Arc::new(NoopSearcher),
         },

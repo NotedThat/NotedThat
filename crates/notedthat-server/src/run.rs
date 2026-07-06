@@ -98,6 +98,7 @@ async fn build_infrastructure(
         declared_kbs,
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
+        max_patchable_size: config.max_patchable_size,
         indexer_tx,
         searcher,
     };
