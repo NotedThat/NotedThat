@@ -34,6 +34,7 @@ These have defaults and can be omitted.
 | `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `true` or `false` | `false` | Use path-style S3 addressing (`endpoint/bucket/key`) instead of virtual-hosted style (`bucket.endpoint/key`). Set to `true` for SeaweedFS, MinIO, and most self-hosted S3-compatible stores. |
 | `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
 | `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
+| NOTEDTHAT_MAX_PATCHABLE_SIZE | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
 
 ## Shutdown behaviour
 
@@ -245,6 +246,24 @@ Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.
 
 See [SPECIFICATIONS.md](../SPECIFICATIONS.md) §6.4 (embeddings), §6.11 (startup provisioning), §6.12 (indexing queue) for full details.
+
+### PATCH memory model
+
+PATCH loads the full object into RAM to perform the splice. At the peak of step 9 (splice construction), three buffers coexist per worker:
+
+1. **Current object bytes** fetched via GET — up to `NOTEDTHAT_MAX_PATCHABLE_SIZE`
+2. **Request body** buffered by axum — up to `NOTEDTHAT_MAX_PATCHABLE_SIZE`
+3. **Spliced result** under construction — up to `NOTEDTHAT_MAX_PATCHABLE_SIZE`
+
+The **rough upper bound on PATCH memory footprint per worker is `~3 × NOTEDTHAT_MAX_PATCHABLE_SIZE`**. Under high concurrency, aggregate worst-case RAM is approximately:
+
+```
+worker_concurrency × 3 × NOTEDTHAT_MAX_PATCHABLE_SIZE
+```
+
+**Rejected patches** (result would exceed the size cap) are detected via checked arithmetic before allocating the third buffer, so a flood of oversized PATCH requests cannot exhaust 3× RAM per worker — rejected patches peak at `~2× NOTEDTHAT_MAX_PATCHABLE_SIZE`.
+
+Operators should lower `NOTEDTHAT_MAX_PATCHABLE_SIZE` or add a concurrency-limit layer around the PATCH route when running with limited memory. See `SPECIFICATIONS.md D46` for the full concurrency contract.
 
 ---
 
