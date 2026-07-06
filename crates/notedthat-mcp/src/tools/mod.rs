@@ -7,8 +7,7 @@ mod list;
 mod list_kbs;
 mod mv;
 mod read;
-/// MCP replace tool stub and RED wire contract tests.
-pub mod replace;
+mod replace;
 mod search;
 mod write;
 
@@ -80,6 +79,16 @@ impl NotedThatMcp {
         args: Parameters<append::AppendArgs>,
     ) -> Result<CallToolResult, McpError> {
         append::run(&self.client, args.0).await
+    }
+
+    #[tool(
+        description = "Replace an exact UTF-8 substring in an object; if_match is required. Fails with no_match if the substring is not found, or ambiguous_match { match_count } if there are multiple matches and replace_all is not set."
+    )]
+    async fn replace(
+        &self,
+        args: Parameters<replace::ReplaceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        replace::run(&self.client, args.0).await
     }
 
     #[tool(description = "List objects in a knowledge base under an optional prefix")]
