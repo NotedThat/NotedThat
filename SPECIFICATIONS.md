@@ -460,6 +460,22 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - Post-splice size cap enforced by `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). Pre-splice and post-splice size both checked before allocation (checked arithmetic, see D46).
 - 503 on indexer backpressure: object IS stored, search index NOT updated (ghost-state, same as PUT 503).
 
+#### String replace `[DECIDED — D47]`
+
+- `POST /v1/knowledgebases/{kb_slug}/replace/{*target_path}` with JSON body `{ "old_string": "...", "new_string": "...", "replace_all": bool? }` and mandatory `If-Match`. `<target_path>` is the object path to replace within; the surrounding `POST … /replace/` URL prefix identifies the action.
+- **URL namespace convention**: POST on paths beginning with `replace/` invokes the replace action targeting the remainder of the path. `GET/HEAD/PUT/PATCH/DELETE` on the same URL still address the literal object at that path (unchanged). To invoke replace on an object whose path is itself `replace/foo.md`, POST to `.../replace/replace/foo.md` — the outer `replace/` is the action prefix, the inner segments are the target path. This is a POST-only namespace reservation; other verbs are unchanged.
+- Exact-byte UTF-8 substring matching. Matching is byte-exact: a needle of `\r\n` finds the two-byte CRLF sequence; a needle of `\n` finds every LF byte, INCLUDING the LF byte that follows a CR in a CRLF. The algorithm is byte-substring, not line-aware.
+- Zero matches → `422 { "error": "no_match" }`; storage untouched (both `replace_all=false` and `replace_all=true` return no_match on zero matches; the flag does not turn zero matches into a success).
+- `replace_all=false` (default) + multiple matches → `422 { "error": "ambiguous_match", "match_count": N }`; storage untouched.
+- `replace_all=true` → replace every non-overlapping occurrence left-to-right in ONE splice.
+- Empty `new_string` allowed (delete-in-place). Empty `old_string` REJECTED with 400 `invalid_request` (would match every byte position).
+- `If-Match` semantics identical to PATCH per D46: `*` and multi-value → 400; stale ETag → 412; two-ETag CAS with bounded 2× retry on window `PreconditionFailed`.
+- Post-splice size cap enforced by `NOTEDTHAT_MAX_PATCHABLE_SIZE` (same knob as PATCH per D46).
+- 503 on indexer backpressure: object IS stored (PUT committed), search index NOT updated (ghost-state, identical semantics to PATCH per §6.12 Partial writes).
+- **503 retry semantics: NOT a safe replay.** Because the write path commits to storage BEFORE enqueueing the indexer event, a 503 from `replace` means the caller's requested mutation has ALREADY landed — the object's `ETag` has advanced, the `old_string` may no longer exist in the object, and blindly resending the same POST with the original `If-Match` will return 412 (stale). The correct retry pattern is: (a) issue a HEAD to observe the current `ETag` and confirm the state matches expectations; (b) if the state is already what the caller wanted, treat the 503 as a success-with-index-lag and poll `/search` for eventual consistency; (c) if reconciliation is needed, GET the object, re-derive `old_string`/`new_string` against the new content, and reissue with the fresh `ETag`. This diverges from typical "retry the request" 503 semantics — clients MUST reconcile, not blindly replay.
+- Success response: `200 OK` + `ETag: "<new>"` + `Content-Location: /v1/knowledgebases/{kb_slug}/{percent_encode_path(target_path)}` (canonical API URI for the TARGET object, not the `/replace/`-prefixed request URI) + JSON body `{ "etag": "...", "match_count": N, "total_bytes": M }`.
+- MCP tool: `replace(kb, path, old_string, new_string, if_match, replace_all?)` — thin wrapper over the HTTP route; If-Match mandatory (mirrors HTTP contract, not `append`'s optional).
+
 #### List/search pagination
 - `list`: lexicographic S3 object order. Default limit `100`, max `1000`. Cursor is opaque and maps to the backend continuation token.
 - `search`: top-k only in v1. Default limit `10`, max `50`. No cursor/offset/search pagination.
@@ -485,6 +501,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 | Upload too large | `413` | `payload_too_large` | `413` |
 | S3 precondition failed (`If-Match`, `If-None-Match`) | `412` | `precondition_failed` | `412` |
 | Unsatisfiable range | `416` | `range_not_satisfiable` | `416` |
+| Unprocessable — non-unique match | `422` | `no_match` / `ambiguous_match` | n/a (WebDAV unchanged) |
 | Backend unavailable / timeout | `503` | `backend_unavailable` | `503` |
 | Unexpected internal error | `500` | `internal_error` | `500` |
 
