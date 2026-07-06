@@ -585,8 +585,8 @@ mod tests {
 
     #[test]
     fn max_patchable_size_defaults_to_100_mib() {
-        let cfg = run_with_env(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", None)], Config::from_env)
-            .unwrap();
+        let cfg =
+            run_with_env(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", None)], Config::from_env).unwrap();
         assert_eq!(cfg.max_patchable_size, 100 * 1024 * 1024);
     }
 
