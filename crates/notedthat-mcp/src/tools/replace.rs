@@ -1,8 +1,12 @@
 use crate::client::NotedThatClient;
-use crate::error::McpToolError;
-use rmcp::{ErrorData as McpError, model::CallToolResult};
+use crate::error::{McpToolError, map_response};
+use crate::path::encode_kb_slug;
+use rmcp::{
+    ErrorData as McpError,
+    model::{CallToolResult, ContentBlock},
+};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Arguments for the replace tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -15,25 +19,80 @@ pub struct ReplaceArgs {
     pub old_string: String,
     /// Replacement string (may be empty for delete-in-place).
     pub new_string: String,
-    /// Required ETag from a previous GET or write (concurrency control).
+    /// Required `ETag` from a previous GET or write (concurrency control).
     pub if_match: String,
     /// When true, replace every non-overlapping match. Default: false.
     #[serde(default)]
     pub replace_all: Option<bool>,
 }
 
+#[derive(Serialize)]
+struct ReplaceResult {
+    etag: Option<String>,
+    match_count: u64,
+    total_bytes: u64,
+}
+
 pub(super) async fn run(
-    _client: &NotedThatClient,
+    client: &NotedThatClient,
     args: ReplaceArgs,
 ) -> Result<CallToolResult, McpError> {
-    // Client-side validation (needed to make test (e) pass correctly)
     if args.old_string.is_empty() {
         return Err(McpToolError::InvalidRequest(
             "old_string must be non-empty (would match every byte position)".into(),
         )
         .into());
     }
-    Err(McpToolError::InvalidRequest("replace tool not implemented yet".into()).into())
+    if args.if_match.trim().is_empty() {
+        return Err(McpToolError::InvalidRequest(
+            "if_match is required and must be a strong ETag string".into(),
+        )
+        .into());
+    }
+
+    let kb_enc = encode_kb_slug(&args.kb);
+    let url = client.v1_url(&["knowledgebases", &kb_enc, "replace", &args.path]);
+
+    let replace_all_flag = args.replace_all.unwrap_or(false);
+    let body = serde_json::json!({
+        "old_string": args.old_string,
+        "new_string": args.new_string,
+        "replace_all": replace_all_flag,
+    });
+
+    let req = client
+        .authorized(client.http.post(url))
+        .header("If-Match", &args.if_match)
+        .header("Content-Type", "application/json")
+        .body(body.to_string());
+
+    let resp = req.send().await.map_err(McpToolError::Transport)?;
+    let resp = map_response(resp).await.map_err(McpError::from)?;
+
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let text = resp.text().await.map_err(McpToolError::Transport)?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        McpToolError::InternalError(format!("malformed replace response body: {e}"))
+    })?;
+    let match_count = parsed
+        .get("match_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let total_bytes = parsed
+        .get("total_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    let result = ReplaceResult {
+        etag,
+        match_count,
+        total_bytes,
+    };
+    Ok(CallToolResult::success(vec![ContentBlock::json(result)?]))
 }
 
 #[cfg(test)]
@@ -79,9 +138,9 @@ mod tests {
             .await;
 
         let c = client(&server.uri());
-        let result = run(&c, replace_args()).await;
+        let result = run(&c, replace_args()).await.unwrap();
 
-        assert!(result.is_err());
+        assert!(!result.content.is_empty());
         server.verify().await;
     }
 
@@ -105,9 +164,9 @@ mod tests {
             replace_all: Some(true),
             ..replace_args()
         };
-        let result = run(&c, args).await;
+        let result = run(&c, args).await.unwrap();
 
-        assert!(result.is_err());
+        assert!(!result.content.is_empty());
         server.verify().await;
     }
 
@@ -204,9 +263,9 @@ mod tests {
             path: "docs/rfc/7231.md".into(),
             ..replace_args()
         };
-        let result = run(&c, args).await;
+        let result = run(&c, args).await.unwrap();
 
-        assert!(result.is_err());
+        assert!(!result.content.is_empty());
         server.verify().await;
     }
 

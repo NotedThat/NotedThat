@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_mcp-483f5dd0c36d9d84)
+
+running 7 tests
+test tools::replace::tests::missing_old_string_invalid_arg_returns_invalid_request_no_http_call ... ok
+test tools::replace::tests::no_match_422_response_returns_no_match_error ... ok
+test tools::replace::tests::single_match_happy_sends_post_with_json_body_and_if_match ... ok
+test tools::replace::tests::precondition_failed_returns_error ... ok
+test tools::replace::tests::nested_path_is_encoded_once ... ok
+test tools::replace::tests::ambiguous_match_422_response_returns_ambiguous_match_with_count ... ok
+test tools::replace::tests::replace_all_true_forwards_the_flag ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.00s
+
+     Running tests/m8_http_transport_resources_contracts.rs (/mnt/cache/rust/cargo/target/debug/deps/m8_http_transport_resources_contracts-509c3197818bc6dc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+

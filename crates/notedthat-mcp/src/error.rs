@@ -24,13 +24,13 @@ pub enum McpToolError {
     /// 416 — Range header not satisfiable (RFC 7233 §4.4 — body is EMPTY).
     #[error("range_not_satisfiable")]
     RangeNotSatisfiable,
-    /// Replacement old_string did not occur in the target text.
+    /// Replacement `old_string` did not occur in the target text.
     #[error("no match found for old_string: {0}")]
     NoMatch(String),
-    /// Replacement old_string occurred multiple times without replace_all.
+    /// Replacement `old_string` occurred multiple times without `replace_all`.
     #[error("multiple matches ({count}); use replace_all to replace them all")]
     AmbiguousMatch {
-        /// Number of matches found for the replacement old_string.
+        /// Number of matches found for the replacement `old_string`.
         count: u64,
     },
     /// 503 — backend (S3 / Qdrant) unavailable.
@@ -134,8 +134,7 @@ pub(crate) async fn map_response(
     let message = parsed
         .as_ref()
         .and_then(|b| b.message.as_deref())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+        .map_or_else(|| format!("HTTP {}", status.as_u16()), str::to_owned);
 
     Err(match status.as_u16() {
         400 => McpToolError::InvalidRequest(message),
