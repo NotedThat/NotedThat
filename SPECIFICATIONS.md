@@ -523,6 +523,7 @@ All routes are prefixed with `/v1`. Object paths are percent-encoded into a sing
 | `DELETE` | `/v1/knowledgebases/{kb_slug}/{path}` | Delete object; forwards `If-Match` (D9) |
 | `PATCH` | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write (bytes/lines splice, append). Requires `If-Match` for bytes/lines; optional for append. |
 | `POST` | `/v1/knowledgebases/{kb_slug}/search` | Hybrid search. Body: `{ query, filters?, limit? }`. Response shape mirrors MCP `search` (§6.10) |
+| `POST` | `/v1/knowledgebases/{kb_slug}/replace/{*path}` | String replace with mandatory `If-Match`; body `{ old_string, new_string, replace_all? }`; response `{ etag, match_count, total_bytes }` per D47 |
 
 #### Path encoding
 
