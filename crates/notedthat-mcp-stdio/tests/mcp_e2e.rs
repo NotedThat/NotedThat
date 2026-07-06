@@ -195,6 +195,7 @@ fn test_config(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        max_patchable_size: 100 * 1024 * 1024,
     }
 }
 
@@ -345,7 +346,7 @@ async fn mcp_initialize_returns_valid_response() {
 
 #[tokio::test]
 #[ignore = "subprocess test — run with --ignored"]
-async fn mcp_tools_list_returns_all_seven() {
+async fn mcp_tools_list_returns_all_nine() {
     let (mut child, mut stdin, mut stdout) =
         spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
 
@@ -381,6 +382,8 @@ async fn mcp_tools_list_returns_all_seven() {
         "search",
         "read",
         "write",
+        "edit",
+        "append",
         "list",
         "delete",
         "move",
@@ -396,8 +399,8 @@ async fn mcp_tools_list_returns_all_seven() {
 
     assert_eq!(
         tools.len(),
-        7,
-        "expected exactly 7 tools, got {}: {actual_tools:?}",
+        9,
+        "expected exactly 9 tools, got {}: {actual_tools:?}",
         tools.len()
     );
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");
