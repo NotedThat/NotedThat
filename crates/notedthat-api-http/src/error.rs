@@ -342,8 +342,42 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use bytes::Bytes;
+    use notedthat_core::KbSlug;
     use notedthat_write::WriteError;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tower::util::ServiceExt;
+
+    const KB: &str = "notes";
+    const TOKEN: &str = "test-token-abc";
+
+    fn router() -> axum::Router {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        crate::router::build_router(crate::state::AppState {
+            storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: 16 * 1024 * 1024,
+            max_patchable_size: 16 * 1024 * 1024,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        })
+    }
+
+    async fn assert_invalid_request_response(response: Response) {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "invalid_request");
+    }
 
     #[tokio::test]
     async fn test_unauthorized_status_and_body() {
@@ -533,6 +567,127 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "no_match");
         assert!(json.get("match_count").is_none());
+    }
+
+    #[tokio::test]
+    async fn replace_missing_if_match_returns_400_invalid_request() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(Bytes::from_static(
+                        br#"{"old_string":"x","new_string":"y"}"#,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_if_match_star_returns_400() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, "*")
+                    .body(Body::from(Bytes::from_static(
+                        br#"{"old_string":"x","new_string":"y"}"#,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_multi_value_if_match_returns_400() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, "\"a\",\"b\"")
+                    .body(Body::from(Bytes::from_static(
+                        br#"{"old_string":"x","new_string":"y"}"#,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_malformed_json_body_returns_400() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
+                    .body(Body::from(Bytes::from_static(b"{invalid json")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_missing_old_string_field_returns_400() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
+                    .body(Body::from(Bytes::from_static(br#"{"new_string":"y"}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_empty_old_string_returns_400() {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
+                    .body(Body::from(Bytes::from_static(
+                        br#"{"old_string":"","new_string":"y"}"#,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_request_response(response).await;
     }
 
     #[tokio::test]
