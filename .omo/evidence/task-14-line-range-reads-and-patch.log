@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_mcp-483f5dd0c36d9d84)
+
+running 6 tests
+test tools::edit::tests::reverse_range_that_is_not_insert_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::line_start_zero_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::insert_point_encoding_sends_reversed_adjacent_line_range ... ok
+test tools::edit::tests::precondition_failed_returns_error ... ok
+test tools::edit::tests::sends_patch_with_line_range_and_if_match_headers ... ok
+test tools::edit::tests::ok_response_returns_etag ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s
+
+   Compiling notedthat-mcp-stdio v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-mcp-stdio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.92s
+     Running tests/mcp_e2e.rs (/mnt/cache/rust/cargo/target/debug/deps/mcp_e2e-ea705b6b757e5adc)
+
+running 10 tests
+test mcp_bad_token ... ignored, requires docker-compose stack
+test mcp_infra_smoke ... ignored, requires docker-compose stack (but smoke test only needs binary)
+test mcp_initialize_returns_valid_response ... ignored, subprocess test — run with --ignored
+test mcp_move_happy ... ignored, requires docker-compose stack
+test mcp_read_missing ... ignored, requires docker-compose stack
+test mcp_shutdown_returns_clean_exit ... ignored, subprocess test
+test mcp_stdin_close_causes_exit ... ignored, subprocess test
+test mcp_tools_list_returns_all_seven ... ignored, subprocess test — run with --ignored
+test mcp_write_list_read_delete ... ignored, requires docker-compose stack
+test mcp_write_precondition ... ignored, requires docker-compose stack
+
+test result: ok. 0 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
