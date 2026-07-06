@@ -234,7 +234,11 @@ fn test_config(
         mcp_http_enabled: false,
         mcp_http_bind: "127.0.0.1:0".parse().expect("valid addr"),
         mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string(), "::1".to_string()],
+        mcp_http_allowed_hosts: vec![
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+            "::1".to_string(),
+        ],
     }
 }
 
