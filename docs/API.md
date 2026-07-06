@@ -784,6 +784,71 @@ curl -X DELETE \
 
 ---
 
+### PATCH /v1/knowledgebases/{kb_slug}/{path}
+
+Partial write — replaces a byte range, a line range, or appends to the end of an object without uploading the full object.
+
+**NOT idempotent**: the object ETag advances on each successful PATCH. Concurrent PATCHes with the same `If-Match` result in exactly one winner and 412 for the rest (OCC contract).
+
+#### Request headers
+
+| Header | Format | Required? | Notes |
+|--------|--------|-----------|-------|
+| `Content-Range` | `bytes <first>-<last>/*` or `lines <first>-<last>/*` | Required for bytes/lines mode | Mutually exclusive with `NT-Patch-Mode: append`. |
+| `If-Match` | `"<etag>"` | Required for bytes/lines mode; optional for append | Single strong ETag. `*` and comma-separated lists are rejected (400). |
+| `NT-Patch-Mode` | `append` | Optional | Mutually exclusive with `Content-Range`. Triggers single-round-trip append (server obtains ETag internally). |
+| `Content-Type` | MIME type | Optional | Hint for the resulting object's content type. |
+
+#### Response
+
+| Status | Condition | Response headers |
+|--------|-----------|-----------------|
+| `200 OK` | Splice succeeded | `ETag`, `Location` |
+| `400 invalid_request` | Malformed `Content-Range`, missing `If-Match` in bytes/lines mode, `If-Match: *`, multi-value `If-Match`, or `NT-Patch-Mode: append` combined with `Content-Range` | JSON error body |
+| `404 not_found` | Object does not exist | JSON error body |
+| `412 precondition_failed` | `If-Match` does not match the current ETag (caller's OCC assertion failed, or retry budget exhausted) | JSON error body |
+| `413 payload_too_large` | Request body OR resulting object exceeds `NOTEDTHAT_MAX_PATCHABLE_SIZE` | JSON error body |
+| `416 range_not_satisfiable` | Line range beyond EOF | `Content-Range: lines */<total>`, `X-Content-Range-Bytes: */<total_bytes>`, empty body |
+| `503 backend_unavailable` | Indexer queue full (object IS stored; retry to re-enqueue index) | `Retry-After: 5`, JSON body |
+
+#### curl examples
+
+```bash
+# Replace lines 2-3
+ETAG=$(curl -sI -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/knowledgebases/notes/hello.md | grep -i etag | cut -d' ' -f2 | tr -d '\r')
+curl -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Range: lines 2-3/*" \
+  -H "If-Match: $ETAG" \
+  -d "new line 2\nnew line 3\n" \
+  http://localhost:8080/v1/knowledgebases/notes/hello.md
+
+# Insert before line 5 (Content-Range: lines 5-4/*)
+curl -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Range: lines 5-4/*" \
+  -H "If-Match: $ETAG" \
+  -d "inserted line\n" \
+  http://localhost:8080/v1/knowledgebases/notes/hello.md
+
+# Append (single round-trip; no prior HEAD needed)
+curl -X PATCH \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "NT-Patch-Mode: append" \
+  -d "appended text\n" \
+  http://localhost:8080/v1/knowledgebases/notes/hello.md
+```
+
+#### Backend compatibility
+
+PATCH correctness under concurrent writers requires the backend to enforce `If-Match` atomically on PUT. Backends listed in `SPECIFICATIONS.md §8.1` as **silent-200 backends** (those that return a silent 200 for `If-Match` without enforcing it atomically) may silently overwrite each other's data under concurrent PATCH. Operators should consult §8.1 before enabling PATCH workloads on those backends.
+
+#### Ghost-state on 503
+
+When PATCH returns `503 backend_unavailable`, the splice has been applied to storage but the search index was not updated — the object is stored-but-not-indexed. This is the same ghost-state condition as PUT/DELETE 503: a subsequent PATCH with the same `If-Match` will return `412` (the ETag has advanced), while a GET will return the new content. Operators should retry the failed index update by re-issuing the same PATCH with an updated `If-Match` obtained from a fresh HEAD request. See `docs/CONFIGURATION.md` for the indexer backpressure configuration.
+
+---
+
 ### POST /v1/knowledgebases/{kb_slug}/search
 
 Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RRF fusion) against a knowledge base.
@@ -890,6 +955,7 @@ curl -sSf -X POST \
 | GET | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Download object; supports `Range`, conditional headers |
 | PUT | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Upload or replace object; supports `If-Match`, `If-None-Match` |
 | DELETE | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Delete object (idempotent); supports `If-Match` |
+| PATCH | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write; supports `Content-Range: bytes|lines` and `NT-Patch-Mode: append` |
 | POST | `/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 
 
@@ -1108,7 +1174,7 @@ The 405 response body is always:
 
 ### Tools
 
-All 7 tools are exposed:
+All 9 tools are exposed:
 
 #### `list_knowledgebases`
 
@@ -1147,6 +1213,38 @@ Create or update an object. Content is UTF-8 text in v1 (binary not supported).
 **Arguments**: `kb` (string), `path` (string), `content` (string), `if_match?` (string ETag), `if_none_match?` (string), `mime_type?` (string)
 
 **Response**: `{ "etag": string|null, "location": string|null }`
+
+#### edit
+
+Edit an object by replacing or inserting a line range.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kb` | string | Yes | Knowledge base slug |
+| `path` | string | Yes | Object path |
+| `line_start` | integer | Yes | First line to replace (1-based inclusive) |
+| `line_end` | integer | Yes | Last line to replace (1-based). Set to `line_start - 1` for an insert point. |
+| `content` | string | Yes | Replacement content |
+| `if_match` | string | Yes | ETag from a prior read (required for OCC) |
+
+Returns: `{ "etag": "<new-etag>", "location": "<path>" }`
+
+---
+
+#### append
+
+Append content to the end of an object — single round-trip, no prior `HEAD` needed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kb` | string | Yes | Knowledge base slug |
+| `path` | string | Yes | Object path |
+| `content` | string | Yes | Content to append |
+| `if_match` | string | No | Optional ETag; server obtains it internally when omitted |
+
+Returns: `{ "etag": "<new-etag>", "location": "<path>" }`
+
+---
 
 #### `list`
 
