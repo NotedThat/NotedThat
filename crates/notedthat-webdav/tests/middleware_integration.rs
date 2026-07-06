@@ -735,7 +735,6 @@ async fn read_matrix_propfind_double_slash_root() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
 }
 
-
 #[tokio::test]
 async fn get_legitimate_object_not_rejected() {
     let app = build_router(make_state());
