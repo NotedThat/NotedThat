@@ -25,7 +25,8 @@ pub use error::{Error, StorageError};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use object_path::ObjectPath;
 pub use range::{
-    ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_range_header,
+    ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,
+    parse_range_header,
 };
 pub use slug::{KbSlug, TenantSlug};
 pub use storage::{ListResponse, ObjectRead, PutOutcome, Storage};
