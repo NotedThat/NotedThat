@@ -849,6 +849,96 @@ When PATCH returns `503 backend_unavailable`, the splice has been applied to sto
 
 ---
 
+### POST /v1/knowledgebases/{kb_slug}/replace/{path}
+
+String replace — find and replace an exact UTF-8 substring within an object without uploading the full body.
+
+**NOT idempotent**: the object ETag advances on each successful replace. A 503 response means the mutation already landed and the ETag has advanced; clients MUST reconcile (HEAD or GET the current state) rather than blindly resending.
+
+#### Request headers
+
+| Header | Required | Notes |
+|--------|----------|-------|
+| `If-Match` | Required | Single strong ETag. `*` and comma-separated multi-value are rejected (400). |
+| `Content-Type` | Required | Must be `application/json`. |
+
+#### Request body
+
+```json
+{
+  "old_string": "exact text to find (required, non-empty)",
+  "new_string": "replacement text (required, may be empty string)",
+  "replace_all": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `old_string` | string | Yes | Exact UTF-8 byte sequence to search for. Must be non-empty. |
+| `new_string` | string | Yes | Replacement text. May be an empty string (deletion). |
+| `replace_all` | boolean | No | Default `false`. When `false`, exactly one match is required; zero matches → 422 `no_match`, multiple matches → 422 `ambiguous_match`. When `true`, all non-overlapping occurrences are replaced left-to-right in a single splice. |
+
+#### Response
+
+**200 OK** — replace succeeded.
+
+Response headers:
+
+| Header | Description |
+|--------|-------------|
+| `ETag` | New ETag of the object after the splice |
+| `Content-Location` | `/v1/knowledgebases/{kb_slug}/{percent_encoded_path}` |
+
+Response body:
+
+```json
+{
+  "etag": "\"d41d8cd98f00b204e9800998ecf8427e\"",
+  "match_count": 1,
+  "total_bytes": 4096
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `etag` | New ETag (same value as the `ETag` response header) |
+| `match_count` | Number of occurrences replaced (1 when `replace_all=false`; ≥ 0 when `replace_all=true`) |
+| `total_bytes` | Size of the object after the splice |
+
+**Error codes:**
+
+| Status | `error` code | When |
+|--------|-------------|------|
+| 400 | `invalid_request` | Missing or blank `old_string`; `If-Match: *`; multi-value `If-Match`; missing `If-Match`; non-`application/json` Content-Type; malformed JSON body |
+| 412 | `precondition_failed` | `If-Match` does not match the current ETag |
+| 413 | `payload_too_large` | Resulting object would exceed `NOTEDTHAT_MAX_PATCHABLE_SIZE` |
+| 422 | `no_match` | `old_string` not found in the object (storage unchanged) |
+| 422 | `ambiguous_match` | `old_string` found more than once and `replace_all=false` (storage unchanged); body includes `"match_count": N` |
+| 503 | `backend_unavailable` | S3 backend unreachable, or indexer queue full. **NOT safe to replay** — the mutation may have landed and the ETag has advanced. Reconcile with HEAD/GET before retrying. |
+
+#### URL namespace
+
+The replace action lives at `.../replace/<path>`. To replace content in an object whose own path starts with `replace/`, double the prefix: `POST .../replace/replace/foo.md` targets the object at `replace/foo.md`.
+
+#### curl example
+
+```bash
+# Fetch the current ETag
+ETAG=$(curl -sI -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/v1/knowledgebases/notes/hello.md \
+  | grep -i '^etag:' | awk '{print $2}' | tr -d '\r')
+
+# Replace the first occurrence of "old text" with "new text"
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "If-Match: $ETAG" \
+  -d '{"old_string": "old text", "new_string": "new text"}' \
+  http://localhost:8080/v1/knowledgebases/notes/hello.md
+```
+
+---
+
 ### POST /v1/knowledgebases/{kb_slug}/search
 
 Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RRF fusion) against a knowledge base.
@@ -956,6 +1046,7 @@ curl -sSf -X POST \
 | PUT | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Upload or replace object; supports `If-Match`, `If-None-Match` |
 | DELETE | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Delete object (idempotent); supports `If-Match` |
 | PATCH | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write; supports `Content-Range: bytes|lines` and `NT-Patch-Mode: append` |
+| POST | `/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
 | POST | `/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 
 
@@ -1174,7 +1265,7 @@ The 405 response body is always:
 
 ### Tools
 
-All 9 tools are exposed:
+All 10 tools are exposed:
 
 #### `list_knowledgebases`
 
@@ -1243,6 +1334,23 @@ Append content to the end of an object — single round-trip, no prior `HEAD` ne
 | `if_match` | string | No | Optional ETag; server obtains it internally when omitted |
 
 Returns: `{ "etag": "<new-etag>", "location": "<path>" }`
+
+---
+
+#### `replace`
+
+Replace an exact UTF-8 substring within an object — server-side find-and-replace without uploading the full body.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kb` | string | Yes | Knowledge base slug |
+| `path` | string | Yes | Object path |
+| `old_string` | string | Yes | Exact UTF-8 byte sequence to find. Must be non-empty. |
+| `new_string` | string | Yes | Replacement text. May be an empty string. |
+| `if_match` | string | Yes | ETag from a prior read (required for OCC) |
+| `replace_all` | boolean | No | Default `false`. When `false`, exactly one match required; zero → `no_match` error, multiple → `ambiguous_match` error. When `true`, all non-overlapping occurrences replaced left-to-right. |
+
+Returns: `{ "etag": "<new-etag>", "match_count": N, "total_bytes": M }`
 
 ---
 
