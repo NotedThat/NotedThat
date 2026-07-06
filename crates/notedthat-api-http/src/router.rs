@@ -671,8 +671,11 @@ fn percent_encode_path(path: &str) -> String {
 #[cfg(test)]
 mod patch_route {
     use super::*;
+    use async_trait::async_trait;
     use axum::body::{Body, to_bytes};
     use notedthat_core::Storage;
+    use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead, PutOutcome};
+    use notedthat_indexer::IndexEvent;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::util::ServiceExt;
@@ -713,6 +716,44 @@ mod patch_route {
         });
 
         (router, outcome.etag.unwrap())
+    }
+
+    async fn object_with_etag(
+        storage: &crate::testing::InMemoryStorage,
+        kb: &KbSlug,
+        body: &'static [u8],
+    ) -> String {
+        storage
+            .put_object(
+                kb,
+                &ObjectPath::try_from_str(OBJECT_PATH).unwrap(),
+                Bytes::from_static(body),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap()
+            .etag
+            .unwrap()
+    }
+
+    fn router_with_storage(
+        storage: Arc<dyn Storage>,
+        kb: KbSlug,
+        max_patchable_size: u64,
+        indexer_tx: tokio::sync::mpsc::Sender<IndexEvent>,
+    ) -> axum::Router {
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        build_router(AppState {
+            storage,
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: MAX_BODY_BYTES,
+            max_patchable_size,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        })
     }
 
     async fn patch_request(
@@ -766,6 +807,13 @@ mod patch_route {
                 .unwrap(),
             &format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}")
         );
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_RANGE)
+                .is_none()
+        );
+        assert!(response.headers().get("nt-patch-mode").is_none());
     }
 
     #[tokio::test]
@@ -899,6 +947,241 @@ mod patch_route {
         .await;
 
         assert_error_code(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+    }
+
+    mod errors {
+        use super::*;
+
+        #[derive(Clone)]
+        struct PutPreconditionFailedStorage {
+            inner: crate::testing::InMemoryStorage,
+        }
+
+        #[async_trait]
+        impl Storage for PutPreconditionFailedStorage {
+            async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
+                self.inner.ensure_bucket(kb).await
+            }
+
+            async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
+                self.inner.read_manifest(kb).await
+            }
+
+            async fn write_manifest(
+                &self,
+                kb: &KbSlug,
+                manifest: &KbManifest,
+            ) -> Result<(), StorageError> {
+                self.inner.write_manifest(kb, manifest).await
+            }
+
+            async fn head_object(
+                &self,
+                kb: &KbSlug,
+                path: &ObjectPath,
+                conditionals: ConditionalHeaders,
+            ) -> Result<ObjectMeta, StorageError> {
+                self.inner.head_object(kb, path, conditionals).await
+            }
+
+            async fn get_object(
+                &self,
+                kb: &KbSlug,
+                path: &ObjectPath,
+                range: Option<Vec<ByteRange>>,
+                conditionals: ConditionalHeaders,
+            ) -> Result<ObjectRead, StorageError> {
+                self.inner.get_object(kb, path, range, conditionals).await
+            }
+
+            async fn put_object(
+                &self,
+                _kb: &KbSlug,
+                _path: &ObjectPath,
+                _bytes: Bytes,
+                _content_type: Option<&str>,
+                _conditionals: ConditionalHeaders,
+            ) -> Result<PutOutcome, StorageError> {
+                Err(StorageError::PreconditionFailed)
+            }
+
+            async fn delete_object(
+                &self,
+                kb: &KbSlug,
+                path: &ObjectPath,
+                conditionals: ConditionalHeaders,
+            ) -> Result<(), StorageError> {
+                self.inner.delete_object(kb, path, conditionals).await
+            }
+
+            async fn list_objects(
+                &self,
+                kb: &KbSlug,
+                prefix: Option<&str>,
+                limit: u32,
+                cursor: Option<&str>,
+            ) -> Result<ListResponse, StorageError> {
+                self.inner.list_objects(kb, prefix, limit, cursor).await
+            }
+        }
+
+        #[tokio::test]
+        async fn missing_if_match_for_bytes_mode_returns_invalid_request() {
+            let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+            let response = patch_request(
+                router,
+                "content-range",
+                "bytes 0-9/*",
+                None,
+                Bytes::from_static(b"ABCDEFGHIJ"),
+            )
+            .await;
+
+            assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+        }
+
+        #[tokio::test]
+        async fn body_larger_than_max_patchable_size_returns_payload_too_large() {
+            let (router, _etag) = router_with_object(b"one\n", 10).await;
+
+            let response = patch_request(
+                router,
+                "nt-patch-mode",
+                "append",
+                None,
+                Bytes::from_static(b"more than ten bytes"),
+            )
+            .await;
+
+            assert_error_code(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+        }
+
+        #[tokio::test]
+        async fn pre_splice_object_larger_than_max_patchable_size_returns_payload_too_large() {
+            let (router, _etag) = router_with_object(b"already too large", 10).await;
+
+            let response = patch_request(
+                router,
+                "nt-patch-mode",
+                "append",
+                None,
+                Bytes::from_static(b"!"),
+            )
+            .await;
+
+            assert_error_code(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+        }
+
+        #[tokio::test]
+        async fn post_splice_body_larger_than_max_patchable_size_returns_payload_too_large() {
+            let (router, _etag) = router_with_object(b"123456", 10).await;
+
+            let response = patch_request(
+                router,
+                "nt-patch-mode",
+                "append",
+                None,
+                Bytes::from_static(b"78901"),
+            )
+            .await;
+
+            assert_error_code(response, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").await;
+        }
+
+        #[tokio::test]
+        async fn line_range_out_of_bounds_returns_dual_416_headers_and_empty_body() {
+            let (router, etag) =
+                router_with_object(b"one\ntwo\nthree\nfour\nfive\n", MAX_BODY_BYTES).await;
+
+            let response = patch_request(
+                router,
+                "content-range",
+                "lines 100-200/*",
+                Some(&etag),
+                Bytes::from_static(b"replacement\n"),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(
+                response.headers().get("content-range").unwrap(),
+                "lines */5"
+            );
+            assert_eq!(
+                response.headers().get("x-content-range-bytes").unwrap(),
+                "*/24"
+            );
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            assert!(body.is_empty());
+        }
+
+        #[tokio::test]
+        async fn if_match_mismatch_after_retries_returns_precondition_failed_without_content_range()
+        {
+            let kb = KbSlug::try_new(KB).unwrap();
+            let inner = crate::testing::InMemoryStorage::default();
+            let etag = object_with_etag(&inner, &kb, b"0123456789").await;
+            let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+            let router = router_with_storage(
+                Arc::new(PutPreconditionFailedStorage { inner }),
+                kb,
+                MAX_BODY_BYTES,
+                indexer_tx,
+            );
+
+            let response = patch_request(
+                router,
+                "content-range",
+                "bytes 0-1/*",
+                Some(&etag),
+                Bytes::from_static(b"AB"),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+            assert!(
+                response
+                    .headers()
+                    .get(axum::http::header::CONTENT_RANGE)
+                    .is_none()
+            );
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], "precondition_failed");
+        }
+
+        #[tokio::test]
+        async fn indexer_queue_full_returns_backend_unavailable_with_retry_after() {
+            let kb = KbSlug::try_new(KB).unwrap();
+            let storage = crate::testing::InMemoryStorage::default();
+            let etag = object_with_etag(&storage, &kb, b"one\n").await;
+            let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+            indexer_tx
+                .try_send(IndexEvent::Upsert {
+                    kb: kb.clone(),
+                    object_key: ObjectPath::try_from_str("queued.md").unwrap(),
+                    etag: "queued".to_string(),
+                    mtime: 0,
+                })
+                .unwrap();
+            let router = router_with_storage(Arc::new(storage), kb, MAX_BODY_BYTES, indexer_tx);
+
+            let response = patch_request(
+                router,
+                "nt-patch-mode",
+                "append",
+                Some(&etag),
+                Bytes::from_static(b"two\n"),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers().get("retry-after").unwrap(), "5");
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], "backend_unavailable");
+        }
     }
 }
 
