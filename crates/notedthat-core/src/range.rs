@@ -51,15 +51,6 @@ pub enum LineRange {
     },
 }
 
-/// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedRanges {
-    /// Range unit token, such as `bytes`.
-    pub unit: String,
-    /// Parsed byte ranges. Empty when `unit` is not `bytes`.
-    pub ranges: Vec<ByteRange>,
-}
-
 /// Errors produced while parsing an RFC 7233 `Range:` header value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RangeParseError {
@@ -134,6 +125,141 @@ impl LineRange {
             Self::Insert { before } => format!("lines={before}-{}", before - 1),
         }
     }
+}
+
+/// Per-request line index built from raw bytes.
+/// `line_starts[i]` is the byte offset at which line `i+1` begins (0-indexed into the array).
+/// `line_starts[0] = 0` always.
+#[derive(Debug, Clone)]
+pub struct LineIndex {
+    /// Byte offset at which each line begins. Length equals `total_lines`.
+    pub line_starts: Vec<u64>,
+    /// Total number of lines (including trailing partial line without a `\n`).
+    pub total_lines: u64,
+    /// Total number of bytes in the buffer.
+    pub total_bytes: u64,
+}
+
+impl LineIndex {
+    /// Build a line index from raw bytes without decoding text.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return Self {
+                line_starts: Vec::new(),
+                total_lines: 0,
+                total_bytes: 0,
+            };
+        }
+
+        let mut line_starts = vec![0];
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                i += 2;
+                if i < bytes.len() {
+                    line_starts.push(i as u64);
+                }
+            } else if bytes[i] == b'\n' {
+                i += 1;
+                if i < bytes.len() {
+                    line_starts.push(i as u64);
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        Self {
+            total_lines: line_starts.len() as u64,
+            total_bytes: bytes.len() as u64,
+            line_starts,
+        }
+    }
+
+    /// Convert a line range into an exclusive byte range.
+    pub fn byte_range(&self, line_range: &LineRange) -> Option<Range<u64>> {
+        match *line_range {
+            LineRange::FromStart { first, last } => {
+                if first == 0 || first > self.total_lines || first > last.saturating_add(1) {
+                    return None;
+                }
+
+                let clamped_last = last.min(self.total_lines);
+                let start = self.line_starts[(first - 1) as usize];
+                let end = if clamped_last == self.total_lines {
+                    self.total_bytes
+                } else {
+                    self.line_starts[clamped_last as usize]
+                };
+                Some(start..end)
+            }
+            LineRange::FromStartOpen { first } => {
+                if first == 0 || first > self.total_lines {
+                    return None;
+                }
+
+                let start = self.line_starts[(first - 1) as usize];
+                Some(start..self.total_bytes)
+            }
+            LineRange::Suffix { length } => {
+                if length == 0 || self.total_lines == 0 {
+                    return None;
+                }
+
+                let clamped = length.min(self.total_lines);
+                let start_line = self.total_lines - clamped;
+                let start = self.line_starts[start_line as usize];
+                Some(start..self.total_bytes)
+            }
+            LineRange::Insert { before } => {
+                if before == 0 || before > self.total_lines + 1 {
+                    return None;
+                }
+
+                if before == self.total_lines + 1 {
+                    return Some(self.total_bytes..self.total_bytes);
+                }
+
+                let offset = self.line_starts[(before - 1) as usize];
+                Some(offset..offset)
+            }
+        }
+    }
+
+    /// Return the `Content-Range` header value for a line-mode response.
+    pub fn content_range_string(&self, line_range: &LineRange) -> String {
+        match *line_range {
+            LineRange::FromStart { first, last } => {
+                let clamped_last = last.min(self.total_lines);
+                format!("lines {first}-{clamped_last}/{}", self.total_lines)
+            }
+            LineRange::FromStartOpen { first } => {
+                format!("lines {first}-{}/{}", self.total_lines, self.total_lines)
+            }
+            LineRange::Suffix { length } => {
+                let actual_first = self
+                    .total_lines
+                    .saturating_sub(length.min(self.total_lines))
+                    + 1;
+                format!(
+                    "lines {actual_first}-{}/{}",
+                    self.total_lines, self.total_lines
+                )
+            }
+            LineRange::Insert { before } => {
+                format!("lines {before}-{}/{}", before - 1, self.total_lines)
+            }
+        }
+    }
+}
+
+/// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedRanges {
+    /// Range unit token, such as `bytes`.
+    pub unit: String,
+    /// Parsed byte ranges. Empty when `unit` is not `bytes`.
+    pub ranges: Vec<ByteRange>,
 }
 
 /// Parse an RFC 7233 §2.1 `Range:` header value.
@@ -250,6 +376,134 @@ mod tests {
                 fn f<T: Send + Sync + Clone>() {}
                 f::<LineRange>();
             };
+        }
+    }
+
+    mod line_index {
+        use super::*;
+
+        fn ten_line_index() -> LineIndex {
+            LineIndex::from_bytes(b"1\n2\n3\n4\n5\n6\n7\n8\n9\n10")
+        }
+
+        #[test]
+        fn empty_buffer_has_no_lines() {
+            let index = LineIndex::from_bytes(b"");
+
+            assert_eq!(index.total_lines, 0);
+            assert_eq!(index.line_starts, Vec::<u64>::new());
+            assert_eq!(index.total_bytes, 0);
+            assert_eq!(
+                index.byte_range(&LineRange::FromStart { first: 1, last: 1 }),
+                None
+            );
+        }
+
+        #[test]
+        fn trailing_newline_belongs_to_last_line() {
+            let index = LineIndex::from_bytes(b"one\n");
+
+            assert_eq!(index.total_lines, 1);
+            assert_eq!(index.line_starts, vec![0]);
+            assert_eq!(index.total_bytes, 4);
+            assert_eq!(
+                index.byte_range(&LineRange::FromStart { first: 1, last: 1 }),
+                Some(0..4)
+            );
+        }
+
+        #[test]
+        fn trailing_partial_line_is_counted() {
+            let index = LineIndex::from_bytes(b"one");
+
+            assert_eq!(index.total_lines, 1);
+            assert_eq!(index.line_starts, vec![0]);
+            assert_eq!(index.total_bytes, 3);
+            assert_eq!(
+                index.byte_range(&LineRange::FromStart { first: 1, last: 1 }),
+                Some(0..3)
+            );
+        }
+
+        #[test]
+        fn crlf_is_one_line_boundary() {
+            let index = LineIndex::from_bytes(b"a\r\nb\n");
+
+            assert_eq!(index.total_lines, 2);
+            assert_eq!(index.line_starts, vec![0, 3]);
+            assert_eq!(index.total_bytes, 5);
+        }
+
+        #[test]
+        fn from_start_clamps_past_eof_end() {
+            let index = ten_line_index();
+
+            assert_eq!(
+                index.byte_range(&LineRange::FromStart {
+                    first: 1,
+                    last: 999,
+                }),
+                Some(0..index.total_bytes)
+            );
+        }
+
+        #[test]
+        fn from_start_past_eof_is_unsatisfiable() {
+            let index = ten_line_index();
+
+            assert_eq!(
+                index.byte_range(&LineRange::FromStart {
+                    first: 999,
+                    last: 1000,
+                }),
+                None
+            );
+        }
+
+        #[test]
+        fn insert_before_existing_line_is_zero_width() {
+            let index = ten_line_index();
+            let offset = index.line_starts[4];
+
+            assert_eq!(
+                index.byte_range(&LineRange::Insert { before: 5 }),
+                Some(offset..offset)
+            );
+        }
+
+        #[test]
+        fn content_range_strings_render_line_bounds() {
+            let index = ten_line_index();
+
+            assert_eq!(
+                index.content_range_string(&LineRange::FromStart { first: 2, last: 4 }),
+                "lines 2-4/10"
+            );
+            assert_eq!(
+                index.content_range_string(&LineRange::Insert { before: 5 }),
+                "lines 5-4/10"
+            );
+        }
+
+        #[test]
+        fn empty_file_insert_allows_position_one_only() {
+            let index = LineIndex::from_bytes(b"");
+
+            assert_eq!(
+                index.byte_range(&LineRange::Insert { before: 1 }),
+                Some(0..0)
+            );
+            assert_eq!(index.byte_range(&LineRange::Insert { before: 2 }), None);
+        }
+
+        #[test]
+        fn lone_cr_and_bom_are_ordinary_bytes() {
+            let lone_cr = LineIndex::from_bytes(b"a\rb");
+            let bom = LineIndex::from_bytes(b"\xef\xbb\xbffoo\n");
+
+            assert_eq!(lone_cr.total_lines, 1);
+            assert_eq!(bom.total_lines, 1);
+            assert_eq!(bom.line_starts, vec![0]);
         }
     }
 
