@@ -796,6 +796,36 @@ async fn read_matrix_propfind_encoded_backslash_non_declared() {
 }
 
 #[tokio::test]
+async fn read_matrix_propfind_single_dot_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/./x/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_empty_segment_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown//x/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
 async fn get_legitimate_object_not_rejected() {
     let app = build_router(make_state());
     let req = Request::builder()
