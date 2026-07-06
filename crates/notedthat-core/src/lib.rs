@@ -24,6 +24,6 @@ pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use object_path::ObjectPath;
-pub use range::{ByteRange, ParsedRanges, RangeParseError, parse_range_header};
+pub use range::{ByteRange, LineRange, ParsedRanges, RangeParseError, parse_range_header};
 pub use slug::{KbSlug, TenantSlug};
 pub use storage::{ListResponse, ObjectRead, PutOutcome, Storage};
