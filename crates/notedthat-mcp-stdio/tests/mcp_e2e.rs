@@ -387,6 +387,7 @@ async fn mcp_tools_list_returns_all_nine() {
         "list",
         "delete",
         "move",
+        "replace",
     ]
     .iter()
     .copied()
@@ -399,8 +400,8 @@ async fn mcp_tools_list_returns_all_nine() {
 
     assert_eq!(
         tools.len(),
-        9,
-        "expected exactly 9 tools, got {}: {actual_tools:?}",
+        10,
+        "expected exactly 10 tools, got {}: {actual_tools:?}",
         tools.len()
     );
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");
