@@ -345,7 +345,8 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use bytes::Bytes;
-    use notedthat_core::KbSlug;
+    use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage};
+    use notedthat_indexer::IndexEvent;
     use notedthat_write::WriteError;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -355,6 +356,10 @@ mod tests {
     const TOKEN: &str = "test-token-abc";
 
     fn router() -> axum::Router {
+        router_with_max_patchable_size(16 * 1024 * 1024)
+    }
+
+    fn router_with_max_patchable_size(max_patchable_size: u64) -> axum::Router {
         let kb = KbSlug::try_new(KB).unwrap();
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
@@ -366,10 +371,111 @@ mod tests {
             declared_kbs: Arc::new(kbs),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: 16 * 1024 * 1024,
-            max_patchable_size: 16 * 1024 * 1024,
+            max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
         })
+    }
+
+    fn router_with_storage_and_indexer(
+        storage: Arc<dyn Storage>,
+        kb: KbSlug,
+        max_patchable_size: u64,
+        indexer_tx: tokio::sync::mpsc::Sender<IndexEvent>,
+    ) -> axum::Router {
+        let mut kbs = BTreeMap::new();
+        kbs.insert(KB.to_string(), kb);
+        crate::router::build_router(crate::state::AppState {
+            storage,
+            declared_kbs: Arc::new(kbs),
+            bearer_token: Arc::new(TOKEN.to_string()),
+            max_body_size: 16 * 1024 * 1024,
+            max_patchable_size,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+        })
+    }
+
+    async fn put_object(router: axum::Router, path: &str, body: &'static [u8]) -> String {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "text/markdown")
+                    .body(Body::from(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn get_object(router: axum::Router, path: &str) -> Bytes {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        to_bytes(response.into_body(), usize::MAX).await.unwrap()
+    }
+
+    async fn post_replace(
+        router: axum::Router,
+        path: &str,
+        if_match: &str,
+        body: &'static [u8],
+    ) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/knowledgebases/{KB}/replace/{path}"))
+                    .header("authorization", format!("Bearer {TOKEN}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .body(Body::from(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn object_with_etag(
+        storage: &crate::testing::InMemoryStorage,
+        kb: &KbSlug,
+        path: &str,
+        body: &'static [u8],
+    ) -> String {
+        storage
+            .put_object(
+                kb,
+                &ObjectPath::try_from_str(path).unwrap(),
+                Bytes::from_static(body),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap()
+            .etag
+            .unwrap()
     }
 
     async fn assert_invalid_request_response(response: Response) {
@@ -688,6 +794,162 @@ mod tests {
             .unwrap();
 
         assert_invalid_request_response(response).await;
+    }
+
+    #[tokio::test]
+    async fn replace_single_match_happy_returns_200_with_etag_and_match_count() {
+        let router = router();
+        let etag = put_object(router.clone(), "hello.md", b"hello world").await;
+
+        let response = post_replace(
+            router.clone(),
+            "hello.md",
+            &etag,
+            br#"{"old_string":"world","new_string":"planet"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(axum::http::header::ETAG).is_some());
+        assert_eq!(
+            response.headers().get("content-location").unwrap(),
+            "/v1/knowledgebases/notes/hello.md"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["etag"].as_str().is_some());
+        assert_eq!(json["match_count"], 1);
+        assert_eq!(json["total_bytes"], 12);
+        assert_eq!(&get_object(router, "hello.md").await[..], b"hello planet");
+    }
+
+    #[tokio::test]
+    async fn replace_no_match_returns_422_no_match() {
+        let router = router();
+        let etag = put_object(router.clone(), "hello.md", b"hello world").await;
+
+        let response = post_replace(
+            router.clone(),
+            "hello.md",
+            &etag,
+            br#"{"old_string":"nonexistent","new_string":"x"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "no_match");
+        assert_eq!(&get_object(router, "hello.md").await[..], b"hello world");
+    }
+
+    #[tokio::test]
+    async fn replace_ambiguous_returns_422_with_match_count() {
+        let router = router();
+        let etag = put_object(router.clone(), "hello.md", b"a b a").await;
+
+        let response = post_replace(
+            router.clone(),
+            "hello.md",
+            &etag,
+            br#"{"old_string":"a","new_string":"Z"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "ambiguous_match");
+        assert_eq!(json["match_count"], 2);
+        assert_eq!(&get_object(router, "hello.md").await[..], b"a b a");
+    }
+
+    #[tokio::test]
+    async fn replace_all_true_multiple_matches_returns_200_with_count_2() {
+        let router = router();
+        let etag = put_object(router.clone(), "hello.md", b"a b a").await;
+
+        let response = post_replace(
+            router.clone(),
+            "hello.md",
+            &etag,
+            br#"{"old_string":"a","new_string":"Z","replace_all":true}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["match_count"], 2);
+        assert_eq!(json["total_bytes"], 5);
+        assert_eq!(&get_object(router, "hello.md").await[..], b"Z b Z");
+    }
+
+    #[tokio::test]
+    async fn replace_stale_etag_returns_412() {
+        let router = router();
+        put_object(router.clone(), "hello.md", b"hello world").await;
+
+        let response = post_replace(
+            router,
+            "hello.md",
+            "\"stale\"",
+            br#"{"old_string":"world","new_string":"planet"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[tokio::test]
+    async fn replace_post_splice_size_over_cap_returns_413() {
+        let router = router_with_max_patchable_size(20);
+        let etag = put_object(router.clone(), "hello.md", b"1234567890").await;
+
+        let response = post_replace(
+            router,
+            "hello.md",
+            &etag,
+            br#"{"old_string":"0","new_string":"abcdefghijklmnopqrstuvwxyz"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "payload_too_large");
+    }
+
+    #[tokio::test]
+    async fn replace_indexer_backpressure_returns_503_with_retry_after() {
+        let kb = KbSlug::try_new(KB).unwrap();
+        let storage = crate::testing::InMemoryStorage::default();
+        let etag = object_with_etag(&storage, &kb, "hello.md", b"hello world").await;
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        indexer_tx
+            .try_send(IndexEvent::Upsert {
+                kb: kb.clone(),
+                object_key: ObjectPath::try_from_str("queued.md").unwrap(),
+                etag: "queued".to_string(),
+                mtime: 0,
+            })
+            .unwrap();
+        let router =
+            router_with_storage_and_indexer(Arc::new(storage), kb, 16 * 1024 * 1024, indexer_tx);
+
+        let response = post_replace(
+            router,
+            "hello.md",
+            &etag,
+            br#"{"old_string":"world","new_string":"planet"}"#,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "5");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "backend_unavailable");
     }
 
     #[tokio::test]
