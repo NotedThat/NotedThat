@@ -1,0 +1,85 @@
+   Compiling notedthat-mcp v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_mcp-483f5dd0c36d9d84)
+
+running 14 tests
+test tools::edit::tests::byte_start_equals_byte_end_returns_invalid_request_no_http_call ... FAILED
+test tools::edit::tests::byte_mode_delete_empty_body ... FAILED
+test tools::edit::tests::half_a_byte_pair_returns_invalid_request_no_http_call ... FAILED
+test tools::edit::tests::neither_pair_returns_invalid_request_no_http_call ... FAILED
+test tools::edit::tests::reverse_range_that_is_not_insert_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::line_start_zero_returns_invalid_request_without_http_call ... ok
+test tools::edit::tests::byte_mode_happy_path_sends_content_range_bytes_100_199 ... FAILED
+test tools::edit::tests::byte_end_off_by_one_conversion_regression ... FAILED
+test tools::edit::tests::byte_start_greater_than_byte_end_returns_invalid_request_no_http_call ... FAILED
+test tools::edit::tests::ok_response_returns_etag ... ok
+test tools::edit::tests::both_line_and_byte_pairs_return_invalid_request_no_http_call ... FAILED
+test tools::edit::tests::sends_patch_with_line_range_and_if_match_headers ... ok
+test tools::edit::tests::insert_point_encoding_sends_reversed_adjacent_line_range ... ok
+test tools::edit::tests::precondition_failed_returns_error ... ok
+
+failures:
+
+---- tools::edit::tests::byte_start_equals_byte_end_returns_invalid_request_no_http_call stdout ----
+
+thread 'tools::edit::tests::byte_start_equals_byte_end_returns_invalid_request_no_http_call' (1099487) panicked at crates/notedthat-mcp/src/tools/edit.rs:265:9:
+assertion `left == right` failed
+  left: "line_start must be >= 1 (1-based)"
+ right: "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tools::edit::tests::byte_mode_delete_empty_body stdout ----
+
+thread 'tools::edit::tests::byte_mode_delete_empty_body' (1099485) panicked at crates/notedthat-mcp/src/tools/edit.rs:287:14:
+called `Result::unwrap()` on an `Err` value: ErrorData { code: ErrorCode(-32602), message: "line_start must be >= 1 (1-based)", data: None }
+
+---- tools::edit::tests::half_a_byte_pair_returns_invalid_request_no_http_call stdout ----
+
+thread 'tools::edit::tests::half_a_byte_pair_returns_invalid_request_no_http_call' (1099489) panicked at crates/notedthat-mcp/src/tools/edit.rs:351:9:
+assertion `left == right` failed
+  left: "line_start must be >= 1 (1-based)"
+ right: "byte_start and byte_end must be provided together"
+
+---- tools::edit::tests::neither_pair_returns_invalid_request_no_http_call stdout ----
+
+thread 'tools::edit::tests::neither_pair_returns_invalid_request_no_http_call' (1099492) panicked at crates/notedthat-mcp/src/tools/edit.rs:331:9:
+assertion `left == right` failed
+  left: "line_start must be >= 1 (1-based)"
+ right: "exactly one of line range or byte range must be provided"
+
+---- tools::edit::tests::byte_mode_happy_path_sends_content_range_bytes_100_199 stdout ----
+
+thread 'tools::edit::tests::byte_mode_happy_path_sends_content_range_bytes_100_199' (1099486) panicked at crates/notedthat-mcp/src/tools/edit.rs:245:14:
+called `Result::unwrap()` on an `Err` value: ErrorData { code: ErrorCode(-32602), message: "line_start must be >= 1 (1-based)", data: None }
+
+---- tools::edit::tests::byte_end_off_by_one_conversion_regression stdout ----
+
+thread 'tools::edit::tests::byte_end_off_by_one_conversion_regression' (1099484) panicked at crates/notedthat-mcp/src/tools/edit.rs:376:14:
+called `Result::unwrap()` on an `Err` value: ErrorData { code: ErrorCode(-32602), message: "line_start must be >= 1 (1-based)", data: None }
+
+---- tools::edit::tests::byte_start_greater_than_byte_end_returns_invalid_request_no_http_call stdout ----
+
+thread 'tools::edit::tests::byte_start_greater_than_byte_end_returns_invalid_request_no_http_call' (1099488) panicked at crates/notedthat-mcp/src/tools/edit.rs:396:9:
+assertion `left == right` failed
+  left: "line_start must be >= 1 (1-based)"
+ right: "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it"
+
+---- tools::edit::tests::both_line_and_byte_pairs_return_invalid_request_no_http_call stdout ----
+
+thread 'tools::edit::tests::both_line_and_byte_pairs_return_invalid_request_no_http_call' (1099483) panicked at crates/notedthat-mcp/src/tools/edit.rs:315:9:
+assertion failed: result.is_err()
+
+
+failures:
+    tools::edit::tests::both_line_and_byte_pairs_return_invalid_request_no_http_call
+    tools::edit::tests::byte_end_off_by_one_conversion_regression
+    tools::edit::tests::byte_mode_delete_empty_body
+    tools::edit::tests::byte_mode_happy_path_sends_content_range_bytes_100_199
+    tools::edit::tests::byte_start_equals_byte_end_returns_invalid_request_no_http_call
+    tools::edit::tests::byte_start_greater_than_byte_end_returns_invalid_request_no_http_call
+    tools::edit::tests::half_a_byte_pair_returns_invalid_request_no_http_call
+    tools::edit::tests::neither_pair_returns_invalid_request_no_http_call
+
+test result: FAILED. 6 passed; 8 failed; 0 ignored; 0 measured; 98 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p notedthat-mcp --lib`
