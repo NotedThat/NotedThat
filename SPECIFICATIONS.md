@@ -67,6 +67,7 @@ Three logical layers:
 | D43 | Error contract (v1) | **Small stable mapping.** HTTP mirrors normal status codes (`400` invalid input/path/range syntax, `401` auth, `403` forbidden in v2 ACL cases, `404` KB/object missing, `409` conflicts that are not preconditions, `412` S3 precondition failed, `416` unsatisfiable range, `413` upload too large, `502/503` backend unavailable). MCP maps these to typed tool errors with the same code strings; WebDAV uses the nearest HTTP/WebDAV status. |
 | D44 | HTTP API route shape | **Routes under `/v1/knowledgebases/{kb_slug}/{path}`** where `{path}` is a percent-encoded (URL-encoded) object key — a single URL segment. Any `/` within an object key becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`, etc. Single-segment matching avoids multi-segment wildcard routing and eliminates any KB-vs-object boundary ambiguity. KB discovery via `GET /v1/knowledgebases`. Health endpoints (`/healthz`, `/readyz`) are unauthenticated and unversioned. The `v1` prefix reserves the option for a breaking API version later without disturbing WebDAV (D23) or MCP (D25). WebDAV keeps its native multi-segment path semantics; the HTTP API and WebDAV share the logical KB+object model but not the URL wire format. See §6.13 for the concrete route surface. |
 | D45 | Line-range reads | **First-class line-range read capability.** HTTP GET accepts `Range: lines=<first>-<last>` (1-based inclusive) and returns 206 + `Content-Range: lines <first>-<last>/<total>` + `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end). MCP `read` gains `line_start`/`line_end` args (mutually exclusive with `byte_start`/`byte_end`). Line index recomputed per request (no sidecar in v1; see §7.2). Backend byte-range semantics unchanged. |
+| D46 | Partial writes (PATCH) | **First-class partial-write capability via HTTP PATCH.** New route `PATCH /v1/knowledgebases/{kb_slug}/{path}`. Modes: `Content-Range: bytes <first>-<last>/*` OR `Content-Range: lines <first>-<last>/*` (Insert form `lines <N>-<N-1>/*`) OR `NT-Patch-Mode: append` (mutually exclusive with `Content-Range`). `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for append (server uses head_etag internally — single round-trip). `If-Match: *` and multi-value `If-Match` REJECTED with 400 (v1 clarity). Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` — NOT caller's If-Match). Bounded 2× retry on GET or PUT PreconditionFailed. Post-splice size cap `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). `IndexEvent::Upsert` unchanged. MCP gains `edit` + `append` tools. WebDAV surface unchanged. PATCH correctness note: requires backend to enforce `If-Match` atomically on PUT — see §8.1. |
 
 ---
 
@@ -364,7 +365,7 @@ Env vars (v2 additions):
 
 ### 6.10 MCP tool surface `[DECIDED — D25]`
 
-All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check).
+All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check). 9 tools total.
 
 | Tool | Purpose |
 |---|---|
@@ -375,6 +376,8 @@ All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
 | `delete(kb, path, if_match?)` | Delete object |
 | `move(kb, from, to, if_match?)` | Rename/move object |
+| `edit(kb, path, line_start, line_end, content, if_match)` | Line-range PATCH; mandatory If-Match |
+| `append(kb, path, content, if_match?)` | Append to EOF; if_match optional (server obtains ETag internally — single round-trip) |
 
 Resources: expose `notedthat://<kb_slug>/<percent-encoded path>` as MCP Resources for browsable clients — **shipped in M8** (D37). Flat listing with opaque base64 cursor across KB boundaries; no `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents`.
 
@@ -446,6 +449,15 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - 416 response includes both `Content-Range: lines */<total_lines>` and `X-Content-Range-Bytes: */<total_bytes>`.
 - Line index is recomputed per request (no persistent sidecar in v1).
 
+#### Partial writes (PATCH)
+
+- `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for `NT-Patch-Mode: append`.
+- `If-Match: *` and multi-value `If-Match` REJECTED with 400 in v1.
+- Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` as internal CAS anchor — NOT the caller's If-Match). Bounded 2× retry on window 412 from GET or PUT.
+- The retry does NOT absorb concurrent PATCH conflicts. Under sustained concurrent PATCH, the loser's step-3 caller-precondition-check surfaces 412 — as the OCC contract requires.
+- Post-splice size cap enforced by `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). Pre-splice and post-splice size both checked before allocation (checked arithmetic, see D46).
+- 503 on indexer backpressure: object IS stored, search index NOT updated (ghost-state, same as PUT 503).
+
 #### List/search pagination
 - `list`: lexicographic S3 object order. Default limit `100`, max `1000`. Cursor is opaque and maps to the backend continuation token.
 - `search`: top-k only in v1. Default limit `10`, max `50`. No cursor/offset/search pagination.
@@ -490,6 +502,7 @@ All routes are prefixed with `/v1`. Object paths are percent-encoded into a sing
 | `GET` | `/v1/knowledgebases/{kb_slug}/{path}` | Read object; supports `Range: bytes=` (D6, §6.12) |
 | `PUT` | `/v1/knowledgebases/{kb_slug}/{path}` | Create/update object; forwards `If-Match` / `If-None-Match` / `If-*-Since` verbatim (D9) |
 | `DELETE` | `/v1/knowledgebases/{kb_slug}/{path}` | Delete object; forwards `If-Match` (D9) |
+| `PATCH` | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write (bytes/lines splice, append). Requires `If-Match` for bytes/lines; optional for append. |
 | `POST` | `/v1/knowledgebases/{kb_slug}/search` | Hybrid search. Body: `{ query, filters?, limit? }`. Response shape mirrors MCP `search` (§6.10) |
 
 #### Path encoding
@@ -566,6 +579,8 @@ Accepting the header is easy; **atomicity under concurrent writers** requires co
 | **SeaweedFS** < 4.09 | ✅ | ✅ | ⚠️ header parsed, not enforced | ⚠️ | (n/a) | ❌ | Upgrade required |
 | **RustFS** 1.0.0-beta.8 (Q2 2026) | ✅ | ✅ | ✅ | ✅ | Per-PUT distributed lock — **lock RPC timeouts under commit-storm concurrency** (issue #3097) + **disk-full metadata-corruption** report (#2737) | ⚠️ | Apache 2.0 (attractive vs MinIO's AGPL) but beta — pilot only |
 | **Garage** | ✅ | ✅ | ⚠️ parses but no atomicity | ⚠️ parses but no atomicity | **none — structurally impossible per Garage docs** ("cannot be safely implemented due to the lack of a consensus algorithm") | ❌ | Works fine for single-writer / best-effort deployments. Silent lost writes under contention. Not a bug — a design choice. |
+
+**PATCH correctness note**: PATCH's step-10 conditional PUT uses the same `If-Match` semantics documented above for regular PUT. Backends classified as silent-200 backends in the table above (those that return 200 without actually enforcing `If-Match` on write) may silently overwrite concurrent PATCH results without surfacing a 412. Operators running PATCH workloads on those backends must be aware of this risk. SeaweedFS ≥ 4.09 and AWS S3 correctly enforce `If-Match` atomically and are safe for PATCH concurrency.
 
 ### 8.2 Rough recommendations to operators
 
