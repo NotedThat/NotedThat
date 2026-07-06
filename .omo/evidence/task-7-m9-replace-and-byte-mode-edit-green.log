@@ -1,0 +1,47 @@
+   Compiling notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.75s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_write-74c2c42523a222bc)
+
+running 17 tests
+test replace::tests::companion::ambiguous_match_fires_at_exactly_two_matches ... ok
+test replace::tests::companion::nul_byte_in_old_string_matches_correctly ... ok
+test replace::tests::companion::content_type_preserved_from_get_response ... ok
+test replace::tests::companion::replace_all_true_with_zero_matches_returns_no_match ... ok
+test replace::tests::match_splice::crlf_line_ending_matches_exact_bytes_not_bare_newline ... ok
+test replace::tests::match_splice::empty_new_string_deletes_in_place ... ok
+test replace::tests::match_splice::multi_byte_utf8_old_string_matches_without_splitting_codepoints ... ok
+test replace::tests::match_splice::multiple_matches_with_replace_all_false_returns_ambiguous_with_count ... ok
+test replace::tests::match_splice::post_splice_size_over_max_patchable_returns_patch_too_large ... ok
+test replace::tests::match_splice::replace_all_true_across_three_non_overlapping_matches ... ok
+test replace::tests::match_splice::single_match_happy_replaces_once ... ok
+test replace::tests::match_splice::zero_matches_returns_replace_no_match_and_leaves_storage_untouched ... ok
+test replace::tests::retry::indexer_channel_full_returns_backpressure_upsert_after_successful_put ... ok
+test replace::tests::retry::stale_caller_if_match_returns_precondition_failed_no_retry ... ok
+test replace::tests::retry::window_412_from_put_absorbed_by_two_retries ... ok
+test replace::tests::retry::window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed ... ok
+test replace::tests::companion::single_pass_splice_o_n_scaling ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_write-74c2c42523a222bc)
+
+running 15 tests
+test patch::tests::retry::propagates_third_put_precondition_failure ... ok
+test patch::tests::retry::retries_two_put_precondition_failures_then_succeeds ... ok
+test patch::tests::retry::retries_two_get_precondition_failures_then_succeeds ... ok
+test patch::tests::retry::retry_rechecks_caller_precondition_against_advanced_head_etag ... ok
+test patch::tests::retry::stale_caller_precondition_is_not_retried ... ok
+test patch::tests::retry::succeeds_on_first_attempt_without_retry ... ok
+test patch::tests::skeleton::appends_with_caller_if_match ... ok
+test patch::tests::skeleton::byte_patch_without_if_match_is_invalid ... ok
+test patch::tests::skeleton::inserts_before_line ... ok
+test patch::tests::skeleton::pre_splice_size_gate_rejects_without_mutation ... ok
+test patch::tests::skeleton::appends_without_caller_if_match ... ok
+test patch::tests::skeleton::replaces_byte_range_and_enqueues_event ... ok
+test patch::tests::skeleton::stale_caller_if_match_is_precondition_failed ... ok
+test patch::tests::skeleton::replaces_line_range ... ok
+test patch::tests::skeleton::star_if_match_is_invalid ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+

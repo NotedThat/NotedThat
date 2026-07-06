@@ -5,7 +5,7 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
 
-pub(super) fn enqueue_patch_upsert(
+pub(crate) fn enqueue_patch_upsert(
     indexer_tx: &Sender<IndexEvent>,
     kb: &KbSlug,
     path: &ObjectPath,
