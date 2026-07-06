@@ -10,7 +10,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::WriteError;
 
-mod indexing;
+pub(crate) mod indexing;
 
 /// Specifies how an object's bytes should be spliced.
 #[derive(Debug, Clone)]
@@ -184,17 +184,32 @@ fn validate_caller_if_match(
 ) -> Result<(), WriteError> {
     match patch_mode {
         PatchMode::Bytes { .. } | PatchMode::Lines { .. } => {
-            if caller_conditionals.if_match.is_none() {
+            require_strong_if_match(caller_conditionals)?;
+        }
+        PatchMode::Append { .. } => {
+            if let Some(etag) = &caller_conditionals.if_match
+                && (etag == "*" || etag.contains(','))
+            {
                 return Err(WriteError::PatchInvalidRange {
-                    message: "If-Match required on PATCH (bytes/lines mode)".into(),
+                    message: "If-Match: * and multi-value If-Match not supported on PATCH in v1"
+                        .into(),
                 });
             }
         }
-        PatchMode::Append { .. } => {}
     }
-    if let Some(etag) = &caller_conditionals.if_match
-        && (etag == "*" || etag.contains(','))
-    {
+    Ok(())
+}
+
+/// Shared If-Match presence + shape validation for PATCH and POST /replace.
+pub(crate) fn require_strong_if_match(
+    caller_conditionals: &ConditionalHeaders,
+) -> Result<(), WriteError> {
+    let Some(etag) = &caller_conditionals.if_match else {
+        return Err(WriteError::PatchInvalidRange {
+            message: "If-Match required on PATCH (bytes/lines mode)".into(),
+        });
+    };
+    if etag == "*" || etag.contains(',') {
         return Err(WriteError::PatchInvalidRange {
             message: "If-Match: * and multi-value If-Match not supported on PATCH in v1".into(),
         });

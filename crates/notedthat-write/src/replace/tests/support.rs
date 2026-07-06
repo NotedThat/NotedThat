@@ -1,13 +1,16 @@
-use super::super::{ReplaceRequest, replace};
 use async_trait::async_trait;
 use bytes::Bytes;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
     ObjectRead, PutOutcome, Storage, StorageError,
 };
-use notedthat_indexer::IndexEvent;
 use std::{collections::HashMap, sync::Mutex};
-use tokio::sync::mpsc;
+
+mod runner;
+
+pub(in crate::replace::tests) use runner::{
+    ReplaceArgs, conditionals, expect_replace_err, kb, path, run_replace, run_replace_with,
+};
 
 #[derive(Clone)]
 struct StoredObject {
@@ -148,13 +151,21 @@ impl Storage for TestStorage {
 
 impl TestStorage {
     pub(super) fn with_body(body: &'static [u8]) -> Self {
+        Self::with_bytes(Bytes::from_static(body), Some("text/plain"))
+    }
+
+    pub(super) fn with_body_and_content_type(body: &'static [u8], content_type: &str) -> Self {
+        Self::with_bytes(Bytes::from_static(body), Some(content_type))
+    }
+
+    pub(super) fn with_bytes(body: Bytes, content_type: Option<&str>) -> Self {
         let storage = Self::default();
         storage.objects.lock().expect("mutex not poisoned").insert(
-            key(&kb(), &path()),
+            key(&make_kb(), &make_path()),
             StoredObject {
-                body: Bytes::from_static(body),
+                body,
                 etag: "etag1".to_string(),
-                content_type: Some("text/plain".to_string()),
+                content_type: content_type.map(str::to_string),
             },
         );
         storage
@@ -167,7 +178,7 @@ impl TestStorage {
             script: Mutex::new(script),
         };
         storage.objects.lock().expect("mutex not poisoned").insert(
-            key(&kb(), &path()),
+            key(&make_kb(), &make_path()),
             StoredObject {
                 body: Bytes::from_static(body),
                 etag: "etag1".to_string(),
@@ -178,16 +189,21 @@ impl TestStorage {
     }
 
     pub(super) async fn read(&self) -> ObjectRead {
-        self.get_object(&kb(), &path(), None, ConditionalHeaders::default())
-            .await
-            .expect("object read succeeds")
+        self.get_object(
+            &make_kb(),
+            &make_path(),
+            None,
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("object read succeeds")
     }
 
     pub(super) fn body(&self) -> Bytes {
         self.objects
             .lock()
             .expect("mutex not poisoned")
-            .get(&key(&kb(), &path()))
+            .get(&key(&make_kb(), &make_path()))
             .expect("object exists")
             .body
             .clone()
@@ -209,74 +225,6 @@ impl TestStorage {
             .get(&key(kb, path))
             .cloned()
             .ok_or_else(|| StorageError::NotFound { key: key(kb, path) })
-    }
-}
-
-pub(super) struct ReplaceArgs<'a> {
-    old: &'a str,
-    new: &'a str,
-    replace_all: bool,
-}
-
-impl<'a> ReplaceArgs<'a> {
-    pub(super) fn one(old: &'a str, new: &'a str) -> Self {
-        Self {
-            old,
-            new,
-            replace_all: false,
-        }
-    }
-
-    pub(super) fn all(old: &'a str, new: &'a str) -> Self {
-        Self {
-            old,
-            new,
-            replace_all: true,
-        }
-    }
-}
-
-pub(super) async fn run_replace(
-    storage: &TestStorage,
-    args: ReplaceArgs<'_>,
-) -> Result<crate::ReplaceOutcome, crate::WriteError> {
-    run_replace_with(storage, args, conditionals(Some("etag1")), 1024, None).await
-}
-
-pub(super) async fn run_replace_with(
-    storage: &TestStorage,
-    args: ReplaceArgs<'_>,
-    caller_conditionals: ConditionalHeaders,
-    max_patchable_size: u64,
-    supplied_indexer_tx: Option<mpsc::Sender<IndexEvent>>,
-) -> Result<crate::ReplaceOutcome, crate::WriteError> {
-    let (indexer_tx, _rx) = mpsc::channel::<IndexEvent>(8);
-    let indexer_tx = supplied_indexer_tx.unwrap_or(indexer_tx);
-    let kb = kb();
-    let path = path();
-    replace(
-        storage,
-        &indexer_tx,
-        ReplaceRequest {
-            kb: &kb,
-            path: &path,
-            old_string: args.old,
-            new_string: args.new,
-            replace_all: args.replace_all,
-            caller_conditionals,
-            max_patchable_size,
-            caller_content_type: None,
-        },
-    )
-    .await
-}
-
-pub(super) fn expect_replace_err(
-    result: Result<crate::ReplaceOutcome, crate::WriteError>,
-) -> crate::WriteError {
-    match result {
-        Ok(_) => panic!("replace should fail"),
-        Err(err) => err,
     }
 }
 
@@ -304,18 +252,18 @@ fn meta(path: &ObjectPath, object: &StoredObject) -> ObjectMeta {
     }
 }
 
-pub(super) fn conditionals(etag: Option<&str>) -> ConditionalHeaders {
+fn make_conditionals(etag: Option<&str>) -> ConditionalHeaders {
     ConditionalHeaders {
         if_match: etag.map(str::to_string),
         ..ConditionalHeaders::default()
     }
 }
 
-pub(super) fn kb() -> KbSlug {
+fn make_kb() -> KbSlug {
     KbSlug::try_new("test-kb").expect("valid kb slug")
 }
 
-pub(super) fn path() -> ObjectPath {
+fn make_path() -> ObjectPath {
     ObjectPath::try_from_str("test.md").expect("valid path")
 }
 

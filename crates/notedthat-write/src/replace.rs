@@ -1,8 +1,11 @@
 //! Shared exact-substring replacement primitive for object writes.
 
-use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage};
+use bytes::{Bytes, BytesMut};
+use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError};
 use notedthat_indexer::IndexEvent;
 use tokio::sync::mpsc::Sender;
+
+use crate::{ReplaceOutcome, WriteError};
 
 /// Request data for one optimistic replace operation.
 pub struct ReplaceRequest<'a> {
@@ -30,259 +33,187 @@ pub struct ReplaceRequest<'a> {
 /// Returns [`crate::WriteError`] when storage access, preconditions, size limits, or
 /// match-count requirements fail.
 pub async fn replace(
-    _storage: &dyn Storage,
-    _indexer_tx: &Sender<IndexEvent>,
-    _request: ReplaceRequest<'_>,
-) -> Result<crate::ReplaceOutcome, crate::WriteError> {
-    unimplemented!("replace() not yet implemented — see T7")
+    storage: &dyn Storage,
+    indexer_tx: &Sender<IndexEvent>,
+    request: ReplaceRequest<'_>,
+) -> Result<ReplaceOutcome, WriteError> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let ReplaceRequest {
+        kb,
+        path,
+        old_string,
+        new_string,
+        replace_all,
+        caller_conditionals,
+        max_patchable_size,
+        caller_content_type,
+    } = request;
+
+    if old_string.is_empty() {
+        return Err(WriteError::PatchInvalidRange {
+            message: "old_string must be non-empty (would match every byte position)".into(),
+        });
+    }
+    crate::patch::require_strong_if_match(&caller_conditionals)?;
+
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+
+        let meta = storage
+            .head_object(kb, path, ConditionalHeaders::default())
+            .await?;
+        ensure_caller_etag_matches(&caller_conditionals, meta.etag.as_deref())?;
+        ensure_within_patchable_size(meta.size, max_patchable_size)?;
+
+        let head_etag = meta
+            .etag
+            .clone()
+            .ok_or_else(|| WriteError::PatchInvalidRange {
+                message: "backend did not return ETag on HEAD".into(),
+            })?;
+
+        let get_conditionals = ConditionalHeaders {
+            if_match: Some(head_etag.clone()),
+            ..ConditionalHeaders::default()
+        };
+        let read = match storage.get_object(kb, path, None, get_conditionals).await {
+            Ok(read) => read,
+            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
+                tracing::debug!(target: "notedthat::replace", kb = %kb, path = %path, attempt, stage = "get", "REPLACE_RETRY_PRECONDITION");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+
+        let needle = old_string.as_bytes();
+        let haystack: &[u8] = read.bytes.as_ref();
+        let matches = find_non_overlapping_matches(haystack, needle);
+
+        if matches.is_empty() {
+            return Err(WriteError::ReplaceNoMatch);
+        }
+        if matches.len() >= 2 && !replace_all {
+            let count =
+                u64::try_from(matches.len()).map_err(|_| WriteError::PatchInvalidRange {
+                    message: "replace: match count exceeds u64".into(),
+                })?;
+            return Err(WriteError::ReplaceAmbiguous { count });
+        }
+
+        let match_bound = if replace_all { matches.len() } else { 1 };
+        let new_bytes = splice_replacement(&ReplacementSplice {
+            haystack,
+            needle,
+            replacement: new_string.as_bytes(),
+            matches: &matches,
+            match_bound,
+            max_patchable_size,
+        })?;
+
+        let put_conditionals = ConditionalHeaders {
+            if_match: Some(head_etag),
+            ..ConditionalHeaders::default()
+        };
+        let content_type = caller_content_type
+            .or(read.meta.content_type.as_deref())
+            .unwrap_or("application/octet-stream");
+        let put_outcome = match storage
+            .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
+                tracing::debug!(target: "notedthat::replace", kb = %kb, path = %path, attempt, stage = "put", "REPLACE_RETRY_PRECONDITION");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+
+        crate::patch::indexing::enqueue_patch_upsert(indexer_tx, kb, path, &put_outcome)?;
+
+        let match_count =
+            u64::try_from(match_bound).map_err(|_| WriteError::PatchInvalidRange {
+                message: "replace: match count exceeds u64".into(),
+            })?;
+        return Ok(ReplaceOutcome {
+            put_outcome,
+            match_count,
+        });
+    }
+}
+
+fn ensure_caller_etag_matches(
+    caller_conditionals: &ConditionalHeaders,
+    current_etag: Option<&str>,
+) -> Result<(), WriteError> {
+    if caller_conditionals.if_match.as_deref() != current_etag {
+        return Err(WriteError::Storage(StorageError::PreconditionFailed));
+    }
+    Ok(())
+}
+
+fn ensure_within_patchable_size(size: u64, limit: u64) -> Result<(), WriteError> {
+    if size > limit {
+        return Err(WriteError::PatchTooLarge { size, limit });
+    }
+    Ok(())
+}
+
+fn find_non_overlapping_matches(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
+    let mut matches = Vec::new();
+    let mut cursor = 0usize;
+    while cursor + needle.len() <= haystack.len() {
+        if &haystack[cursor..cursor + needle.len()] == needle {
+            matches.push(cursor);
+            cursor += needle.len();
+        } else {
+            cursor += 1;
+        }
+    }
+    matches
+}
+
+struct ReplacementSplice<'a> {
+    haystack: &'a [u8],
+    needle: &'a [u8],
+    replacement: &'a [u8],
+    matches: &'a [usize],
+    match_bound: usize,
+    max_patchable_size: u64,
+}
+
+fn splice_replacement(splice: &ReplacementSplice<'_>) -> Result<Bytes, WriteError> {
+    let replaced_bytes = splice.match_bound * splice.needle.len();
+    let added_bytes = splice.match_bound * splice.replacement.len();
+    let new_len = splice
+        .haystack
+        .len()
+        .checked_sub(replaced_bytes)
+        .and_then(|n| n.checked_add(added_bytes))
+        .ok_or_else(|| WriteError::PatchInvalidRange {
+            message: "replace: length arithmetic overflow".into(),
+        })?;
+    let new_len_u64 = u64::try_from(new_len).map_err(|_| WriteError::PatchInvalidRange {
+        message: "replace: new_len exceeds u64".into(),
+    })?;
+    if new_len_u64 > splice.max_patchable_size {
+        return Err(WriteError::PatchTooLarge {
+            size: new_len_u64,
+            limit: splice.max_patchable_size,
+        });
+    }
+
+    let mut result = BytesMut::with_capacity(new_len);
+    let mut prev_end = 0usize;
+    for &matched_at in splice.matches.iter().take(splice.match_bound) {
+        result.extend_from_slice(&splice.haystack[prev_end..matched_at]);
+        result.extend_from_slice(splice.replacement);
+        prev_end = matched_at + splice.needle.len();
+    }
+    result.extend_from_slice(&splice.haystack[prev_end..]);
+    Ok(result.freeze())
 }
 
 #[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-    use notedthat_core::StorageError;
-    use notedthat_indexer::IndexEvent;
-    use tokio::sync::mpsc;
-
-    mod support;
-
-    use support::{
-        ReplaceArgs, Script, TestStorage, conditionals, expect_replace_err, kb, path, run_replace,
-        run_replace_with,
-    };
-
-    #[tokio::test]
-    async fn single_match_happy_replaces_once() {
-        let storage = TestStorage::with_body(b"hello world");
-        let before = storage.read().await;
-        let outcome = run_replace(&storage, ReplaceArgs::one("world", "planet"))
-            .await
-            .expect("single match replace succeeds");
-
-        assert_eq!(outcome.match_count, 1);
-        let after = storage.read().await;
-        assert_eq!(after.bytes, Bytes::from_static(b"hello planet"));
-        assert_ne!(after.meta.etag, before.meta.etag);
-    }
-
-    #[tokio::test]
-    async fn replace_all_true_across_three_non_overlapping_matches() {
-        let storage = TestStorage::with_body(b"a b a b a");
-        let outcome = run_replace(&storage, ReplaceArgs::all("a", "Z"))
-            .await
-            .expect("replace_all succeeds");
-
-        assert_eq!(outcome.match_count, 3);
-        assert_eq!(storage.read().await.bytes, Bytes::from_static(b"Z b Z b Z"));
-    }
-
-    #[tokio::test]
-    async fn zero_matches_returns_replace_no_match_and_leaves_storage_untouched() {
-        let storage = TestStorage::with_body(b"foo");
-        let before = storage.read().await;
-        let err = expect_replace_err(run_replace(&storage, ReplaceArgs::one("bar", "baz")).await);
-
-        assert!(matches!(err, crate::WriteError::ReplaceNoMatch));
-        let after = storage.read().await;
-        assert_eq!(after.bytes, before.bytes);
-        assert_eq!(after.meta.etag, before.meta.etag);
-    }
-
-    #[tokio::test]
-    async fn multiple_matches_with_replace_all_false_returns_ambiguous_with_count() {
-        let storage = TestStorage::with_body(b"a b a");
-        let before = storage.read().await;
-        let err = expect_replace_err(run_replace(&storage, ReplaceArgs::one("a", "Z")).await);
-
-        assert!(matches!(
-            err,
-            crate::WriteError::ReplaceAmbiguous { count: 2 }
-        ));
-        let after = storage.read().await;
-        assert_eq!(after.bytes, before.bytes);
-        assert_eq!(after.meta.etag, before.meta.etag);
-    }
-
-    #[tokio::test]
-    async fn empty_new_string_deletes_in_place() {
-        let storage = TestStorage::with_body(b"prefix_MID_suffix");
-        let outcome = run_replace(&storage, ReplaceArgs::one("MID", ""))
-            .await
-            .expect("empty replacement succeeds");
-
-        assert_eq!(outcome.match_count, 1);
-        assert_eq!(
-            storage.read().await.bytes,
-            Bytes::from_static(b"prefix__suffix")
-        );
-    }
-
-    #[tokio::test]
-    async fn crlf_line_ending_matches_exact_bytes_not_bare_newline() {
-        let storage = TestStorage::with_body(b"a\r\nb");
-        let crlf_outcome = run_replace(&storage, ReplaceArgs::one("\r\n", "|"))
-            .await
-            .expect("CRLF byte substring matches once");
-        assert_eq!(crlf_outcome.match_count, 1);
-        assert_eq!(storage.read().await.bytes, Bytes::from_static(b"a|b"));
-
-        let storage = TestStorage::with_body(b"a\r\nb");
-        let lf_outcome = run_replace(&storage, ReplaceArgs::one("\n", "|"))
-            .await
-            .expect("bare LF byte inside CRLF matches once");
-        assert_eq!(lf_outcome.match_count, 1);
-        assert_eq!(storage.read().await.bytes, Bytes::from_static(b"a\r|b"));
-    }
-
-    #[tokio::test]
-    async fn multi_byte_utf8_old_string_matches_without_splitting_codepoints() {
-        let storage = TestStorage::with_body("café".as_bytes());
-        let outcome = run_replace(&storage, ReplaceArgs::one("café", "cafe"))
-            .await
-            .expect("multi-byte UTF-8 old string matches");
-
-        assert_eq!(outcome.match_count, 1);
-        assert_eq!(storage.read().await.bytes, Bytes::from_static(b"cafe"));
-    }
-
-    #[tokio::test]
-    async fn post_splice_size_over_max_patchable_returns_patch_too_large() {
-        let storage = TestStorage::with_body(b"hello world xes");
-        let before = storage.read().await;
-        let err = expect_replace_err(
-            run_replace_with(
-                &storage,
-                ReplaceArgs::one("x", "ABCDEFGHIJKL"),
-                conditionals(Some("etag1")),
-                20,
-                None,
-            )
-            .await,
-        );
-
-        assert!(matches!(
-            err,
-            crate::WriteError::PatchTooLarge {
-                size: 26,
-                limit: 20
-            }
-        ));
-        let after = storage.read().await;
-        assert_eq!(after.bytes, before.bytes);
-        assert_eq!(after.meta.etag, before.meta.etag);
-    }
-
-    #[tokio::test]
-    async fn stale_caller_if_match_returns_precondition_failed_no_retry() {
-        let storage = TestStorage::with_body(b"hello world");
-        let err = expect_replace_err(
-            run_replace_with(
-                &storage,
-                ReplaceArgs::one("world", "planet"),
-                conditionals(Some("\"stale\"")),
-                1024,
-                None,
-            )
-            .await,
-        );
-
-        assert!(matches!(
-            err,
-            crate::WriteError::Storage(StorageError::PreconditionFailed)
-        ));
-        let calls = storage.calls();
-        assert_eq!(calls.head, 1);
-        assert_eq!(calls.get, 0);
-        assert_eq!(calls.put, 0);
-        assert_eq!(storage.body(), Bytes::from_static(b"hello world"));
-    }
-
-    #[tokio::test]
-    async fn window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed() {
-        for failures in [1, 2] {
-            let storage = TestStorage::with_script(
-                b"hello world",
-                Script {
-                    get_failures_remaining: failures,
-                    ..Script::default()
-                },
-            );
-
-            run_replace(&storage, ReplaceArgs::one("world", "planet"))
-                .await
-                .expect("GET precondition window is absorbed before max attempts");
-
-            assert_eq!(storage.body(), Bytes::from_static(b"hello planet"));
-        }
-
-        let storage = TestStorage::with_script(
-            b"hello world",
-            Script {
-                get_failures_remaining: 3,
-                ..Script::default()
-            },
-        );
-        let err =
-            expect_replace_err(run_replace(&storage, ReplaceArgs::one("world", "planet")).await);
-
-        assert!(matches!(
-            err,
-            crate::WriteError::Storage(StorageError::PreconditionFailed)
-        ));
-        let calls = storage.calls();
-        assert_eq!(calls.head, 3);
-        assert_eq!(calls.get, 3);
-        assert_eq!(calls.put, 0);
-    }
-
-    #[tokio::test]
-    async fn window_412_from_put_absorbed_by_two_retries() {
-        let storage = TestStorage::with_script(
-            b"hello world",
-            Script {
-                put_failures_remaining: 2,
-                ..Script::default()
-            },
-        );
-
-        run_replace(&storage, ReplaceArgs::one("world", "planet"))
-            .await
-            .expect("PUT precondition window is absorbed before max attempts");
-
-        assert_eq!(storage.body(), Bytes::from_static(b"hello planet"));
-        let calls = storage.calls();
-        assert_eq!(calls.head, 3);
-        assert_eq!(calls.get, 3);
-        assert_eq!(calls.put, 3);
-    }
-
-    #[tokio::test]
-    async fn indexer_channel_full_returns_backpressure_upsert_after_successful_put() {
-        let storage = TestStorage::with_body(b"hello world");
-        let (indexer_tx, _rx) = mpsc::channel(1);
-        indexer_tx
-            .try_send(IndexEvent::Upsert {
-                kb: kb(),
-                object_key: path(),
-                etag: "queued".to_string(),
-                mtime: 0,
-            })
-            .expect("prefill indexer channel");
-        let err = expect_replace_err(
-            run_replace_with(
-                &storage,
-                ReplaceArgs::one("world", "planet"),
-                conditionals(Some("etag1")),
-                1024,
-                Some(indexer_tx),
-            )
-            .await,
-        );
-
-        assert!(matches!(err, crate::WriteError::IndexerBackpressureUpsert));
-        assert_eq!(
-            storage.read().await.bytes,
-            Bytes::from_static(b"hello planet")
-        );
-    }
-}
+mod tests;
