@@ -66,6 +66,7 @@ Three logical layers:
 | D42 | Reindex (v1) | **No public reindex endpoint/tool in v1.** Qdrant remains rebuildable by design, but rebuild is an operator/internal future operation. If indexing falls behind or data is stale, v1 accepts temporary search staleness. |
 | D43 | Error contract (v1) | **Small stable mapping.** HTTP mirrors normal status codes (`400` invalid input/path/range syntax, `401` auth, `403` forbidden in v2 ACL cases, `404` KB/object missing, `409` conflicts that are not preconditions, `412` S3 precondition failed, `416` unsatisfiable range, `413` upload too large, `502/503` backend unavailable). MCP maps these to typed tool errors with the same code strings; WebDAV uses the nearest HTTP/WebDAV status. |
 | D44 | HTTP API route shape | **Routes under `/v1/knowledgebases/{kb_slug}/{path}`** where `{path}` is a percent-encoded (URL-encoded) object key — a single URL segment. Any `/` within an object key becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`, etc. Single-segment matching avoids multi-segment wildcard routing and eliminates any KB-vs-object boundary ambiguity. KB discovery via `GET /v1/knowledgebases`. Health endpoints (`/healthz`, `/readyz`) are unauthenticated and unversioned. The `v1` prefix reserves the option for a breaking API version later without disturbing WebDAV (D23) or MCP (D25). WebDAV keeps its native multi-segment path semantics; the HTTP API and WebDAV share the logical KB+object model but not the URL wire format. See §6.13 for the concrete route surface. |
+| D45 | Line-range reads | **First-class line-range read capability.** HTTP GET accepts `Range: lines=<first>-<last>` (1-based inclusive) and returns 206 + `Content-Range: lines <first>-<last>/<total>` + `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end). MCP `read` gains `line_start`/`line_end` args (mutually exclusive with `byte_start`/`byte_end`). Line index recomputed per request (no sidecar in v1; see §7.2). Backend byte-range semantics unchanged. |
 
 ---
 
@@ -369,7 +370,7 @@ All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args
 |---|---|
 | `list_knowledgebases()` | Returns `[{kb_slug, display_name, description?, perms}]`; in v1 this is every KB declared in `NOTEDTHAT_KBS` |
 | `search(kb, query, filters?, limit?)` | Hybrid search; returns chunks with `{object_key, byte_start, byte_end, heading_path, score, preview}` |
-| `read(kb, path, byte_start?, byte_end?)` | Byte-range read of an object |
+| `read(kb, path, byte_start?, byte_end?, line_start?, line_end?)` | Byte-range or line-range read of an object. `byte_*` and `line_*` args are mutually exclusive; provide one pair or omit both for a full read. |
 | `write(kb, path, content, if_match?, if_none_match?)` | Create/update object |
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
 | `delete(kb, path, if_match?)` | Delete object |
@@ -436,6 +437,14 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - Full reads return `200`.
 - Malformed ranges return `400`; unsatisfiable ranges return `416`.
 - MCP `read(kb, path, byte_start?, byte_end?)` uses zero-based byte offsets with `byte_end` exclusive, matching internal chunk offsets. The MCP wrapper converts to HTTP's inclusive `Range` header when calling the API.
+
+#### Line ranges
+
+- HTTP `Range: lines=<first>-<last>` returns 206 with `Content-Range: lines <first>-<last>/<total_lines>` and `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end).
+- Line numbers are 1-based inclusive. `last` past EOF is clamped; `first` past EOF is 416.
+- `Range: lines=<N>-<N-1>` (Insert form) returns 206 with empty body — valid for validating an insert offset.
+- 416 response includes both `Content-Range: lines */<total_lines>` and `X-Content-Range-Bytes: */<total_bytes>`.
+- Line index is recomputed per request (no persistent sidecar in v1).
 
 #### List/search pagination
 - `list`: lexicographic S3 object order. Default limit `100`, max `1000`. Cursor is opaque and maps to the backend continuation token.
@@ -510,6 +519,7 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - ✅ Resources: shipped in M8 (D37). Flat `notedthat://` URIs, opaque base64 cursor, no subscribe/listChanged.
 - ✅ HTTP transport: shipped in M8 (D31). Stateless JSON-response streamable HTTP at `POST /mcp`; Bearer auth reuses `NOTEDTHAT_API_TOKEN`.
 - ✅ Legacy SSE MCP transport: not implemented — deprecated in the MCP spec; GET/DELETE /mcp and POST/GET /sse return 405.
+- ✅ Line-range reads: shipped (D45).
 
 ### 7.3 Non-functional targets `[OPEN]`
 - Search P50/P95 latency budget? — set with data once search ships.
@@ -524,6 +534,7 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - **MCP**: `subscribe`/`listChanged` Resources capability (post-v1); per-KB access control for Resources.
 - **Tuning**: env-var overrides for upload buffer / multipart thresholds (D35, D36).
 - **Storage**: full-rebuild-from-S3 as a first-class operation.
+- **Line ranges**: server-side line-index sidecar object (`.notedthat/idx/<key>.lines`) — deferred; index is recomputed per request in v1 (D45).
 
 ---
 
