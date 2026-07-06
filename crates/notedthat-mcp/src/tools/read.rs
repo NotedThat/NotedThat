@@ -45,13 +45,14 @@ pub(super) async fn run(
         )
         .into());
     }
-    if let (Some(start), Some(end)) = (args.line_start, args.line_end) {
-        if start > end && start != end + 1 {
-            return Err(McpToolError::InvalidRequest(
-                "line_start must be <= line_end + 1; see docs for insert-point encoding".into(),
-            )
-            .into());
-        }
+    if let (Some(start), Some(end)) = (args.line_start, args.line_end)
+        && start > end
+        && start != end + 1
+    {
+        return Err(McpToolError::InvalidRequest(
+            "line_start must be <= line_end + 1; see docs for insert-point encoding".into(),
+        )
+        .into());
     }
 
     let range_header: Option<String> = match (

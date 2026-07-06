@@ -83,6 +83,7 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        max_patchable_size: 10 * 1024 * 1024,
     }
 }
 

@@ -16,8 +16,8 @@ pub struct AppendArgs {
     pub path: String,
     /// Content to append to the end of the object.
     pub content: String,
-    /// Optional ETag for optimistic concurrency. When omitted, the server
-    /// obtains the current ETag internally — this is a true single round-trip.
+    /// Optional `ETag` for optimistic concurrency. When omitted, the server
+    /// obtains the current `ETag` internally — this is a true single round-trip.
     pub if_match: Option<String>,
 }
 

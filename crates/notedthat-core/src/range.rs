@@ -185,11 +185,11 @@ impl LineIndex {
                 }
 
                 let clamped_last = last.min(self.total_lines);
-                let start = self.line_starts[(first - 1) as usize];
+                let start = self.line_start(first - 1)?;
                 let end = if clamped_last == self.total_lines {
                     self.total_bytes
                 } else {
-                    self.line_starts[clamped_last as usize]
+                    self.line_start(clamped_last)?
                 };
                 Some(start..end)
             }
@@ -198,7 +198,7 @@ impl LineIndex {
                     return None;
                 }
 
-                let start = self.line_starts[(first - 1) as usize];
+                let start = self.line_start(first - 1)?;
                 Some(start..self.total_bytes)
             }
             LineRange::Suffix { length } => {
@@ -208,7 +208,7 @@ impl LineIndex {
 
                 let clamped = length.min(self.total_lines);
                 let start_line = self.total_lines - clamped;
-                let start = self.line_starts[start_line as usize];
+                let start = self.line_start(start_line)?;
                 Some(start..self.total_bytes)
             }
             LineRange::Insert { before } => {
@@ -220,10 +220,15 @@ impl LineIndex {
                     return Some(self.total_bytes..self.total_bytes);
                 }
 
-                let offset = self.line_starts[(before - 1) as usize];
+                let offset = self.line_start(before - 1)?;
                 Some(offset..offset)
             }
         }
+    }
+
+    fn line_start(&self, zero_based_line: u64) -> Option<u64> {
+        let index = usize::try_from(zero_based_line).ok()?;
+        self.line_starts.get(index).copied()
     }
 
     /// Return the `Content-Range` header value for a line-mode response.

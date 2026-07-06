@@ -318,9 +318,17 @@ async fn serve_line_range_read(
             byte_total: idx.total_bytes,
         })
     })?;
-    let sliced = read
-        .bytes
-        .slice(byte_range.start as usize..byte_range.end as usize);
+    let range_start = usize::try_from(byte_range.start).map_err(|_| {
+        err(ApiError::Core(CoreError::InvalidInput {
+            message: "line range start does not fit usize".to_string(),
+        }))
+    })?;
+    let range_end = usize::try_from(byte_range.end).map_err(|_| {
+        err(ApiError::Core(CoreError::InvalidInput {
+            message: "line range end does not fit usize".to_string(),
+        }))
+    })?;
+    let sliced = read.bytes.slice(range_start..range_end);
     let content_type = read
         .meta
         .content_type
@@ -514,38 +522,24 @@ async fn patch_object(
         })));
     }
 
-    let patch_mode = match (nt_patch_mode.as_deref(), content_range_header.as_deref()) {
-        (Some("append"), None) => PatchMode::Append {
-            body: body_bytes.clone(),
-        },
-        (Some("append"), Some(_)) => {
-            return Err(err(ApiError::Core(CoreError::InvalidInput {
-                message: "NT-Patch-Mode: append is mutually exclusive with Content-Range".into(),
-            })));
-        }
-        (None, Some(content_range)) => parse_patch_content_range(content_range, body_bytes.clone())
-            .map_err(|message| err(ApiError::Core(CoreError::InvalidInput { message })))?,
-        (None, None) => {
-            return Err(err(ApiError::Core(CoreError::InvalidInput {
-                message: "PATCH requires either Content-Range or NT-Patch-Mode: append".into(),
-            })));
-        }
-        (Some(mode), _) => {
-            return Err(err(ApiError::Core(CoreError::InvalidInput {
-                message: format!("Unknown NT-Patch-Mode value: {mode}; only 'append' is supported"),
-            })));
-        }
-    };
+    let patch_mode = patch_mode_from_headers(
+        nt_patch_mode.as_deref(),
+        content_range_header.as_deref(),
+        body_bytes,
+    )
+    .map_err(|error| err(ApiError::Core(error)))?;
 
     let outcome = notedthat_write::patch(
         state.storage.as_ref(),
         &state.indexer_tx,
-        &kb,
-        &path,
-        patch_mode,
-        conditionals,
-        state.max_patchable_size,
-        content_type.as_deref(),
+        notedthat_write::patch::PatchRequest {
+            kb: &kb,
+            path: &path,
+            patch_mode,
+            caller_conditionals: conditionals,
+            max_patchable_size: state.max_patchable_size,
+            caller_content_type: content_type.as_deref(),
+        },
     )
     .await
     .map_err(|e| err(ApiError::from(e)))?;
@@ -564,6 +558,27 @@ async fn patch_object(
     Ok(builder
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+}
+
+fn patch_mode_from_headers(
+    nt_patch_mode: Option<&str>,
+    content_range_header: Option<&str>,
+    body_bytes: Bytes,
+) -> Result<PatchMode, CoreError> {
+    match (nt_patch_mode, content_range_header) {
+        (Some("append"), None) => Ok(PatchMode::Append { body: body_bytes }),
+        (Some("append"), Some(_)) => Err(CoreError::InvalidInput {
+            message: "NT-Patch-Mode: append is mutually exclusive with Content-Range".into(),
+        }),
+        (None, Some(content_range)) => parse_patch_content_range(content_range, body_bytes)
+            .map_err(|message| CoreError::InvalidInput { message }),
+        (None, None) => Err(CoreError::InvalidInput {
+            message: "PATCH requires either Content-Range or NT-Patch-Mode: append".into(),
+        }),
+        (Some(mode), _) => Err(CoreError::InvalidInput {
+            message: format!("Unknown NT-Patch-Mode value: {mode}; only 'append' is supported"),
+        }),
+    }
 }
 
 /// `DELETE /v1/knowledgebases/{kb_slug}/{*object_path}` — delete an object (idempotent).
@@ -1198,13 +1213,15 @@ mod line_range_get {
     const TOKEN: &str = "test-token-abc";
 
     fn twenty_line_markdown() -> String {
-        (1..=20).map(|line| format!("line {line:02}\n")).collect()
+        markdown_lines(1, 20)
     }
 
     fn markdown_lines(first: u32, last: u32) -> String {
-        (first..=last)
-            .map(|line| format!("line {line:02}\n"))
-            .collect()
+        let mut body = String::new();
+        for line in first..=last {
+            std::fmt::Write::write_fmt(&mut body, format_args!("line {line:02}\n")).unwrap();
+        }
+        body
     }
 
     async fn router_with_markdown_object(body: String) -> axum::Router {
@@ -1300,7 +1317,7 @@ mod line_range_get {
         use super::*;
 
         fn ten_line_markdown() -> String {
-            (1..=10).map(|line| format!("line {line:02}\n")).collect()
+            markdown_lines(1, 10)
         }
 
         #[tokio::test]

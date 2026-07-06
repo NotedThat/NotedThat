@@ -36,7 +36,23 @@ pub enum PatchMode {
     },
 }
 
-/// Apply one optimistic PATCH attempt using the current HEAD ETag as the internal CAS anchor.
+/// Request data for one optimistic PATCH operation.
+pub struct PatchRequest<'a> {
+    /// Knowledge base containing the object.
+    pub kb: &'a KbSlug,
+    /// Object path to patch.
+    pub path: &'a ObjectPath,
+    /// Patch splice mode.
+    pub patch_mode: PatchMode,
+    /// Caller-supplied conditional headers.
+    pub caller_conditionals: ConditionalHeaders,
+    /// Maximum patchable object size in bytes.
+    pub max_patchable_size: u64,
+    /// Caller-supplied content type, if any.
+    pub caller_content_type: Option<&'a str>,
+}
+
+/// Apply one optimistic PATCH attempt using the current HEAD `ETag` as the internal CAS anchor.
 ///
 /// # Errors
 /// Returns [`WriteError`] when caller preconditions fail, the requested splice is invalid, the
@@ -44,14 +60,17 @@ pub enum PatchMode {
 pub async fn patch(
     storage: &dyn Storage,
     indexer_tx: &Sender<IndexEvent>,
-    kb: &KbSlug,
-    path: &ObjectPath,
-    patch_mode: PatchMode,
-    caller_conditionals: ConditionalHeaders,
-    max_patchable_size: u64,
-    caller_content_type: Option<&str>,
+    request: PatchRequest<'_>,
 ) -> Result<PutOutcome, WriteError> {
     const MAX_ATTEMPTS: u32 = 3;
+    let PatchRequest {
+        kb,
+        path,
+        patch_mode,
+        caller_conditionals,
+        max_patchable_size,
+        caller_content_type,
+    } = request;
 
     validate_caller_if_match(&patch_mode, &caller_conditionals)?;
 
@@ -109,7 +128,7 @@ pub async fn patch(
                 let end = usize::try_from(br.end).map_err(|_| WriteError::PatchInvalidRange {
                     message: "splice end does not fit usize".into(),
                 })?;
-                splice_bytes(&read.bytes, start..end, body.clone())
+                splice_bytes(&read.bytes, start..end, body)
             }
             (PatchMode::Append { body }, None) => {
                 let mut buf = BytesMut::with_capacity(capacity_from_u64(new_len)?);
@@ -150,11 +169,11 @@ pub async fn patch(
     }
 }
 
-pub(crate) fn splice_bytes(src: &Bytes, byte_range: std::ops::Range<usize>, body: Bytes) -> Bytes {
+pub(crate) fn splice_bytes(src: &Bytes, byte_range: std::ops::Range<usize>, body: &Bytes) -> Bytes {
     let mut buf =
         BytesMut::with_capacity(byte_range.start + body.len() + (src.len() - byte_range.end));
     buf.extend_from_slice(&src[..byte_range.start]);
-    buf.extend_from_slice(&body);
+    buf.extend_from_slice(body);
     buf.extend_from_slice(&src[byte_range.end..]);
     buf.freeze()
 }
