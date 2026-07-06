@@ -167,6 +167,30 @@ pub async fn intercept_write_methods(
     }
 }
 
+/// Intercept `WebDAV` READ methods before `dav-server` so raw HTTP URIs remain available.
+///
+/// Enforces D40 strict per-segment path normalization on GET, HEAD, and PROPFIND —
+/// the same rules already applied to write methods by `intercept_write_methods`.
+/// Rejects requests whose URI contains `.`, `..`, empty middle segments, `/`, `\`,
+/// or `\0` segments (raw or percent-encoded) with 400 Bad Request, matching the
+/// write-path 400 shape. A single trailing `/` on a legitimate collection path is
+/// permitted via `validate_read_uri_path` so `PROPFIND /notes/folder/` still lists.
+pub async fn intercept_read_methods(
+    State(state): State<WebDavState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    match req.method().as_str() {
+        "GET" | "HEAD" | "PROPFIND" => {
+            if validate_read_uri_path(req.uri().path(), &state.declared_kbs).is_err() {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            next.run(req).await
+        }
+        _ => next.run(req).await,
+    }
+}
+
 fn decode_uri_segment(raw_segment: &str) -> Result<Cow<'_, str>, ()> {
     percent_encoding::percent_decode_str(raw_segment)
         .decode_utf8()
@@ -228,6 +252,52 @@ fn parse_uri_path(
     ObjectPath::try_from_str(&decoded_rest)
         .map(|path| DavTarget::Object(kb_slug, path))
         .map_err(|_| ())
+}
+
+/// Read-side path validation: enforces D40 strict per-segment rules on EVERY
+/// segment (including segments after a non-declared first KB slug — otherwise
+/// `parse_uri_path`'s early `Ok(NonDeclaredKb)` return at line 204-206
+/// would silently skip validation for the rest of the path, letting
+/// `/unknown/%2e%2e/notes/hello.md` reach `dav-server`), and tolerates exactly
+/// ONE trailing `/` on legitimate collection paths (e.g. `/notes/folder/`).
+/// Still rejects `.`, `..`, empty middle segments, encoded `/`, `\`, `\0`,
+/// invalid UTF-8, and any `//` double-slash (raw or from an empty first segment
+/// after `//notes/...`).
+fn validate_read_uri_path(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<(), ()> {
+    let raw_path = uri_path.strip_prefix('/').unwrap_or(uri_path);
+    if raw_path.is_empty() {
+        return Ok(());
+    }
+
+    // Strip AT MOST one trailing `/` (for legitimate collection paths); a second
+    // trailing `/` or an empty stripped path is a double-slash violation.
+    let candidate_raw = if let Some(stripped) = raw_path.strip_suffix('/') {
+        if stripped.is_empty() || stripped.ends_with('/') {
+            return Err(());
+        }
+        stripped
+    } else {
+        raw_path
+    };
+
+    // Reject any segment that fails D40, INDEPENDENT of KB-declared status.
+    for raw_segment in candidate_raw.split('/') {
+        let decoded = decode_uri_segment(raw_segment)?;
+        if !validate_decoded_segment(&decoded) {
+            return Err(());
+        }
+    }
+
+    // Only after every segment passes D40, resolve the target via `parse_uri_path`.
+    let candidate_uri = if raw_path.ends_with('/') {
+        uri_path.strip_suffix('/').ok_or(())?
+    } else {
+        uri_path
+    };
+    parse_uri_path(candidate_uri, declared_kbs).map(|_| ())
 }
 
 fn dav_error_body(condition: &str) -> String {
