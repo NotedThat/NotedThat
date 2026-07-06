@@ -91,7 +91,11 @@ All error responses use the same JSON envelope:
 
 ---
 
-## Byte-range requests
+## Range reads
+
+Partial retrieval of objects using the HTTP `Range:` header.
+
+### Byte ranges (RFC 7233)
 
 Clients can request a partial object body by including a `Range` header:
 
@@ -119,6 +123,54 @@ curl -H "Authorization: Bearer $TOKEN" \
 # Response: HTTP/1.1 206 Partial Content
 # Content-Range: bytes 0-99/1234
 # Content-Length: 100
+```
+
+### Line ranges
+
+Request a slice of an object by line number rather than byte offset. Line numbers are 1-based; both ends are inclusive.
+
+**Request grammar:**
+
+| Header value | Effect |
+|---|---|
+| `Range: lines=<first>-<last>` | Lines `first` through `last` (1-based, inclusive both ends) |
+| `Range: lines=<first>-` | From line `first` to end of file |
+| `Range: lines=-<length>` | Last `N` lines |
+| `Range: lines=<N>-<N-1>` | Zero-width insert point at line `N` (returns empty body; useful to validate an insert offset before PATCH) |
+
+**Semantics:**
+- Line 1 is the first line of the object.
+- A `last` value past the end of the file is clamped to the total line count.
+- `Range: lines=100-200` on a 20-line object returns **416** (out of range).
+
+**Response on 206:**
+- `Content-Range: lines <first>-<last>/<total_lines>` — line positions within the object
+- `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` — corresponding byte positions (byte_end is inclusive); lets clients convert to byte offsets without an extra HEAD request
+
+**Error responses:**
+- **400** `malformed_range` — unparseable `lines=` spec
+- **416** `range_not_satisfiable` — out-of-range request; response includes:
+  - `Content-Range: lines */<total_lines>`
+  - `X-Content-Range-Bytes: */<total_bytes>`
+  - Empty body
+
+**curl example:**
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Range: lines=1-5" \
+     http://localhost:8080/v1/knowledgebases/notes/hello.md
+```
+
+**Response snippet:**
+
+```
+HTTP/1.1 206 Partial Content
+Content-Range: lines 1-5/20
+X-Content-Range-Bytes: 0-149/400
+Content-Length: 150
+
+[lines 1-5 of hello.md]
 ```
 
 ---
@@ -505,7 +557,7 @@ headers. Supports byte-range reads and conditional requests.
 
 | Header | Description |
 |--------|-------------|
-| `Range` | Request a byte range (see [Byte-range requests](#byte-range-requests)) |
+| `Range` | Request a byte range or line range (see [Range reads](#range-reads)) |
 | `If-Match` | Return 412 if ETag doesn't match |
 | `If-None-Match` | Return 304 if ETag matches |
 | `If-Modified-Since` | Return 304 if not modified since the given date |
@@ -518,14 +570,15 @@ headers. Supports byte-range reads and conditional requests.
 | `content-type` | MIME type (falls back to `application/octet-stream` if not stored) |
 | `content-length` | Object size in bytes (or partial size on 206) |
 | `etag` | Object ETag, if provided by the backend |
-| `content-range` | Byte range returned, present only on 206 responses |
+| `content-range` | Range returned, present only on 206 responses. Format: `bytes <start>-<end>/<total>` for byte-range requests; `lines <first>-<last>/<total_lines>` for line-range requests |
+| `x-content-range-bytes` | Present only on 206 line-mode responses. Byte positions corresponding to the returned line range, in the form `<byte_start>-<byte_end>/<total_bytes>` (byte_end inclusive) |
 
 **Response:**
 
 | Status | Body |
 |--------|------|
 | 200 OK | Full object bytes |
-| 206 Partial Content | Partial object bytes (Range request satisfied) |
+| 206 Partial Content | Partial object bytes (byte-range or line-range request satisfied) |
 | 304 Not Modified | No body (conditional request matched) |
 | 400 Bad Request | `{"error": "invalid_request", ...}` — malformed `Range` header |
 | 404 Not Found | `{"error": "not_found", ...}` |
