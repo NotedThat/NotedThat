@@ -104,9 +104,9 @@ impl From<McpToolError> for ErrorData {
 /// `request_id` is present but we ALWAYS drop it (Metis directive).
 #[derive(Debug, serde::Deserialize)]
 struct ApiErrorBody {
-    #[allow(dead_code)]
     error: Option<String>,
     message: Option<String>,
+    match_count: Option<u64>,
 }
 
 /// Inspect an HTTP response:
@@ -132,7 +132,9 @@ pub(crate) async fn map_response(
     let parsed: Option<ApiErrorBody> = serde_json::from_str(&body_text).ok();
 
     let message = parsed
-        .and_then(|b| b.message)
+        .as_ref()
+        .and_then(|b| b.message.as_deref())
+        .map(str::to_owned)
         .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
 
     Err(match status.as_u16() {
@@ -141,6 +143,14 @@ pub(crate) async fn map_response(
         404 => McpToolError::NotFound(message),
         412 => McpToolError::PreconditionFailed,
         413 => McpToolError::PayloadTooLarge,
+        422 => match parsed.as_ref().and_then(|b| b.error.as_deref()) {
+            Some("no_match") => McpToolError::NoMatch(message),
+            Some("ambiguous_match") => {
+                let count = parsed.as_ref().and_then(|b| b.match_count).unwrap_or(0);
+                McpToolError::AmbiguousMatch { count }
+            }
+            _ => McpToolError::InvalidRequest(message),
+        },
         503 => McpToolError::BackendUnavailable,
         _ => McpToolError::InternalError(format!("HTTP {}: {message}", status.as_u16())),
     })
@@ -297,5 +307,151 @@ mod tests {
                 "status {status}: error variant mismatch: {err:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn map_response_422_no_match_returns_no_match_variant() {
+        // Given: a 422 API response with the no_match error code
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": "no_match",
+                "message": "needle"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/test", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        // When: the response is mapped into an MCP tool error
+        let result = map_response(resp).await;
+
+        // Then: the no_match API code maps to the NoMatch variant
+        assert!(
+            matches!(result, Err(McpToolError::NoMatch(ref message)) if message == "needle"),
+            "Expected NoMatch, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn map_response_422_ambiguous_match_extracts_count() {
+        // Given: a 422 API response with the ambiguous_match error code and count
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": "ambiguous_match",
+                "message": "too many matches",
+                "match_count": 3
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/test", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        // When: the response is mapped into an MCP tool error
+        let result = map_response(resp).await;
+
+        // Then: the ambiguous_match API code maps to AmbiguousMatch with count
+        assert!(
+            matches!(result, Err(McpToolError::AmbiguousMatch { count: 3 })),
+            "Expected AmbiguousMatch count 3, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn map_response_422_ambiguous_match_missing_count_defaults_to_zero() {
+        // Given: a 422 ambiguous_match API response without match_count
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": "ambiguous_match",
+                "message": "too many matches"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/test", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        // When: the response is mapped into an MCP tool error
+        let result = map_response(resp).await;
+
+        // Then: a missing match_count defaults to zero
+        assert!(
+            matches!(result, Err(McpToolError::AmbiguousMatch { count: 0 })),
+            "Expected AmbiguousMatch count 0, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn map_response_422_unknown_error_code_falls_back_to_invalid_request() {
+        // Given: a 422 API response with an unknown error code
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": "weird_code",
+                "message": "?"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/test", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        // When: the response is mapped into an MCP tool error
+        let result = map_response(resp).await;
+
+        // Then: unrecognized 422 codes preserve the existing invalid request behavior
+        assert!(
+            matches!(result, Err(McpToolError::InvalidRequest(ref message)) if message == "?"),
+            "Expected InvalidRequest, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn map_response_412_body_shape_unchanged_after_apierrorbody_extension() {
+        // Given: a 412 API response using the existing error/message body shape
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
+                "error": "precondition_failed",
+                "message": "stale etag"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/test", server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        // When: the response is mapped into an MCP tool error
+        let result = map_response(resp).await;
+
+        // Then: 412 still maps to PreconditionFailed
+        assert!(
+            matches!(result, Err(McpToolError::PreconditionFailed)),
+            "Expected PreconditionFailed, got: {result:?}"
+        );
     }
 }
