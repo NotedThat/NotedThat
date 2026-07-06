@@ -483,3 +483,232 @@ async fn read_methods_reject_encoded_dotdot_propfind() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn read_matrix_get_dotdot_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/../secret.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_single_dot_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/./hello.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_empty_segment_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes//hello.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_encoded_slash_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/foo%2fbar.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_encoded_backslash_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/foo%5cbar.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_head_dotdot_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/%2e%2e/hello.md";
+    let req = Request::builder()
+        .method("HEAD")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_dotdot_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/%2e%2e/scratch/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_encoded_slash_declared() {
+    let app = build_router(make_state());
+    let uri = "/notes/foo%2fbar/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_dotdot_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/%2e%2e/notes/hello.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_head_dotdot_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/%2e%2e/notes/hello.md";
+    let req = Request::builder()
+        .method("HEAD")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_dotdot_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/%2e%2e/notes/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_dotslash_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/./x.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_empty_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown//x.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_encoded_slash_non_declared() {
+    let app = build_router(make_state());
+    let uri = "/unknown/foo%2fbar/";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_get_encoded_dotdot_mid_segment() {
+    let app = build_router(make_state());
+    let uri = "/notes/%2e%2e/scratch/deep.md";
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
+
+#[tokio::test]
+async fn read_matrix_propfind_double_slash_root() {
+    let app = build_router(make_state());
+    let uri = "//notes/hello";
+    let req = Request::builder()
+        .method(Method::from_bytes(b"PROPFIND").unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(Body::from(PROPFIND_BODY))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+}
