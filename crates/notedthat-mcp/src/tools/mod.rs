@@ -51,7 +51,9 @@ impl NotedThatMcp {
         search::run(&self.client, args.0).await
     }
 
-    #[tool(description = "Read an object by byte range (optional); byte_end is exclusive")]
+    #[tool(
+        description = "Read an object by optional range. Accepts byte_start/byte_end for byte ranges or line_start/line_end for line ranges (mutually exclusive). byte_end is exclusive."
+    )]
     async fn read(&self, args: Parameters<read::ReadArgs>) -> Result<CallToolResult, McpError> {
         read::run(&self.client, args.0).await
     }
