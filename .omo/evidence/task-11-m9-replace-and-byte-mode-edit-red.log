@@ -1,0 +1,69 @@
+   Compiling notedthat-api-http v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-api-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.34s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 6 tests
+test error::tests::replace_missing_if_match_returns_400_invalid_request ... FAILED
+test error::tests::replace_empty_old_string_returns_400 ... FAILED
+test error::tests::replace_malformed_json_body_returns_400 ... FAILED
+test error::tests::replace_missing_old_string_field_returns_400 ... FAILED
+test error::tests::replace_multi_value_if_match_returns_400 ... FAILED
+test error::tests::replace_if_match_star_returns_400 ... FAILED
+
+failures:
+
+---- error::tests::replace_missing_if_match_returns_400_invalid_request stdout ----
+
+thread 'error::tests::replace_missing_if_match_returns_400_invalid_request' (1222386) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+
+---- error::tests::replace_empty_old_string_returns_400 stdout ----
+
+thread 'error::tests::replace_empty_old_string_returns_400' (1222383) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+
+---- error::tests::replace_malformed_json_body_returns_400 stdout ----
+
+thread 'error::tests::replace_malformed_json_body_returns_400' (1222385) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+
+---- error::tests::replace_missing_old_string_field_returns_400 stdout ----
+
+thread 'error::tests::replace_missing_old_string_field_returns_400' (1222387) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- error::tests::replace_multi_value_if_match_returns_400 stdout ----
+
+thread 'error::tests::replace_multi_value_if_match_returns_400' (1222388) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+
+---- error::tests::replace_if_match_star_returns_400 stdout ----
+
+thread 'error::tests::replace_if_match_star_returns_400' (1222384) panicked at crates/notedthat-api-http/src/error.rs:376:9:
+assertion `left == right` failed
+  left: 405
+ right: 400
+
+
+failures:
+    error::tests::replace_empty_old_string_returns_400
+    error::tests::replace_if_match_star_returns_400
+    error::tests::replace_malformed_json_body_returns_400
+    error::tests::replace_missing_if_match_returns_400_invalid_request
+    error::tests::replace_missing_old_string_field_returns_400
+    error::tests::replace_multi_value_if_match_returns_400
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p notedthat-api-http --lib`
