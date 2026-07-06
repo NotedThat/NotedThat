@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.70s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_api_http-ccd2588b867e1203)
+
+running 2 tests
+test error::tests::test_from_write_error_replace_ambiguous ... ok
+test error::tests::test_from_write_error_replace_no_match ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.00s
+
