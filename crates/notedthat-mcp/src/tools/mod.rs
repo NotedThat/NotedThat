@@ -222,6 +222,22 @@ mod resources_shared {
             h.get_tool("nonexistent_tool").is_none(),
             "nonexistent tools must not be registered"
         );
+
+        // Verify TOTAL count is exactly 9 by checking that no additional tools exist.
+        // This catches accidental tool registrations that would break the contract.
+        let deferred_tools = [
+            "edit_bytes",    // deferred per issue #38
+            "edit_string",   // deferred per issue #38
+            "append_bytes",  // not in spec
+            "delete_bytes",  // not in spec
+            "write_bytes",   // not in spec
+        ];
+        for name in deferred_tools {
+            assert!(
+                h.get_tool(name).is_none(),
+                "deferred tool {name:?} must not be registered (would make count > 9)"
+            );
+        }
     }
 
     // ── Delegation smoke tests ───────────────────────────────────────────────
