@@ -1,0 +1,80 @@
+== baseline: cargo test -p notedthat-write --lib ==
+   Compiling notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_write-74c2c42523a222bc)
+
+running 34 tests
+test commit::tests::check_size_at_limit_returns_ok ... ok
+test commit::tests::check_size_below_limit_returns_ok ... ok
+test commit::tests::check_size_over_limit_returns_too_large ... ok
+test commit::tests::burst_write_returns_backpressure_after_capacity ... ok
+test commit::tests::commit_delete_full_queue_returns_backpressure ... ok
+test commit::tests::full_queue_returns_indexer_backpressure ... ok
+test commit::tests::put_failure_returns_error_no_event ... ok
+test commit::tests::closed_queue_returns_write_success ... ok
+test error::tests::patch_invalid_range_displays_reason_when_constructed ... ok
+test commit::tests::successful_put_enqueues_event ... ok
+test error::tests::patch_line_out_of_range_constructs_with_line_and_byte_totals ... ok
+test error::tests::patch_too_large_displays_size_limit_when_constructed ... ok
+test error::tests::replace_ambiguous_displays_match_count_when_constructed ... ok
+test mime::tests::caller_explicit_wins ... ok
+test mime::tests::caller_none_inferred_from_markdown ... ok
+test mime::tests::caller_none_inferred_from_md ... ok
+test mime::tests::caller_none_no_extension ... ok
+test mime::tests::caller_none_unknown_ext_falls_back_to_octet_stream ... ok
+test mime::tests::caller_octet_stream_overridden_for_md ... ok
+test patch::tests::retry::propagates_third_put_precondition_failure ... ok
+test patch::tests::retry::retries_two_get_precondition_failures_then_succeeds ... ok
+test patch::tests::retry::retries_two_put_precondition_failures_then_succeeds ... ok
+test patch::tests::retry::stale_caller_precondition_is_not_retried ... ok
+test patch::tests::retry::retry_rechecks_caller_precondition_against_advanced_head_etag ... ok
+test patch::tests::retry::succeeds_on_first_attempt_without_retry ... ok
+test patch::tests::skeleton::appends_without_caller_if_match ... ok
+test patch::tests::skeleton::appends_with_caller_if_match ... ok
+test patch::tests::skeleton::byte_patch_without_if_match_is_invalid ... ok
+test patch::tests::skeleton::inserts_before_line ... ok
+test patch::tests::skeleton::pre_splice_size_gate_rejects_without_mutation ... ok
+test patch::tests::skeleton::replaces_line_range ... ok
+test patch::tests::skeleton::replaces_byte_range_and_enqueues_event ... ok
+test patch::tests::skeleton::stale_caller_if_match_is_precondition_failed ... ok
+test patch::tests::skeleton::star_if_match_is_invalid ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+== cargo check -p notedthat-write --locked --all-targets ==
+    Checking serde_core v1.0.228
+    Checking typenum v1.20.1
+    Checking ring v0.17.14
+    Checking tower v0.5.3
+    Checking tower v0.4.13
+    Checking getrandom v0.3.4
+    Checking tokio-stream v0.1.18
+    Checking hyper v1.10.1
+    Checking pulldown-cmark v0.13.4
+    Checking url v2.5.8
+    Checking ahash v0.8.12
+    Checking tower-http v0.6.11
+    Checking generic-array v0.14.7
+    Checking text-splitter v0.32.0
+    Checking hyper-util v0.1.20
+    Checking rustls-webpki v0.103.13
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking digest v0.10.7
+    Checking sha2 v0.10.9
+    Checking rustls v0.23.41
+    Checking serde v1.0.228
+    Checking serde_json v1.0.150
+    Checking hyper-timeout v0.5.2
+    Checking axum v0.7.9
+    Checking serde_urlencoded v0.7.1
+    Checking notedthat-core v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-core)
+    Checking tokio-rustls v0.26.4
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking tonic v0.12.3
+    Checking qdrant-client v1.15.0
+    Checking notedthat-indexer v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-indexer)
+    Checking notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.16s

@@ -1,0 +1,4 @@
+== cargo doc -p notedthat-write --no-deps ==
+ Documenting notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.85s
+   Generated /mnt/cache/rust/cargo/target/doc/notedthat_write/index.html

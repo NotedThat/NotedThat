@@ -51,6 +51,15 @@ pub enum WriteError {
         /// Human-readable reason.
         message: String,
     },
+    /// Replace operation found no occurrence of the requested old string.
+    #[error("replace: no match found for old_string")]
+    ReplaceNoMatch,
+    /// Replace operation found multiple occurrences, making single replace ambiguous.
+    #[error("replace: found {count} matches; use replace_all to replace them all")]
+    ReplaceAmbiguous {
+        /// Number of matches found in the object body.
+        count: u64,
+    },
 }
 
 impl From<StorageError> for WriteError {
@@ -92,5 +101,15 @@ mod tests {
         };
 
         assert!(err.to_string().contains("invalid patch"));
+    }
+
+    #[test]
+    fn replace_ambiguous_displays_match_count_when_constructed() {
+        let err = WriteError::ReplaceAmbiguous { count: 3 };
+
+        assert_eq!(
+            err.to_string(),
+            "replace: found 3 matches; use replace_all to replace them all"
+        );
     }
 }
