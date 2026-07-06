@@ -14,6 +14,7 @@ notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.0" }
 notedthat-webdav = { path = "../notedthat-webdav", version = "0.1.0" }
 notedthat-indexer = { path = "../notedthat-indexer" }
 notedthat-mcp = { path = "../notedthat-mcp" }  # M8 deliberate dependency extension — see plan §W1.3
+notedthat-write = { path = "../notedthat-write", version = "0.1.0" }
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }

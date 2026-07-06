@@ -2251,6 +2251,7 @@ dependencies = [
  "notedthat-mcp-stdio",
  "notedthat-storage-s3",
  "notedthat-webdav",
+ "notedthat-write",
  "reqwest",
  "serde_json",
  "temp-env",

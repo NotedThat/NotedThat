@@ -4,6 +4,7 @@
 //! configuration surface. See `docs/CONFIGURATION.md` for the full reference.
 
 use notedthat_core::{Error, KbSlug, TenantSlug};
+use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
@@ -40,6 +41,8 @@ pub struct Config {
     pub mcp_http_allowed_origins: Vec<String>,
     /// Allowed hosts for MCP HTTP Host header validation (`NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`; empty → `["127.0.0.1", "localhost", "::1"]`).
     pub mcp_http_allowed_hosts: Vec<String>,
+    /// Maximum patchable object size in bytes (`NOTEDTHAT_MAX_PATCHABLE_SIZE`; default 100 MiB).
+    pub max_patchable_size: u64,
 }
 
 /// Tracing output format.
@@ -185,6 +188,24 @@ impl Config {
                 ],
             };
 
+        let max_patchable_size = std::env::var("NOTEDTHAT_MAX_PATCHABLE_SIZE")
+            .unwrap_or_else(|_| (100 * 1024 * 1024u64).to_string())
+            .parse::<u64>()
+            .map_err(|_e: std::num::ParseIntError| Error::Config {
+                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must be a valid u64 integer".into(),
+            })?;
+        if max_patchable_size == 0 {
+            return Err(Error::Config {
+                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must be > 0".into(),
+            });
+        }
+        if max_patchable_size > MAX_UPLOAD_BYTES {
+            return Err(Error::Config {
+                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must not exceed MAX_UPLOAD_BYTES (5 GiB)"
+                    .into(),
+            });
+        }
+
         Ok(Self {
             api_token,
             kbs,
@@ -201,6 +222,7 @@ impl Config {
             mcp_http_enabled,
             mcp_http_allowed_origins,
             mcp_http_allowed_hosts,
+            max_patchable_size,
         })
     }
 }
@@ -315,7 +337,7 @@ impl EmbedderConfig {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 26] = [
+    const ALL_ENV_KEYS: [&str; 27] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_S3_REGION",
@@ -334,6 +356,7 @@ mod tests {
         "NOTEDTHAT_MCP_HTTP_ENABLED",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+        "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -364,6 +387,7 @@ mod tests {
             ("NOTEDTHAT_MCP_HTTP_ENABLED", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
+            ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -556,7 +580,69 @@ mod tests {
 
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 26);
+        assert_eq!(ALL_ENV_KEYS.len(), 27);
+    }
+
+    #[test]
+    fn max_patchable_size_defaults_to_100_mib() {
+        let cfg = run_with_env(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", None)], Config::from_env)
+            .unwrap();
+        assert_eq!(cfg.max_patchable_size, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn max_patchable_size_accepts_explicit_bytes() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("52428800"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.max_patchable_size, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn max_patchable_size_rejects_zero() {
+        let result = run_with_env(
+            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("0"))],
+            Config::from_env,
+        );
+        assert!(matches!(result, Err(Error::Config { .. })));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must be > 0")
+        );
+    }
+
+    #[test]
+    fn max_patchable_size_rejects_values_over_max_upload_bytes() {
+        let result = run_with_env(
+            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("6442450944"))],
+            Config::from_env,
+        );
+        assert!(matches!(result, Err(Error::Config { .. })));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must not exceed MAX_UPLOAD_BYTES (5 GiB)")
+        );
+    }
+
+    #[test]
+    fn max_patchable_size_rejects_non_numeric_values() {
+        let result = run_with_env(
+            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("not-a-number"))],
+            Config::from_env,
+        );
+        assert!(matches!(result, Err(Error::Config { .. })));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must be a valid u64 integer")
+        );
     }
 
     #[test]

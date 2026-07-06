@@ -54,6 +54,7 @@ fn test_config(mcp_http_bind: SocketAddr) -> Config {
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        max_patchable_size: 100 * 1024 * 1024,
     }
 }
 

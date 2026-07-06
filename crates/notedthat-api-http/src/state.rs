@@ -18,6 +18,8 @@ pub struct AppState {
     pub bearer_token: Arc<String>,
     /// Maximum accepted PUT body size in bytes (16 MiB in M2).
     pub max_body_size: u64,
+    /// Maximum object size eligible for patch operations, in bytes.
+    pub max_patchable_size: u64,
     /// Sender half of the async indexing queue.
     pub indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
     /// The search implementation (injected at startup).
@@ -37,6 +39,7 @@ mod tests {
             declared_kbs: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new("token".to_string()),
             max_body_size: 1024,
+            max_patchable_size: 1024,
             indexer_tx: tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
         }
