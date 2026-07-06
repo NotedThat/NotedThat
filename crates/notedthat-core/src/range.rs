@@ -291,6 +291,59 @@ pub fn parse_range_header(value: &str) -> Result<ParsedRanges, RangeParseError> 
     Ok(ParsedRanges { unit, ranges })
 }
 
+/// Parse a single `lines=` `Range:` header value into a line range.
+///
+/// # Errors
+///
+/// Returns [`RangeParseError`] when the value is empty, misses `=`, has no
+/// range set, uses unsupported multi-range line syntax, or contains an invalid
+/// line range component.
+pub fn parse_line_range_header(value: &str) -> Result<LineRange, RangeParseError> {
+    if value.is_empty() {
+        return Err(RangeParseError::Empty);
+    }
+
+    let (_unit, range_set) = value
+        .split_once('=')
+        .ok_or(RangeParseError::MissingEquals)?;
+    if range_set.is_empty() {
+        return Err(RangeParseError::NoRanges);
+    }
+    if range_set.contains(',') {
+        return Err(RangeParseError::InvalidSpec(
+            "multi-range lines= not supported".into(),
+        ));
+    }
+
+    let (start, end) = range_set
+        .split_once('-')
+        .ok_or_else(|| RangeParseError::InvalidSpec(range_set.to_string()))?;
+
+    if start.is_empty() && end.is_empty() {
+        return Err(RangeParseError::InvalidSpec(range_set.to_string()));
+    }
+
+    if start.is_empty() {
+        let length = parse_u64(end, range_set)?;
+        return Ok(LineRange::Suffix { length });
+    }
+
+    let first = parse_u64(start, range_set)?;
+    if end.is_empty() {
+        return Ok(LineRange::FromStartOpen { first });
+    }
+
+    let last = parse_u64(end, range_set)?;
+    if first == 0 {
+        return Err(RangeParseError::InvalidSpec(range_set.to_string()));
+    }
+    if last == first - 1 {
+        Ok(LineRange::Insert { before: first })
+    } else {
+        Ok(LineRange::FromStart { first, last })
+    }
+}
+
 fn parse_byte_range_spec(spec: &str) -> Result<ByteRange, RangeParseError> {
     let (start, end) = spec
         .split_once('-')
@@ -504,6 +557,76 @@ mod tests {
             assert_eq!(lone_cr.total_lines, 1);
             assert_eq!(bom.total_lines, 1);
             assert_eq!(bom.line_starts, vec![0]);
+        }
+    }
+
+    mod parse_line_range {
+        use super::*;
+
+        #[test]
+        fn closed_range_parses_as_from_start() {
+            assert_eq!(
+                parse_line_range_header("lines=1-10"),
+                Ok(LineRange::FromStart { first: 1, last: 10 })
+            );
+        }
+
+        #[test]
+        fn open_ended_range_parses_as_from_start_open() {
+            assert_eq!(
+                parse_line_range_header("lines=100-"),
+                Ok(LineRange::FromStartOpen { first: 100 })
+            );
+        }
+
+        #[test]
+        fn suffix_range_parses_as_suffix() {
+            assert_eq!(
+                parse_line_range_header("lines=-5"),
+                Ok(LineRange::Suffix { length: 5 })
+            );
+        }
+
+        #[test]
+        fn zero_width_range_parses_as_insert() {
+            assert_eq!(
+                parse_line_range_header("lines=5-4"),
+                Ok(LineRange::Insert { before: 5 })
+            );
+        }
+
+        #[test]
+        fn single_line_range_is_not_insert() {
+            assert_eq!(
+                parse_line_range_header("lines=1-1"),
+                Ok(LineRange::FromStart { first: 1, last: 1 })
+            );
+        }
+
+        #[test]
+        fn empty_range_set_is_no_ranges_error() {
+            assert_eq!(
+                parse_line_range_header("lines="),
+                Err(RangeParseError::NoRanges)
+            );
+        }
+
+        #[test]
+        fn zero_start_is_invalid_spec() {
+            assert_eq!(
+                parse_line_range_header("lines=0-10"),
+                Err(RangeParseError::InvalidSpec("0-10".into()))
+            );
+        }
+
+        #[test]
+        fn multi_range_is_invalid_spec() {
+            assert_eq!(
+                parse_line_range_header("lines=1-10,20-30"),
+                Err(RangeParseError::InvalidSpec(
+                    "multi-range lines= not supported".into()
+                ))
+            );
         }
     }
 
