@@ -1,0 +1,99 @@
+   Compiling notedthat-write v0.1.0 (/home/steve/Projects/github.com/NotedThat/NotedThat/crates/notedthat-write)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.73s
+     Running unittests src/lib.rs (/mnt/cache/rust/cargo/target/debug/deps/notedthat_write-74c2c42523a222bc)
+
+running 12 tests
+test replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline ... FAILED
+test replace::tests::empty_new_string_deletes_in_place ... FAILED
+test replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints ... FAILED
+test replace::tests::indexer_channel_full_returns_backpressure_upsert_after_successful_put ... FAILED
+test replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count ... FAILED
+test replace::tests::replace_all_true_across_three_non_overlapping_matches ... FAILED
+test replace::tests::post_splice_size_over_max_patchable_returns_patch_too_large ... FAILED
+test replace::tests::single_match_happy_replaces_once ... FAILED
+test replace::tests::stale_caller_if_match_returns_precondition_failed_no_retry ... FAILED
+test replace::tests::window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed ... FAILED
+test replace::tests::window_412_from_put_absorbed_by_two_retries ... FAILED
+test replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched ... FAILED
+
+failures:
+
+---- replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline stdout ----
+
+thread 'replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline' (1135307) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::empty_new_string_deletes_in_place stdout ----
+
+thread 'replace::tests::empty_new_string_deletes_in_place' (1135308) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints stdout ----
+
+thread 'replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints' (1135310) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::indexer_channel_full_returns_backpressure_upsert_after_successful_put stdout ----
+
+thread 'replace::tests::indexer_channel_full_returns_backpressure_upsert_after_successful_put' (1135309) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count stdout ----
+
+thread 'replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count' (1135311) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::replace_all_true_across_three_non_overlapping_matches stdout ----
+
+thread 'replace::tests::replace_all_true_across_three_non_overlapping_matches' (1135313) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::post_splice_size_over_max_patchable_returns_patch_too_large stdout ----
+
+thread 'replace::tests::post_splice_size_over_max_patchable_returns_patch_too_large' (1135312) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::single_match_happy_replaces_once stdout ----
+
+thread 'replace::tests::single_match_happy_replaces_once' (1135314) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::stale_caller_if_match_returns_precondition_failed_no_retry stdout ----
+
+thread 'replace::tests::stale_caller_if_match_returns_precondition_failed_no_retry' (1135315) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed stdout ----
+
+thread 'replace::tests::window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed' (1135316) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::window_412_from_put_absorbed_by_two_retries stdout ----
+
+thread 'replace::tests::window_412_from_put_absorbed_by_two_retries' (1135317) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+---- replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched stdout ----
+
+thread 'replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched' (1135318) panicked at crates/notedthat-write/src/replace.rs:37:5:
+not implemented: replace() not yet implemented — see T7
+
+
+failures:
+    replace::tests::crlf_line_ending_matches_exact_bytes_not_bare_newline
+    replace::tests::empty_new_string_deletes_in_place
+    replace::tests::indexer_channel_full_returns_backpressure_upsert_after_successful_put
+    replace::tests::multi_byte_utf8_old_string_matches_without_splitting_codepoints
+    replace::tests::multiple_matches_with_replace_all_false_returns_ambiguous_with_count
+    replace::tests::post_splice_size_over_max_patchable_returns_patch_too_large
+    replace::tests::replace_all_true_across_three_non_overlapping_matches
+    replace::tests::single_match_happy_replaces_once
+    replace::tests::stale_caller_if_match_returns_precondition_failed_no_retry
+    replace::tests::window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed
+    replace::tests::window_412_from_put_absorbed_by_two_retries
+    replace::tests::zero_matches_returns_replace_no_match_and_leaves_storage_untouched
+
+test result: FAILED. 0 passed; 12 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p notedthat-write --lib`
