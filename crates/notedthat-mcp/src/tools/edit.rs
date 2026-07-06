@@ -15,9 +15,9 @@ pub struct EditArgs {
     /// Object path within the knowledge base.
     pub path: String,
     /// First line to replace (1-based inclusive).
-    pub line_start: u64,
+    pub line_start: Option<u64>,
     /// Last line to replace (1-based inclusive). Set to `line_start - 1` for an insert point.
-    pub line_end: u64,
+    pub line_end: Option<u64>,
     /// First byte to replace (0-based inclusive).
     pub byte_start: Option<u64>,
     /// End byte to replace (0-based exclusive).
@@ -38,17 +38,65 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: EditArgs,
 ) -> Result<CallToolResult, McpError> {
-    let _byte_start = args.byte_start;
-    let _byte_end = args.byte_end;
+    let line_range_requested = args.line_start.is_some() || args.line_end.is_some();
+    let byte_range_requested = args.byte_start.is_some() || args.byte_end.is_some();
 
-    if args.line_start < 1 {
-        return Err(
-            McpToolError::InvalidRequest("line_start must be >= 1 (1-based)".into()).into(),
-        );
+    if line_range_requested && byte_range_requested {
+        return Err(McpToolError::InvalidRequest(
+            "line_* and byte_* arguments are mutually exclusive; provide one pair or the other"
+                .into(),
+        )
+        .into());
     }
-    if args.line_start > args.line_end.saturating_add(1) {
+    if args.line_end.is_some() && args.line_start.is_none() {
+        return Err(McpToolError::InvalidRequest(
+            "line_end requires line_start; provide both or omit both".into(),
+        )
+        .into());
+    }
+    if args.line_start.is_some() && args.line_end.is_none() {
+        return Err(McpToolError::InvalidRequest(
+            "line_start requires line_end; provide both or omit both".into(),
+        )
+        .into());
+    }
+    if args.byte_end.is_some() && args.byte_start.is_none() {
+        return Err(McpToolError::InvalidRequest(
+            "byte_end requires byte_start; provide both or omit both".into(),
+        )
+        .into());
+    }
+    if args.byte_start.is_some() && args.byte_end.is_none() {
+        return Err(McpToolError::InvalidRequest(
+            "byte_start requires byte_end; provide both or omit both".into(),
+        )
+        .into());
+    }
+    if !line_range_requested && !byte_range_requested {
+        return Err(McpToolError::InvalidRequest(
+            "edit requires either (line_start, line_end) or (byte_start, byte_end); use append for EOF-only writes".into(),
+        )
+        .into());
+    }
+    if args.line_start == Some(0) {
+        return Err(McpToolError::InvalidRequest(
+            "line numbers are 1-based; line_start must be >= 1".into(),
+        )
+        .into());
+    }
+    if let (Some(start), Some(end)) = (args.line_start, args.line_end)
+        && start > end.saturating_add(1)
+    {
         return Err(McpToolError::InvalidRequest(
             "line_start must be <= line_end + 1 (set line_end = line_start - 1 for insert)".into(),
+        )
+        .into());
+    }
+    if let (Some(start), Some(end)) = (args.byte_start, args.byte_end)
+        && start >= end
+    {
+        return Err(McpToolError::InvalidRequest(
+            "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it".into(),
         )
         .into());
     }
@@ -56,7 +104,16 @@ pub(super) async fn run(
     let kb_enc = encode_kb_slug(&args.kb);
     let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
-    let content_range = format!("lines {}-{}/*", args.line_start, args.line_end);
+    let content_range = match (
+        args.line_start,
+        args.line_end,
+        args.byte_start,
+        args.byte_end,
+    ) {
+        (Some(ls), Some(le), None, None) => format!("lines {ls}-{le}/*"),
+        (None, None, Some(bs), Some(be)) => format!("bytes {bs}-{}/*", be - 1),
+        _ => unreachable!("range validation rejected mixed/incomplete pairs"),
+    };
     let req = client
         .authorized(client.http.patch(url))
         .header("Content-Range", content_range)
@@ -98,8 +155,8 @@ mod tests {
         EditArgs {
             kb: "notes".into(),
             path: "hello.md".into(),
-            line_start,
-            line_end,
+            line_start: Some(line_start),
+            line_end: Some(line_end),
             byte_start: None,
             byte_end: None,
             content: "replacement".into(),
@@ -111,8 +168,8 @@ mod tests {
         EditArgs {
             kb: "notes".into(),
             path: "hello.md".into(),
-            line_start: 0,
-            line_end: 0,
+            line_start: None,
+            line_end: None,
             byte_start,
             byte_end,
             content: content.into(),
@@ -303,8 +360,8 @@ mod tests {
         let args = EditArgs {
             kb: "notes".into(),
             path: "hello.md".into(),
-            line_start: 1,
-            line_end: 10,
+            line_start: Some(1),
+            line_end: Some(10),
             byte_start: Some(100),
             byte_end: Some(200),
             content: "x".into(),
@@ -330,7 +387,7 @@ mod tests {
 
         assert_eq!(
             err.message.to_string(),
-            "exactly one of line range or byte range must be provided"
+            "edit requires either (line_start, line_end) or (byte_start, byte_end); use append for EOF-only writes"
         );
         server.verify().await;
     }
@@ -350,11 +407,11 @@ mod tests {
 
         assert_eq!(
             byte_start_only.unwrap_err().message.to_string(),
-            "byte_start and byte_end must be provided together"
+            "byte_start requires byte_end; provide both or omit both"
         );
         assert_eq!(
             byte_end_only.unwrap_err().message.to_string(),
-            "byte_start and byte_end must be provided together"
+            "byte_end requires byte_start; provide both or omit both"
         );
         server.verify().await;
     }

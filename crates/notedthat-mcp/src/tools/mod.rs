@@ -66,7 +66,7 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Edit an object by replacing/inserting lines <line_start>..<line_end>; if_match is required"
+        description = "Edit an object by replacing lines or bytes. Accepts (line_start, line_end) for line mode (1-based, insert-at-N via line_end = line_start - 1) OR (byte_start, byte_end) for byte mode (0-based, byte_end EXCLUSIVE, requires byte_start < byte_end — byte-mode insert not supported in v1). Mutually exclusive. if_match is required."
     )]
     async fn edit(&self, args: Parameters<edit::EditArgs>) -> Result<CallToolResult, McpError> {
         edit::run(&self.client, args.0).await
