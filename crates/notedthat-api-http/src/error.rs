@@ -85,6 +85,22 @@ impl From<notedthat_write::WriteError> for ApiError {
             notedthat_write::WriteError::IndexerBackpressureTombstone => {
                 Self::IndexerBackpressureTombstone
             }
+            notedthat_write::WriteError::PatchTooLarge { size, limit } => {
+                Self::Core(CoreError::PayloadTooLarge { size, limit })
+            }
+            notedthat_write::WriteError::PatchLineOutOfRange {
+                total_lines,
+                total_bytes,
+                ..
+            } => Self::Core(CoreError::InvalidInput {
+                // T6 will replace this placeholder with ApiError::LineRangeNotSatisfiable.
+                message: format!(
+                    "line range out of bounds: {total_lines} lines, {total_bytes} bytes"
+                ),
+            }),
+            notedthat_write::WriteError::PatchInvalidRange { message } => {
+                Self::Core(CoreError::InvalidInput { message })
+            }
         }
     }
 }
@@ -372,6 +388,43 @@ mod tests {
             ApiError::from(WriteError::IndexerBackpressureTombstone),
             ApiError::IndexerBackpressureTombstone
         ));
+    }
+
+    #[test]
+    fn test_from_write_error_patch_too_large() {
+        let api_err = ApiError::from(WriteError::PatchTooLarge {
+            size: 200 * 1024 * 1024,
+            limit: 100 * 1024 * 1024,
+        });
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 413);
+        assert_eq!(code, "payload_too_large");
+    }
+
+    #[test]
+    fn test_from_write_error_patch_line_out_of_range() {
+        let api_err = ApiError::from(WriteError::PatchLineOutOfRange {
+            first: 999,
+            last: 1000,
+            total_lines: 20,
+            total_bytes: 100,
+        });
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 400);
+        assert_eq!(code, "invalid_request");
+    }
+
+    #[test]
+    fn test_from_write_error_patch_invalid_range() {
+        let api_err = ApiError::from(WriteError::PatchInvalidRange {
+            message: "test".into(),
+        });
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 400);
+        assert_eq!(code, "invalid_request");
     }
 
     // ─── New variant tests ────────────────────────────────────────────────────
