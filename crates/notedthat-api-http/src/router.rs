@@ -310,9 +310,10 @@ async fn serve_line_range_read(
 
     let idx = LineIndex::from_bytes(&read.bytes);
     let byte_range = idx.byte_range(&line_range).ok_or_else(|| {
-        err(ApiError::MalformedRange(format!(
-            "line range not satisfiable: {raw_range}"
-        )))
+        err(ApiError::LineRangeNotSatisfiable {
+            line_total: idx.total_lines,
+            byte_total: idx.total_bytes,
+        })
     })?;
     let sliced = read
         .bytes

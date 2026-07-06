@@ -1,8 +1,8 @@
 //! HTTP API error types and JSON envelope.
 
 use axum::Json;
-use axum::http::StatusCode;
 use axum::http::header::{CONTENT_RANGE, RETRY_AFTER};
+use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{Error as CoreError, StorageError};
 use serde::Serialize;
@@ -54,6 +54,17 @@ pub enum ApiError {
     /// Maps to HTTP 400 Bad Request.
     #[error("malformed range: {0}")]
     MalformedRange(String),
+    /// A `Range: lines=…` header specified a range that exceeds the object's line count.
+    ///
+    /// Maps to HTTP 416 with `Content-Range: lines */<line_total>` and
+    /// `X-Content-Range-Bytes: */<byte_total>` per the line-range extension.
+    #[error("line range not satisfiable")]
+    LineRangeNotSatisfiable {
+        /// Total line count in the object.
+        line_total: u64,
+        /// Total byte count in the object.
+        byte_total: u64,
+    },
 }
 
 /// Promote specific `StorageError` variants to top-level `ApiError` variants so
@@ -92,12 +103,10 @@ impl From<notedthat_write::WriteError> for ApiError {
                 total_lines,
                 total_bytes,
                 ..
-            } => Self::Core(CoreError::InvalidInput {
-                // T6 will replace this placeholder with ApiError::LineRangeNotSatisfiable.
-                message: format!(
-                    "line range out of bounds: {total_lines} lines, {total_bytes} bytes"
-                ),
-            }),
+            } => Self::LineRangeNotSatisfiable {
+                line_total: total_lines,
+                byte_total: total_bytes,
+            },
             notedthat_write::WriteError::PatchInvalidRange { message } => {
                 Self::Core(CoreError::InvalidInput { message })
             }
@@ -149,6 +158,9 @@ impl ApiError {
             }
             Self::Core(CoreError::MalformedRange(_)) | Self::MalformedRange(_) => {
                 (StatusCode::BAD_REQUEST, "malformed_range")
+            }
+            Self::LineRangeNotSatisfiable { .. } => {
+                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
             }
             Self::Core(CoreError::NotModified) | Self::NotModified => {
                 (StatusCode::NOT_MODIFIED, "not_modified")
@@ -212,6 +224,25 @@ impl ApiError {
 
 impl IntoResponse for ApiErrorResponse {
     fn into_response(self) -> Response {
+        // Line-mode 416: emit Content-Range: lines */<total> + X-Content-Range-Bytes: */<total_bytes>.
+        if let ApiError::LineRangeNotSatisfiable {
+            line_total,
+            byte_total,
+        } = &self.error
+        {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [
+                    (CONTENT_RANGE, format!("lines */{line_total}")),
+                    (
+                        HeaderName::from_static("x-content-range-bytes"),
+                        format!("*/{byte_total}"),
+                    ),
+                ],
+            )
+                .into_response();
+        }
+
         // 416 Range Not Satisfiable: RFC 7233 §4.4 requires
         // `Content-Range: bytes */N` and an empty body.
         if let Some(complete_length) = self.error.range_not_satisfiable_length() {
@@ -412,8 +443,8 @@ mod tests {
         });
 
         let (status, code) = api_err.status_and_code();
-        assert_eq!(status.as_u16(), 400);
-        assert_eq!(code, "invalid_request");
+        assert_eq!(status.as_u16(), 416);
+        assert_eq!(code, "range_not_satisfiable");
     }
 
     #[test]
@@ -529,5 +560,153 @@ mod tests {
             key: "foo".to_string(),
         });
         assert!(matches!(api_err, ApiError::Storage(_)));
+    }
+
+    mod line_range_error {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use bytes::Bytes;
+        use notedthat_core::KbSlug;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        use tower::util::ServiceExt;
+
+        const KB: &str = "notes";
+        const TOKEN: &str = "test-token-abc";
+
+        fn twenty_line_markdown() -> String {
+            (1..=20).map(|line| format!("line {line:02}\n")).collect()
+        }
+
+        fn router() -> axum::Router {
+            let kb = KbSlug::try_new(KB).unwrap();
+            let mut kbs = BTreeMap::new();
+            kbs.insert(KB.to_string(), kb);
+            let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+            crate::router::build_router(crate::state::AppState {
+                storage: Arc::new(crate::testing::InMemoryStorage::default()),
+                declared_kbs: Arc::new(kbs),
+                bearer_token: Arc::new(TOKEN.to_string()),
+                max_body_size: 16 * 1024 * 1024,
+                max_patchable_size: 16 * 1024 * 1024,
+                indexer_tx,
+                searcher: Arc::new(crate::testing::NoopSearcher),
+            })
+        }
+
+        async fn put_ranges_md(router: axum::Router) {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                        .header("authorization", format!("Bearer {TOKEN}"))
+                        .header(axum::http::header::CONTENT_TYPE, "text/markdown")
+                        .body(Body::from(Bytes::from(twenty_line_markdown())))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CREATED);
+        }
+
+        #[tokio::test]
+        async fn malformed_line_range_returns_json_400() {
+            let response = ApiError::MalformedRange("lines=abc".into()).into_response();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], "malformed_range");
+        }
+
+        #[tokio::test]
+        async fn line_range_not_satisfiable_returns_dual_headers_and_empty_body() {
+            let response = ApiError::LineRangeNotSatisfiable {
+                line_total: 20,
+                byte_total: 100,
+            }
+            .into_response();
+
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(
+                response.headers().get("content-range").unwrap(),
+                "lines */20"
+            );
+            assert_eq!(
+                response.headers().get("x-content-range-bytes").unwrap(),
+                "*/100"
+            );
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(body.is_empty());
+        }
+
+        #[tokio::test]
+        async fn out_of_range_line_get_returns_dual_headers_and_empty_body() {
+            let router = router();
+            put_ranges_md(router.clone()).await;
+
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                        .header("authorization", format!("Bearer {TOKEN}"))
+                        .header(axum::http::header::RANGE, "lines=100-200")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(
+                response.headers().get("content-range").unwrap(),
+                "lines */20"
+            );
+            assert_eq!(
+                response.headers().get("x-content-range-bytes").unwrap(),
+                "*/160"
+            );
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(body.is_empty());
+        }
+
+        #[tokio::test]
+        async fn byte_range_not_satisfiable_omits_line_byte_header() {
+            let response = ApiError::RangeNotSatisfiable {
+                complete_length: 100,
+            }
+            .into_response();
+
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(
+                response.headers().get("content-range").unwrap(),
+                "bytes */100"
+            );
+            assert!(response.headers().get("x-content-range-bytes").is_none());
+        }
+
+        #[test]
+        fn patch_line_out_of_range_maps_to_line_range_not_satisfiable() {
+            let error = ApiError::from(WriteError::PatchLineOutOfRange {
+                first: 100,
+                last: 200,
+                total_lines: 20,
+                total_bytes: 100,
+            });
+
+            assert!(matches!(
+                error,
+                ApiError::LineRangeNotSatisfiable {
+                    line_total: 20,
+                    byte_total: 100
+                }
+            ));
+        }
     }
 }
