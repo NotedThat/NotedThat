@@ -15,7 +15,8 @@ use wiremock::{
 };
 
 const API_TOKEN: &str = "e2e-test-token";
-const EXPECTED_M7_TOOLS: &str = "list_knowledgebases,search,read,write,list,delete,move";
+const EXPECTED_M7_TOOLS: &str =
+    "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
