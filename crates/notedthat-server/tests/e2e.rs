@@ -114,7 +114,7 @@ async fn e2e_healthz_and_put_get() {
             .expect("server run failed");
     });
 
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let client = reqwest::Client::new();
     let base = format!("http://{bound_addr}");
@@ -165,7 +165,7 @@ async fn e2e_list_and_delete() {
             .expect("server run failed");
     });
 
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let client = reqwest::Client::new();
     let base = format!("http://{bound_addr}");

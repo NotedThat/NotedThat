@@ -266,8 +266,7 @@ async fn wait_for_http(url: &str, timeout: Duration) {
             .get(url)
             .send()
             .await
-            .map(|response| response.status().is_success())
-            .unwrap_or(false)
+            .is_ok_and(|response| response.status().is_success())
         {
             return;
         }

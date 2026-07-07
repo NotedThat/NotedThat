@@ -85,15 +85,13 @@ impl DavMetaData for WebDavMetaData {
             Self::Root { server_start } => {
                 let secs = server_start
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.as_secs());
                 Some(format!("nt-root-{secs:x}"))
             }
             Self::Kb { slug, server_start } => {
                 let secs = server_start
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.as_secs());
                 Some(format!("nt-kb-{slug}-{secs:x}"))
             }
             Self::Object { meta } => {

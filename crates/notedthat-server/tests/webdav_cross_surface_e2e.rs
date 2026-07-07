@@ -156,8 +156,7 @@ async fn wait_for_http(url: &str, timeout: Duration) {
             .get(url)
             .send()
             .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
+            .is_ok_and(|r| r.status().is_success())
         {
             return;
         }
@@ -178,8 +177,7 @@ async fn wait_for_dav_options(base_url: &str, timeout: Duration) {
             .header("Authorization", basic_auth(WEBDAV_USER, WEBDAV_PASS))
             .send()
             .await
-            .map(|r| r.status().as_u16() == 204)
-            .unwrap_or(false);
+            .is_ok_and(|r| r.status().as_u16() == 204);
         if ok {
             return;
         }

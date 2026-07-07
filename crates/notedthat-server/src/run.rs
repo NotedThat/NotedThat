@@ -28,7 +28,7 @@ mod mcp_http_listener;
 
 /// Grace period for in-flight `WebDAV` uploads after shutdown signal.
 /// Runs BEFORE the existing 31-second indexer drain.
-pub const WEBDAV_INFLIGHT_GRACE: Duration = Duration::from_secs(60);
+pub const WEBDAV_INFLIGHT_GRACE: Duration = Duration::from_mins(1);
 
 /// Build infrastructure components (S3, Qdrant, embedder, indexer, app state).
 async fn build_infrastructure(
