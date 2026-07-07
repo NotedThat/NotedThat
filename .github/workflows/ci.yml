@@ -48,6 +48,23 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Dry-run Dockerfile build on every push and PR. Catches breakage before
+  # release-plz can tag a broken commit. Runs the reusable docker.yml with
+  # push=false — no GHCR login, no cosign, no secrets required (safe for
+  # fork PRs). The upper bound on permissions here matches what the reusable
+  # workflow declares at job level, even though push=false uses none of them.
+  docker-build:
+    name: Docker Build
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      actions: write
+      attestations: write
+    with:
+      push: false
+
   integration-test:
     name: Integration tests (SeaweedFS testcontainer)
     needs: [test, clippy, fmt]
@@ -69,7 +86,7 @@ jobs:
 
   release-plz-release:
     name: Tag and publish crates
-    needs: [test, clippy, fmt, integration-test]
+    needs: [test, clippy, fmt, docker-build, integration-test]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
@@ -99,7 +116,7 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, integration-test, release-plz-release]
+    needs: [test, clippy, fmt, docker-build, integration-test, release-plz-release]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
