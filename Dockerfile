@@ -44,13 +44,12 @@ FROM chef AS builder
 # Cook only the dependencies. This layer is cached until Cargo.lock or any
 # workspace Cargo.toml changes — source edits do not invalidate it.
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json --bin notedthat-server --bin notedthat-mcp-stdio
+RUN cargo chef cook --release --recipe-path recipe.json --bin notedthat-server
 
 # Copy the actual sources and compile the server binary against the cooked deps.
 COPY . .
-RUN cargo build --release --locked --bin notedthat-server --bin notedthat-mcp-stdio \
- && strip target/release/notedthat-server \
- && strip target/release/notedthat-mcp-stdio
+RUN cargo build --release --locked --bin notedthat-server \
+ && strip target/release/notedthat-server
 
 # ------------------------------------------------------------------------------
 # Stage 4: runtime — small Debian slim with the binary and just enough tooling.
@@ -78,7 +77,6 @@ RUN groupadd --system --gid 10001 notedthat \
         --home-dir /nonexistent --shell /usr/sbin/nologin notedthat
 
 COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedthat-server
-COPY --from=builder /app/target/release/notedthat-mcp-stdio /usr/local/bin/notedthat-mcp-stdio
 
 USER notedthat:notedthat
 EXPOSE 8080
@@ -87,5 +85,23 @@ EXPOSE 8081
 # /healthz is an unauthenticated liveness probe served by notedthat-api-http.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz || exit 1
+
+# ------------------------------------------------------------------------------
+# OCI image metadata.
+#
+# IMAGE_VERSION and IMAGE_REVISION are injected by the release workflow (see
+# .github/workflows/docker.yml). Local `docker build` without --build-arg
+# produces "0.1.0" / "unknown", which is fine for dev images.
+# ------------------------------------------------------------------------------
+ARG IMAGE_VERSION=0.1.0
+ARG IMAGE_REVISION=unknown
+
+LABEL org.opencontainers.image.title="notedthat-server" \
+      org.opencontainers.image.description="NotedThat markdown-first knowledgebase server (HTTP API + WebDAV + remote MCP)" \
+      org.opencontainers.image.source="https://github.com/NotedThat/NotedThat" \
+      org.opencontainers.image.url="https://github.com/NotedThat/NotedThat" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.licenses="MPL-2.0"
 
 ENTRYPOINT ["/usr/local/bin/notedthat-server"]

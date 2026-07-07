@@ -32,6 +32,11 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+# Opt into cargo-dist packaging. Ships `notedthat-server` binary for every
+# target listed in [workspace.metadata.dist]. See .github/workflows/release.yml.
+[package.metadata.dist]
+dist = true
+
 [dev-dependencies]
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.0", features = ["test-support"] }
 notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.1.0" }
