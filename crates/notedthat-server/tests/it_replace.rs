@@ -167,3 +167,223 @@ async fn if_match_multi_value_on_replace_returns_400_invalid_request() {
     assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
     assert_eq!(server.get_text("ifmatch-multi.md").await, "foo");
 }
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
+    // Given: three clients share one starting ETag.
+    let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
+    let starting_etag = server.put_text("concurrent.md", "hello world").await;
+
+    // When: all three attempt concurrent replaces with the same If-Match precondition.
+    let mut handles = Vec::new();
+    for suffix in ["A", "B", "C"] {
+        let server_client = server.client.clone();
+        let url = format!(
+            "{}/v1/knowledgebases/{}/replace/concurrent.md",
+            server.base_url, server.kb
+        );
+        let etag = starting_etag.clone();
+        let payload = serde_json::json!({
+            "old_string": "world",
+            "new_string": format!("world-{}", suffix),
+            "replace_all": false,
+        });
+        handles.push(tokio::spawn(async move {
+            server_client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", API_TOKEN))
+                .header("Content-Type", "application/json")
+                .header("If-Match", etag)
+                .body(payload.to_string())
+                .send()
+                .await
+                .expect("concurrent replace should return")
+                .status()
+        }));
+    }
+
+    // Then: exactly one wins, and the sustained stale preconditions surface 412s.
+    let mut statuses = Vec::new();
+    for h in handles {
+        statuses.push(h.await.expect("task join"));
+    }
+    let successes = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::OK)
+        .count();
+    let conflicts = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::PRECONDITION_FAILED)
+        .count();
+    assert_eq!(
+        successes, 1,
+        "exactly one replace should succeed: {statuses:?}"
+    );
+    assert!(
+        conflicts >= 2,
+        "at least two replaces should fail with 412: {statuses:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts() {
+    // Given: one starting ETag shared by PATCH and replace clients.
+    let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
+    let starting_etag = server.put_text("cross.md", "hello world").await;
+
+    // When: a PATCH and a replace race with the same If-Match precondition.
+    let patch_url = format!(
+        "{}/v1/knowledgebases/{}/cross.md",
+        server.base_url, server.kb
+    );
+    let patch_client = server.client.clone();
+    let patch_etag = starting_etag.clone();
+    let patch_handle = tokio::spawn(async move {
+        patch_client
+            .patch(patch_url)
+            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Content-Range", "bytes 6-10/*")
+            .header("If-Match", patch_etag)
+            .body("PLNTS")
+            .send()
+            .await
+            .expect("patch should return")
+            .status()
+    });
+
+    let replace_url = format!(
+        "{}/v1/knowledgebases/{}/replace/cross.md",
+        server.base_url, server.kb
+    );
+    let replace_client = server.client.clone();
+    let replace_etag = starting_etag.clone();
+    let replace_handle = tokio::spawn(async move {
+        replace_client
+            .post(replace_url)
+            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Content-Type", "application/json")
+            .header("If-Match", replace_etag)
+            .body(
+                serde_json::json!({
+                    "old_string": "world",
+                    "new_string": "planet"
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .expect("replace should return")
+            .status()
+    });
+
+    let patch_status = patch_handle.await.expect("patch join");
+    let replace_status = replace_handle.await.expect("replace join");
+
+    // Then: exactly one succeeds, the other fails with 412, and the final body is one of the two intended writes.
+    let successes = [patch_status, replace_status]
+        .iter()
+        .filter(|s| **s == StatusCode::OK)
+        .count();
+    let conflicts = [patch_status, replace_status]
+        .iter()
+        .filter(|s| **s == StatusCode::PRECONDITION_FAILED)
+        .count();
+    assert_eq!(
+        successes, 1,
+        "exactly one of PATCH/replace should win: patch={patch_status:?}, replace={replace_status:?}"
+    );
+    assert_eq!(
+        conflicts, 1,
+        "the other must fail with 412: patch={patch_status:?}, replace={replace_status:?}"
+    );
+
+    let final_body = server.get_text("cross.md").await;
+    assert!(
+        final_body == "hello PLNTS" || final_body == "hello planet",
+        "final body must be one of the two intended writes, got {final_body:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_silently() {
+    // Given: one starting ETag shared by delete and replace clients.
+    let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
+    let starting_etag = server.put_text("racy.md", "hello world").await;
+
+    // When: a DELETE and a replace race with the same If-Match precondition.
+    let delete_url = format!(
+        "{}/v1/knowledgebases/{}/racy.md",
+        server.base_url, server.kb
+    );
+    let delete_client = server.client.clone();
+    let delete_etag = starting_etag.clone();
+    let delete_handle = tokio::spawn(async move {
+        delete_client
+            .delete(delete_url)
+            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("If-Match", delete_etag)
+            .send()
+            .await
+            .expect("delete should return")
+            .status()
+    });
+
+    let replace_url = format!(
+        "{}/v1/knowledgebases/{}/replace/racy.md",
+        server.base_url, server.kb
+    );
+    let replace_client = server.client.clone();
+    let replace_etag = starting_etag.clone();
+    let replace_handle = tokio::spawn(async move {
+        replace_client
+            .post(replace_url)
+            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Content-Type", "application/json")
+            .header("If-Match", replace_etag)
+            .body(
+                serde_json::json!({
+                    "old_string": "world",
+                    "new_string": "planet"
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .expect("replace should return")
+            .status()
+    });
+
+    let delete_status = delete_handle.await.expect("delete join");
+    let replace_status = replace_handle.await.expect("replace join");
+
+    // Then: exactly one operation succeeds, and the final state is consistent (no silent data loss).
+    match server.head_text_status("racy.md").await {
+        StatusCode::OK => {
+            assert_eq!(
+                replace_status, StatusCode::OK,
+                "object still present but replace didn't win: replace={replace_status:?}, delete={delete_status:?}"
+            );
+            assert!(
+                matches!(delete_status, StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND),
+                "object exists so delete must have failed with 412 or 404: delete={delete_status:?}"
+            );
+            assert_eq!(server.get_text("racy.md").await, "hello planet");
+        }
+        StatusCode::NOT_FOUND => {
+            assert_eq!(
+                delete_status, StatusCode::NO_CONTENT,
+                "object gone but delete didn't return 204: delete={delete_status:?}, replace={replace_status:?}"
+            );
+            assert!(
+                matches!(replace_status, StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND),
+                "object gone so replace must have failed with 412 or 404: replace={replace_status:?}"
+            );
+        }
+        other => panic!(
+            "unexpected HEAD status after concurrent replace+delete: {other:?}"
+        ),
+    }
+}
