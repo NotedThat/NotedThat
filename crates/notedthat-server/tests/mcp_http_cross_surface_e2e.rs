@@ -1222,3 +1222,116 @@ async fn mcp_resources_list_and_read() {
 
     server_handle.abort();
 }
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
+async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
+    // Given: MCP HTTP and HTTP API are running with SeaweedFS and Qdrant.
+    let (_seaweed, s3_url) = start_seaweedfs().await;
+    let (_qdrant, qdrant_url) = start_qdrant().await;
+    let mock_embedder = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_embedder)
+        .await;
+
+    let http_addr = free_addr().await;
+    let dav_addr = free_addr().await;
+    let mcp_addr = free_addr().await;
+    let config = test_config_with_mcp_http(
+        http_addr,
+        dav_addr,
+        mcp_addr,
+        &s3_url,
+        &qdrant_url,
+        &mock_embedder.uri(),
+    );
+
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run(config)
+            .await
+            .expect("server run failed");
+    });
+
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{mcp_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+
+    let client = reqwest::Client::new();
+
+    // When: HTTP PUT writes initial content and captures ETag.
+    let put_response = client
+        .put(format!("{http_url}/v1/knowledgebases/notes/mcp-replace.md"))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "text/markdown")
+        .body("hello world")
+        .send()
+        .await
+        .expect("HTTP PUT failed");
+    assert_eq!(put_response.status(), reqwest::StatusCode::CREATED);
+    let first_etag = put_response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .expect("PUT response must include ETag")
+        .to_owned();
+
+    // Initialize MCP.
+    let initialize = mcp_request(
+        &client,
+        &mcp_url,
+        0,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "notedthat-e2e", "version": "0" }
+        }),
+    )
+    .await;
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize should succeed: {initialize}"
+    );
+
+    // When: MCP replace tool is called with the first ETag.
+    let replace_response = mcp_call_tool(
+        &client,
+        &mcp_url,
+        1,
+        "replace",
+        serde_json::json!({
+            "kb": "notes",
+            "path": "mcp-replace.md",
+            "old_string": "world",
+            "new_string": "planet",
+            "if_match": first_etag,
+        }),
+    )
+    .await;
+    assert!(
+        replace_response.get("result").is_some(),
+        "MCP replace should succeed: {replace_response}"
+    );
+
+    // Then: HTTP GET verifies the content was updated.
+    let get_response = client
+        .get(format!("{http_url}/v1/knowledgebases/notes/mcp-replace.md"))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .send()
+        .await
+        .expect("HTTP GET failed");
+    assert_eq!(get_response.status(), reqwest::StatusCode::OK);
+    let updated_content = get_response
+        .text()
+        .await
+        .expect("GET response body should read");
+    assert_eq!(
+        updated_content, "hello planet",
+        "content should be updated after MCP replace"
+    );
+
+    server_handle.abort();
+}
