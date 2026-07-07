@@ -9,7 +9,7 @@
 #[path = "support/patch_env.rs"]
 mod patch_env;
 
-use patch_env::{PatchServer, assert_replace_success, assert_error_code, API_TOKEN};
+use patch_env::{API_TOKEN, PatchServer, assert_error_code, assert_replace_success};
 use reqwest::StatusCode;
 
 const NORMAL_MAX_PATCHABLE_SIZE: u64 = 10 * 1024 * 1024;
@@ -192,7 +192,7 @@ async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
         handles.push(tokio::spawn(async move {
             server_client
                 .post(url)
-                .header("Authorization", format!("Bearer {}", API_TOKEN))
+                .header("Authorization", format!("Bearer {API_TOKEN}"))
                 .header("Content-Type", "application/json")
                 .header("If-Match", etag)
                 .body(payload.to_string())
@@ -208,10 +208,7 @@ async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
     for h in handles {
         statuses.push(h.await.expect("task join"));
     }
-    let successes = statuses
-        .iter()
-        .filter(|s| **s == StatusCode::OK)
-        .count();
+    let successes = statuses.iter().filter(|s| **s == StatusCode::OK).count();
     let conflicts = statuses
         .iter()
         .filter(|s| **s == StatusCode::PRECONDITION_FAILED)
@@ -243,7 +240,7 @@ async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts(
     let patch_handle = tokio::spawn(async move {
         patch_client
             .patch(patch_url)
-            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
             .header("Content-Range", "bytes 6-10/*")
             .header("If-Match", patch_etag)
             .body("PLNTS")
@@ -262,7 +259,7 @@ async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts(
     let replace_handle = tokio::spawn(async move {
         replace_client
             .post(replace_url)
-            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
             .header("Content-Type", "application/json")
             .header("If-Match", replace_etag)
             .body(
@@ -323,7 +320,7 @@ async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_sile
     let delete_handle = tokio::spawn(async move {
         delete_client
             .delete(delete_url)
-            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
             .header("If-Match", delete_etag)
             .send()
             .await
@@ -340,7 +337,7 @@ async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_sile
     let replace_handle = tokio::spawn(async move {
         replace_client
             .post(replace_url)
-            .header("Authorization", format!("Bearer {}", API_TOKEN))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
             .header("Content-Type", "application/json")
             .header("If-Match", replace_etag)
             .body(
@@ -363,27 +360,33 @@ async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_sile
     match server.head_text_status("racy.md").await {
         StatusCode::OK => {
             assert_eq!(
-                replace_status, StatusCode::OK,
+                replace_status,
+                StatusCode::OK,
                 "object still present but replace didn't win: replace={replace_status:?}, delete={delete_status:?}"
             );
             assert!(
-                matches!(delete_status, StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND),
+                matches!(
+                    delete_status,
+                    StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND
+                ),
                 "object exists so delete must have failed with 412 or 404: delete={delete_status:?}"
             );
             assert_eq!(server.get_text("racy.md").await, "hello planet");
         }
         StatusCode::NOT_FOUND => {
             assert_eq!(
-                delete_status, StatusCode::NO_CONTENT,
+                delete_status,
+                StatusCode::NO_CONTENT,
                 "object gone but delete didn't return 204: delete={delete_status:?}, replace={replace_status:?}"
             );
             assert!(
-                matches!(replace_status, StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND),
+                matches!(
+                    replace_status,
+                    StatusCode::PRECONDITION_FAILED | StatusCode::NOT_FOUND
+                ),
                 "object gone so replace must have failed with 412 or 404: replace={replace_status:?}"
             );
         }
-        other => panic!(
-            "unexpected HEAD status after concurrent replace+delete: {other:?}"
-        ),
+        other => panic!("unexpected HEAD status after concurrent replace+delete: {other:?}"),
     }
 }

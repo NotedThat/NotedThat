@@ -1,6 +1,6 @@
 # release-plz configuration for unified ecosystem versioning.
 #
-# All 8 publishable crates share a single version via [workspace.package].version,
+# All 9 publishable crates share a single version via [workspace.package].version,
 # release as ONE workspace tag (vX.Y.Z), and feed into ONE root CHANGELOG.md.
 #
 # Architecture: the facade crate `notedthat-server` owns:
