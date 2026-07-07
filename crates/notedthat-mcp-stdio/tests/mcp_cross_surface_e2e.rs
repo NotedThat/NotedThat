@@ -459,7 +459,7 @@ fn shutdown_child(mut child: Child, stdin: ChildStdin) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires SeaweedFS+Qdrant testcontainers"]
 async fn mcp_write_becomes_searchable_via_mcp_search() {
     // Given: a fresh NotedThat server and MCP client with a unique markdown document.
@@ -505,7 +505,7 @@ async fn mcp_write_becomes_searchable_via_mcp_search() {
     shutdown_child(child, stdin);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires SeaweedFS+Qdrant testcontainers"]
 async fn mcp_delete_removes_from_search() {
     // Given: a fresh NotedThat server and a unique markdown document written via MCP.

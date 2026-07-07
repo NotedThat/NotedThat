@@ -467,7 +467,7 @@ fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>)
 
 // ─── W4.3: Happy-path chain ─────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires docker-compose stack"]
 #[allow(clippy::too_many_lines)]
 async fn mcp_write_list_read_delete() {
@@ -599,7 +599,7 @@ async fn mcp_write_list_read_delete() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires docker-compose stack"]
 async fn mcp_move_happy() {
     let fixture = start_notedthat_server_fixture().await;
@@ -700,7 +700,7 @@ async fn mcp_move_happy() {
 
 // ─── W4.4: Error paths ──────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires docker-compose stack"]
 async fn mcp_read_missing() {
     let fixture = start_notedthat_server_fixture().await;
@@ -734,7 +734,7 @@ async fn mcp_read_missing() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires docker-compose stack"]
 async fn mcp_write_precondition() {
     let fixture = start_notedthat_server_fixture().await;
@@ -807,7 +807,7 @@ async fn mcp_write_precondition() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires docker-compose stack"]
 async fn mcp_bad_token() {
     let fixture = start_notedthat_server_fixture().await;
