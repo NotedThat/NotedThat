@@ -91,6 +91,32 @@ uuid = { version = "1.6", default-features = false, features = ["v7"] }
 testcontainers = "0.27"
 wiremock = "0.6"
 
+# cargo-dist configuration — drives .github/workflows/release.yml.
+# Only crates that opt in via [package.metadata.dist] dist = true are packaged
+# (currently: notedthat-server, notedthat-mcp-stdio). Everything else is a
+# library crate and stays library-only.
+[workspace.metadata.dist]
+cargo-dist-version = "0.32.0"
+allow-dirty = ["ci"]
+ci = ["github"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
+installers = ["shell", "powershell"]
+windows-archive = ".zip"
+unix-archive = ".tar.xz"
+checksum = "sha256"
+build-local-artifacts = false
+publish-prereleases = false
+announce-in-tag = true
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
