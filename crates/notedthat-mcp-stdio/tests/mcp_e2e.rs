@@ -118,15 +118,25 @@ async fn start_seaweedfs() -> (impl std::any::Any, String) {
 async fn start_qdrant() -> (impl std::any::Any, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
+        .with_exposed_port(6333_u16.tcp())
         .with_wait_for(WaitFor::seconds(5))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let port = container
+    let grpc_port = container
         .get_host_port_ipv4(6334_u16)
         .await
         .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
+    let http_port = container
+        .get_host_port_ipv4(6333_u16)
+        .await
+        .expect("failed to get Qdrant HTTP port");
+    wait_for_http(
+        &format!("http://127.0.0.1:{http_port}/healthz"),
+        Duration::from_mins(1),
+    )
+    .await;
+    (container, format!("http://127.0.0.1:{grpc_port}"))
 }
 
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
@@ -239,6 +249,7 @@ struct NotedThatServerFixture {
     server_handle: tokio::task::JoinHandle<()>,
     _seaweed: Box<dyn std::any::Any>,
     _qdrant: Box<dyn std::any::Any>,
+    _mock_embedder: wiremock::MockServer,
 }
 
 impl Drop for NotedThatServerFixture {
@@ -284,6 +295,7 @@ async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
         server_handle,
         _seaweed: Box::new(seaweed),
         _qdrant: Box::new(qdrant),
+        _mock_embedder: mock_embedder,
     }
 }
 
