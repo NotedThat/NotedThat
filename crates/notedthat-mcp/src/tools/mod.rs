@@ -239,10 +239,10 @@ mod resources_shared {
         // This catches accidental tool registrations that would break the contract.
         // "edit_string" resolved by #39 as top-level `replace` tool (no longer deferred).
         let deferred_tools = [
-            "edit_bytes",   // deferred per issue #40 (byte args added to the unified `edit` tool instead of a separate name)
+            "edit_bytes", // deferred per issue #40 (byte args added to the unified `edit` tool instead of a separate name)
             "append_bytes", // not in spec
             "delete_bytes", // not in spec
-            "write_bytes",  // not in spec
+            "write_bytes", // not in spec
         ];
         for name in deferred_tools {
             assert!(

@@ -1168,8 +1168,10 @@ async fn put_with_double_slash_path_returns_400_or_404() {
     assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
 }
 
+/// POST is now a registered method on the catch-all (dispatches to `replace_object` for replace/ paths);
+/// a bare POST to a non-action path returns 404 `not_found`.
 #[tokio::test]
-async fn unsupported_method_returns_405() {
+async fn unsupported_post_action_returns_not_found() {
     let resp = app()
         .oneshot(authed_request(
             "POST",
@@ -1178,7 +1180,7 @@ async fn unsupported_method_returns_405() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
