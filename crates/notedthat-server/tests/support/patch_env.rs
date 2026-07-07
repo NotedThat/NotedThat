@@ -1,4 +1,7 @@
-#![expect(dead_code, reason = "replace helpers are shared by forthcoming E2E cases")]
+#![expect(
+    dead_code,
+    reason = "replace helpers are shared by forthcoming E2E cases"
+)]
 
 #[path = "patch_backends.rs"]
 mod patch_backends;
