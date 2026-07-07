@@ -1,0 +1,134 @@
+# Reusable Docker workflow.
+#
+# Called by:
+#   - ci.yml with `push: false`  — PR/main validation (no login, no cosign, no
+#     secrets required; safe for fork PRs). Catches Dockerfile breakage before
+#     release-plz can tag a broken commit.
+#   - release.yml (M3) with `push: true, sign: true` — tag-triggered publish
+#     to ghcr.io/notedthat/server, with cosign keyless signing.
+#
+# The reusable-workflow contract keeps both call sites in sync: one Dockerfile,
+# one build recipe, one place to change platforms or labels.
+name: Docker
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: "Whether to push the built image to GHCR."
+        type: boolean
+        default: false
+      sign:
+        description: "Whether to sign the pushed image with cosign (requires push=true)."
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to check out. Empty = the SHA that triggered the caller."
+        type: string
+        default: ""
+      tag_name:
+        description: "Release tag used for image tagging when push=true (e.g. v1.2.3)."
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      actions: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tags and labels
+        if: inputs.push
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/notedthat/server
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag_name }}
+            type=semver,pattern={{major}},value=${{ inputs.tag_name }}
+            type=raw,value=latest,enable=${{ !contains(inputs.tag_name, '-') }}
+          labels: |
+            org.opencontainers.image.title=notedthat-server
+            org.opencontainers.image.description=NotedThat markdown-first knowledgebase server (HTTP API + WebDAV + remote MCP)
+            org.opencontainers.image.source=https://github.com/NotedThat/NotedThat
+            org.opencontainers.image.url=https://github.com/NotedThat/NotedThat
+            org.opencontainers.image.licenses=MPL-2.0
+
+      # `docker/metadata-action` produces an empty `version` output when its
+      # `value` inputs cannot be parsed as semver — usually because tag_name
+      # was passed empty. Fail loudly here rather than pushing an untagged image.
+      - name: Verify resolved version is non-empty
+        if: inputs.push
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          if [ -z "${VERSION}" ]; then
+            echo "ERROR: docker/metadata-action produced empty version (tag_name=${TAG_NAME})" >&2
+            exit 1
+          fi
+          echo "Building image version: ${VERSION}"
+
+      # IMAGE_VERSION defaults to `ci-validation` on `push=false` runs so images
+      # built during PR/main validation are visibly distinguishable from real
+      # releases if they leak into anyone's local Docker cache.
+      - name: Build${{ inputs.push && ' and push' || '' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            IMAGE_VERSION=${{ inputs.push && steps.meta.outputs.version || 'ci-validation' }}
+            IMAGE_REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        if: inputs.sign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: "v2.4.0"
+
+      - name: Sign the image (keyless via Sigstore/Fulcio)
+        if: inputs.sign
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "ghcr.io/notedthat/server@${DIGEST}"
+
+      # SLSA L2 build provenance attestation, pushed as a referrer on the same
+      # image digest. Bundled with `sign` because attestation without a
+      # signature (or vice versa) is a footgun — the two together are the
+      # single "trustable image" primitive. Verify with:
+      #   gh attestation verify oci://ghcr.io/notedthat/server:TAG --owner NotedThat
+      - name: Generate SLSA provenance attestation for the image
+        if: inputs.sign
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/notedthat/server
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
