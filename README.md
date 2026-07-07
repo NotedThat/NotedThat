@@ -22,7 +22,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
-| `notedthat-server` | `crates/notedthat-server` | Main server binary — HTTP API + WebDAV in one process (release facade) |
+| `notedthat-server` | `crates/notedthat-server` | Main server binary — HTTP API + WebDAV + remote MCP in one process (release facade). Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 
 All 9 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
@@ -67,6 +67,31 @@ echo "# Hello World" | curl -X PUT \
 # 6. Read it back
 curl -H "Authorization: Bearer dev-token" \
      http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+```
+
+### Docker (prebuilt image)
+
+Once the first tagged release exists, the server image is published to GHCR at `ghcr.io/notedthat/server`. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation.
+
+```sh
+docker pull ghcr.io/notedthat/server:latest
+
+docker run --rm -p 8080:8080 -p 8081:8081 \
+  -e NOTEDTHAT_API_TOKEN=dev-token \
+  -e NOTEDTHAT_KBS=notes,scratch \
+  -e NOTEDTHAT_S3_ENDPOINT_URL=http://host.docker.internal:8333 \
+  -e NOTEDTHAT_S3_REGION=us-east-1 \
+  -e NOTEDTHAT_S3_ACCESS_KEY_ID=any \
+  -e NOTEDTHAT_S3_SECRET_ACCESS_KEY=any \
+  ghcr.io/notedthat/server:latest
+```
+
+Or use `docker compose up` with the bundled [docker-compose.yml](docker-compose.yml) for a full local stack (SeaweedFS + Qdrant + server).
+
+Verify the signature + provenance before running in production:
+
+```sh
+gh attestation verify oci://ghcr.io/notedthat/server:0.2.0 --owner NotedThat
 ```
 
 ### WebDAV
@@ -114,32 +139,28 @@ See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protoc
 
 #### Install options
 
-**Docker (recommended)**:
+Three ways to get `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Installer scripts become available after the first tagged release.
 
-```json
-{
-  "mcpServers": {
-    "notedthat": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i",
-               "--entrypoint", "/usr/local/bin/notedthat-mcp-stdio",
-               "-e", "NOTEDTHAT_URL",
-               "-e", "NOTEDTHAT_TOKEN",
-               "notedthat:dev"],
-      "env": {
-        "NOTEDTHAT_URL": "http://host.docker.internal:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
-    }
-  }
-}
+**Shell installer** (macOS / Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-mcp-stdio-installer.sh | sh
 ```
 
-**cargo install**:
+**PowerShell installer** (Windows):
 
-```bash
+```powershell
+powershell -c "irm https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-mcp-stdio-installer.ps1 | iex"
+```
+
+**cargo install** (requires a Rust toolchain):
+
+```sh
 cargo install notedthat-mcp-stdio
 ```
+
+Once installed, wire it into your MCP client:
 
 ```json
 {
@@ -153,6 +174,16 @@ cargo install notedthat-mcp-stdio
     }
   }
 }
+```
+
+Every prebuilt binary is cosign-signed with a SLSA L2 build provenance attestation — verify before running:
+
+```sh
+cosign verify-blob \
+  --bundle notedthat-mcp-stdio.bundle \
+  --certificate-identity-regexp 'https://github.com/NotedThat/NotedThat/.+' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  notedthat-mcp-stdio
 ```
 
 #### Claude Desktop
