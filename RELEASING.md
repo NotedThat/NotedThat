@@ -2,11 +2,11 @@
 
 ## Overview
 
-NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 8 crates share a single version from `[workspace.package].version`. The `notedthat-server` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`.
+NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 9 crates share a single version from `[workspace.package].version`. The `notedthat-server` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`.
 
 ## Versioning Policy
 
-All 8 crates share a single ecosystem-level version:
+All 9 crates share a single ecosystem-level version:
 
 - **Major bump**: any breaking change in any crate
 - **Minor bump**: new capabilities added in any crate
@@ -19,7 +19,7 @@ All 8 crates share a single ecosystem-level version:
 release-plz runs automatically on every push to `main`:
 
 1. `release-plz-release` runs first (needs: test, clippy, fmt). If unreleased changes exist, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release.
-2. `release-plz-pr` runs after (needs: release-plz-release). It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 8 crates.
+2. `release-plz-pr` runs after (needs: release-plz-release). It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 9 crates.
 3. Merging the release PR into `main` triggers the next cycle.
 
 ## Prerequisites (One-Time Setup)
@@ -39,7 +39,7 @@ Trusted Publishing cannot create new crates on crates.io. Use the bootstrap work
 1. Actions → **Publish crate (initial)** → Run workflow
 2. Enter the crate name (e.g. `notedthat-core`)
 3. Leave `register_trusted_publishers` checked (best-effort TP registration)
-4. Repeat for all 8 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-indexer`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat-mcp-stdio`
+4. Repeat for all 9 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-indexer`, `notedthat-write`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat-mcp-stdio`
 
 ### 4. Verify Trusted Publishing Configs
 
