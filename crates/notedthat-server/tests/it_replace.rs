@@ -9,7 +9,8 @@
 #[path = "support/patch_env.rs"]
 mod patch_env;
 
-use patch_env::{PatchServer, assert_replace_success};
+use patch_env::{PatchServer, assert_replace_success, assert_error_code, API_TOKEN};
+use reqwest::StatusCode;
 
 const NORMAL_MAX_PATCHABLE_SIZE: u64 = 10 * 1024 * 1024;
 
@@ -138,7 +139,7 @@ async fn replace_on_nonexistent_path_returns_404() {
 async fn if_match_star_on_replace_returns_400_invalid_request() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
-    let first_etag = server.put_text("ifmatch-star.md", "foo").await;
+    let _first_etag = server.put_text("ifmatch-star.md", "foo").await;
 
     // When: a replace is issued with If-Match: * (wildcard).
     let response = server
@@ -155,7 +156,7 @@ async fn if_match_star_on_replace_returns_400_invalid_request() {
 async fn if_match_multi_value_on_replace_returns_400_invalid_request() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
-    let first_etag = server.put_text("ifmatch-multi.md", "foo").await;
+    let _first_etag = server.put_text("ifmatch-multi.md", "foo").await;
 
     // When: a replace is issued with If-Match: "a","b" (multiple values).
     let response = server
