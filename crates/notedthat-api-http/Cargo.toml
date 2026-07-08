@@ -11,7 +11,7 @@ authors.workspace = true
 test-support = []
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.1.0" }
+notedthat-core = { path = "../notedthat-core", version = "0.1.1" }
 notedthat-indexer = { path = "../notedthat-indexer" }
 notedthat-write = { workspace = true }
 async-trait.workspace = true
