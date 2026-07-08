@@ -13,8 +13,8 @@ notedthat-core = { path = "../notedthat-core", version = "0.1.1" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.1" }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.1" }
 notedthat-webdav = { path = "../notedthat-webdav", version = "0.1.1" }
-notedthat-indexer = { path = "../notedthat-indexer" }
-notedthat-mcp = { path = "../notedthat-mcp" }  # M8 deliberate dependency extension — see plan §W1.3
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.1" }
+notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.1" }  # M8 deliberate dependency extension — see plan §W1.3
 notedthat-write = { path = "../notedthat-write", version = "0.1.1" }
 anyhow.workspace = true
 async-trait.workspace = true
