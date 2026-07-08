@@ -10,8 +10,13 @@ pub fn sniff_content_type(caller: Option<&str>, path: &ObjectPath) -> String {
     match caller {
         Some(ct) if ct != "application/octet-stream" => ct.to_string(),
         _ => {
-            let ext = path.as_str().rsplit('.').next().unwrap_or("");
-            match ext {
+            let ext = path
+                .as_str()
+                .rsplit('.')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match ext.as_str() {
                 "md" | "markdown" => "text/markdown".to_string(),
                 _ => "application/octet-stream".to_string(),
             }
@@ -72,6 +77,41 @@ mod tests {
         assert_eq!(
             sniff_content_type(None, &path("README")),
             "application/octet-stream"
+        );
+    }
+
+    // Regression: extension match must be case-insensitive, mirroring
+    // is_indexable() in notedthat-indexer::worker — otherwise `.MD` files
+    // sniff as octet-stream and are silently dropped from the index.
+    #[test]
+    fn caller_none_uppercase_md_inferred_as_markdown() {
+        assert_eq!(
+            sniff_content_type(None, &path("README.MD")),
+            "text/markdown"
+        );
+    }
+
+    #[test]
+    fn caller_none_uppercase_markdown_inferred_as_markdown() {
+        assert_eq!(
+            sniff_content_type(None, &path("notes/DRAFT.MARKDOWN")),
+            "text/markdown"
+        );
+    }
+
+    #[test]
+    fn caller_none_mixed_case_md_inferred_as_markdown() {
+        assert_eq!(
+            sniff_content_type(None, &path("notes/Notes.Md")),
+            "text/markdown"
+        );
+    }
+
+    #[test]
+    fn caller_octet_stream_uppercase_md_overridden_for_markdown() {
+        assert_eq!(
+            sniff_content_type(Some("application/octet-stream"), &path("file.MD")),
+            "text/markdown"
         );
     }
 }
