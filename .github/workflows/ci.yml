@@ -84,6 +84,24 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo test --workspace --locked -- --include-ignored
 
+  # release-plz-release and release-plz-pr MUST stay INDEPENDENT parallel jobs
+  # per the official release-plz quickstart. Two constraints from upstream docs
+  # (https://release-plz.dev/docs/github/quickstart#3-setup-the-workflow):
+  #
+  #   1. release-plz-pr MUST NOT `needs:` release-plz-release. The dependency
+  #      serializes them for no benefit, and skips the PR update whenever the
+  #      release job fails, leaving the release PR permanently stale against
+  #      the current HEAD.
+  #
+  #   2. release-plz-release MUST NOT have a `concurrency:` block. GitHub
+  #      cancels a *pending* run when a newer run for the same group is queued
+  #      (independent of `cancel-in-progress`), so a rapid three-commit
+  #      sequence to main causes commit 2's release to be silently dropped —
+  #      its version never gets tagged or published to crates.io.
+  #
+  # release-plz-pr keeps a concurrency block: skipping a stale release-PR
+  # update is safe because the newest queued run produces a fresh, correct PR
+  # against the current HEAD.
   release-plz-release:
     name: Tag and publish crates
     needs: [test, clippy, fmt, docker-build, integration-test]
@@ -97,9 +115,6 @@ jobs:
       contents: write
       pull-requests: read
       id-token: write
-    concurrency:
-      group: release-plz-release-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -116,7 +131,7 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, docker-build, integration-test, release-plz-release]
+    needs: [test, clippy, fmt, docker-build, integration-test]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
@@ -126,7 +141,7 @@ jobs:
       contents: write
       pull-requests: write
     concurrency:
-      group: release-plz-pr-${{ github.ref }}
+      group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
