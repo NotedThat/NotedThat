@@ -8,7 +8,7 @@ description = "Chunking, embedder client, and Qdrant integration for NotedThat"
 readme = "README.md"
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.1.1" }
+notedthat-core = { path = "../notedthat-core", version = "0.1.2" }
 qdrant-client = { workspace = true }
 pulldown-cmark = { workspace = true }
 text-splitter = { workspace = true }

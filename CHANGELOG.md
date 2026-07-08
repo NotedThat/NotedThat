@@ -10,6 +10,13 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/NotedThat/NotedThat/compare/v0.1.1...v0.1.2) - 2026-07-08
+
+### Fixed
+
+- *(release)* add description to 4 crates required by crates.io
+- *(release)* add version specs to internal path deps for cargo publish
+
 ## [0.1.1](https://github.com/NotedThat/NotedThat/compare/v0.1.0...v0.1.1) - 2026-07-08
 
 ### Fixed
