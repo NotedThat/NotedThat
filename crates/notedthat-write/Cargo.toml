@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Shared write path (commit, patch, replace) for NotedThat HTTP API and WebDAV surfaces"
 homepage.workspace = true
 authors.workspace = true
 
