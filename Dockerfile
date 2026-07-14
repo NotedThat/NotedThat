@@ -12,11 +12,16 @@
 #   docker build -t notedthat-server:local .
 #
 # Run:
-#   docker run --rm -p 8080:8080 \
+#   docker run --rm -p 8080:8080 -p 8081:8081 -p 8082:8082 \
 #     -e NOTEDTHAT_API_TOKEN=... -e NOTEDTHAT_KBS=notes,scratch \
 #     -e NOTEDTHAT_S3_REGION=us-east-1 \
 #     -e NOTEDTHAT_S3_ACCESS_KEY_ID=... -e NOTEDTHAT_S3_SECRET_ACCESS_KEY=... \
 #     notedthat-server:local
+#
+# Ports:
+#   8080  HTTP API
+#   8081  WebDAV
+#   8082  MCP HTTP (Streamable HTTP, POST /mcp) — see docs/API.md
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -81,6 +86,7 @@ COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedtha
 USER notedthat:notedthat
 EXPOSE 8080
 EXPOSE 8081
+EXPOSE 8082
 
 # /healthz is an unauthenticated liveness probe served by notedthat-api-http.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

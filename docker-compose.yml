@@ -60,6 +60,8 @@ services:
     ports:
       - "127.0.0.1:${NOTEDTHAT_HTTP_PORT:-8080}:8080"
       - "127.0.0.1:${NOTEDTHAT_WEBDAV_PORT:-8081}:8081"
+      # MCP HTTP (Streamable HTTP, POST /mcp). Loopback-only by default; TLS-terminate at a reverse proxy for public use.
+      - "127.0.0.1:${NOTEDTHAT_MCP_HTTP_PORT:-8082}:8082"
     environment:
       NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
       NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
@@ -74,6 +76,13 @@ services:
       NOTEDTHAT_WEBDAV_USERNAME: ${NOTEDTHAT_WEBDAV_USERNAME:-webdav-user-please-change}
       NOTEDTHAT_WEBDAV_PASSWORD: ${NOTEDTHAT_WEBDAV_PASSWORD:-webdav-pass-please-change}
       NOTEDTHAT_WEBDAV_LISTEN_ADDR: 0.0.0.0:8081
+      # MCP HTTP defaults (from config.rs): enabled=true, bind 0.0.0.0:8082,
+      # allowed_hosts=[127.0.0.1,localhost,::1], allowed_origins=[null].
+      # Override any of NOTEDTHAT_MCP_HTTP_{ENABLED,BIND,ALLOWED_HOSTS,ALLOWED_ORIGINS} in .env if needed.
+      NOTEDTHAT_MCP_HTTP_ENABLED: ${NOTEDTHAT_MCP_HTTP_ENABLED:-true}
+      NOTEDTHAT_MCP_HTTP_BIND: ${NOTEDTHAT_MCP_HTTP_BIND:-0.0.0.0:8082}
+      NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS: ${NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS-}
+      NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS: ${NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS-}
       NOTEDTHAT_QDRANT_URL: http://qdrant:6334
       EMBEDDING_ENDPOINT_URL: ${EMBEDDING_ENDPOINT_URL:?set in .env — see docs/CONFIGURATION.md}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:?set in .env — see docs/CONFIGURATION.md}

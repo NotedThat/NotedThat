@@ -2,12 +2,11 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "notedthat": {
-      "type": "local",
+      "type": "remote",
       "enabled": true,
-      "command": ["notedthat-mcp-stdio"],
-      "environment": {
-        "NOTEDTHAT_URL": "http://localhost:18080",
-        "NOTEDTHAT_TOKEN": "dev-token-please-change"
+      "url": "http://localhost:18082/mcp",
+      "headers": {
+        "Authorization": "Bearer dev-token-please-change"
       }
     }
   }
