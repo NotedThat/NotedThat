@@ -7,17 +7,19 @@
 # Instead it appends binary + container artifacts to the existing release.
 #
 # Pipeline:
-#   plan   → cargo-dist scans the workspace and emits a build matrix.
-#   build  → cross-compile every (crate, target) pair into archives + loose
-#            binaries under target/dist/.
-#   attest → generate SLSA L2 provenance for every artifact via
-#            actions/attest-build-provenance.
-#   sign   → cosign keyless sign-blob every executable, emitting sidecar
-#            *.bundle files.
-#   docker → call the reusable docker.yml with push=true, sign=true, which
-#            builds + pushes + cosign-signs + attests the container image.
-#   release → download all artifacts and append them (assets only, not body)
-#             to the existing GitHub Release created by release-plz.
+#   plan                    → dist plan emits the per-target artifacts matrix
+#   build-local-artifacts   → per-target binary + archive builds (matrix)
+#   build-global-artifacts  → installers (shell + powershell) + universal checksums
+#   attest                  → SLSA L2 build provenance via actions/attest-build-provenance
+#   sign                    → cosign keyless sign-blob every artifact → .bundle sidecars
+#   docker                  → reusable docker.yml with push=true, sign=true
+#   release                 → append signed artifacts to the existing GH release
+#
+# Job schema follows cargo-dist v0.32.0's `ci.github.artifacts_matrix` output.
+# Do NOT hand-edit matrix field names (matrix.runner, matrix.targets, matrix.dist_args,
+# matrix.install_dist.run, matrix.packages_install, matrix.container.image) — they are
+# cargo-dist wire contract. Regenerate with `dist generate --mode=ci` to see canonical.
+
 name: Release
 
 on:
@@ -44,113 +46,217 @@ permissions:
 jobs:
   plan:
     name: Plan release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       manifest: ${{ steps.plan.outputs.manifest }}
+      tag: ${{ github.ref_name }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dist
+        shell: bash
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
 
-      - name: Install cargo-dist
-        run: cargo install cargo-dist --locked --version 0.32.0
-
-      - name: Plan release
-        id: plan
-        run: |
-          dist plan --output-format=json > dist-manifest.json
-          {
-            echo 'manifest<<EOF'
-            cat dist-manifest.json
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Upload manifest
+      - name: Cache dist for downstream jobs
         uses: actions/upload-artifact@v7
         with:
-          name: dist-manifest
-          path: dist-manifest.json
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/dist
 
-  build:
-    name: Build ${{ matrix.target }}
+      - id: plan
+        name: dist plan
+        run: |
+          dist plan --output-format=json > plan-dist-manifest.json
+          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-plan-dist-manifest
+          path: plan-dist-manifest.json
+
+  # Per-target binary + archive builds. Matrix comes straight from cargo-dist's
+  # plan output (`.ci.github.artifacts_matrix`) — 8 entries covering all
+  # configured target triples. Each entry ships its own runner selection,
+  # optional container image, installer command, package prerequisites, and
+  # dist CLI args, so the job body stays platform-agnostic.
+  build-local-artifacts:
+    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     needs: plan
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.manifest).build-matrix }}
-    runs-on: ${{ matrix.os }}
+      matrix: ${{ fromJson(needs.plan.outputs.manifest).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    # Some Linux cross-compile entries (currently x86_64-pc-windows-msvc via
+    # messense/cargo-xwin) run inside a container. When absent, resolves to
+    # null which GitHub Actions treats as "no container".
+    container: ${{ matrix.container && matrix.container.image || null }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+    steps:
+      - name: Enable Windows longpaths
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # In-container images may not ship Rust — install rustup on demand.
+      - name: Install Rust in container if missing
+        if: ${{ matrix.container }}
+        shell: bash
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install dist
+        run: ${{ matrix.install_dist.run }}
+
+      - name: Install packages
+        run: |
+          ${{ matrix.packages_install }}
+
+      - name: Build artifacts
+        run: dist build --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+
+      - id: cargo-dist
+        name: Extract upload paths
+        shell: bash
+        run: |
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+
+      - name: Upload local artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+
+  # Universal artifacts (installer.sh, installer.ps1, unified checksums).
+  # Needs every per-target manifest first — that's why it depends on
+  # build-local-artifacts even though it doesn't itself use the matrix.
+  build-global-artifacts:
+    name: build-global-artifacts
+    needs: [plan, build-local-artifacts]
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cached dist
+        uses: actions/download-artifact@v8
         with:
-          targets: ${{ matrix.target }}
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
 
-      - name: Install cargo-dist
-        run: cargo install cargo-dist --locked --version 0.32.0
+      - run: chmod +x ~/.cargo/bin/dist
 
-      - name: Build binaries
-        run: dist build --target=${{ matrix.target }}
+      - name: Fetch per-target manifests + artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
 
-      - name: Upload artifacts
+      - id: cargo-dist
+        shell: bash
+        run: |
+          dist build --output-format=json --artifacts=global > dist-manifest.json
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+
+      - name: Upload global artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: artifacts-${{ matrix.target }}
-          path: target/dist
+          name: artifacts-build-global
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
 
   attest:
     name: Generate binary attestations
-    needs: build
+    needs: [build-local-artifacts, build-global-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: artifacts-build-*
           path: artifacts
+          merge-multiple: true
 
-      - name: Generate artifact attestations
+      # Per-target dist-manifest.json files come along in the download but
+      # aren't user-facing artifacts — strip them so attestations only cover
+      # things users will actually pull from the release.
+      - name: Remove internal manifests
+        shell: bash
+        run: rm -f artifacts/*-dist-manifest.json
+
+      - name: Generate SLSA build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: 'artifacts/artifacts-*/*'
+          subject-path: 'artifacts/*'
 
   sign:
     name: Sign binaries
-    needs: build
+    needs: [build-local-artifacts, build-global-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: artifacts-build-*
           path: artifacts
+          merge-multiple: true
+
+      - name: Remove internal manifests
+        shell: bash
+        run: rm -f artifacts/*-dist-manifest.json
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
         with:
-          cosign-release: "v2.4.0"
+          cosign-release: v2.4.0
 
-      # cosign sign-blob against every executable file. cargo-dist emits both
-      # archives (.tar.xz / .zip — not executable, skipped by the -x test)
-      # and loose binaries (executable — signed). Bundle mode writes the
-      # signature + certificate as a single .bundle sidecar.
-      - name: Sign binaries with cosign (keyless)
+      # Sign every downloadable artifact (archives, installer scripts,
+      # checksums, bare binaries). Skip anything already a .bundle (shouldn't
+      # exist yet, but defensive) — cosign sign-blob writes one .bundle
+      # sidecar per input file that carries signature + certificate.
+      - name: Sign artifacts with cosign (keyless)
+        shell: bash
         run: |
           set -euo pipefail
-          for artifact_dir in artifacts/artifacts-*/; do
-            for binary in "${artifact_dir}"*; do
-              if [ -f "${binary}" ] && [ -x "${binary}" ]; then
-                echo "Signing: ${binary}"
-                cosign sign-blob \
-                  --bundle "${binary}.bundle" \
-                  --yes \
-                  "${binary}"
-              fi
-            done
+          for artifact in artifacts/*; do
+            case "${artifact}" in
+              *.bundle) continue ;;
+            esac
+            if [ -f "${artifact}" ]; then
+              echo "Signing: ${artifact}"
+              cosign sign-blob \
+                --bundle "${artifact}.bundle" \
+                --yes \
+                "${artifact}"
+            fi
           done
 
-      - name: Upload signed artifacts
+      - name: Upload signed artifacts (with .bundle sidecars)
         uses: actions/upload-artifact@v7
         with:
           name: signed-artifacts
@@ -173,30 +279,28 @@ jobs:
       ref: ${{ github.ref_name }}
       tag_name: ${{ github.ref_name }}
 
-  # Append binary artifacts + attestations to the existing release created
-  # by release-plz-release. `append_body: false` protects the CHANGELOG body
-  # release-plz wrote; assets are added alongside it.
+  # Append binary artifacts + installers + cosign bundles to the existing
+  # release created by release-plz-release. `append_body: false` protects
+  # the CHANGELOG body release-plz wrote; assets are added alongside it.
   release:
     name: Attach artifacts to GitHub Release
-    needs: [plan, build, attest, sign, docker]
+    needs: [plan, build-local-artifacts, build-global-artifacts, attest, sign, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Download all artifacts
+      - name: Download signed artifacts (binaries + archives + installers + .bundle sidecars)
         uses: actions/download-artifact@v8
         with:
+          name: signed-artifacts
           path: release-artifacts
 
       - name: Attach assets to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            release-artifacts/artifacts-*/*
-            release-artifacts/signed-artifacts/**/*
-            release-artifacts/dist-manifest/dist-manifest.json
+          files: release-artifacts/*
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}
           append_body: false

@@ -113,7 +113,7 @@ installers = ["shell", "powershell"]
 windows-archive = ".zip"
 unix-archive = ".tar.xz"
 checksum = "sha256"
-build-local-artifacts = false
+build-local-artifacts = true
 publish-prereleases = false
 announce-in-tag = true
 
