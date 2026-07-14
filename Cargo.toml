@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/NotedThat/NotedThat"
@@ -26,9 +26,9 @@ authors = ["NotedThat Contributors"]
 # Populated in M2. Features left minimal here; crates opt into features they need.
 [workspace.dependencies]
 # Workspace crates
-notedthat-core = { path = "crates/notedthat-core", version = "0.1.3" }
-notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.1.3" }
-notedthat-write = { path = "crates/notedthat-write", version = "0.1.3" }
+notedthat-core = { path = "crates/notedthat-core", version = "0.1.4" }
+notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.1.4" }
+notedthat-write = { path = "crates/notedthat-write", version = "0.1.4" }
 
 # MCP
 rmcp = { version = "2.1.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
