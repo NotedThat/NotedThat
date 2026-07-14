@@ -20,7 +20,7 @@ path = "src/main.rs"
 dist = true
 
 [dependencies]
-notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.4" }
+notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.5" }
 rmcp = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
