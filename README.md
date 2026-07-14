@@ -76,7 +76,7 @@ Once the first tagged release exists, the server image is published to GHCR at `
 ```sh
 docker pull ghcr.io/notedthat/server:latest
 
-docker run --rm -p 8080:8080 -p 8081:8081 \
+docker run --rm -p 8080:8080 -p 8081:8081 -p 8082:8082 \
   -e NOTEDTHAT_API_TOKEN=dev-token \
   -e NOTEDTHAT_KBS=notes,scratch \
   -e NOTEDTHAT_S3_ENDPOINT_URL=http://host.docker.internal:8333 \
@@ -85,6 +85,12 @@ docker run --rm -p 8080:8080 -p 8081:8081 \
   -e NOTEDTHAT_S3_SECRET_ACCESS_KEY=any \
   ghcr.io/notedthat/server:latest
 ```
+
+Ports published:
+
+- **8080** — HTTP API
+- **8081** — WebDAV
+- **8082** — MCP HTTP (Streamable HTTP, `POST /mcp`; TLS-terminate at a reverse proxy before exposing publicly)
 
 Or use `docker compose up` with the bundled [docker-compose.yml](docker-compose.yml) for a full local stack (SeaweedFS + Qdrant + server).
 
