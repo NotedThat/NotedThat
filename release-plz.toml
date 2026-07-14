@@ -32,7 +32,14 @@ git_release_enable = false
 changelog_update = false
 
 # Only publish after a release PR has been merged.
-release_always = false
+# TEMPORARILY set to true to unblock the stuck 0.1.3 publish: the previous
+# release run (29298748673) published 7 crates then failed on notedthat-server
+# due to a dev-dep cycle, leaving notedthat-server and notedthat-mcp-stdio at
+# 0.1.2 on crates.io while the workspace is at 0.1.3. With release_always =
+# true, release-plz will publish any crate whose local version > registry
+# version on the next push, catching those two up. Revert to false once
+# crates.io is aligned.
+release_always = true
 
 # Run cargo-semver-checks before opening the release PR
 semver_check = false
