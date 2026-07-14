@@ -1,4 +1,6 @@
 //! `notedthat-server` binary entry point.
+//!
+//! Boots the HTTP API + WebDAV + remote MCP server as a single process.
 
 use notedthat_server::{config::Config, run::run, tracing_init::init_tracing};
 
