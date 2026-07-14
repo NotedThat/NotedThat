@@ -10,6 +10,12 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/NotedThat/NotedThat/compare/v0.1.2...v0.1.3) - 2026-07-14
+
+### Other
+
+- *(clippy)* use assert_eq! for rust 1.97 manual_assert_eq lint
+
 ## [0.1.2](https://github.com/NotedThat/NotedThat/compare/v0.1.1...v0.1.2) - 2026-07-08
 
 ### Fixed
