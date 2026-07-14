@@ -135,3 +135,13 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 # Reason: Placeholder code has no meaningful return values yet
 must_use_candidate = "allow"
+
+# Cargo profile used by cargo-dist for release-artifact builds. Required —
+# release.yml's build-local-artifacts job runs `dist build --artifacts=local
+# --target=X`, which invokes `cargo build --profile=dist`. Without this
+# section, cargo errors with `profile 'dist' is not defined` and every
+# per-target build fails. `dist init` normally adds this automatically, but
+# our `allow-dirty = ["ci"]` blocks regeneration, so it lives here explicitly.
+[profile.dist]
+inherits = "release"
+lto = "thin"
