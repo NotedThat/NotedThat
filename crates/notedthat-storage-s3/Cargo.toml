@@ -9,7 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.1.4" }
+notedthat-core = { path = "../notedthat-core", version = "0.1.5" }
 aws-sdk-s3.workspace = true
 aws-config.workspace = true
 aws-smithy-runtime-api.workspace = true
