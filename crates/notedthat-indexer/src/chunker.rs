@@ -248,7 +248,10 @@ mod tests {
         let chunks = chunk(raw);
         assert!(!chunks.is_empty());
         let heading_chunk = chunks.iter().find(|c| !c.heading_path.is_empty());
-        assert!(heading_chunk.map(|c| c.heading_path[0].as_str()) == Some("日本語"));
+        assert_eq!(
+            heading_chunk.map(|c| c.heading_path[0].as_str()),
+            Some("日本語")
+        );
         for c in &chunks {
             assert_eq!(&raw[c.byte_start..c.byte_end], c.text.as_str());
         }
