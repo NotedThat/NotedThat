@@ -10,6 +10,13 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/NotedThat/NotedThat/compare/v0.1.3...v0.1.4) - 2026-07-14
+
+### Fixed
+
+- *(server)* backtick WebDAV in main.rs docstring for clippy::doc-markdown
+- *(release)* expand main.rs docstring to cross release-plz packaged-file filter
+
 ## [0.1.3](https://github.com/NotedThat/NotedThat/compare/v0.1.2...v0.1.3) - 2026-07-14
 
 ### Other
