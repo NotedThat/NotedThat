@@ -115,6 +115,9 @@ jobs:
       contents: write
       pull-requests: read
       id-token: write
+      # actions: write is required so the follow-up step can dispatch
+      # release.yml via `gh workflow run` (see below).
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -122,12 +125,36 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz (release)
+        id: release-plz
         uses: release-plz/action@v0.5
         with:
           command: release
           config: release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # release-plz just pushed the workspace tag (e.g. v0.1.4) using
+      # GITHUB_TOKEN. GitHub suppresses `push` triggers on tags created that
+      # way (recursion prevention), so release.yml would never fire and no
+      # binaries, docker image, cosign sigs, or attestations would be built.
+      # workflow_dispatch IS allowed to be triggered by GITHUB_TOKEN — so we
+      # chain to release.yml explicitly. The `..|.tag?` jq walker handles
+      # either shape release-plz may emit (`{"releases":[...]}` or `[...]`),
+      # and the `^v[0-9]` filter picks the workspace-wide tag (`v0.1.4`)
+      # while skipping per-crate tags (`notedthat-mcp-stdio-v0.1.4`).
+      - name: Trigger release.yml for the workspace tag
+        if: steps.release-plz.outputs.releases != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          set -euo pipefail
+          tag=$(printf '%s' "$RELEASES" | jq -r '..|.tag? // empty | select(test("^v[0-9]"))' | head -n1)
+          if [ -n "$tag" ] && [ "$tag" != "null" ]; then
+            echo "Dispatching release.yml against tag $tag"
+            gh workflow run release.yml --ref "$tag" --repo "$GITHUB_REPOSITORY"
+          else
+            echo "No workspace tag (v*) in release-plz output; nothing to dispatch"
+          fi
 
   release-plz-pr:
     name: Open / update release PR

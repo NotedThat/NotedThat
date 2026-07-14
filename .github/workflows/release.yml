@@ -24,6 +24,13 @@ on:
   push:
     tags:
       - 'v*'
+  # Also dispatchable, because release-plz-release in ci.yml pushes the tag
+  # using GITHUB_TOKEN and GitHub suppresses downstream workflow triggers on
+  # GITHUB_TOKEN-authored pushes (recursion prevention). workflow_dispatch is
+  # the documented exception: the release-plz-release job chains to this
+  # workflow via `gh workflow run release.yml --ref <tag>` so that cargo-dist
+  # binaries, the docker image, cosign sigs, and attestations get built.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
