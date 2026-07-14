@@ -9,13 +9,13 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.1.5" }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.5" }
-notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.5" }
-notedthat-webdav = { path = "../notedthat-webdav", version = "0.1.5" }
-notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.5" }
-notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.5" }  # M8 deliberate dependency extension — see plan §W1.3
-notedthat-write = { path = "../notedthat-write", version = "0.1.5" }
+notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.6" }
+notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.6" }
+notedthat-webdav = { path = "../notedthat-webdav", version = "0.1.6" }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6" }
+notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.6" }  # M8 deliberate dependency extension — see plan §W1.3
+notedthat-write = { path = "../notedthat-write", version = "0.1.6" }
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
@@ -39,7 +39,7 @@ path = "src/lib.rs"
 dist = true
 
 [dev-dependencies]
-notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.5", features = ["test-support"] }
+notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.6", features = ["test-support"] }
 # Path-only (no version): mcp-stdio has notedthat-server as a dev-dep for its
 # in-process fixtures, which would create a publish-time cycle. Dropping the
 # version keeps this dev-dep for local `cargo test` (binary is spawned via
