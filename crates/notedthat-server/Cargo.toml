@@ -40,7 +40,13 @@ dist = true
 
 [dev-dependencies]
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.3", features = ["test-support"] }
-notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.1.3" }
+# Path-only (no version): mcp-stdio has notedthat-server as a dev-dep for its
+# in-process fixtures, which would create a publish-time cycle. Dropping the
+# version keeps this dev-dep for local `cargo test` (binary is spawned via
+# CARGO_BIN_EXE_notedthat-mcp-stdio) while cargo strips it from the published
+# manifest, so notedthat-server no longer requires mcp-stdio to be on
+# crates.io at any specific version.
+notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 testcontainers.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
