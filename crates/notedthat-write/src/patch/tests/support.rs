@@ -86,6 +86,16 @@ impl Storage for TestStorage {
         })
     }
 
+    async fn get_object_stream(
+        &self,
+        _kb: &KbSlug,
+        _path: &ObjectPath,
+        _range: Option<Vec<ByteRange>>,
+        _conditionals: ConditionalHeaders,
+    ) -> Result<notedthat_core::ObjectStream, StorageError> {
+        unimplemented!()
+    }
+
     async fn put_object(
         &self,
         kb: &KbSlug,
@@ -125,6 +135,27 @@ impl Storage for TestStorage {
             },
         );
         Ok(PutOutcome { etag: Some(etag) })
+    }
+
+    async fn put_staged_object(
+        &self,
+        _kb: &KbSlug,
+        _path: &ObjectPath,
+        _body: notedthat_core::StagedBody,
+        _content_type: Option<&str>,
+        _conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        unimplemented!()
+    }
+
+    async fn copy_object(
+        &self,
+        _kb: &KbSlug,
+        _source: &ObjectPath,
+        _destination: &ObjectPath,
+        _options: notedthat_core::CopyObjectOptions,
+    ) -> Result<PutOutcome, StorageError> {
+        unimplemented!()
     }
 
     async fn delete_object(

@@ -57,7 +57,28 @@ fn test_config(mcp_http_bind: SocketAddr) -> Config {
             "::1".to_string(),
         ],
         max_patchable_size: 100 * 1024 * 1024,
+        staging: notedthat_core::StagingConfig::default(),
     }
+}
+
+#[tokio::test]
+async fn invalid_staging_directory_fails_before_infrastructure_setup() {
+    let missing_directory = std::env::temp_dir().join(format!(
+        "notedthat-staging-config-missing-{}",
+        std::process::id()
+    ));
+    let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
+    config.staging = notedthat_core::StagingConfig::new(missing_directory);
+
+    let Err(error) = super::build_infrastructure(config).await else {
+        panic!("missing staging directory must fail before infrastructure setup");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")
+    );
 }
 
 #[tokio::test]

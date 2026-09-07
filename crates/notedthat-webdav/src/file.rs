@@ -241,6 +241,16 @@ mod tests {
             })
         }
 
+        async fn get_object_stream(
+            &self,
+            _kb: &KbSlug,
+            _path: &ObjectPath,
+            _range: Option<Vec<ByteRange>>,
+            _conditionals: ConditionalHeaders,
+        ) -> Result<notedthat_core::ObjectStream, StorageError> {
+            Err(unavailable())
+        }
+
         async fn put_object(
             &self,
             _kb: &KbSlug,
@@ -248,6 +258,27 @@ mod tests {
             _bytes: Bytes,
             _content_type: Option<&str>,
             _conditionals: ConditionalHeaders,
+        ) -> Result<PutOutcome, StorageError> {
+            Err(unavailable())
+        }
+
+        async fn put_staged_object(
+            &self,
+            _kb: &KbSlug,
+            _path: &ObjectPath,
+            _body: notedthat_core::StagedBody,
+            _content_type: Option<&str>,
+            _conditionals: ConditionalHeaders,
+        ) -> Result<PutOutcome, StorageError> {
+            Err(unavailable())
+        }
+
+        async fn copy_object(
+            &self,
+            _kb: &KbSlug,
+            _source: &ObjectPath,
+            _destination: &ObjectPath,
+            _options: notedthat_core::CopyObjectOptions,
         ) -> Result<PutOutcome, StorageError> {
             Err(unavailable())
         }
@@ -286,6 +317,7 @@ mod tests {
             username: Arc::new("user".to_string()),
             password: Arc::new("pass".to_string()),
             storage,
+            staging_config: notedthat_core::StagingConfig::default(),
             declared_kbs: Arc::new(BTreeMap::new()),
             indexer_tx,
         })

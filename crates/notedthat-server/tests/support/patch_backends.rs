@@ -169,6 +169,7 @@ fn test_config(
             "::1".to_string(),
         ],
         max_patchable_size,
+        staging: notedthat_core::StagingConfig::default(),
     }
 }
 

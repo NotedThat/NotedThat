@@ -12,6 +12,10 @@
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use text_splitter::MarkdownSplitter;
 
+mod streaming;
+
+pub use streaming::{ChunkIter, stream_chunks};
+
 /// Soft character cap per chunk (~800 tokens). Configurable in a later milestone.
 pub const SOFT_CHAR_CAP: usize = 3_000;
 

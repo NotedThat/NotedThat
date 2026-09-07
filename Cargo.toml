@@ -42,6 +42,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = "0.1.89"
 bytes = "1.12"
 futures = "0.3"
+tempfile = "3"
 pulldown-cmark = { version = "0.13", default-features = false }
 
 # HTTP layer

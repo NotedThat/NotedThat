@@ -11,6 +11,7 @@ pub mod object_path;
 pub mod range;
 pub mod search;
 pub mod slug;
+pub mod staging;
 pub mod storage;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -32,4 +33,10 @@ pub use range::{
     parse_range_header,
 };
 pub use slug::{KbSlug, TenantSlug};
-pub use storage::{ListResponse, ObjectRead, PutOutcome, Storage};
+pub use staging::{
+    AsyncReadSeek, ReadSeek, StageError, StagedBody, StagingConfig, UPLOAD_TMP_DIR_ENV,
+};
+pub use storage::{
+    CopyObjectOptions, ListResponse, ObjectChunkStream, ObjectRead, ObjectStream, PutOutcome,
+    Storage,
+};

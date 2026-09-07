@@ -10,5 +10,6 @@ pub mod file;
 pub mod filesystem;
 pub mod metadata;
 pub mod middleware;
+pub(crate) mod propfind;
 pub mod router;
 pub mod state;

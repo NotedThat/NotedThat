@@ -14,8 +14,13 @@ use axum::{
 use notedthat_core::{extract_basic_from_header, verify_basic_credentials};
 use tower_http::request_id::RequestId;
 
-use crate::filesystem::{PROPFIND_TOO_LARGE_DAV_XML, ensure_propfind_target_within_cap};
 use crate::state::WebDavState;
+use crate::{
+    filesystem::PROPFIND_TOO_LARGE_DAV_XML,
+    propfind::{
+        PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
+    },
+};
 use handlers::{handle_copy, handle_delete, handle_move, handle_put};
 use path_validation::{parse_uri_path, validate_read_uri_path};
 
@@ -128,18 +133,30 @@ pub async fn intercept_lock_unlock(req: Request, next: Next) -> Response {
 /// Intercept over-large PROPFIND requests before dav-server swallows `read_dir` errors.
 pub async fn intercept_propfind_too_large(
     State(state): State<WebDavState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     if req.method().as_str() != "PROPFIND" {
         return next.run(req).await;
     }
 
-    let Ok(target) = parse_uri_path(req.uri().path(), &state.declared_kbs) else {
+    match parse_propfind_depth(&req) {
+        PropfindDepth::Infinity => return depth_infinity_response(),
+        PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
+        PropfindDepth::Default | PropfindDepth::Zero => return next.run(req).await,
+        PropfindDepth::One => {}
+    }
+
+    let uri_path = req.uri().path();
+    let target_path = uri_path
+        .strip_suffix('/')
+        .filter(|path| !path.is_empty())
+        .unwrap_or(uri_path);
+    let Ok(target) = parse_uri_path(target_path, &state.declared_kbs) else {
         return next.run(req).await;
     };
 
-    match ensure_propfind_target_within_cap(&state, &target).await {
+    match prepare_propfind_listing(&state, &target).await {
         Err(dav_server::fs::FsError::InsufficientStorage) => (
             StatusCode::INSUFFICIENT_STORAGE,
             [(
@@ -149,7 +166,11 @@ pub async fn intercept_propfind_too_large(
             PROPFIND_TOO_LARGE_DAV_XML,
         )
             .into_response(),
-        Ok(()) | Err(_) => next.run(req).await,
+        Ok(Some(listing)) => {
+            req.extensions_mut().insert(listing);
+            next.run(req).await
+        }
+        Ok(None) | Err(_) => next.run(req).await,
     }
 }
 
@@ -259,6 +280,16 @@ mod basic_auth {
                 Err(unavailable())
             }
 
+            async fn get_object_stream(
+                &self,
+                _kb: &KbSlug,
+                _path: &ObjectPath,
+                _range: Option<Vec<ByteRange>>,
+                _conditionals: ConditionalHeaders,
+            ) -> Result<notedthat_core::ObjectStream, StorageError> {
+                Err(unavailable())
+            }
+
             async fn put_object(
                 &self,
                 _kb: &KbSlug,
@@ -266,6 +297,27 @@ mod basic_auth {
                 _bytes: Bytes,
                 _content_type: Option<&str>,
                 _conditionals: ConditionalHeaders,
+            ) -> Result<PutOutcome, StorageError> {
+                Err(unavailable())
+            }
+
+            async fn put_staged_object(
+                &self,
+                _kb: &KbSlug,
+                _path: &ObjectPath,
+                _body: notedthat_core::StagedBody,
+                _content_type: Option<&str>,
+                _conditionals: ConditionalHeaders,
+            ) -> Result<PutOutcome, StorageError> {
+                Err(unavailable())
+            }
+
+            async fn copy_object(
+                &self,
+                _kb: &KbSlug,
+                _source: &ObjectPath,
+                _destination: &ObjectPath,
+                _options: notedthat_core::CopyObjectOptions,
             ) -> Result<PutOutcome, StorageError> {
                 Err(unavailable())
             }
@@ -296,6 +348,7 @@ mod basic_auth {
                 username: Arc::new("testuser".to_string()),
                 password: Arc::new("testpass".to_string()),
                 storage: Arc::new(MockStorage),
+                staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(BTreeMap::new()),
                 indexer_tx,
             }
@@ -592,14 +645,15 @@ mod intercept_write_methods {
         };
         use bytes::Bytes;
         use notedthat_core::{
-            ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta,
-            ObjectPath, ObjectRead, PutOutcome, Storage, StorageError,
+            ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse,
+            ObjectMeta, ObjectPath, ObjectRead, PutOutcome, StagedBody, Storage, StorageError,
         };
         use std::{
             collections::{BTreeMap, HashMap},
             sync::Arc,
             sync::Mutex,
         };
+        use tokio::io::AsyncReadExt;
         use tokio::sync::mpsc;
         use tower::util::ServiceExt;
 
@@ -614,7 +668,13 @@ mod intercept_write_methods {
         struct MockStorage {
             objects: Mutex<HashMap<String, StoredObject>>,
             calls: Mutex<Vec<&'static str>>,
+            copy_options: Mutex<Vec<CopyObjectOptions>>,
+            staged_paths: Mutex<Vec<std::path::PathBuf>>,
+            staged_lengths: Mutex<Vec<u64>>,
             next_etag: Mutex<u64>,
+            race_destination_before_copy: Mutex<bool>,
+            change_source_before_copy: Mutex<bool>,
+            change_source_after_copy: Mutex<bool>,
         }
 
         impl MockStorage {
@@ -631,11 +691,22 @@ mod intercept_write_methods {
             }
 
             fn insert(&self, kb: &str, path: &str, bytes: impl Into<Bytes>, etag: &str) {
+                self.insert_with_content_type(kb, path, bytes, etag, "text/markdown");
+            }
+
+            fn insert_with_content_type(
+                &self,
+                kb: &str,
+                path: &str,
+                bytes: impl Into<Bytes>,
+                etag: &str,
+                content_type: &str,
+            ) {
                 self.objects.lock().expect("mutex not poisoned").insert(
                     format!("{kb}/{path}"),
                     StoredObject {
                         bytes: bytes.into(),
-                        content_type: Some("text/markdown".to_string()),
+                        content_type: Some(content_type.to_string()),
                         etag: etag.to_string(),
                     },
                 );
@@ -647,6 +718,48 @@ mod intercept_write_methods {
                     .expect("mutex not poisoned")
                     .get(&format!("{kb}/{path}"))
                     .cloned()
+            }
+
+            fn copy_options(&self) -> Vec<CopyObjectOptions> {
+                self.copy_options
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .clone()
+            }
+
+            fn staged_paths(&self) -> Vec<std::path::PathBuf> {
+                self.staged_paths
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .clone()
+            }
+
+            fn staged_lengths(&self) -> Vec<u64> {
+                self.staged_lengths
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .clone()
+            }
+
+            fn race_destination_before_copy(&self) {
+                *self
+                    .race_destination_before_copy
+                    .lock()
+                    .expect("mutex not poisoned") = true;
+            }
+
+            fn change_source_after_copy(&self) {
+                *self
+                    .change_source_after_copy
+                    .lock()
+                    .expect("mutex not poisoned") = true;
+            }
+
+            fn change_source_before_copy(&self) {
+                *self
+                    .change_source_before_copy
+                    .lock()
+                    .expect("mutex not poisoned") = true;
             }
         }
 
@@ -733,6 +846,16 @@ mod intercept_write_methods {
                 })
             }
 
+            async fn get_object_stream(
+                &self,
+                _kb: &KbSlug,
+                _path: &ObjectPath,
+                _range: Option<Vec<ByteRange>>,
+                _conditionals: ConditionalHeaders,
+            ) -> Result<notedthat_core::ObjectStream, StorageError> {
+                Err(unavailable())
+            }
+
             async fn put_object(
                 &self,
                 kb: &KbSlug,
@@ -757,6 +880,129 @@ mod intercept_write_methods {
                         etag: etag.clone(),
                     },
                 );
+                Ok(PutOutcome { etag: Some(etag) })
+            }
+
+            async fn put_staged_object(
+                &self,
+                kb: &KbSlug,
+                path: &ObjectPath,
+                body: StagedBody,
+                content_type: Option<&str>,
+                conditionals: ConditionalHeaders,
+            ) -> Result<PutOutcome, StorageError> {
+                let staged_len = body.len();
+                if let Some(path) = body.file_path() {
+                    self.staged_paths
+                        .lock()
+                        .expect("mutex not poisoned")
+                        .push(path.to_path_buf());
+                }
+                let mut reader = body.open().await.map_err(|source| StorageError::Other {
+                    source: Box::new(source),
+                })?;
+                let bytes = if body.is_file() {
+                    let mut buffer = vec![0_u8; 64 * 1024];
+                    let mut read = 0_u64;
+                    loop {
+                        let count = reader.read(&mut buffer).await.map_err(|source| {
+                            StorageError::Other {
+                                source: Box::new(source),
+                            }
+                        })?;
+                        if count == 0 {
+                            break;
+                        }
+                        read += u64::try_from(count).unwrap();
+                    }
+                    assert_eq!(read, staged_len);
+                    Vec::new()
+                } else {
+                    let mut bytes = Vec::new();
+                    reader
+                        .read_to_end(&mut bytes)
+                        .await
+                        .map_err(|source| StorageError::Other {
+                            source: Box::new(source),
+                        })?;
+                    bytes
+                };
+                self.staged_lengths
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .push(staged_len);
+                self.put_object(kb, path, Bytes::from(bytes), content_type, conditionals)
+                    .await
+            }
+
+            async fn copy_object(
+                &self,
+                kb: &KbSlug,
+                source: &ObjectPath,
+                destination: &ObjectPath,
+                options: CopyObjectOptions,
+            ) -> Result<PutOutcome, StorageError> {
+                self.record("copy_object");
+                self.copy_options
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .push(options.clone());
+                let source_key = Self::key(kb, source);
+                let destination_key = Self::key(kb, destination);
+                let mut objects = self.objects.lock().expect("mutex not poisoned");
+                if *self
+                    .change_source_before_copy
+                    .lock()
+                    .expect("mutex not poisoned")
+                    && let Some(source) = objects.get_mut(&source_key)
+                {
+                    source.etag = "\"changed\"".to_string();
+                }
+                let source_object =
+                    objects
+                        .get(&source_key)
+                        .cloned()
+                        .ok_or_else(|| StorageError::NotFound {
+                            key: source_key.clone(),
+                        })?;
+                if options
+                    .source_if_match
+                    .as_deref()
+                    .is_some_and(|etag| etag != source_object.etag)
+                {
+                    return Err(StorageError::PreconditionFailed);
+                }
+                if *self
+                    .race_destination_before_copy
+                    .lock()
+                    .expect("mutex not poisoned")
+                {
+                    objects.insert(
+                        destination_key.clone(),
+                        StoredObject {
+                            bytes: Bytes::from_static(b"racing writer"),
+                            content_type: Some("text/plain".to_string()),
+                            etag: "\"race\"".to_string(),
+                        },
+                    );
+                }
+                if options.destination_if_none_match.as_deref() == Some("*")
+                    && objects.contains_key(&destination_key)
+                {
+                    return Err(StorageError::PreconditionFailed);
+                }
+                let mut copied = source_object;
+                copied.content_type = options.content_type;
+                let etag = copied.etag.clone();
+                objects.insert(destination_key, copied);
+                if *self
+                    .change_source_after_copy
+                    .lock()
+                    .expect("mutex not poisoned")
+                    && let Some(source) = objects.get_mut(&source_key)
+                {
+                    source.etag = "\"changed\"".to_string();
+                }
                 Ok(PutOutcome { etag: Some(etag) })
             }
 
@@ -810,6 +1056,7 @@ mod intercept_write_methods {
                 username: Arc::new("user".to_string()),
                 password: Arc::new("pass".to_string()),
                 storage,
+                staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
                 indexer_tx,
             }
@@ -836,6 +1083,17 @@ mod intercept_write_methods {
                 ))
         }
 
+        fn app_with_staging_config(
+            storage: Arc<MockStorage>,
+            staging_config: notedthat_core::StagingConfig,
+        ) -> Router {
+            let mut state = test_state(storage);
+            state.staging_config = staging_config;
+            Router::new()
+                .fallback(any(|| async { "inner handler reached" }))
+                .layer(from_fn_with_state(state, intercept_write_methods))
+        }
+
         fn object_path(value: &str) -> ObjectPath {
             ObjectPath::try_from(value).expect("valid object path")
         }
@@ -843,6 +1101,10 @@ mod intercept_write_methods {
         async fn response_body(resp: Response) -> String {
             let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
             String::from_utf8(body.to_vec()).unwrap()
+        }
+
+        mod mutation_safety {
+            include!("mutation_tests.rs");
         }
 
         #[tokio::test]
@@ -1157,7 +1419,7 @@ mod intercept_write_methods {
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(
                 storage.calls(),
-                vec!["get_object", "head_object", "put_object", "delete_object"]
+                vec!["head_object", "head_object", "copy_object", "delete_object"]
             );
             assert!(storage.get_stored("notes", "source.md").is_none());
             assert!(storage.get_stored("notes", "dest.md").is_some());
@@ -1184,12 +1446,15 @@ mod intercept_write_methods {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::CREATED);
+            assert_eq!(resp.headers().get("etag").unwrap(), "\"source\"");
             assert_eq!(
                 storage.calls(),
-                vec!["get_object", "head_object", "put_object"]
+                vec!["head_object", "head_object", "copy_object"]
             );
             assert!(storage.get_stored("notes", "source.md").is_some());
             assert!(storage.get_stored("notes", "copy.md").is_some());
+            assert!(!storage.calls().contains(&"get_object"));
+            assert_eq!(storage.copy_options()[0].destination_if_none_match, None);
         }
 
         #[tokio::test]

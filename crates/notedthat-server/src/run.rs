@@ -39,6 +39,12 @@ async fn build_infrastructure(
     CancellationToken,
     tokio::task::JoinHandle<()>,
 )> {
+    config
+        .staging
+        .validate()
+        .await
+        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
+
     let client = config.s3.build_client();
     let storage = Arc::new(S3Storage::new(client, config.tenant_slug.clone()));
 
@@ -74,6 +80,7 @@ async fn build_infrastructure(
         storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
         declared_kbs: declared_kbs.clone(),
         indexer_tx: indexer_tx.clone(),
+        staging_config: config.staging.clone(),
     };
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
@@ -114,6 +121,7 @@ async fn build_infrastructure(
             indexer_shutdown.clone(),
             config.embedder.batch_size,
         )
+        .with_staging_config(config.staging.clone())
         .run(),
     );
 

@@ -95,6 +95,13 @@ Ports published:
 
 Or use `docker compose up` with the bundled [docker-compose.yml](docker-compose.yml) for a full local stack (SeaweedFS + Qdrant + server).
 
+The default temporary directory stages uploads and index snapshots. For production-sized uploads,
+ensure its backing filesystem has at least 5 GiB for every concurrent maximum-size upload, plus
+index snapshots and backend/build working space; configure
+`NOTEDTHAT_UPLOAD_TMP_DIR` when a specific writable location is needed. Do not use `tmpfs`,
+which consumes RAM. See [configuration](docs/CONFIGURATION.md#upload-and-index-staging-directory)
+for cleanup behavior and sizing details.
+
 Verify the signature + provenance before running in production:
 
 ```sh

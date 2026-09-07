@@ -2,8 +2,13 @@
 //!
 //! Behavior: one event at a time, batched embedding, drain on shutdown.
 
-use crate::{chunker, embedder::Embedder, event::IndexEvent, qdrant::QdrantClient};
-use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError};
+mod chunks;
+mod pipeline;
+mod points;
+mod snapshot;
+
+use crate::{embedder::Embedder, event::IndexEvent, qdrant::QdrantClient};
+use notedthat_core::{KbSlug, ObjectPath, StagingConfig, Storage};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -26,6 +31,8 @@ pub struct IndexerWorker {
     pub shutdown: CancellationToken,
     /// Maximum number of chunks sent to the embedder per request.
     pub batch_size: usize,
+    /// Directory configuration for private index snapshots.
+    pub staging: StagingConfig,
 }
 
 impl IndexerWorker {
@@ -45,7 +52,15 @@ impl IndexerWorker {
             rx,
             shutdown,
             batch_size,
+            staging: StagingConfig::default(),
         }
+    }
+
+    /// Use the validated shared staging directory for index snapshots.
+    #[must_use]
+    pub fn with_staging_config(mut self, staging: StagingConfig) -> Self {
+        self.staging = staging;
+        self
     }
 
     /// Run until the channel closes or shutdown is requested.
@@ -102,162 +117,6 @@ impl IndexerWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    async fn handle_upsert(&self, kb: KbSlug, object_key: ObjectPath) -> Result<(), String> {
-        let object_read = match self
-            .storage
-            .get_object(&kb, &object_key, None, ConditionalHeaders::default())
-            .await
-        {
-            Ok(read) => read,
-            Err(StorageError::NotFound { .. }) => {
-                tracing::debug!(
-                    target: "notedthat::indexing",
-                    kb = %kb.as_str(),
-                    path = %object_key.as_str(),
-                    "object not found on re-read; treating as tombstone"
-                );
-                return self.handle_tombstone(kb, object_key).await;
-            }
-            Err(err) => return Err(format!("storage.get_object failed: {err}")),
-        };
-
-        let mime = object_read.meta.content_type.clone().unwrap_or_default();
-        if !is_indexable(&mime) {
-            tracing::debug!(
-                target: "notedthat::indexing",
-                kb = %kb.as_str(),
-                path = %object_key.as_str(),
-                mime,
-                "skipping non-indexable content type"
-            );
-            return Ok(());
-        }
-
-        let content_hash = sha256_hex(&object_read.bytes);
-        let text = match std::str::from_utf8(&object_read.bytes) {
-            Ok(text) => text.to_string(),
-            Err(err) => {
-                tracing::warn!(
-                    target: "notedthat::indexing",
-                    kb = %kb.as_str(),
-                    path = %object_key.as_str(),
-                    error = %err,
-                    "object is not valid UTF-8; skipping"
-                );
-                return Ok(());
-            }
-        };
-
-        let document = crate::okf::parse(object_key.as_str(), &text);
-        let chunks = &document.chunks;
-        if chunks.is_empty() {
-            tracing::debug!(
-                target: "notedthat::indexing",
-                kb = %kb.as_str(),
-                path = %object_key.as_str(),
-                "no chunks produced; removing previous index entries"
-            );
-            return self.handle_tombstone(kb, object_key).await;
-        }
-
-        let max_chars = self.embedder.max_input_tokens();
-        let mut filtered = Vec::with_capacity(chunks.len());
-        for (chunk_index, chunk) in chunks.iter().enumerate() {
-            let char_count = chunk.text.chars().count();
-            if char_count > max_chars {
-                tracing::warn!(
-                    target: "notedthat::indexing",
-                    kb = %kb.as_str(),
-                    path = %object_key.as_str(),
-                    chunk_index,
-                    char_count,
-                    max_input_tokens = max_chars,
-                    "dropping oversized chunk"
-                );
-                continue;
-            }
-            filtered.push((chunk_index, chunk));
-        }
-
-        if filtered.is_empty() {
-            tracing::debug!(
-                target: "notedthat::indexing",
-                kb = %kb.as_str(),
-                path = %object_key.as_str(),
-                "all chunks dropped after size filter"
-            );
-            return self.handle_tombstone(kb, object_key).await;
-        }
-
-        let mut all_embeddings = Vec::with_capacity(filtered.len());
-        for batch in filtered.chunks(self.batch_size.max(1)) {
-            let texts: Vec<String> = batch.iter().map(|(_, chunk)| chunk.text.clone()).collect();
-            let embeddings = self
-                .embedder
-                .embed(&texts)
-                .await
-                .map_err(|err| format!("embedder.embed failed: {err}"))?;
-            if embeddings.len() != texts.len() {
-                return Err(format!(
-                    "embedder returned {} embeddings for {} chunks",
-                    embeddings.len(),
-                    texts.len()
-                ));
-            }
-            all_embeddings.extend(embeddings);
-        }
-
-        let points = build_points(
-            &filtered,
-            &all_embeddings,
-            &object_key,
-            &object_read.meta,
-            &content_hash,
-            document.metadata.as_ref(),
-        )?;
-
-        self.qdrant
-            .inner()
-            .upsert_points(
-                qdrant_client::qdrant::UpsertPointsBuilder::new(collection_name(&kb), points)
-                    .wait(true),
-            )
-            .await
-            .map_err(|err| format!("qdrant upsert failed: {err}"))?;
-
-        let mut obsolete =
-            qdrant_client::qdrant::Filter::must([qdrant_client::qdrant::Condition::matches(
-                "object_key",
-                object_key.as_str().to_owned(),
-            )]);
-        obsolete
-            .must_not
-            .push(qdrant_client::qdrant::Condition::has_id(
-                filtered
-                    .iter()
-                    .map(|(index, _)| point_id(&object_key, *index)),
-            ));
-        self.qdrant
-            .inner()
-            .delete_points(
-                qdrant_client::qdrant::DeletePointsBuilder::new(collection_name(&kb))
-                    .points(obsolete)
-                    .wait(true),
-            )
-            .await
-            .map_err(|err| format!("qdrant obsolete chunk cleanup failed: {err}"))?;
-
-        tracing::info!(
-            target: "notedthat::indexing",
-            kb = %kb.as_str(),
-            path = %object_key.as_str(),
-            chunks = filtered.len(),
-            "indexed"
-        );
-        Ok(())
-    }
-
     async fn handle_tombstone(&self, kb: KbSlug, object_key: ObjectPath) -> Result<(), String> {
         use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
 
@@ -285,99 +144,6 @@ impl IndexerWorker {
     }
 }
 
-fn build_points(
-    filtered: &[(usize, &chunker::Chunk)],
-    embeddings: &[Vec<f32>],
-    object_key: &ObjectPath,
-    meta: &notedthat_core::ObjectMeta,
-    content_hash: &str,
-    metadata: Option<&notedthat_core::search::ConceptMetadata>,
-) -> Result<Vec<qdrant_client::qdrant::PointStruct>, String> {
-    use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
-    use std::collections::HashMap;
-
-    if filtered.len() != embeddings.len() {
-        return Err(format!(
-            "embedding count mismatch: chunks={} embeddings={}",
-            filtered.len(),
-            embeddings.len()
-        ));
-    }
-
-    Ok(filtered
-        .iter()
-        .zip(embeddings.iter())
-        .map(|((chunk_index, chunk), embedding)| {
-            let mut payload = HashMap::<String, Value>::new();
-            payload.insert(
-                "object_key".to_string(),
-                object_key.as_str().to_string().into(),
-            );
-            payload.insert(
-                "chunk_index".to_string(),
-                i64::try_from(*chunk_index).unwrap_or(i64::MAX).into(),
-            );
-            payload.insert(
-                "byte_start".to_string(),
-                i64::try_from(chunk.byte_start).unwrap_or(i64::MAX).into(),
-            );
-            payload.insert(
-                "byte_end".to_string(),
-                i64::try_from(chunk.byte_end).unwrap_or(i64::MAX).into(),
-            );
-            payload.insert(
-                "etag".to_string(),
-                meta.etag.as_deref().unwrap_or("").into(),
-            );
-            payload.insert(
-                "mime".to_string(),
-                meta.content_type.as_deref().unwrap_or("").into(),
-            );
-            payload.insert("mtime".to_string(), meta.last_modified.unwrap_or(0).into());
-            payload.insert(
-                "heading_path".to_string(),
-                chunk.heading_path.clone().into(),
-            );
-            payload.insert(
-                "tags".to_string(),
-                metadata.map(|m| m.tags.clone()).unwrap_or_default().into(),
-            );
-            if let Some(metadata) = metadata {
-                payload.insert("okf".to_string(), serde_json::json!(metadata).into());
-            }
-            payload.insert("content_hash".to_string(), content_hash.to_string().into());
-            payload.insert("text".to_string(), chunk.text.clone().into());
-
-            let vectors = HashMap::from([
-                ("dense".to_string(), Vector::from(embedding.clone())),
-                (
-                    "sparse_bm25".to_string(),
-                    Vector::from(Document::new(chunk.text.clone(), "qdrant/bm25")),
-                ),
-            ]);
-            PointStruct::new(point_id(object_key, *chunk_index), vectors, payload)
-        })
-        .collect())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    let hash = Sha256::digest(bytes);
-    format!("{hash:x}")
-}
-
-fn point_id(object_key: &ObjectPath, chunk_index: usize) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let id = format!("{}/{}", object_key.as_str(), chunk_index);
-    id.as_bytes().iter().fold(FNV_OFFSET, |hash, byte| {
-        let hash = hash ^ u64::from(*byte);
-        hash.wrapping_mul(FNV_PRIME)
-    })
-}
-
 pub(crate) fn collection_name(kb: &KbSlug) -> String {
     format!("kb_{}_v1", kb.as_str())
 }
@@ -395,6 +161,7 @@ pub fn is_indexable(mime: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::points::point_id;
     use super::*;
 
     #[test]

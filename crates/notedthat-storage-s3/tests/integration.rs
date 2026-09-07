@@ -8,8 +8,8 @@
 
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Storage, StorageError,
-    TenantSlug,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ObjectPath, Storage,
+    StorageError, TenantSlug,
 };
 use notedthat_storage_s3::{S3Config, S3Storage};
 use testcontainers::{
@@ -804,4 +804,104 @@ async fn m3_content_range_extracted_correctly() {
         100,
         "range response should contain exactly 100 bytes"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires SeaweedFS 4.18 in Docker"]
+async fn native_copy_enforces_source_and_destination_conditions() {
+    let (_container, endpoint) = start_seaweedfs().await;
+    let storage = S3Storage::new(make_config(&endpoint).build_client(), TenantSlug::default());
+    let kb = KbSlug::try_new("native-copy-conditions").unwrap();
+    let source = ObjectPath::try_from_str("folder/source file.md").unwrap();
+    let copied = ObjectPath::try_from_str("copied/文 copy.md").unwrap();
+    let existing = ObjectPath::try_from_str("existing.md").unwrap();
+    let rejected = ObjectPath::try_from_str("wrong-source-etag.md").unwrap();
+
+    storage.ensure_bucket(&kb).await.expect("ensure bucket");
+    let source_put = storage
+        .put_object(
+            &kb,
+            &source,
+            Bytes::from_static(b"# encoded source\n"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put encoded source");
+    let source_etag = source_put.etag.expect("source etag");
+
+    let copied_outcome = storage
+        .copy_object(
+            &kb,
+            &source,
+            &copied,
+            CopyObjectOptions {
+                source_if_match: Some(source_etag.clone()),
+                destination_if_none_match: Some("*".into()),
+                content_type: Some("text/plain".into()),
+            },
+        )
+        .await
+        .expect("conditional native copy");
+    let copied_etag = copied_outcome.etag.expect("copied etag");
+    assert_quoted_lower_hex_etag(&copied_etag);
+    assert_eq!(copied_etag, source_etag);
+    let copied_read = storage
+        .get_object(&kb, &copied, None, ConditionalHeaders::default())
+        .await
+        .expect("read encoded destination");
+    assert_eq!(copied_read.bytes, Bytes::from_static(b"# encoded source\n"));
+    assert_eq!(copied_read.meta.content_type.as_deref(), Some("text/plain"));
+
+    storage
+        .put_object(
+            &kb,
+            &existing,
+            Bytes::from_static(b"preserve destination"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put existing destination");
+    let existing_error = storage
+        .copy_object(
+            &kb,
+            &source,
+            &existing,
+            CopyObjectOptions {
+                source_if_match: Some(source_etag.clone()),
+                destination_if_none_match: Some("*".into()),
+                content_type: Some("text/plain".into()),
+            },
+        )
+        .await
+        .expect_err("existing destination must reject create-only copy");
+    assert!(matches!(existing_error, StorageError::PreconditionFailed));
+    let preserved = storage
+        .get_object(&kb, &existing, None, ConditionalHeaders::default())
+        .await
+        .expect("read preserved destination");
+    assert_eq!(preserved.bytes, Bytes::from_static(b"preserve destination"));
+    assert_eq!(preserved.meta.content_type.as_deref(), Some("text/plain"));
+
+    let source_error = storage
+        .copy_object(
+            &kb,
+            &source,
+            &rejected,
+            CopyObjectOptions {
+                source_if_match: Some("\"wrong-etag\"".into()),
+                destination_if_none_match: Some("*".into()),
+                content_type: Some("text/plain".into()),
+            },
+        )
+        .await
+        .expect_err("wrong source etag must reject copy");
+    assert!(matches!(source_error, StorageError::PreconditionFailed));
+    assert!(matches!(
+        storage
+            .head_object(&kb, &rejected, ConditionalHeaders::default())
+            .await,
+        Err(StorageError::NotFound { .. })
+    ));
 }

@@ -11,8 +11,8 @@ use axum::{
 use base64::Engine as _;
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
-    ObjectRead, PutOutcome, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
+    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
 };
 use notedthat_webdav::{router::build_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc};
@@ -75,6 +75,21 @@ impl Storage for MockStorage {
         })
     }
 
+    async fn get_object_stream(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectStream, StorageError> {
+        let read = self.get_object(kb, path, range, conditionals).await?;
+        Ok(ObjectStream {
+            chunks: Box::pin(futures::stream::once(async move { Ok(read.bytes) })),
+            meta: read.meta,
+            content_range: read.content_range,
+        })
+    }
+
     async fn put_object(
         &self,
         _kb: &KbSlug,
@@ -85,6 +100,36 @@ impl Storage for MockStorage {
     ) -> Result<PutOutcome, StorageError> {
         Ok(PutOutcome {
             etag: Some("\"test-etag\"".to_string()),
+        })
+    }
+
+    async fn put_staged_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        body: StagedBody,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        let bytes =
+            body.memory_bytes()
+                .cloned()
+                .ok_or_else(|| StorageError::BackendUnavailable {
+                    message: "file-backed bodies are outside this middleware test".into(),
+                })?;
+        self.put_object(kb, path, bytes, content_type, conditionals)
+            .await
+    }
+
+    async fn copy_object(
+        &self,
+        _kb: &KbSlug,
+        _source: &ObjectPath,
+        _destination: &ObjectPath,
+        _options: CopyObjectOptions,
+    ) -> Result<PutOutcome, StorageError> {
+        Ok(PutOutcome {
+            etag: Some("\"test-etag\"".into()),
         })
     }
 
@@ -122,6 +167,7 @@ fn make_state() -> WebDavState {
         username: Arc::new("testuser".to_string()),
         password: Arc::new("testpass".to_string()),
         storage: Arc::new(MockStorage),
+        staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new({
             let mut m = BTreeMap::new();
             m.insert(

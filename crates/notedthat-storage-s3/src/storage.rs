@@ -8,12 +8,25 @@ use aws_smithy_runtime_api::http::Response as HttpResponse;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
-    ObjectRead, PutOutcome, Storage, StorageError, TenantSlug, derive_bucket_name,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
+    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+    TenantSlug, derive_bucket_name,
 };
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::{debug, info};
 
 const MANIFEST_KEY: &str = ".notedthat/manifest.json";
+const COPY_SOURCE_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
 
 /// Production `Storage` implementation backed by Amazon S3 (or S3-compatible backends
 /// such as `SeaweedFS` 4.18+).
@@ -128,9 +141,28 @@ fn map_delete_error(
     storage_other(format!("S3 delete_object error: {err}"))
 }
 
+fn map_copy_error(
+    err: &SdkError<aws_sdk_s3::operation::copy_object::CopyObjectError>,
+) -> StorageError {
+    if let SdkError::ServiceError(inner) = err
+        && inner.raw().status().as_u16() == 412
+    {
+        return StorageError::PreconditionFailed;
+    }
+    storage_other(format!("S3 copy_object error: {err}"))
+}
+
 fn storage_other(message: String) -> StorageError {
     StorageError::Other {
         source: Box::new(std::io::Error::other(message)),
+    }
+}
+
+fn normalize_etag(etag: &str) -> String {
+    if etag.starts_with('"') && etag.ends_with('"') {
+        etag.to_string()
+    } else {
+        format!("\"{etag}\"")
     }
 }
 
@@ -333,6 +365,60 @@ impl Storage for S3Storage {
         })
     }
 
+    async fn get_object_stream(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectStream, StorageError> {
+        let bucket = self.bucket_name(kb);
+        let key = path.as_str();
+        let mut req = self.client.get_object().bucket(&bucket).key(key);
+        if let Some(ranges) = &range
+            && let Some(header) = range_header(ranges)
+        {
+            req = req.range(header);
+        }
+        if let Some(value) = conditionals.if_match {
+            req = req.if_match(value);
+        }
+        if let Some(value) = conditionals.if_none_match {
+            req = req.if_none_match(value);
+        }
+        if let Some(value) = &conditionals.if_modified_since {
+            req = req.if_modified_since(parse_http_date_to_smithy(value)?);
+        }
+        if let Some(value) = &conditionals.if_unmodified_since {
+            req = req.if_unmodified_since(parse_http_date_to_smithy(value)?);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|error| map_get_error(&error, key))?;
+        let meta = ObjectMeta {
+            key: key.to_string(),
+            size: u64::try_from(resp.content_length().unwrap_or(0)).unwrap_or(0),
+            last_modified: resp.last_modified().map(aws_smithy_types::DateTime::secs),
+            content_type: resp.content_type().map(str::to_string),
+            etag: resp.e_tag().map(str::to_string),
+        };
+        let content_range = resp.content_range().map(str::to_string);
+        let chunks = futures::stream::unfold(resp.body, |mut body| async move {
+            body.next().await.map(|result| {
+                let mapped = result.map_err(|error| StorageError::BackendUnavailable {
+                    message: format!("reading streamed S3 body failed: {error}"),
+                });
+                (mapped, body)
+            })
+        });
+        Ok(ObjectStream {
+            chunks: Box::pin(chunks),
+            meta,
+            content_range,
+        })
+    }
+
     async fn put_object(
         &self,
         kb: &KbSlug,
@@ -372,6 +458,90 @@ impl Storage for S3Storage {
         info!(bucket = %bucket, key = %key, "object stored");
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
+        })
+    }
+
+    async fn put_staged_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        body: StagedBody,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        let bucket = self.bucket_name(kb);
+        let key = path.as_str();
+        let byte_stream = match (body.memory_bytes(), body.file_path()) {
+            (Some(bytes), None) => ByteStream::from(bytes.clone()),
+            (None, Some(path)) => ByteStream::read_from()
+                .path(path)
+                .length(aws_smithy_types::byte_stream::Length::Exact(body.len()))
+                .build()
+                .await
+                .map_err(|error| {
+                    storage_other(format!("opening staged body for upload: {error}"))
+                })?,
+            _ => return Err(storage_other("invalid staged body storage".into())),
+        };
+        let mut req = self
+            .client
+            .put_object()
+            .bucket(&bucket)
+            .key(key)
+            .body(byte_stream);
+        if let Some(value) = content_type {
+            req = req.content_type(value);
+        }
+        if let Some(value) = conditionals.if_match {
+            req = req.if_match(value);
+        }
+        if let Some(value) = conditionals.if_none_match {
+            req = req.if_none_match(value);
+        }
+        let resp = req.send().await.map_err(|error| map_put_error(&error))?;
+        Ok(PutOutcome {
+            etag: resp.e_tag().map(str::to_string),
+        })
+    }
+
+    async fn copy_object(
+        &self,
+        kb: &KbSlug,
+        source: &ObjectPath,
+        destination: &ObjectPath,
+        options: CopyObjectOptions,
+    ) -> Result<PutOutcome, StorageError> {
+        let bucket = self.bucket_name(kb);
+        let encoded_source = source
+            .as_str()
+            .split('/')
+            .map(|segment| utf8_percent_encode(segment, COPY_SOURCE_ENCODE_SET).to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        let copy_source = format!("{bucket}/{encoded_source}");
+        let mut req = self
+            .client
+            .copy_object()
+            .bucket(&bucket)
+            .key(destination.as_str())
+            .copy_source(copy_source);
+        if let Some(value) = options.source_if_match {
+            req = req.copy_source_if_match(value);
+        }
+        if let Some(value) = options.destination_if_none_match {
+            req = req.if_none_match(value);
+        }
+        if let Some(value) = options.content_type {
+            req = req
+                .content_type(value)
+                .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
+        }
+        let resp = req.send().await.map_err(|error| map_copy_error(&error))?;
+        Ok(PutOutcome {
+            etag: resp
+                .copy_object_result()
+                .and_then(|result| result.e_tag())
+                .map(normalize_etag),
         })
     }
 
