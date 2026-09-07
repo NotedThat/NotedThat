@@ -54,6 +54,37 @@ Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install e
   ```
 - **Run ignored tests**: `cargo test --workspace -- --ignored`
 
+### Container-backed tests
+
+Tests that need Qdrant or SeaweedFS start them with
+[testcontainers](https://docs.rs/testcontainers). **Wait on a readiness signal,
+never on a fixed duration.** `WaitFor::seconds(5)` was used throughout and was a
+reliable source of flakes: on a loaded machine the container is not ready when the
+sleep expires, the first RPC lands early, and it fails against the client timeout
+with a misleading error — for Qdrant, collection calls would succeed while the
+first `upsert_points` returned `Cancelled: Timeout expired`.
+
+Use the log line each service prints once its listener is bound:
+
+```rust
+// Qdrant — stdout
+.with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
+// SeaweedFS — stderr (it logs to stderr, and takes ~3.5s to reach this line)
+.with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
+```
+
+`notedthat-indexer` goes one step further in `tests/support/mod.rs`: after the log
+line it polls `health_check` until Qdrant answers, so a bound-but-not-yet-serving
+port cannot slip through. Prefer `support::start_qdrant()` and
+`support::raw_client()` there over hand-rolling a container or a client in a test
+file — a raw `Qdrant::from_url(..).build()` inherits the crate's 5-second
+per-RPC default, which a `wait(true)` upsert can exceed under load.
+
+Give the server itself room to start. `build_infrastructure` provisions buckets,
+manifests and a Qdrant collection; measured on a cold, loaded machine that is
+about 9s, so readiness budgets are 60s rather than the 10s that used to leave
+under a second of margin.
+
 ## Dependency Ownership Rules
 
 - S3/Qdrant/WebDAV deps live **only** in their respective crates (`notedthat-storage-s3`, `notedthat-indexer`, `notedthat-webdav`).

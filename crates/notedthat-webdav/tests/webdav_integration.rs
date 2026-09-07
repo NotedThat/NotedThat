@@ -28,7 +28,7 @@ const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credential
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .start()

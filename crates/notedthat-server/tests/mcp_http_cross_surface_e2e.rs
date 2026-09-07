@@ -14,6 +14,14 @@ use wiremock::{
     matchers::{method, path},
 };
 
+/// How long to wait for the server to bind after `run()` starts.
+///
+/// Startup provisions two containers' worth of backends — buckets, manifests and
+/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
+/// machine that takes about 9s, against the 10s this used to allow: under a
+/// second of margin, which is why these tests failed intermittently.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 const API_TOKEN: &str = "e2e-test-token";
 const EXPECTED_M7_TOOLS: &str =
     "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace";
@@ -26,7 +34,7 @@ const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credential
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .start()
@@ -42,7 +50,7 @@ async fn start_seaweedfs() -> (impl std::any::Any, String) {
 async fn start_qdrant() -> (impl std::any::Any, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
@@ -487,7 +495,7 @@ async fn mcp_http_initialize_tools() {
 
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
 
@@ -584,7 +592,7 @@ async fn mcp_http_write_search_identity() {
 
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
     let nonce = std::time::SystemTime::now()
@@ -702,7 +710,7 @@ async fn mcp_http_write_stdio_search_identity() {
 
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
     let nonce = std::time::SystemTime::now()
@@ -855,7 +863,7 @@ async fn mcp_http_auth_and_sse_refusal() {
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
     let sse_url = format!("http://{mcp_addr}/sse");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     // Raw reqwest client — no MCP library, no redirect following.
     let client = reqwest::Client::builder()
@@ -1008,7 +1016,7 @@ async fn mcp_resources_list_and_read() {
 
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(30)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
 
@@ -1261,7 +1269,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
 
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{mcp_addr}/mcp");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
 

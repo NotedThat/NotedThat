@@ -6,27 +6,11 @@
 //! ```
 #![allow(missing_docs)]
 
+mod support;
+use support::{raw_client, start_qdrant};
+
 use notedthat_core::KbSlug;
 use notedthat_indexer::{QdrantClient, QdrantConfig, QdrantProvisioner};
-use testcontainers::{
-    GenericImage,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
-
-async fn start_qdrant() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
-        .start()
-        .await
-        .expect("failed to start Qdrant testcontainer");
-    let port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
 
 fn make_config(url: &str) -> QdrantConfig {
     QdrantConfig {
@@ -34,12 +18,6 @@ fn make_config(url: &str) -> QdrantConfig {
         api_key: None,
         ..Default::default()
     }
-}
-
-fn raw_client(url: &str) -> qdrant_client::Qdrant {
-    qdrant_client::Qdrant::from_url(url)
-        .build()
-        .expect("raw qdrant client build")
 }
 
 /// The payload indexes `ensure_collection` is expected to create.

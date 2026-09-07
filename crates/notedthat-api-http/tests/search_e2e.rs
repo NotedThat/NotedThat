@@ -38,6 +38,13 @@ use wiremock::{
     matchers::{method, path},
 };
 
+/// How long to wait for an asynchronous index event to land in Qdrant.
+///
+/// Indexing re-reads the object from S3, calls the embedder and upserts into
+/// Qdrant, all against freshly started containers. The previous 10s budget was
+/// marginal on a cold, loaded machine and timed out intermittently.
+const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const TOKEN: &str = "e2e-test-token";
@@ -59,7 +66,7 @@ async fn e2e_guard() -> tokio::sync::MutexGuard<'static, ()> {
 async fn start_qdrant() -> (impl std::any::Any, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
@@ -268,7 +275,11 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     };
 
     let router = build_router(state);
+    // A raw client inherits qdrant-client's 5s default for every RPC, which a
+    // `wait(true)` upsert can exceed on a loaded machine.
     let qdrant_raw = qdrant_client::Qdrant::from_url(&qdrant_url)
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("raw qdrant client for polling");
 
@@ -346,7 +357,7 @@ async fn e2e_put_then_search_finds_hit() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED, "PUT must return 201");
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, Duration::from_secs(10))
+    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("document was not indexed within 10 s");
 
@@ -402,7 +413,7 @@ async fn e2e_search_limit_clamped() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, Duration::from_secs(10))
+    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -464,7 +475,7 @@ async fn e2e_filter_by_heading_path_prefix() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, Duration::from_secs(10))
+    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -533,7 +544,7 @@ async fn e2e_delete_removes_from_search() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, Duration::from_secs(10))
+    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -560,7 +571,7 @@ async fn e2e_delete_removes_from_search() {
         &env.qdrant_raw,
         &env.collection,
         "to-delete.md",
-        Duration::from_secs(10),
+        INDEX_READY_TIMEOUT,
     )
     .await
     .expect("tombstone was not applied within 10 s");

@@ -82,7 +82,7 @@ pub(super) async fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
 async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .start()
@@ -98,7 +98,7 @@ async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
 async fn start_qdrant() -> (impl std::any::Any + Send, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
