@@ -44,10 +44,11 @@ the background indexer. If it is unset, NotedThat uses the platform temporary di
 The server refuses startup when the selected path is missing, is not a directory, or is not
 writable; this happens before listener binding and storage provisioning.
 
-Size the filesystem for at least **5 GiB per concurrently accepted maximum-size upload**, plus
-space for the corresponding index snapshot, backend working space, and image/build needs. Use a
-disk-backed volume for containers. A `tmpfs` consumes host RAM and can turn a burst of uploads
-into memory pressure or an out-of-memory kill.
+Size the selected filesystem for at least **5 GiB per concurrently accepted maximum-size upload**,
+plus space for the corresponding index snapshot, backend working space, and image/build needs.
+The default temporary directory is sufficient when it has that capacity; set the variable to use
+a specific directory. A `tmpfs` consumes host RAM and can turn a burst of uploads into memory
+pressure or an out-of-memory kill.
 
 Each staged file is created privately. Successful uploads, failures, and cancelled requests clean
 up their temporary files automatically. A forced `SIGKILL` prevents cleanup, so operators should

@@ -78,8 +78,6 @@ Once the first tagged release exists, the server image is published to GHCR at `
 docker pull ghcr.io/notedthat/server:latest
 
 docker run --rm -p 8080:8080 -p 8081:8081 -p 8082:8082 \
-  -v notedthat-upload-staging:/var/lib/notedthat/uploads \
-  -e NOTEDTHAT_UPLOAD_TMP_DIR=/var/lib/notedthat/uploads \
   -e NOTEDTHAT_API_TOKEN=dev-token \
   -e NOTEDTHAT_KBS=notes,scratch \
   -e NOTEDTHAT_S3_ENDPOINT_URL=http://host.docker.internal:8333 \
@@ -97,11 +95,12 @@ Ports published:
 
 Or use `docker compose up` with the bundled [docker-compose.yml](docker-compose.yml) for a full local stack (SeaweedFS + Qdrant + server).
 
-The server's upload and index staging directory must have at least 5 GiB for every concurrent
-maximum-size upload, plus index snapshots and backend/build working space. The Compose stack uses
-a disk-backed named volume at `/var/lib/notedthat/uploads`; do not substitute `tmpfs`, which
-consumes RAM. See [configuration](docs/CONFIGURATION.md#upload-and-index-staging-directory) for
-cleanup behavior and sizing details.
+The default temporary directory stages uploads and index snapshots. For production-sized uploads,
+ensure its backing filesystem has at least 5 GiB for every concurrent maximum-size upload, plus
+index snapshots and backend/build working space; configure
+`NOTEDTHAT_UPLOAD_TMP_DIR` when a specific writable location is needed. Do not use `tmpfs`,
+which consumes RAM. See [configuration](docs/CONFIGURATION.md#upload-and-index-staging-directory)
+for cleanup behavior and sizing details.
 
 Verify the signature + provenance before running in production:
 

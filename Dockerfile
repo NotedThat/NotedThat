@@ -79,8 +79,7 @@ RUN apt-get update \
 # predictable ownership across hosts.
 RUN groupadd --system --gid 10001 notedthat \
  && useradd  --system --uid 10001 --gid notedthat \
-        --home-dir /nonexistent --shell /usr/sbin/nologin notedthat \
- && install --directory --owner=notedthat --group=notedthat /var/lib/notedthat/uploads
+        --home-dir /nonexistent --shell /usr/sbin/nologin notedthat
 
 COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedthat-server
 
