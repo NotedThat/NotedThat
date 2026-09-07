@@ -26,7 +26,7 @@ Source bytes are preserved, including unknown YAML fields and relative or bundle
 
 ## Searching
 
-For recognized concepts, only the Markdown body is embedded and chunked. Search byte offsets still address the original stored file, including its frontmatter. A concept with no body is stored and readable but has no search chunks. Replacing a document removes obsolete chunks after successful indexing, including when its body becomes empty.
+For recognized concepts, only the Markdown body is embedded and chunked. Search byte offsets still address the original stored file, including its frontmatter. A concept with no body is stored and readable but has no search chunks. Replacing a document removes obsolete chunks after successful indexing, including when its body becomes empty or every new chunk exceeds the configured embedding input limit.
 
 ```sh
 curl -sSf -X PUT \

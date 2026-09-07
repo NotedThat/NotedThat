@@ -1282,9 +1282,9 @@ Note: `display_name`, `description`, and `perms` are post-v1 (HTTP list endpoint
 
 Hybrid semantic + keyword search across a knowledge base.
 
-**Arguments**: `kb` (string), `query` (string), `filters?` (object with `mime?`), `limit?` (u32)
+**Arguments**: `kb` (string), `query` (string), `filters?` (object with optional `mime`, `concept_type`, and `tags`), `limit?` (u32). Type matching is exact; tags match any supplied value; different fields are AND-composed.
 
-**Response**: `{ "hits": [SearchHit] }` where each `SearchHit` has `object_key`, `byte_start`, `byte_end`, `heading_path`, `score`, `preview`
+**Response**: `{ "hits": [SearchHit] }` where each `SearchHit` has `object_key`, `byte_start`, `byte_end`, `heading_path`, `score`, `preview`, and optional `okf` concept metadata. See [OKF support](OKF.md) for the metadata shape and upgrade steps.
 
 #### `read`
 

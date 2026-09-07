@@ -187,7 +187,7 @@ impl IndexerWorker {
                 path = %object_key.as_str(),
                 "all chunks dropped after size filter"
             );
-            return Ok(());
+            return self.handle_tombstone(kb, object_key).await;
         }
 
         let mut all_embeddings = Vec::with_capacity(filtered.len());
