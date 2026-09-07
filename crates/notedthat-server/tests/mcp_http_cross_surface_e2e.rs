@@ -16,15 +16,18 @@ use wiremock::{
 
 /// How long to wait for the server to bind after `run()` starts.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Startup provisions two containers' worth of backends — buckets,
+/// manifests and a Qdrant collection with its payload indexes — which
+/// measures around 15s on a cold, loaded machine. The previous 10s budget
+/// was already marginal and failed intermittently before OKF existed.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
-const EXPECTED_M7_TOOLS: &str =
-    "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace";
+/// Every tool the MCP surface must advertise.
+///
+/// The four `okf_*` entries were added by D48, taking the surface from 10 to 14.
+const EXPECTED_TOOLS: &str = "list_knowledgebases,search,read,write,list,delete,move,append,edit,\
+     replace,okf_validate,okf_browse,okf_computation,okf_reindex_directory";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
@@ -130,6 +133,7 @@ fn test_config_with_mcp_http(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        okf: notedthat_server::config::OkfConfig::default(),
         max_patchable_size: 10 * 1024 * 1024,
     }
 }
@@ -193,6 +197,7 @@ fn test_config_with_kbs_and_mcp_http(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        okf: notedthat_server::config::OkfConfig::default(),
         max_patchable_size: 10 * 1024 * 1024,
     }
 }
@@ -541,11 +546,11 @@ async fn mcp_http_initialize_tools() {
         .expect("tools/list result must contain tools array");
     assert_eq!(
         tools.len(),
-        EXPECTED_M7_TOOLS.split(',').count(),
+        EXPECTED_TOOLS.split(',').count(),
         "tools/list response: {tools_list}"
     );
 
-    for expected_tool in EXPECTED_M7_TOOLS.split(',') {
+    for expected_tool in EXPECTED_TOOLS.split(',') {
         assert!(
             tools
                 .iter()

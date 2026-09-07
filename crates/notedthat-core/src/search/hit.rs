@@ -1,6 +1,7 @@
 //! `SearchHit` — one hit in a search result set.
 
 use super::ObjectKey;
+use crate::okf::OkfAnnotation;
 use serde::{Deserialize, Serialize};
 
 /// One hit in a search result set.
@@ -23,6 +24,12 @@ pub struct SearchHit {
     pub score: f32,
     /// Preview text — a UTF-8-safe truncation of the chunk to at most 500 characters.
     pub preview: String,
+    /// OKF v0.2 metadata, when the source document carried conformant frontmatter.
+    ///
+    /// Omitted entirely for every other document, so hits from non-OKF content
+    /// serialise byte-identically to before D48.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf: Option<OkfAnnotation>,
 }
 
 #[cfg(test)]
@@ -37,6 +44,7 @@ mod tests {
             heading_path: vec!["Section 1".into(), "Subsection 1.2".into()],
             score: 0.0163_f32,
             preview: "RFC 7231 defines HTTP semantics.".into(),
+            okf: None,
         }
     }
 
@@ -62,6 +70,7 @@ mod tests {
             heading_path: vec![],
             score: 0.5,
             preview: "preview text".into(),
+            okf: None,
         };
         let json = serde_json::to_string(&hit).unwrap();
         // heading_path is skip_serializing_if = "Vec::is_empty", so it should not appear
@@ -84,6 +93,7 @@ mod tests {
             heading_path: vec![],
             score: 0.1,
             preview: "Hello 🚀 World".into(),
+            okf: None,
         };
         let json = serde_json::to_string(&hit).unwrap();
         let back: SearchHit = serde_json::from_str(&json).unwrap();
@@ -102,5 +112,38 @@ mod tests {
     fn send_sync_clone_debug() {
         fn assert<T: Send + Sync + Clone + std::fmt::Debug>() {}
         assert::<SearchHit>();
+    }
+    #[test]
+    fn non_okf_hit_json_is_byte_identical_to_pre_d48() {
+        // The exact string matters: existing clients must see no change at all.
+        let hit = SearchHit {
+            object_key: ObjectKey::try_new("notes/a.md").unwrap(),
+            byte_start: 0,
+            byte_end: 100,
+            heading_path: vec![],
+            score: 0.5,
+            preview: "hello".into(),
+            okf: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&hit).unwrap(),
+            r#"{"object_key":"notes/a.md","byte_start":0,"byte_end":100,"score":0.5,"preview":"hello"}"#
+        );
+    }
+
+    #[test]
+    fn okf_annotation_round_trips_on_a_hit() {
+        let mut hit = make_hit();
+        hit.okf = Some(crate::okf::OkfAnnotation::new("BigQuery Table"));
+        let back: SearchHit = serde_json::from_str(&serde_json::to_string(&hit).unwrap()).unwrap();
+        assert_eq!(back.okf, hit.okf);
+    }
+
+    #[test]
+    fn missing_okf_key_deserializes_as_none() {
+        let json =
+            r#"{"object_key":"notes/a.md","byte_start":0,"byte_end":1,"score":0.5,"preview":"x"}"#;
+        let hit: SearchHit = serde_json::from_str(json).unwrap();
+        assert!(hit.okf.is_none());
     }
 }

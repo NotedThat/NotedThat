@@ -69,21 +69,14 @@ Use the log line each service prints once its listener is bound:
 ```rust
 // Qdrant — stdout
 .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
-// SeaweedFS — stderr (it logs to stderr, and takes ~3.5s to reach this line)
+// SeaweedFS — stderr
 .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
 ```
 
 `notedthat-indexer` goes one step further in `tests/support/mod.rs`: after the log
 line it polls `health_check` until Qdrant answers, so a bound-but-not-yet-serving
-port cannot slip through. Prefer `support::start_qdrant()` and
-`support::raw_client()` there over hand-rolling a container or a client in a test
-file — a raw `Qdrant::from_url(..).build()` inherits the crate's 5-second
-per-RPC default, which a `wait(true)` upsert can exceed under load.
-
-Give the server itself room to start. `build_infrastructure` provisions buckets,
-manifests and a Qdrant collection; measured on a cold, loaded machine that is
-about 9s, so readiness budgets are 60s rather than the 10s that used to leave
-under a second of margin.
+port cannot slip through. Prefer `support::start_qdrant()` there over hand-rolling
+a container in a test file.
 
 ## Dependency Ownership Rules
 

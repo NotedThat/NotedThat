@@ -962,7 +962,14 @@ Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RR
     "heading_path_prefix": ["Introduction"],
     "updated_after": 1700000000,
     "updated_before": 1800000000,
-    "tags": ["rust"]
+    "tags": ["rust"],
+    "okf_type": "Metric",
+    "okf_status": "stable",
+    "okf_min_trust": "human_reviewed",
+    "okf_runtime": "bigquery",
+    "chunk_kind": "metadata",
+    "exclude_stale": true,
+    "okf_only": true
   },
   "limit": 10
 }
@@ -981,7 +988,16 @@ All `filter` fields are optional and AND-composed. `limit` defaults to `10`, is 
       "byte_end": 2048,
       "heading_path": ["Section 1", "Subsection 1.2"],
       "score": 0.0163,
-      "preview": "RFC 7231 defines HTTP semantics and content negotiation..."
+      "preview": "RFC 7231 defines HTTP semantics and content negotiation...",
+      "okf": {
+        "type": "BigQuery Table",
+        "title": "Customers",
+        "description": "Customer master table",
+        "tags": ["finance"],
+        "status": "stable",
+        "trust": "human_reviewed",
+        "stale_after": "2027-01-01"
+      }
     }
   ]
 }
@@ -1019,7 +1035,13 @@ curl -sSf -X POST \
 
 - **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
 
-- **Tags filter**: The `tags` field in `SearchFilter` is reserved shape. Tags are not populated in v1 (D33 defers frontmatter extraction to post-v1). Tag filter values will match nothing until tag extraction ships.
+- **Tags filter**: `tags` is populated from OKF frontmatter `tags` (D48). It is empty for documents without conformant OKF frontmatter, so a tag filter matches only OKF concepts.
+
+- **The `okf` object**: present on a hit only when the source document carried conformant OKF v0.2 frontmatter — a leading `---` block that parses as a YAML mapping with a non-empty `type`. It is **omitted entirely** otherwise, so hits from non-OKF content serialise exactly as they did before D48. `status` and `trust` are always present when the object is (an absent `status` key reports as `stable`, an absent `verified` family as `unverified`), so clients never reimplement the defaulting rules. `stale` is evaluated per request against the server clock; `stale_after` echoes the document's own lexical form so a client can re-evaluate against its own.
+
+- **OKF filters**: all opt-in and all defaulting to no filtering. OKF §11 requires consumers to tolerate missing trust data, so search returns everything by default and annotates it. `okf_min_trust` is inclusive (`machine_confirmed` also matches `human_reviewed`). `exclude_stale` keeps documents that state no `stale_after` at all, and those whose `stale_after` could not be parsed. `okf_only` restricts results to documents carrying OKF frontmatter. `chunk_kind` selects `"body"` or `"metadata"` points.
+
+- **Metadata points**: an OKF concept's frontmatter is indexed as its own point, distinct from its body chunks. Its `byte_start`/`byte_end` cover the frontmatter block, and its `preview` is the raw YAML — but its vectors are built from a rendered prose form of the fields, which is what lets a query like "quarterly revenue" match a concept whose title says so and whose body does not. A concept that is nothing but frontmatter is therefore still searchable.
 
 - **`content_hash`**: Stored in the Qdrant payload for idempotent reindex detection but is **not** exposed in `SearchHit`.
 
@@ -1030,6 +1052,143 @@ curl -sSf -X POST \
 > **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
+
+### OKF v0.2 routes
+
+Open Knowledge Format support (D48) lives under `/v1/okf/{kb_slug}/…`, a sibling
+namespace to `/v1/knowledgebases/…`. That is deliberate: object routes are a
+catch-all (`{*object_path}`), so any static sibling segment permanently shadows an
+object key — `search` already does. Diverging the namespace before `{kb_slug}`
+shadows nothing. The target object is always a query parameter, never a path
+segment.
+
+All four routes require the same `Authorization: Bearer` token as the rest of
+`/v1/`, validate the slug before the declaration lookup (so a malformed slug is
+`400`, not a leaked `404`), and use the standard `ErrorBody` envelope.
+
+#### `POST /v1/okf/{kb_slug}/validate`
+
+Checks OKF §11 conformance. Body (all fields optional):
+
+```json
+{ "path": "tables/customers.md", "prefix": "tables/", "limit": 200,
+  "cursor": null, "check_links": false }
+```
+
+`path` and `prefix` are mutually exclusive (`400` otherwise). `path` checks one
+object — the call to make right after a write, without paying for a bundle walk.
+Otherwise one page of the bundle is walked: `limit` defaults to 200 and is clamped
+to 1000, objects over 1 MiB are reported without ever being fetched (their size
+comes from the listing), Markdown objects are fetched 8 at a time, and the whole
+request is bounded by a 20-second budget after which it returns what it has with
+`truncated: true` and a cursor.
+
+`check_links` is off by default because it costs a round trip per unseen target.
+When on, targets already seen in the listing are free; the rest are capped at 200
+existence checks. **Absolute URLs are never resolved, never fetched and never
+reported broken** — the server holds S3 credentials and sits inside the network.
+
+```json
+{ "okf_version": "0.2", "conformant": false, "scanned": 128,
+  "skipped_non_markdown": 12, "truncated": false, "next_cursor": null,
+  "counts": { "error": 3, "warning": 5 },
+  "findings": [ { "path": "tables/customers.md", "rule": "type_missing",
+                  "severity": "error", "line": 3,
+                  "message": "frontmatter has no non-empty string `type` (OKF v0.2 §11)" } ],
+  "findings_truncated": false, "link_checks_truncated": false }
+```
+
+**`conformant` is exactly `counts.error == 0`.** OKF §11 lists broken links,
+unknown `type` values, unknown extra keys and a missing `index.md` as things a
+consumer *must tolerate*, so every one of them is a **warning** — a validator that
+failed a bundle on them would contradict the specification it validates.
+
+| `rule` | severity | why |
+| --- | --- | --- |
+| `frontmatter_missing` | error | §11 clause 1 |
+| `frontmatter_unparseable` | error | §11 clause 1 |
+| `type_missing` | error | §11 clause 2 |
+| `index_frontmatter_forbidden` | error | §11 clause 3 — frontmatter on a non-root `index.md`, or a key other than `okf_version` at the root |
+| `non_utf8` | error | cannot be parsed at all |
+| `index_malformed_entry` | warning | tolerated shape deviation |
+| `index_bullet_outside_section` | warning | tolerated shape deviation |
+| `log_malformed_date` | warning | tolerated shape deviation |
+| `log_entry_outside_date` | warning | tolerated shape deviation |
+| `broken_link` | warning | §11 tolerance clause |
+| `object_too_large` | warning | skipped, not fetched |
+
+#### `GET /v1/okf/{kb_slug}/index?dir=tables/`
+
+Returns the directory's parsed `index.md`, with every entry resolved to a
+knowledge base key — relative-link resolution from a subdirectory is exactly where
+agents get it wrong. When the directory has no `index.md`, a listing stands in and
+`source` says `"listing"` rather than `"index.md"`.
+
+```json
+{ "dir": "tables/", "source": "index.md", "okf_version": "0.2",
+  "sections": [ { "heading": "Tables", "entries": [
+    { "title": "Customers", "url": "./customers.md",
+      "resolved_path": "tables/customers.md",
+      "description": "Customer master table", "is_directory": false } ] } ],
+  "truncated": false, "deviations": [] }
+```
+
+An entry pointing at an absolute URL has no `resolved_path`, and is never fetched.
+
+#### `GET /v1/okf/{kb_slug}/computation?path=metrics/rev.md`
+
+Returns an Attested Computation **contract**. The computation body is either the
+fenced block under the concept's `# Computation` heading (`source: "inline"`) or
+the file named by `computation:` (`source: "file"`, capped at 1 MiB).
+
+**NotedThat never executes a computation and never issues an outbound HTTP request
+on an agent's behalf.** A `computation:` that is an absolute URL is `400`, not a
+fetch; so is one that escapes the knowledge base. `executor.resource` and
+`attester.resource` are returned verbatim alongside a `resource_path` resolved to a
+key, and are never read — the agent has `read` and now has the key.
+
+```json
+{ "path": "metrics/rev.md", "type": "Attested Computation", "title": "Daily Revenue",
+  "runtime": "bigquery",
+  "parameters": [ { "name": "start_date", "type": "date", "required": true } ],
+  "computation": { "source": "inline", "language": "sql", "code": "SELECT 1;\n" },
+  "executor": { "resource": "/executors/bq.md", "resource_path": "executors/bq.md",
+                "receipt": ["job_id"] },
+  "attester": { "resource": "/attesters/fin.md", "resource_path": "attesters/fin.md" },
+  "warnings": [],
+  "execution": "NotedThat never executes this computation. Run it with your own credentials." }
+```
+
+| Status | When |
+| --- | --- |
+| `400` | absolute-URL or bundle-escaping `computation`; the concept declares no computation; non-UTF-8 content |
+| `404` | the concept, or the file named by `computation:`, does not exist |
+| `413` | the computation file exceeds 1 MiB |
+
+#### `POST /v1/okf/{kb_slug}/reindex`
+
+Rebuilds one directory's `index.md` from the concepts actually present.
+**Defaults to a dry run** — `{"dir": "tables/", "dry_run": false}` is required to
+write. Entries are identified by URL rather than by rendered text, so a retitled
+concept updates its line instead of gaining a second one; the edit is a line
+splice, so prose an author wrote between sections survives byte for byte; and a
+section heading is never removed even when it becomes empty.
+
+```json
+{ "dir": "tables/", "applied": false, "changed": true, "entries": 3,
+  "changes": ["BigQuery Table: ./customers.md"],
+  "index_md": "# BigQuery Table\n\n* [Customers](./customers.md) - Customer master table\n" }
+```
+
+#### Upgrade notes (M8 → M9)
+
+> **Reindex recommended after upgrading.** The Qdrant payload schema was extended for OKF v0.2 support (D48): `chunk_kind`, `okf_type`, `okf_title`, `okf_description`, `okf_resource`, `okf_status`, `okf_trust`, `okf_stale_after`, `okf_stale_after_raw` and `okf_runtime` were added, the previously reserved `tags` field is now populated from OKF frontmatter, and Keyword/Integer payload indexes were created for `tags`, `chunk_kind`, `okf_type`, `okf_status`, `okf_trust`, `okf_runtime`, `okf_resource` and `okf_stale_after`. The collection name stays `kb_{slug}_v1`, matching the M4 → M5 precedent.
+>
+> **Payload indexes now backfill automatically.** Before this release, `ensure_collection` returned early when the collection already existed, so an in-place upgrade never gained the indexes a new release added — and the "re-PUT to backfill" advice never helped, because a re-PUT writes payloads, not indexes. Indexes are now (re-)ensured on every startup. Point *payloads* still only change when a document is indexed: documents last written by an older server carry no `okf` object on their hits and match no `okf_*` filter until they are re-PUT. Reindex tooling remains a post-v1 feature (D42); operators trigger a rewrite with `PUT /v1/knowledgebases/{kb_slug}/{path}`.
+>
+> **Byte offsets shift for OKF documents.** A conformant concept's frontmatter is now indexed as its own metadata point and its body is chunked from the end of the frontmatter, so offsets computed by a current server differ from those an older one produced. Offsets were only ever valid against the ETag they were indexed at, so this is not a new class of staleness — but a stale index yields stale ranges until the document is re-indexed.
+>
+> **`SearchHit` gained an optional `okf` field.** It is omitted entirely for non-OKF documents, so existing clients see byte-identical JSON for those hits. Rust consumers constructing `SearchHit` with a struct literal must add `okf: None`; `SearchHit` is deliberately not `#[non_exhaustive]` (see `search::request` for the rationale), so this is a source-breaking change in a 0.x crate.
 
 ---
 

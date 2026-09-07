@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 percent-encoding = { workspace = true }
 url = { workspace = true }
-notedthat-core = { workspace = true }
+notedthat-core = { workspace = true, features = ["schemars"] }
 
 [dev-dependencies]
 wiremock = { workspace = true }

@@ -8,6 +8,18 @@ mod hybrid;
 mod preview;
 
 pub use filter::{PostFilter, TranslatedFilter, translate_filter};
+
+/// The current instant as Unix seconds, saturating rather than panicking.
+///
+/// Read once per search request and threaded into filter translation and hit
+/// annotation, so a single request evaluates OKF staleness against one clock
+/// value (D48).
+#[must_use]
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
 pub use hybrid::HybridSearcher;
 pub use preview::{PREVIEW_MAX_CHARS, truncate_preview};
 

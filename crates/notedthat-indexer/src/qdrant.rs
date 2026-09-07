@@ -13,12 +13,11 @@ use std::time::Duration;
 
 /// Default per-RPC timeout.
 ///
-/// `qdrant-client` defaults to **5 seconds for every RPC**, and nothing here
-/// used to override it. That is too tight for this workload: a full embedding
-/// batch upserted with `wait(true)`, against a collection that is still building
-/// payload indexes, on a busy host, can exceed it. When it does, the failure
-/// surfaces as an opaque `Cancelled: Timeout expired` that reads like a Qdrant
-/// fault rather than a deadline, and the document silently goes unindexed.
+/// `qdrant-client` defaults to **5 seconds**, which is too tight for this
+/// workload: `upsert_points(...).wait(true)` on a full embedding batch, against a
+/// collection that is still building payload indexes, on a loaded host, routinely
+/// takes longer than that — and the failure surfaces as an opaque
+/// `Cancelled: Timeout expired` rather than as backpressure.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default connection-establishment timeout.

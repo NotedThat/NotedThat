@@ -171,13 +171,12 @@ NotedThat uses [Qdrant](https://qdrant.tech/) for vector search indexing (M4+). 
 | `NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS` | No | `10000` | Connection-establishment timeout in milliseconds. Must be > 0. |
 
 > **Why the timeout is set explicitly.** `qdrant-client` defaults to **5 seconds
-> for every RPC**, and NotedThat did not override it. That is too tight for this
-> workload: a full embedding batch upserted with `wait(true)`, against a collection
-> that is still building payload indexes, on a busy host, can exceed it. When it
-> does, the failure surfaces as an opaque `Cancelled: Timeout expired` — which
-> reads like a Qdrant fault rather than a deadline — and the document silently
-> goes unindexed. Raise `NOTEDTHAT_QDRANT_TIMEOUT_MS` further if you run large
-> batches on slow storage.
+> for every RPC**, which is too tight for this workload: a full embedding batch
+> upserted with `wait(true)`, against a collection that is still building payload
+> indexes, on a busy host, can exceed it. When it does, the failure surfaces as an
+> opaque `Cancelled: Timeout expired` rather than as backpressure, and the
+> document silently does not get indexed. Raise `NOTEDTHAT_QDRANT_TIMEOUT_MS`
+> further if you run large batches on slow storage.
 
 **Example**:
 
@@ -299,6 +298,46 @@ Conditional writes under backpressure: retry semantics interact with 412. Condit
 The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three write surfaces (HTTP API, WebDAV, MCP-via-HTTP) surface this the same way: HTTP 503, error code `backend_unavailable`, and (for HTTP API + WebDAV) `Retry-After: 5`.
 
 ---
+
+## OKF index maintenance
+
+Open Knowledge Format support (D48) is read-only by default. Parsing, search
+annotation, conformance validation, browsing and contract serving are always on and
+never modify anything.
+
+Maintaining the reserved `index.md` and `log.md` files is the exception: it is the
+one feature that **rewrites files the user authored**, so it is off unless you turn
+it on.
+
+| Variable | Type | Default | Meaning |
+| -------- | ---- | ------- | ------- |
+| `NOTEDTHAT_OKF_MAINTAIN_INDEX` | `true` or `1` to enable | disabled | Master switch. When off, no maintenance queue or worker is started at all. |
+| `NOTEDTHAT_OKF_MAINTAIN_KBS` | comma-separated slugs | (empty) | Which knowledge bases to maintain. Empty means every declared KB, but only when the master switch is on. A slug not present in `NOTEDTHAT_KBS` fails startup (D39), rather than silently maintaining nothing. |
+| `NOTEDTHAT_OKF_MAINTAIN_LOG` | `true` or `1` to enable | disabled | Also maintain `log.md`. A separate switch because `log.md` grows without bound. |
+
+### Behaviour when enabled
+
+- A concept written through **any** surface — HTTP, WebDAV or MCP — updates its
+  directory's `index.md`, because the event is produced by the indexing worker,
+  which is the one place that sees every write.
+- Only OKF-conformant concepts count. Reserved files never trigger maintenance,
+  which is what stops the feature from feeding itself.
+- Writes are read-modify-write under `If-Match`, retried at most three times. A
+  lost race is logged as `OKF_MAINTENANCE_CONFLICT` and abandoned: maintenance can
+  never fail, delay, or retry the user's own write.
+- Events are coalesced over a 250 ms window and applied per directory, so a bulk
+  import of 200 concepts into one directory is a handful of writes rather than 200
+  rewrites of a growing file.
+- A full maintenance queue logs `OKF_MAINTENANCE_QUEUE_FULL` and drops the event —
+  deliberately unlike the indexing queue, which surfaces backpressure as a 503.
+
+### The explicit alternative
+
+`okf_reindex_directory` (MCP) and `POST /v1/okf/{kb_slug}/reindex` (HTTP) rebuild a
+directory's `index.md` on demand and are available whether or not maintenance is
+switched on. Both default to a dry run that returns the proposal without writing.
+If you would rather nothing rewrote your files in the background, leave the switches
+off and use these.
 
 ## MCP HTTP listener
 

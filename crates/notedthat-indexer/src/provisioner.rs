@@ -80,12 +80,11 @@ impl QdrantProvisioner {
     /// Idempotent. Collection creation is conditional, but **payload indexes are
     /// ensured on every call**, including for a collection that already exists.
     ///
-    /// That last part fixes a real bug. This method used to return early when the
-    /// collection existed, so a server upgraded in place never gained the payload
-    /// indexes a new release added — and the remedy documented for the M4 → M5
-    /// payload extension ("re-PUT your objects to backfill") could not help,
-    /// because a re-PUT rewrites point payloads and does not create indexes. The
-    /// only recovery was to delete the collection.
+    /// That is deliberate and it fixes a real bug: this method used to return
+    /// early when the collection existed, so an in-place upgrade never gained the
+    /// indexes a new release added. The documented remedy of re-PUTting objects
+    /// could not help, because a re-PUT writes payloads and does not create
+    /// indexes. Backfilling here is what makes the D48 upgrade path actually work.
     pub async fn ensure_collection(
         &self,
         kb: &KbSlug,
@@ -169,6 +168,16 @@ impl QdrantProvisioner {
             ("mime", FieldType::Keyword),
             ("mtime", FieldType::Integer),
             ("heading_path", FieldType::Keyword),
+            // OKF v0.2 (D48). `tags` was reserved for exactly this and is now
+            // populated from OKF frontmatter.
+            ("tags", FieldType::Keyword),
+            ("chunk_kind", FieldType::Keyword),
+            ("okf_type", FieldType::Keyword),
+            ("okf_status", FieldType::Keyword),
+            ("okf_trust", FieldType::Keyword),
+            ("okf_runtime", FieldType::Keyword),
+            ("okf_resource", FieldType::Keyword),
+            ("okf_stale_after", FieldType::Integer),
         ] {
             inner
                 .create_field_index(CreateFieldIndexCollectionBuilder::new(

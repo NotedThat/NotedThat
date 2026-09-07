@@ -7,6 +7,7 @@ members = [
   "crates/notedthat-core",
   "crates/notedthat-storage-s3",
   "crates/notedthat-indexer",
+  "crates/notedthat-okf",
   "crates/notedthat-write",
   "crates/notedthat-api-http",
   "crates/notedthat-webdav",
@@ -28,6 +29,7 @@ authors = ["NotedThat Contributors"]
 # Workspace crates
 notedthat-core = { path = "crates/notedthat-core", version = "0.1.6" }
 notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.1.6" }
+notedthat-okf = { path = "crates/notedthat-okf", version = "0.1.6" }
 notedthat-write = { path = "crates/notedthat-write", version = "0.1.6" }
 
 # MCP
@@ -67,6 +69,11 @@ qdrant-client = { version = "1.15", default-features = false }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# YAML — panic-free, budget-limited parsing of untrusted OKF frontmatter (D48).
+# serde_yaml is archived and serde_yml unmaintained; serde-saphyr is the maintained option.
+serde-saphyr = "1.2"
+# ISO 8601 instants for OKF `stale_after` / `generated.at` / `verified[].at` (D48).
+time = { version = "0.3", default-features = false, features = ["parsing", "macros"] }
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

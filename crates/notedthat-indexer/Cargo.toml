@@ -9,6 +9,7 @@ readme = "README.md"
 
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
+notedthat-okf = { workspace = true }
 qdrant-client = { workspace = true }
 pulldown-cmark = { workspace = true }
 text-splitter = { workspace = true }
@@ -17,7 +18,6 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

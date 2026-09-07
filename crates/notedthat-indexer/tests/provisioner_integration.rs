@@ -21,7 +21,22 @@ fn make_config(url: &str) -> QdrantConfig {
 }
 
 /// The payload indexes `ensure_collection` is expected to create.
-const EXPECTED_INDEXES: [&str; 5] = ["object_key", "etag", "mime", "mtime", "heading_path"];
+const EXPECTED_INDEXES: [&str; 13] = [
+    "object_key",
+    "etag",
+    "mime",
+    "mtime",
+    "heading_path",
+    // OKF v0.2 (D48).
+    "tags",
+    "chunk_kind",
+    "okf_type",
+    "okf_status",
+    "okf_trust",
+    "okf_runtime",
+    "okf_resource",
+    "okf_stale_after",
+];
 
 /// Poll until every expected payload index appears, or fail at the deadline.
 ///
@@ -157,37 +172,24 @@ async fn payload_indexes_created() {
         .await
         .expect("ensure_collection");
 
+    // Wait for the whole expected set, not merely "at least five". Index creation
+    // is asynchronous, so a count-based poll can return while later fields — such
+    // as `tags` — are still being built.
     let raw = raw_client(&url);
-    let schema = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let info = raw
-                .collection_info("kb_index-kb_v1")
-                .await
-                .expect("collection_info");
-            let schema = info
-                .result
-                .expect("collection info should have a result")
-                .payload_schema;
-            if schema.len() >= 5 || std::time::Instant::now() >= deadline {
-                break schema;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-    };
+    let schema = await_indexes(&raw, "kb_index-kb_v1").await;
 
-    assert!(
-        schema.contains_key("object_key"),
-        "object_key index missing"
-    );
-    assert!(schema.contains_key("etag"), "etag index missing");
-    assert!(schema.contains_key("mime"), "mime index missing");
-    assert!(schema.contains_key("mtime"), "mtime index missing");
-    assert!(
-        schema.contains_key("heading_path"),
-        "heading_path index missing"
-    );
-    assert!(!schema.contains_key("tags"), "tags should NOT be indexed");
+    for field in EXPECTED_INDEXES {
+        assert!(
+            schema.contains_key(field),
+            "payload index {field:?} missing; have {:?}",
+            schema.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // `tags` used to be asserted as deliberately NOT indexed, because D33 left it
+    // an unpopulated placeholder. D48 populates it from OKF frontmatter and
+    // indexes it, which is what the placeholder was reserved for.
+    assert!(schema.contains_key("tags"), "tags is indexed as of D48");
 }
 
 #[tokio::test]

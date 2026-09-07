@@ -1,0 +1,24 @@
+[package]
+name = "notedthat-okf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Open Knowledge Format (OKF) v0.2 parsing, conformance and reserved-file handling for NotedThat"
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+notedthat-core = { workspace = true }
+pulldown-cmark = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

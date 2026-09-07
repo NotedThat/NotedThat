@@ -44,7 +44,11 @@ impl PostFilter {
 /// tokenises differently).
 ///
 /// All other fields are translated to Qdrant [`Condition`]s and AND-composed via `Filter::must`.
-pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
+///
+/// `now_unix` is the request's evaluation instant. It is passed in rather than
+/// read from the clock so that translation stays a pure, unit-testable function;
+/// only `exclude_stale` uses it.
+pub fn translate_filter(filter: &SearchFilter, now_unix: i64) -> TranslatedFilter {
     let mut conditions: Vec<Condition> = Vec::new();
 
     // mime: exact keyword match against the mime payload index added in T1.
@@ -94,6 +98,69 @@ pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
         conditions.push(Condition::matches("tags", filter.tags.clone()));
     }
 
+    // --- OKF v0.2 (D48). Every one of these is opt-in; the default is to return
+    // everything and let the annotation on each hit speak for itself. ---
+
+    if let Some(concept_type) = &filter.okf_type {
+        conditions.push(Condition::matches("okf_type", concept_type.clone()));
+    }
+
+    // `okf_status` is written for every OKF document — an absent `status` key is
+    // indexed as "stable" — so this is a plain equality, not an OR-with-empty.
+    if let Some(status) = filter.okf_status {
+        conditions.push(Condition::matches(
+            "okf_status",
+            status.as_str().to_string(),
+        ));
+    }
+
+    // Keyword payloads have no ordinal comparison, so enumerate the tiers at or
+    // above the minimum and MatchAny over them. The set has at most three members.
+    if let Some(min_trust) = filter.okf_min_trust {
+        let allowed: Vec<String> = min_trust
+            .at_least()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        conditions.push(Condition::matches("okf_trust", allowed));
+    }
+
+    if let Some(runtime) = &filter.okf_runtime {
+        conditions.push(Condition::matches("okf_runtime", runtime.clone()));
+    }
+
+    if let Some(chunk_kind) = &filter.chunk_kind {
+        conditions.push(Condition::matches("chunk_kind", chunk_kind.clone()));
+    }
+
+    // `okf_type` is written for every OKF document and only for OKF documents,
+    // so its presence is the marker for "this document carries OKF frontmatter".
+    if filter.okf_only {
+        conditions.push(Condition::from(Filter::must_not([Condition::is_empty(
+            "okf_type",
+        )])));
+    }
+
+    // "no expiry set OR the expiry is still in the future", as a nested OR folded
+    // into the outer AND. This has to be server-side: a client-side version would
+    // interact badly with the capped over-fetch, silently under-filling results on
+    // a stale-heavy corpus, and `is_empty` semantics ("missing or null or empty")
+    // are not reproducible client-side because `point_to_hit` discards the
+    // difference between "no key" and "an OKF document with no expiry".
+    if filter.exclude_stale {
+        conditions.push(Condition::from(Filter::should([
+            Condition::is_empty("okf_stale_after"),
+            Condition::range(
+                "okf_stale_after",
+                Range {
+                    gt: Some(unix_seconds_as_range_bound(now_unix)),
+                    gte: None,
+                    lte: None,
+                    lt: None,
+                },
+            ),
+        ])));
+    }
+
     // Build the Qdrant-side filter if any conditions were added.
     let qdrant = if conditions.is_empty() {
         None
@@ -117,11 +184,12 @@ fn unix_seconds_as_range_bound(value: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notedthat_core::okf::{OkfStatus, OkfTrust};
     use notedthat_core::search::SearchFilter;
 
     #[test]
     fn empty_filter_returns_no_conditions() {
-        let t = translate_filter(&SearchFilter::default());
+        let t = translate_filter(&SearchFilter::default(), 0);
         assert!(t.qdrant.is_none());
         assert!(t.post.is_empty());
     }
@@ -132,7 +200,7 @@ mod tests {
             mime: Some("text/markdown".into()),
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_some());
         assert!(t.post.is_empty());
     }
@@ -143,7 +211,7 @@ mod tests {
             heading_path_prefix: vec!["A".into()],
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         let filter = t.qdrant.as_ref().unwrap();
         assert_eq!(filter.must.len(), 1);
         assert!(t.post.is_empty());
@@ -155,7 +223,7 @@ mod tests {
             heading_path_prefix: vec!["A".into(), "B".into()],
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         let filter = t.qdrant.as_ref().unwrap();
         assert_eq!(filter.must.len(), 2);
     }
@@ -166,7 +234,7 @@ mod tests {
             updated_after: Some(1_000_000),
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_some());
         let filter = t.qdrant.unwrap();
         assert_eq!(filter.must.len(), 1);
@@ -178,7 +246,7 @@ mod tests {
             updated_before: Some(2_000_000),
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_some());
     }
 
@@ -188,7 +256,7 @@ mod tests {
             tags: vec!["rust".into()],
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_some());
         assert!(t.post.is_empty());
     }
@@ -199,7 +267,7 @@ mod tests {
             tags: vec![],
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_none());
         assert!(t.post.is_empty());
     }
@@ -210,7 +278,7 @@ mod tests {
             object_key_prefix: Some("docs/".into()),
             ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         assert!(t.qdrant.is_none());
         assert_eq!(t.post.object_key_prefix.as_deref(), Some("docs/"));
     }
@@ -224,11 +292,115 @@ mod tests {
             updated_after: Some(1_000),
             updated_before: Some(2_000),
             tags: vec!["rust".into()],
+            ..Default::default()
         };
-        let t = translate_filter(&f);
+        let t = translate_filter(&f, 0);
         let filter = t.qdrant.unwrap();
         assert_eq!(filter.must.len(), 5);
         assert_eq!(t.post.object_key_prefix.as_deref(), Some("docs/"));
+    }
+
+    #[test]
+    fn combined_all_okf_fields_produces_seven_more_conditions() {
+        let f = SearchFilter {
+            mime: Some("text/markdown".into()),
+            okf_type: Some("Metric".into()),
+            okf_status: Some(OkfStatus::Stable),
+            okf_min_trust: Some(OkfTrust::MachineConfirmed),
+            okf_runtime: Some("bigquery".into()),
+            chunk_kind: Some("metadata".into()),
+            okf_only: true,
+            exclude_stale: true,
+            ..Default::default()
+        };
+        let filter = translate_filter(&f, 0).qdrant.unwrap();
+        assert_eq!(filter.must.len(), 8);
+    }
+
+    #[test]
+    fn okf_type_produces_one_condition() {
+        let f = SearchFilter {
+            okf_type: Some("Metric".into()),
+            ..Default::default()
+        };
+        assert_eq!(translate_filter(&f, 0).qdrant.unwrap().must.len(), 1);
+    }
+
+    #[test]
+    fn okf_min_trust_unverified_matches_all_three_tiers() {
+        let f = SearchFilter {
+            okf_min_trust: Some(OkfTrust::Unverified),
+            ..Default::default()
+        };
+        let filter = translate_filter(&f, 0).qdrant.unwrap();
+        assert_eq!(match_any_len(&filter.must[0]), 3);
+    }
+
+    #[test]
+    fn okf_min_trust_human_reviewed_matches_one_tier() {
+        let f = SearchFilter {
+            okf_min_trust: Some(OkfTrust::HumanReviewed),
+            ..Default::default()
+        };
+        let filter = translate_filter(&f, 0).qdrant.unwrap();
+        assert_eq!(match_any_len(&filter.must[0]), 1);
+    }
+
+    #[test]
+    fn exclude_stale_produces_a_nested_should_with_two_clauses() {
+        use qdrant_client::qdrant::condition::ConditionOneOf;
+        let f = SearchFilter {
+            exclude_stale: true,
+            ..Default::default()
+        };
+        let filter = translate_filter(&f, 1_234).qdrant.unwrap();
+        assert_eq!(filter.must.len(), 1);
+        match &filter.must[0].condition_one_of {
+            Some(ConditionOneOf::Filter(nested)) => {
+                // "no expiry set" OR "expiry still in the future".
+                assert_eq!(nested.should.len(), 2);
+                assert!(nested.must.is_empty());
+            }
+            other => panic!("expected a nested filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exclude_stale_false_produces_no_condition() {
+        let f = SearchFilter {
+            exclude_stale: false,
+            ..Default::default()
+        };
+        assert!(translate_filter(&f, 0).qdrant.is_none());
+    }
+
+    #[test]
+    fn okf_only_produces_a_nested_must_not() {
+        use qdrant_client::qdrant::condition::ConditionOneOf;
+        let f = SearchFilter {
+            okf_only: true,
+            ..Default::default()
+        };
+        let filter = translate_filter(&f, 0).qdrant.unwrap();
+        match &filter.must[0].condition_one_of {
+            Some(ConditionOneOf::Filter(nested)) => assert_eq!(nested.must_not.len(), 1),
+            other => panic!("expected a nested filter, got {other:?}"),
+        }
+    }
+
+    /// Number of values in a `MatchAny` keyword condition.
+    fn match_any_len(condition: &Condition) -> usize {
+        use qdrant_client::qdrant::condition::ConditionOneOf;
+        use qdrant_client::qdrant::r#match::MatchValue;
+        match &condition.condition_one_of {
+            Some(ConditionOneOf::Field(field)) => {
+                match field.r#match.as_ref().and_then(|m| m.match_value.as_ref()) {
+                    Some(MatchValue::Keywords(keywords)) => keywords.strings.len(),
+                    other => panic!("expected keywords match, got {other:?}"),
+                }
+            }
+            other => panic!("expected a field condition, got {other:?}"),
+        }
     }
 
     #[test]

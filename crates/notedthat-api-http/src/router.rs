@@ -58,6 +58,29 @@ pub fn build_router(state: AppState) -> Router {
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
+        // OKF v0.2 (D48). A sibling namespace, so no object key is shadowed the
+        // way `/v1/knowledgebases/{kb_slug}/search` shadows the key `search`.
+        // The target object is a query parameter, never a path segment.
+        .route(
+            "/v1/okf/{kb_slug}/validate",
+            axum::routing::post(crate::okf::validate_route::validate_bundle).layer(
+                axum::extract::DefaultBodyLimit::max(crate::okf::OKF_BODY_MAX_BYTES),
+            ),
+        )
+        .route(
+            "/v1/okf/{kb_slug}/index",
+            get(crate::okf::browse_route::browse_index),
+        )
+        .route(
+            "/v1/okf/{kb_slug}/computation",
+            get(crate::okf::contract_route::get_contract),
+        )
+        .route(
+            "/v1/okf/{kb_slug}/reindex",
+            axum::routing::post(crate::okf::reindex_route::reindex_directory).layer(
+                axum::extract::DefaultBodyLimit::max(crate::okf::OKF_BODY_MAX_BYTES),
+            ),
+        )
         .route(
             "/v1/knowledgebases/{kb_slug}/{*object_path}",
             get(get_object)

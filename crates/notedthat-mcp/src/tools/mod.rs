@@ -6,6 +6,7 @@ mod edit;
 mod list;
 mod list_kbs;
 mod mv;
+mod okf;
 mod read;
 mod replace;
 mod search;
@@ -44,6 +45,46 @@ impl NotedThatMcp {
         _args: Parameters<list_kbs::ListKbsArgs>,
     ) -> Result<CallToolResult, McpError> {
         list_kbs::run(&self.client).await
+    }
+
+    #[tool(
+        description = "Check a knowledge base for Open Knowledge Format (OKF) v0.2 conformance. Pass `path` for one object or `prefix` for a bundle walk. Broken links, unknown `type` values and unknown keys are warnings, never errors, because OKF requires consumers to tolerate them."
+    )]
+    async fn okf_validate(
+        &self,
+        args: Parameters<okf::ValidateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        okf::validate(&self.client, args.0).await
+    }
+
+    #[tool(
+        description = "Browse an OKF directory through its index.md, with every entry resolved to a knowledge base key. Falls back to a plain listing when the directory has no index.md."
+    )]
+    async fn okf_browse(
+        &self,
+        args: Parameters<okf::BrowseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        okf::browse(&self.client, args.0).await
+    }
+
+    #[tool(
+        description = "Return an OKF Attested Computation contract: runtime, parameters, the computation source, and the executor and attester references. NotedThat never executes the computation — run it yourself with your own credentials."
+    )]
+    async fn okf_computation(
+        &self,
+        args: Parameters<okf::ComputationArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        okf::computation(&self.client, args.0).await
+    }
+
+    #[tool(
+        description = "Rebuild a directory's OKF index.md from the concepts actually present. Defaults to a dry run that returns the proposal without writing; pass dry_run=false to apply it."
+    )]
+    async fn okf_reindex_directory(
+        &self,
+        args: Parameters<okf::ReindexArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        okf::reindex(&self.client, args.0).await
     }
 
     #[tool(description = "Hybrid search across a knowledge base")]
@@ -210,9 +251,9 @@ mod resources_shared {
     // ── Tool count contract ──────────────────────────────────────────────────
 
     #[test]
-    fn tools_list_returns_exactly_ten_m9_tools() {
+    fn tools_list_returns_the_expected_tool_set() {
         let h = handler("http://localhost:8080");
-        let m9 = [
+        let expected = [
             "append",
             "delete",
             "edit",
@@ -223,11 +264,16 @@ mod resources_shared {
             "replace",
             "search",
             "write",
+            // OKF v0.2 (D48).
+            "okf_validate",
+            "okf_browse",
+            "okf_computation",
+            "okf_reindex_directory",
         ];
-        for name in m9 {
+        for name in expected {
             assert!(
                 h.get_tool(name).is_some(),
-                "expected M9 tool {name:?} to be registered"
+                "expected tool {name:?} to be registered"
             );
         }
         assert!(
@@ -235,7 +281,7 @@ mod resources_shared {
             "nonexistent tools must not be registered"
         );
 
-        // Verify TOTAL count is exactly 10 by checking that no additional tools exist.
+        // Verify the TOTAL count by checking that no additional tools exist.
         // This catches accidental tool registrations that would break the contract.
         // "edit_string" resolved by #39 as top-level `replace` tool (no longer deferred).
         let deferred_tools = [
@@ -247,7 +293,7 @@ mod resources_shared {
         for name in deferred_tools {
             assert!(
                 h.get_tool(name).is_none(),
-                "deferred tool {name:?} must not be registered (would make count > 10)"
+                "deferred tool {name:?} must not be registered (would inflate the tool count)"
             );
         }
     }

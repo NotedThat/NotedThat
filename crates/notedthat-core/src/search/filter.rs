@@ -1,9 +1,11 @@
+use crate::okf::{OkfStatus, OkfTrust};
 use serde::{Deserialize, Serialize};
 
 /// Filters applied to a search request. All fields are optional and AND-composed.
 ///
 /// Unknown JSON fields are silently ignored (no `deny_unknown_fields`) for forward compatibility.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SearchFilter {
     /// Only return hits whose `object_key` starts with this prefix (client-side post-filter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,9 +28,45 @@ pub struct SearchFilter {
     pub updated_before: Option<i64>,
 
     /// Only return hits tagged with at least one of these tags.
-    /// Reserved shape — tags are not populated in M5 (D33).
+    /// Populated from OKF frontmatter `tags` (D48); empty for non-OKF documents.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+
+    /// Only return hits whose OKF `type` equals this value exactly.
+    ///
+    /// Case-sensitive: OKF puts no registry behind `type`, so normalising it here
+    /// would silently merge distinct concept kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_type: Option<String>,
+
+    /// Only return hits with this OKF lifecycle status.
+    ///
+    /// Documents with no `status` key are indexed as `stable`, so `stable` matches them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_status: Option<OkfStatus>,
+
+    /// Only return hits at or above this trust tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_min_trust: Option<OkfTrust>,
+
+    /// Only return hits whose Attested Computation `runtime` equals this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_runtime: Option<String>,
+
+    /// Only return hits from a chunk of this kind — `"body"` or `"metadata"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_kind: Option<String>,
+
+    /// Exclude hits whose `stale_after` has passed.
+    ///
+    /// Defaults to `false`: search returns everything and annotates staleness, per
+    /// OKF §11 ("never reject a concept for missing trust data") and D48.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub exclude_stale: bool,
+
+    /// Only return hits from documents that carry OKF frontmatter at all.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub okf_only: bool,
 }
 
 impl SearchFilter {
@@ -40,6 +78,13 @@ impl SearchFilter {
             && self.updated_after.is_none()
             && self.updated_before.is_none()
             && self.tags.is_empty()
+            && self.okf_type.is_none()
+            && self.okf_status.is_none()
+            && self.okf_min_trust.is_none()
+            && self.okf_runtime.is_none()
+            && self.chunk_kind.is_none()
+            && !self.exclude_stale
+            && !self.okf_only
     }
 }
 
@@ -146,5 +191,98 @@ mod tests {
         let f: SearchFilter =
             serde_json::from_str(r#"{"mime":"text/plain","unknown_field":true}"#).unwrap();
         assert_eq!(f.mime, Some("text/plain".into()));
+    }
+    #[test]
+    fn okf_type_sets_not_empty() {
+        let f = SearchFilter {
+            okf_type: Some("Metric".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn okf_status_sets_not_empty() {
+        let f = SearchFilter {
+            okf_status: Some(OkfStatus::Draft),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn okf_min_trust_sets_not_empty() {
+        let f = SearchFilter {
+            okf_min_trust: Some(OkfTrust::HumanReviewed),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn okf_runtime_sets_not_empty() {
+        let f = SearchFilter {
+            okf_runtime: Some("bigquery".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn chunk_kind_sets_not_empty() {
+        let f = SearchFilter {
+            chunk_kind: Some("metadata".into()),
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn exclude_stale_sets_not_empty() {
+        let f = SearchFilter {
+            exclude_stale: true,
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn okf_only_sets_not_empty() {
+        let f = SearchFilter {
+            okf_only: true,
+            ..Default::default()
+        };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn default_filter_serialises_to_an_empty_object() {
+        // Regression guard: a missing skip_serializing_if on any new field shows up here.
+        assert_eq!(
+            serde_json::to_string(&SearchFilter::default()).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn okf_fields_round_trip_through_json() {
+        let f = SearchFilter {
+            okf_type: Some("Attested Computation".into()),
+            okf_status: Some(OkfStatus::Deprecated),
+            okf_min_trust: Some(OkfTrust::MachineConfirmed),
+            okf_runtime: Some("dbt".into()),
+            chunk_kind: Some("body".into()),
+            exclude_stale: true,
+            okf_only: true,
+            ..Default::default()
+        };
+        let back: SearchFilter = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!(back, f);
+    }
+
+    #[test]
+    fn unknown_fields_are_still_ignored() {
+        let f: SearchFilter = serde_json::from_str(r#"{"okf_type":"Metric","future":1}"#).unwrap();
+        assert_eq!(f.okf_type.as_deref(), Some("Metric"));
     }
 }

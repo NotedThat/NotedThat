@@ -5,12 +5,14 @@ use notedthat_core::PutOutcome;
 mod commit;
 mod error;
 mod mime;
+pub mod okf;
 pub mod patch;
 pub mod replace;
 
 pub use commit::{MAX_UPLOAD_BYTES, check_size, commit, commit_delete};
 pub use error::WriteError;
 pub use mime::sniff_content_type;
+pub use okf::{OkfMaintenanceConfig, OkfMaintenanceWorker};
 pub use patch::{PatchMode, patch};
 pub use replace::{ReplaceRequest, replace};
 

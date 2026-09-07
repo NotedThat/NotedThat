@@ -17,7 +17,8 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | ----- | ---- | ---- |
 | `notedthat-core` | `crates/notedthat-core` | Shared domain types, path/range/error/auth primitives, config |
 | `notedthat-storage-s3` | `crates/notedthat-storage-s3` | S3 storage adapter |
-| `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, embedder client, Qdrant integration |
+| `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, metadata extraction, embedder client, Qdrant integration |
+| `notedthat-okf` | `crates/notedthat-okf` | Open Knowledge Format v0.2 — frontmatter parsing, conformance, link resolution, `index.md`/`log.md` |
 | `notedthat-write` | `crates/notedthat-write` | Shared write path (`commit()`, `commit_delete()`, MIME sniff, 5 GiB limit) — used by HTTP API + WebDAV surfaces |
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
@@ -25,7 +26,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-server` | `crates/notedthat-server` | Main server binary — HTTP API + WebDAV + remote MCP in one process (release facade). Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 
-All 9 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 10 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Running locally
 

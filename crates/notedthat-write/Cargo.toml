@@ -11,10 +11,12 @@ authors.workspace = true
 [dependencies]
 notedthat-core = { workspace = true }
 notedthat-indexer = { workspace = true }
+notedthat-okf = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

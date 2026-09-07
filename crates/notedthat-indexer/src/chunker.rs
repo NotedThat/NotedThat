@@ -6,7 +6,9 @@
 //! Per §6.3 / D15: uses `pulldown-cmark::into_offset_iter` for byte offsets and
 //! `text-splitter::MarkdownSplitter` as the secondary splitter for oversized sections.
 //!
-//! Frontmatter is treated as raw markdown per D33.
+//! Frontmatter is treated as raw markdown per D33, except for OKF-conformant
+//! documents: [`chunk_from`] lets the caller start heading discovery past a
+//! frontmatter block, whose metadata is indexed separately (D48).
 //!
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use text_splitter::MarkdownSplitter;
@@ -36,18 +38,42 @@ pub struct Chunk {
 /// `raw[chunk.byte_start..chunk.byte_end] == chunk.text`.
 ///
 pub fn chunk(raw: &str) -> Vec<Chunk> {
+    chunk_from(raw, 0)
+}
+
+/// Chunk `raw`, skipping the first `body_start` bytes.
+///
+/// Heading discovery runs only over `raw[body_start..]`, so a YAML frontmatter
+/// block can no longer be mis-parsed as a setext heading and leak into every
+/// chunk's `heading_path`. Byte offsets stay **absolute in `raw`**, which is what
+/// keeps D6 intact: a search hit still dereferences to an exact byte range of the
+/// stored object, and the round-trip invariant
+/// `raw[chunk.byte_start..chunk.byte_end] == chunk.text` still holds because
+/// chunks are sliced out of `raw` rather than out of a substring.
+///
+/// The skipped preamble is not chunked. For an OKF concept it is indexed as its
+/// own metadata point instead (D48); `chunk_from(raw, 0)` is exactly [`chunk`].
+///
+/// `body_start` is clamped to the input length and floored to a character
+/// boundary, so this never panics.
+pub fn chunk_from(raw: &str, body_start: usize) -> Vec<Chunk> {
     if raw.is_empty() {
         return Vec::new();
     }
+    let body_start = floor_char_boundary(raw, body_start.min(raw.len()));
 
-    let boundaries = heading_boundaries(raw);
+    let mut boundaries = heading_boundaries(&raw[body_start..]);
+    for boundary in &mut boundaries {
+        boundary.start_byte += body_start;
+    }
+
     if boundaries.is_empty() {
-        return split_section(raw, 0, raw.len(), &[]);
+        return split_section(raw, body_start, raw.len(), &[]);
     }
 
     let mut chunks = Vec::new();
     let mut heading_path = Vec::new();
-    let mut section_start_byte = 0;
+    let mut section_start_byte = body_start;
 
     for boundary in boundaries {
         chunks.extend(split_section(
@@ -70,6 +96,18 @@ pub fn chunk(raw: &str) -> Vec<Chunk> {
         &heading_path,
     ));
     chunks
+}
+
+/// The largest character boundary at or below `index`.
+///
+/// `str::floor_char_boundary` is still unstable, and a caller-supplied offset
+/// must never be able to panic the indexer.
+fn floor_char_boundary(raw: &str, index: usize) -> usize {
+    let mut i = index.min(raw.len());
+    while i > 0 && !raw.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 #[derive(Debug)]
@@ -302,5 +340,111 @@ mod tests {
     fn chunk_is_send_sync_clone_debug() {
         fn bounds<T: Send + Sync + Clone + std::fmt::Debug>() {}
         bounds::<Chunk>();
+    }
+    // --- chunk_from (D48) ---
+
+    const OKF_DOC: &str = "---\ntype: Metric\ntitle: Daily Revenue\n---\n# Body\n\ntext here\n";
+
+    /// `body_start` of `OKF_DOC`, i.e. just past the closing delimiter line.
+    fn okf_body_start() -> usize {
+        OKF_DOC.find("# Body").unwrap()
+    }
+
+    #[test]
+    fn chunk_from_zero_is_exactly_chunk() {
+        for raw in [
+            "",
+            "hello",
+            "# H1\n\nbody",
+            "## B\nx",
+            OKF_DOC,
+            "---\nnot: okf\n---\n# H\n",
+        ] {
+            assert_eq!(chunk_from(raw, 0), chunk(raw), "mismatch for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn chunk_from_skips_the_preamble() {
+        let chunks = chunk_from(OKF_DOC, okf_body_start());
+        assert_eq!(chunks[0].byte_start, okf_body_start());
+        assert!(!chunks.iter().any(|c| c.text.contains("type: Metric")));
+    }
+
+    #[test]
+    fn chunk_from_keeps_offsets_absolute_in_the_input() {
+        // The D6 invariant, asserted against the stored document.
+        for chunk in chunk_from(OKF_DOC, okf_body_start()) {
+            assert_eq!(&OKF_DOC[chunk.byte_start..chunk.byte_end], chunk.text);
+        }
+    }
+
+    #[test]
+    fn chunk_from_finds_body_headings() {
+        let chunks = chunk_from(OKF_DOC, okf_body_start());
+        assert!(chunks.iter().any(|c| c.heading_path == vec!["Body"]));
+    }
+
+    #[test]
+    fn chunk_from_removes_the_phantom_setext_heading() {
+        // `title: Daily Revenue` followed by the closing `---` parses as a setext
+        // H2 when the frontmatter is included, polluting every heading_path.
+        let polluted = chunk(OKF_DOC);
+        assert!(
+            polluted
+                .iter()
+                .any(|c| c.heading_path.iter().any(|h| h.contains("title:"))),
+            "expected the pre-D48 phantom heading to be present"
+        );
+        let clean = chunk_from(OKF_DOC, okf_body_start());
+        assert!(
+            !clean
+                .iter()
+                .any(|c| c.heading_path.iter().any(|h| h.contains("title:"))),
+            "phantom setext heading leaked into {clean:?}"
+        );
+    }
+
+    #[test]
+    fn chunk_from_a_frontmatter_only_document_yields_no_chunks() {
+        // Correct: the metadata point carries this document, not a body chunk.
+        let raw = "---\ntype: Metric\n---\n";
+        assert!(chunk_from(raw, raw.len()).is_empty());
+    }
+
+    #[test]
+    fn chunk_from_past_the_end_does_not_panic() {
+        assert!(chunk_from("hello", 999).is_empty());
+    }
+
+    #[test]
+    fn chunk_from_a_non_char_boundary_does_not_panic() {
+        let raw = "\u{1f680}body";
+        // 1 and 2 are inside the leading four-byte character.
+        for offset in [1, 2, 3] {
+            let chunks = chunk_from(raw, offset);
+            for chunk in chunks {
+                assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_from_an_empty_input_yields_nothing() {
+        assert!(chunk_from("", 0).is_empty());
+        assert!(chunk_from("", 10).is_empty());
+    }
+
+    #[test]
+    fn chunk_from_splits_an_oversized_body_and_keeps_the_invariant() {
+        let big = "x".repeat(SOFT_CHAR_CAP * 3);
+        let raw = format!("---\ntype: Metric\n---\n# H\n\n{big}\n");
+        let body_start = raw.find("# H").unwrap();
+        let chunks = chunk_from(&raw, body_start);
+        assert!(chunks.len() > 1);
+        for chunk in chunks {
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+            assert!(chunk.byte_start >= body_start);
+        }
     }
 }

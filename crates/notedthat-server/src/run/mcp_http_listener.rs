@@ -48,6 +48,7 @@ fn test_config(mcp_http_bind: SocketAddr) -> Config {
         webdav_listen_addr: "127.0.0.1:0".parse().expect("test DAV addr is valid"),
         webdav_username: "webdav-user".to_string(),
         webdav_password: "webdav-pass".to_string(),
+        okf: crate::config::OkfConfig::default(),
         mcp_http_bind,
         mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],

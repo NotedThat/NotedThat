@@ -153,6 +153,7 @@ fn test_config(
         webdav_listen_addr: listeners.dav,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
+        okf: notedthat_server::config::OkfConfig::default(),
         mcp_http_bind: listeners.mcp,
         mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],

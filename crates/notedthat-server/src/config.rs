@@ -43,6 +43,25 @@ pub struct Config {
     pub mcp_http_allowed_hosts: Vec<String>,
     /// Maximum patchable object size in bytes (`NOTEDTHAT_MAX_PATCHABLE_SIZE`; default 100 MiB).
     pub max_patchable_size: u64,
+    /// OKF `index.md` / `log.md` maintenance settings (D48). Off by default.
+    pub okf: OkfConfig,
+}
+
+/// Settings for OKF reserved-file maintenance.
+///
+/// This is the one feature that rewrites files the user authored, so it is off
+/// unless an operator turns it on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OkfConfig {
+    /// Whether to maintain `index.md` at all (`NOTEDTHAT_OKF_MAINTAIN_INDEX`).
+    pub maintain_index: bool,
+    /// Knowledge bases opted in (`NOTEDTHAT_OKF_MAINTAIN_KBS`). Empty means every
+    /// declared KB, but only when `maintain_index` is set.
+    pub maintain_kbs: std::collections::BTreeSet<String>,
+    /// Whether to maintain `log.md` too (`NOTEDTHAT_OKF_MAINTAIN_LOG`).
+    ///
+    /// A separate switch, because `log.md` grows without bound.
+    pub maintain_log: bool,
 }
 
 /// Tracing output format.
@@ -206,6 +225,34 @@ impl Config {
             });
         }
 
+        let okf = OkfConfig {
+            maintain_index: matches!(
+                std::env::var("NOTEDTHAT_OKF_MAINTAIN_INDEX").as_deref(),
+                Ok("true" | "1")
+            ),
+            maintain_kbs: std::env::var("NOTEDTHAT_OKF_MAINTAIN_KBS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            maintain_log: matches!(
+                std::env::var("NOTEDTHAT_OKF_MAINTAIN_LOG").as_deref(),
+                Ok("true" | "1")
+            ),
+        };
+        // Fail fast on a typo rather than silently maintaining nothing (D39).
+        for slug in &okf.maintain_kbs {
+            if !kbs.keys().any(|declared| declared == slug) {
+                return Err(Error::Config {
+                    message: format!(
+                        "NOTEDTHAT_OKF_MAINTAIN_KBS names {slug:?}, which is not in NOTEDTHAT_KBS"
+                    ),
+                });
+            }
+        }
+
         Ok(Self {
             api_token,
             kbs,
@@ -223,6 +270,7 @@ impl Config {
             mcp_http_allowed_origins,
             mcp_http_allowed_hosts,
             max_patchable_size,
+            okf,
         })
     }
 }

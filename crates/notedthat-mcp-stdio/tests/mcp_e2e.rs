@@ -16,10 +16,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::p
 
 /// How long to wait for the server to bind after `run()` starts.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Startup provisions two containers' worth of backends — buckets,
+/// manifests and a Qdrant collection with its payload indexes — which
+/// measures around 15s on a cold, loaded machine. The previous 10s budget
+/// was already marginal and failed intermittently before OKF existed.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
@@ -215,6 +215,7 @@ fn test_config(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        okf: notedthat_server::config::OkfConfig::default(),
         max_patchable_size: 100 * 1024 * 1024,
     }
 }
@@ -367,7 +368,7 @@ async fn mcp_initialize_returns_valid_response() {
 
 #[tokio::test]
 #[ignore = "subprocess test — run with --ignored"]
-async fn mcp_tools_list_returns_all_nine() {
+async fn mcp_tools_list_returns_the_expected_tool_set() {
     let (mut child, mut stdin, mut stdout) =
         spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
 
@@ -409,6 +410,11 @@ async fn mcp_tools_list_returns_all_nine() {
         "delete",
         "move",
         "replace",
+        // OKF v0.2 (D48).
+        "okf_validate",
+        "okf_browse",
+        "okf_computation",
+        "okf_reindex_directory",
     ]
     .iter()
     .copied()
@@ -421,8 +427,8 @@ async fn mcp_tools_list_returns_all_nine() {
 
     assert_eq!(
         tools.len(),
-        10,
-        "expected exactly 10 tools, got {}: {actual_tools:?}",
+        14,
+        "expected exactly 14 tools, got {}: {actual_tools:?}",
         tools.len()
     );
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");

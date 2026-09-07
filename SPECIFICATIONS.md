@@ -36,7 +36,7 @@ Three logical layers:
 | D12 | Chunking strategy | **Heading-aware.** Split at markdown H1/H2/H3 boundaries with a soft size cap; every chunk carries `byte_start`/`byte_end`. |
 | D13 | Search shape | **Hybrid BM25 + dense vector,** fused. Qdrant is the vector store. |
 | D14 | Qdrant hybrid impl | **Server-side BM25 via `qdrant/bm25` inference model** (no client tokenizer). Named vectors: `dense` + `sparse_bm25` (with `Modifier::Idf`). Query API with `prefetch` + `fusion: RRF` (default) or `DBSF`. `qdrant-client` Rust crate ≥ 1.15.2 (minimum for server-side `qdrant/bm25` inference). |
-| D15 | Markdown parsing stack | v1 uses `pulldown-cmark` byte-offset iteration + a heading-aware chunker (§6.3). `comrak` rejected: line/column spans, not bytes. `gray_matter` / frontmatter parsing is `[POST-v1]` per D33. |
+| D15 | Markdown parsing stack | v1 uses `pulldown-cmark` byte-offset iteration + a heading-aware chunker (§6.3). `comrak` rejected: line/column spans, not bytes. Frontmatter parsing landed in D48 using `serde-saphyr` (panic-free, budgeted — the frontmatter is untrusted third-party content on the indexing hot path). `gray_matter` was not adopted: it wraps `serde_yaml`, which is archived. |
 | D16 | WebDAV crate | **`dav-server` v0.11** (github.com/messense/dav-server-rs). Custom `DavFileSystem` backed by our HTTP API (per D29 all surfaces wrap the API). Reference impl: RustFS `WebDavDriver`. Streaming PUT accumulates into a write buffer (S3 has no streaming PUT). |
 | D17 | WebDAV LOCK | **Not implemented, ever.** S3 Object Lock is a retention primitive, not a coordination primitive — semantically incompatible with WebDAV LOCK. Optimistic concurrency (D9) is the only concurrency contract we offer. v1 rejects `LOCK`/`UNLOCK`; FakeLs is deferred (D34). |
 | D18 | Embeddings | **External endpoints only.** No local embedding models. Pluggable adapter over an OpenAI-compatible HTTP interface (works with OpenAI, Voyage, Cohere, self-hosted vLLM/Ollama/TEI). Config via env vars per D10. Same endpoint used at index time and query time. |
@@ -54,7 +54,7 @@ Three logical layers:
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other backends (§8.1) are supported at deployer-choice; NotedThat itself makes no runtime distinction. |
 | D31 | MCP transport (v1) | **stdio only in v1; streamable HTTP added in M8.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport (streamable) shipped in M8: `notedthat-server` binds a third listener (`NOTEDTHAT_MCP_HTTP_BIND`, default `0.0.0.0:8082`) serving stateless JSON-response MCP at `POST /mcp` with Bearer auth. Legacy SSE paths return 405. |
 | D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared in env vars** — no admin API, no CLI in v1. A `NOTEDTHAT_KBS` env var lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
-| D33 | Frontmatter handling (v1) | **Fully raw.** Frontmatter is not parsed, skipped, mapped, or interpreted in v1. If a markdown file starts with YAML/TOML/JSON frontmatter, those bytes are treated as ordinary markdown text for chunking, indexing, and byte offsets. Frontmatter-aware tag extraction and payload mapping are `[POST-v1]`. |
+| D33 | Frontmatter handling (v1) | **Fully raw.** Frontmatter is not parsed, skipped, mapped, or interpreted in v1. If a markdown file starts with YAML/TOML/JSON frontmatter, those bytes are treated as ordinary markdown text for chunking, indexing, and byte offsets. Frontmatter-aware tag extraction and payload mapping are `[POST-v1]`. **Amended by D48**: documents that are OKF v0.2-conformant are parsed and annotated. This row remains normative for every other document. |
 | D34 | WebDAV FakeLs | **`[POST-v1]`** Not enabled in v1. Consequence: WebDAV clients that require `LOCK` before `PUT` (macOS Finder for saving, some Office suites, some mobile Files apps) will treat the mount as read-only or refuse to save. Read-only browsing works. API + MCP writes are unaffected. Add `FakeLs` when a real client scenario demands it. |
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D36 | Multipart upload | Switch to S3 multipart above **32 MiB** total size; part size **8 MiB** (matches `aws-sdk-s3` defaults). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
@@ -69,6 +69,7 @@ Three logical layers:
 | D45 | Line-range reads | **First-class line-range read capability.** HTTP GET accepts `Range: lines=<first>-<last>` (1-based inclusive) and returns 206 + `Content-Range: lines <first>-<last>/<total>` + `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end). MCP `read` gains `line_start`/`line_end` args (mutually exclusive with `byte_start`/`byte_end`). Line index recomputed per request (no sidecar in v1; see §7.2). Backend byte-range semantics unchanged. |
 | D46 | Partial writes (PATCH) | **First-class partial-write capability via HTTP PATCH.** New route `PATCH /v1/knowledgebases/{kb_slug}/{path}`. Modes: `Content-Range: bytes <first>-<last>/*` OR `Content-Range: lines <first>-<last>/*` (Insert form `lines <N>-<N-1>/*`) OR `NT-Patch-Mode: append` (mutually exclusive with `Content-Range`). `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for append (server uses head_etag internally — single round-trip). `If-Match: *` and multi-value `If-Match` REJECTED with 400 (v1 clarity). Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` — NOT caller's If-Match). Bounded 2× retry on GET or PUT PreconditionFailed. Post-splice size cap `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). `IndexEvent::Upsert` unchanged. MCP gains `edit` + `append` tools. WebDAV surface unchanged. PATCH correctness note: requires backend to enforce `If-Match` atomically on PUT — see §8.1. |
 | D47 | String-based edits | **Content-based edit endpoint.** MCP `replace(old_string, new_string, if_match, replace_all?)` + `POST /v1/knowledgebases/{kb_slug}/replace/{*path}`. Server-side exact-byte UTF-8 substring search; splices under `If-Match` with the same two-ETag CAS pattern as PATCH (D46). Zero matches → 422 `no_match`; multiple matches with `replace_all=false` → 422 `ambiguous_match { match_count }`; both leave storage byte-identical. `replace_all=true` replaces every non-overlapping occurrence left-to-right in one splice. Post-splice size cap reuses `NOTEDTHAT_MAX_PATCHABLE_SIZE`. WebDAV unchanged. Complements offset-based PATCH (D46); does not replace it. |
+| D48 | OKF v0.2 frontmatter (amends D33) | **Parse and annotate; never execute.** A markdown object whose leading `---` block parses as a YAML mapping carrying a non-empty string `type` is an Open Knowledge Format v0.2 concept. Its frontmatter is indexed as a **separate metadata point** — its own Qdrant point, with the frontmatter's real byte range, its `text` payload the verbatim stored bytes, and its dense vector and BM25 document built from a rendered prose form of the fields, so metadata is independently *searchable* and not merely filterable. Its body is chunked from `body_start` onward via `chunker::chunk_from`, with offsets still absolute in the stored object, so D6 is intact and `raw[byte_start..byte_end] == text` still holds for every chunk. Derived payload fields (`chunk_kind`, `okf_type`, `okf_title`, `okf_description`, `okf_resource`, `okf_status`, `okf_trust`, `okf_stale_after`, `okf_stale_after_raw`, `okf_runtime`, and the previously reserved `tags`) are echoed on each `SearchHit` as an optional `okf` object. **Every other document keeps D33's fully-raw behaviour verbatim.** Trust tier is derived at index time from `verified` (content-derived, time-invariant); staleness is evaluated **per request** against the index-time absolute `stale_after`, never baked in. Search returns everything by default and merely annotates trust and staleness — `okf_type` / `okf_status` / `okf_min_trust` / `okf_runtime` / `chunk_kind` / `exclude_stale` / `okf_only` are opt-in filters, because OKF §11 forbids rejecting a concept for missing trust data. Conformance validation, index browsing and contract serving live in a sibling route namespace `/v1/okf/{kb_slug}/…`, so no object key is shadowed the way `/v1/knowledgebases/{kb_slug}/search` shadows the key `search`. `type: Attested Computation` is catalogued and served as a **contract only**: NotedThat never executes anything, never issues an outbound HTTP request on an agent's behalf (an absolute URL in `computation`, `executor.resource` or `attester.resource` is returned as a string and never fetched), and never writes attestation receipts. `index.md` / `log.md` maintenance is **opt-in per KB and off by default** (`NOTEDTHAT_OKF_MAINTAIN_INDEX`); the explicit `okf_reindex_directory` tool is always available and dry-runs by default. Bundle-root `okf_version` is not a payload field: it lives in a different S3 object and §6.1 forbids cross-object reads on the indexing path. |
 
 ---
 
@@ -177,9 +178,22 @@ Payload schema:
 | `mtime`            | int      | last-modified Unix timestamp |
 | `mime`             | string   | source MIME |
 | `heading_path`     | string[] | markdown headings, e.g. `["Introduction", "Motivation"]` |
-| `tags` `[POST-v1]` | string[] | Deferred — no source until frontmatter parsing lands (D33). Not indexed. |
+| `tags` | string[] | Populated from OKF frontmatter `tags` (D48). Keyword-indexed. Empty for non-OKF documents. |
+| `chunk_kind` | string | `"body"` or `"metadata"` (D48). |
+| `content_hash` | string | SHA-256 of the whole object, for idempotent reindex detection. |
+| `text` | string | The chunk text; source of `preview`. For a metadata point this is the **verbatim frontmatter bytes**, while the vectors are built from a rendered prose form (D48). |
+| `okf_type` | string | OKF `type`. Present only on OKF documents, and its presence is the OKF marker. |
+| `okf_title` / `okf_description` | string | Capped at 200 / 500 characters — the annotation is copied onto every point of the document. |
+| `okf_resource` | string | OKF `resource` URI. |
+| `okf_status` | string | `draft` \| `stable` \| `deprecated`. Always written for an OKF document: an absent `status` key is stored as `stable`. |
+| `okf_trust` | string | `unverified` \| `machine_confirmed` \| `human_reviewed`, derived at index time from `verified`. |
+| `okf_stale_after` | int | Absolute Unix seconds. **Omitted entirely** when `stale_after` is absent or unparseable — no sentinel, so Qdrant's `IsEmpty` means exactly "no expiry". |
+| `okf_stale_after_raw` | string | The lexical form, echoed so a client can re-evaluate against its own clock. Not indexed. |
+| `okf_runtime` | string | Attested Computation `runtime`, for discovery. Catalogue only. |
 
-Payload indexes (created at collection provisioning): `object_key`, `etag`, `mtime`, `heading_path`. Adding indexes requires a schema-version bump on the collection name.
+Payload indexes: `object_key`, `etag`, `mime`, `mtime`, `heading_path`, plus (D48) `tags`, `chunk_kind`, `okf_type`, `okf_status`, `okf_trust`, `okf_runtime`, `okf_resource` as Keyword and `okf_stale_after` as Integer.
+
+Payload indexes are **(re-)ensured on every startup**, including for a collection that already exists. Adding a field or an index therefore does not require a schema-version bump on the collection name — the M4→M5 extension already set that precedent, and D48 followed it. (Before D48, `ensure_collection` returned early when the collection existed, so an in-place upgrade silently gained no new indexes; the documented "re-PUT to backfill" remedy only ever rewrote payloads.)
 
 Search: `prefetch` on `dense` + `prefetch` on `sparse_bm25` fused via RRF. Sparse prefetch limit bumped when a selective payload filter is present (§8.6).
 
@@ -366,12 +380,12 @@ Env vars (v2 additions):
 
 ### 6.10 MCP tool surface `[DECIDED — D25]`
 
-All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check). 10 tools total.
+All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args map directly to HTTP conditional headers (per D9 — forwarded to backend, no capability check). 14 tools total (10, plus 4 for OKF v0.2 per D48).
 
 | Tool | Purpose |
 |---|---|
 | `list_knowledgebases()` | Returns `[{kb_slug, display_name, description?, perms}]`; in v1 this is every KB declared in `NOTEDTHAT_KBS` |
-| `search(kb, query, filters?, limit?)` | Hybrid search; returns chunks with `{object_key, byte_start, byte_end, heading_path, score, preview}` |
+| `search(kb, query, filters?, limit?)` | Hybrid search; returns chunks with `{object_key, byte_start, byte_end, heading_path, score, preview, okf?}`. `filters` is `notedthat_core::search::SearchFilter` itself rather than a mirror of it, so a filter added there reaches MCP automatically (D48) |
 | `read(kb, path, byte_start?, byte_end?, line_start?, line_end?)` | Byte-range or line-range read of an object. `byte_*` and `line_*` args are mutually exclusive; provide one pair or omit both for a full read. |
 | `write(kb, path, content, if_match?, if_none_match?)` | Create/update object |
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
@@ -380,6 +394,10 @@ All tools take `kb` (the slug) where relevant. `if_match` / `if_none_match` args
 | `edit(kb, path, line_start?, line_end?, byte_start?, byte_end?, content, if_match)` | Byte-range or line-range PATCH; mandatory If-Match. Provide `line_start`/`line_end` for line mode or `byte_start`/`byte_end` for byte mode (mutually exclusive). Byte mode requires strict `byte_start < byte_end`; byte-mode insert is not supported in v1. |
 | `append(kb, path, content, if_match?)` | Append to EOF; if_match optional (server obtains ETag internally — single round-trip) |
 | `replace(kb, path, old_string, new_string, if_match, replace_all?)` | Content-based server-side substring replace with mandatory If-Match; 422 `no_match` / `ambiguous_match` on non-unique matches (D47) |
+| `okf_validate(kb, path?, prefix?, limit?, cursor?, check_links?)` | OKF §11 conformance report for one object or one page of a bundle (D48). Broken links, unknown types and unknown keys are warnings, never errors |
+| `okf_browse(kb, dir?)` | Parsed `index.md` for a directory with every entry resolved to a KB key; falls back to a listing when absent (D48) |
+| `okf_computation(kb, path)` | Attested Computation contract: runtime, parameters, computation source, and executor/attester references. **Never executed** (D48) |
+| `okf_reindex_directory(kb, dir?, dry_run?)` | Rebuild a directory's `index.md` from the concepts present. Dry-runs by default (D48) |
 
 Resources: expose `notedthat://<kb_slug>/<percent-encoded path>` as MCP Resources for browsable clients — **shipped in M8** (D37). Flat listing with opaque base64 cursor across KB boundaries; no `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents`.
 
@@ -395,7 +413,8 @@ notedthat/
 └── crates/
     ├── notedthat-core/           # domain types, traits, static auth checks; JWT verify post-v1
     ├── notedthat-storage-s3/     # S3 adapter (aws-sdk-s3); implements Storage trait
-    ├── notedthat-indexer/        # chunker + embedder client + Qdrant integration
+    ├── notedthat-indexer/        # chunker + metadata extraction + embedder client + Qdrant integration
+    ├── notedthat-okf/            # Open Knowledge Format v0.2 — pure parsing, conformance, link resolution
     ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
     ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
     ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
@@ -405,8 +424,9 @@ notedthat/
 
 Dep graph:
 - `notedthat-core` — no deps on other workspace crates
-- `notedthat-storage-s3`, `notedthat-indexer` — depend on core
-- `notedthat-api-http` — depends on core + storage + indexer
+- `notedthat-storage-s3`, `notedthat-okf` — depend on core
+- `notedthat-indexer` — depends on core + okf
+- `notedthat-api-http` — depends on core + storage + indexer + okf
 - `notedthat-webdav` — depends on core + an HTTP client to the local API
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
 - `notedthat-server` — depends on api-http + webdav + **notedthat-mcp** (deliberate M8 extension, plan §W1.3); runs three coordinated listeners: HTTP API + WebDAV + MCP HTTP
@@ -524,6 +544,12 @@ All routes are prefixed with `/v1`. Object paths are percent-encoded into a sing
 | `PATCH` | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write (bytes/lines splice, append). Requires `If-Match` for bytes/lines; optional for append. |
 | `POST` | `/v1/knowledgebases/{kb_slug}/search` | Hybrid search. Body: `{ query, filters?, limit? }`. Response shape mirrors MCP `search` (§6.10) |
 | `POST` | `/v1/knowledgebases/{kb_slug}/replace/{*path}` | String replace with mandatory `If-Match`; body `{ old_string, new_string, replace_all? }`; response `{ etag, match_count, total_bytes }` per D47 |
+| `POST` | `/v1/okf/{kb_slug}/validate` | OKF §11 conformance report for one object (`path`) or one page of a bundle (`prefix`) (D48) |
+| `GET` | `/v1/okf/{kb_slug}/index?dir=` | Parsed `index.md` with entries resolved to KB keys; falls back to a listing (D48) |
+| `GET` | `/v1/okf/{kb_slug}/computation?path=` | Attested Computation contract. **Never executed, and no outbound fetch on the caller's behalf** (D48) |
+| `POST` | `/v1/okf/{kb_slug}/reindex` | Rebuild a directory's `index.md`; dry-runs by default (D48) |
+
+**Reserved object keys.** Static segments under `/v1/knowledgebases/{kb_slug}/` shadow object keys of the same name: `search` and `replace/**` are not addressable as objects over the HTTP API (they remain reachable over WebDAV, which has no such routes). OKF deliberately does **not** add to that list — its routes live under `/v1/okf/…`, a sibling namespace that diverges before `{kb_slug}`, and its target object is a query parameter rather than a path segment (D48).
 
 #### Path encoding
 
@@ -563,7 +589,6 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - **Auth**: JWT (D27), per-KB + per-prefix ACL, HTTP admin endpoints for KB create / token mint.
 - **WebDAV**: `FakeLs` for save-workflow clients (D34).
 - **KB lifecycle**: delete + rename (D32).
-- **Content**: frontmatter parsing → payload mapping (D33).
 - **MCP**: `subscribe`/`listChanged` Resources capability (post-v1); per-KB access control for Resources.
 - **Tuning**: env-var overrides for upload buffer / multipart thresholds (D35, D36).
 - **Storage**: full-rebuild-from-S3 as a first-class operation.

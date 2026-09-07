@@ -12,10 +12,10 @@ use tokio::task::JoinHandle;
 
 /// How long to wait for the server to bind after `run()` starts.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Startup provisions two containers' worth of backends — buckets,
+/// manifests and a Qdrant collection with its payload indexes — which
+/// measures around 15s on a cold, loaded machine. The previous 10s budget
+/// was already marginal and failed intermittently before OKF existed.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub const API_TOKEN: &str = "e2e-test-token";

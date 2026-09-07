@@ -101,21 +101,45 @@ async fn build_infrastructure(
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,
-        indexer_tx,
+        indexer_tx: indexer_tx.clone(),
         searcher,
     };
 
-    let worker_handle = tokio::spawn(
-        IndexerWorker::new(
-            storage.clone() as Arc<dyn notedthat_core::Storage>,
-            embedder.clone(),
-            qdrant_client.clone(),
-            indexer_rx,
-            indexer_shutdown.clone(),
-            config.embedder.batch_size,
-        )
-        .run(),
+    let mut indexer_worker = IndexerWorker::new(
+        storage.clone() as Arc<dyn notedthat_core::Storage>,
+        embedder.clone(),
+        qdrant_client.clone(),
+        indexer_rx,
+        indexer_shutdown.clone(),
+        config.embedder.batch_size,
     );
+
+    // OKF reserved-file maintenance (D48). Off unless an operator switched it on,
+    // in which case a second bounded queue and its own worker do the S3 writes —
+    // the indexer worker only produces events, so it can never feed itself.
+    if config.okf.maintain_index {
+        let (okf_tx, okf_rx) = mpsc::channel(1024);
+        indexer_worker = indexer_worker.with_okf_maintenance(okf_tx);
+        let maintenance = notedthat_write::OkfMaintenanceWorker::new(
+            storage.clone() as Arc<dyn notedthat_core::Storage>,
+            indexer_tx.clone(),
+            okf_rx,
+            indexer_shutdown.clone(),
+            notedthat_write::OkfMaintenanceConfig {
+                kbs: config.okf.maintain_kbs.clone(),
+                maintain_log: config.okf.maintain_log,
+            },
+        );
+        tracing::info!(
+            target: "notedthat::okf",
+            kbs = ?config.okf.maintain_kbs,
+            maintain_log = config.okf.maintain_log,
+            "OKF index maintenance enabled"
+        );
+        tokio::spawn(maintenance.run());
+    }
+
+    let worker_handle = tokio::spawn(indexer_worker.run());
 
     Ok((state, dav_state, indexer_shutdown, worker_handle))
 }

@@ -14,10 +14,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::p
 
 /// How long to wait for the server to bind after `run()` starts.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Startup provisions two containers' worth of backends — buckets,
+/// manifests and a Qdrant collection with its payload indexes — which
+/// measures around 15s on a cold, loaded machine. The previous 10s budget
+/// was already marginal and failed intermittently before OKF existed.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub const API_TOKEN: &str = "e2e-test-token";
@@ -204,7 +204,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
             url: backends.qdrant.to_string(),
             api_key: None,
             timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
+            connect_timeout_ms: 30_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: backends.embedder.to_string(),
@@ -219,6 +219,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
         webdav_listen_addr: listeners.dav,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
+        okf: notedthat_server::config::OkfConfig::default(),
         mcp_http_bind: listeners.mcp,
         mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],

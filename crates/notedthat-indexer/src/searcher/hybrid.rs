@@ -6,6 +6,7 @@ use crate::qdrant::QdrantClient;
 use crate::worker::collection_name;
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
+use notedthat_core::okf::{OkfAnnotation, OkfStatus, OkfTrust};
 use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse, ValidatedRequest};
 use qdrant_client::qdrant::{
     Document, Fusion, PrefetchQueryBuilder, Query, QueryPointsBuilder, ScoredPoint,
@@ -79,10 +80,14 @@ impl super::Searcher for HybridSearcher {
             ));
         };
 
+        // One clock reading per request, threaded through both filter translation
+        // and hit annotation so staleness is evaluated consistently (D48).
+        let now_unix = super::now_unix();
+
         let translated = request
             .filter
             .as_ref()
-            .map(super::filter::translate_filter)
+            .map(|filter| super::filter::translate_filter(filter, now_unix))
             .unwrap_or_default();
         tracing::Span::current()
             .record("qdrant_filter_present", translated.qdrant.is_some())
@@ -133,7 +138,7 @@ impl super::Searcher for HybridSearcher {
         let mut hits: Vec<SearchHit> = response
             .result
             .into_iter()
-            .map(point_to_hit)
+            .map(|point| point_to_hit(point, now_unix))
             .collect::<Result<Vec<_>, _>>()?;
 
         hits.retain(|hit| translated.post.matches(hit.object_key.as_str()));
@@ -143,7 +148,7 @@ impl super::Searcher for HybridSearcher {
     }
 }
 
-fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
+fn point_to_hit(point: ScoredPoint, now_unix: i64) -> Result<SearchHit, SearchError> {
     use qdrant_client::qdrant::value::Kind;
 
     let payload = point.payload;
@@ -205,7 +210,65 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
         heading_path,
         score: point.score,
         preview,
+        okf: okf_annotation(&payload, now_unix),
     })
+}
+
+/// Rebuild the OKF annotation from a point's payload.
+///
+/// `okf_type` is written for every OKF document and only for OKF documents, so
+/// its presence is the marker. Staleness is evaluated here against `now_unix`
+/// rather than read from the payload, because `okf_stale_after` is an absolute
+/// instant that the clock walks past (D48).
+fn okf_annotation(
+    payload: &std::collections::HashMap<String, qdrant_client::qdrant::Value>,
+    now_unix: i64,
+) -> Option<OkfAnnotation> {
+    use qdrant_client::qdrant::value::Kind;
+
+    let string_field = |key: &str| {
+        payload.get(key).and_then(|value| match &value.kind {
+            Some(Kind::StringValue(value)) => Some(value.clone()),
+            _ => None,
+        })
+    };
+    let int_field = |key: &str| {
+        payload.get(key).and_then(|value| match &value.kind {
+            Some(Kind::IntegerValue(value)) => Some(*value),
+            _ => None,
+        })
+    };
+
+    let mut annotation = OkfAnnotation::new(string_field("okf_type")?);
+    annotation.title = string_field("okf_title");
+    annotation.description = string_field("okf_description");
+    annotation.resource = string_field("okf_resource");
+    annotation.runtime = string_field("okf_runtime");
+    annotation.stale_after = string_field("okf_stale_after_raw");
+    annotation.status = string_field("okf_status")
+        .and_then(|s| OkfStatus::parse(&s))
+        .unwrap_or(OkfStatus::Stable);
+    annotation.trust = string_field("okf_trust")
+        .and_then(|s| OkfTrust::parse(&s))
+        .unwrap_or(OkfTrust::Unverified);
+    annotation.stale = int_field("okf_stale_after").is_some_and(|t| now_unix >= t);
+    annotation.tags = payload
+        .get("tags")
+        .and_then(|value| match &value.kind {
+            Some(Kind::ListValue(list)) => Some(
+                list.values
+                    .iter()
+                    .filter_map(|value| match &value.kind {
+                        Some(Kind::StringValue(value)) => Some(value.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    Some(annotation)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -297,7 +360,7 @@ mod tests {
         payload.insert("heading_path".to_string(), vec!["A", "B"].into());
         payload.insert("text".to_string(), "hello world".to_string().into());
 
-        let hit = point_to_hit(scored_point(payload, 0.5)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.5), 0).expect("valid hit");
 
         assert_eq!(hit.object_key.as_str(), "docs/a.md");
         assert_eq!(hit.byte_start, 5);
@@ -314,7 +377,7 @@ mod tests {
         payload.insert("byte_start".to_string(), 0_i64.into());
         payload.insert("byte_end".to_string(), 100_i64.into());
 
-        let hit = point_to_hit(scored_point(payload, 0.5)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.5), 0).expect("valid hit");
 
         assert!(hit.preview.is_empty());
         assert_eq!(hit.object_key.as_str(), "docs/a.md");
@@ -323,7 +386,8 @@ mod tests {
 
     #[test]
     fn point_to_hit_missing_object_key_returns_error() {
-        let err = point_to_hit(scored_point(HashMap::new(), 0.5)).expect_err("missing object key");
+        let err =
+            point_to_hit(scored_point(HashMap::new(), 0.5), 0).expect_err("missing object key");
 
         assert!(matches!(err, SearchError::Internal { .. }));
     }
@@ -333,7 +397,7 @@ mod tests {
         let mut payload = HashMap::new();
         payload.insert("object_key".to_string(), "/docs/a.md".to_string().into());
 
-        let err = point_to_hit(scored_point(payload, 0.5)).expect_err("invalid object key");
+        let err = point_to_hit(scored_point(payload, 0.5), 0).expect_err("invalid object key");
 
         assert!(matches!(err, SearchError::Internal { .. }));
     }
@@ -343,7 +407,7 @@ mod tests {
         let mut payload = HashMap::new();
         payload.insert("object_key".to_string(), "docs/b.md".to_string().into());
 
-        let hit = point_to_hit(scored_point(payload, 0.1)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.1), 0).expect("valid hit");
 
         assert!(hit.heading_path.is_empty());
     }
@@ -355,7 +419,7 @@ mod tests {
         payload.insert("byte_start".to_string(), (-1_i64).into());
         payload.insert("byte_end".to_string(), (-2_i64).into());
 
-        let hit = point_to_hit(scored_point(payload, 0.1)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.1), 0).expect("valid hit");
 
         assert_eq!(hit.byte_start, 0);
         assert_eq!(hit.byte_end, 0);
@@ -368,7 +432,7 @@ mod tests {
         payload.insert("object_key".to_string(), "docs/c.md".to_string().into());
         payload.insert("text".to_string(), long_text.into());
 
-        let hit = point_to_hit(scored_point(payload, 0.2)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.2), 0).expect("valid hit");
 
         assert_eq!(hit.preview.chars().count(), 500);
     }
@@ -386,7 +450,7 @@ mod tests {
             },
         );
 
-        let hit = point_to_hit(scored_point(payload, 0.3)).expect("valid hit");
+        let hit = point_to_hit(scored_point(payload, 0.3), 0).expect("valid hit");
 
         assert_eq!(hit.heading_path, vec!["A", "B"]);
     }
