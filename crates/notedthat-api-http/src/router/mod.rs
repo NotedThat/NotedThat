@@ -412,6 +412,18 @@ mod patch_route {
                 self.inner.get_object(kb, path, range, conditionals).await
             }
 
+            async fn get_object_stream(
+                &self,
+                kb: &KbSlug,
+                path: &ObjectPath,
+                range: Option<Vec<ByteRange>>,
+                conditionals: ConditionalHeaders,
+            ) -> Result<notedthat_core::ObjectStream, StorageError> {
+                self.inner
+                    .get_object_stream(kb, path, range, conditionals)
+                    .await
+            }
+
             async fn put_object(
                 &self,
                 _kb: &KbSlug,
@@ -421,6 +433,29 @@ mod patch_route {
                 _conditionals: ConditionalHeaders,
             ) -> Result<PutOutcome, StorageError> {
                 Err(StorageError::PreconditionFailed)
+            }
+
+            async fn put_staged_object(
+                &self,
+                _kb: &KbSlug,
+                _path: &ObjectPath,
+                _body: notedthat_core::StagedBody,
+                _content_type: Option<&str>,
+                _conditionals: ConditionalHeaders,
+            ) -> Result<PutOutcome, StorageError> {
+                Err(StorageError::PreconditionFailed)
+            }
+
+            async fn copy_object(
+                &self,
+                kb: &KbSlug,
+                source: &ObjectPath,
+                destination: &ObjectPath,
+                options: notedthat_core::CopyObjectOptions,
+            ) -> Result<PutOutcome, StorageError> {
+                self.inner
+                    .copy_object(kb, source, destination, options)
+                    .await
             }
 
             async fn delete_object(

@@ -9,11 +9,12 @@ use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 
 use crate::{
-    ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
-    ObjectRead, PutOutcome, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
+    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
 };
 
 #[derive(Clone)]
@@ -265,6 +266,21 @@ impl Storage for InMemoryStorage {
         })
     }
 
+    async fn get_object_stream(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectStream, StorageError> {
+        let read = self.get_object(kb, path, range, conditionals).await?;
+        Ok(ObjectStream {
+            chunks: Box::pin(futures::stream::once(async move { Ok(read.bytes) })),
+            meta: read.meta,
+            content_range: read.content_range,
+        })
+    }
+
     async fn put_object(
         &self,
         kb: &KbSlug,
@@ -283,6 +299,79 @@ impl Storage for InMemoryStorage {
             StoredObject {
                 bytes,
                 content_type: content_type.map(str::to_string),
+                etag: etag.clone(),
+                last_modified: SystemTime::now(),
+            },
+        );
+        Ok(PutOutcome { etag: Some(etag) })
+    }
+
+    async fn put_staged_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        body: StagedBody,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        let bytes = if let Some(bytes) = body.memory_bytes() {
+            bytes.clone()
+        } else {
+            let capacity = usize::try_from(body.len()).map_err(|source| StorageError::Other {
+                source: Box::new(source),
+            })?;
+            let mut reader = body.open().await.map_err(|source| StorageError::Other {
+                source: Box::new(source),
+            })?;
+            let mut bytes = Vec::with_capacity(capacity);
+            reader
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|source| StorageError::Other {
+                    source: Box::new(source),
+                })?;
+            Bytes::from(bytes)
+        };
+        self.put_object(kb, path, bytes, content_type, conditionals)
+            .await
+    }
+
+    async fn copy_object(
+        &self,
+        kb: &KbSlug,
+        source: &ObjectPath,
+        destination: &ObjectPath,
+        options: CopyObjectOptions,
+    ) -> Result<PutOutcome, StorageError> {
+        let mut inner = self.inner.write().await;
+        let source_key = (kb.as_str().to_string(), source.as_str().to_string());
+        let destination_key = (kb.as_str().to_string(), destination.as_str().to_string());
+        let source_object =
+            inner
+                .objects
+                .get(&source_key)
+                .cloned()
+                .ok_or_else(|| StorageError::NotFound {
+                    key: source.as_str().to_string(),
+                })?;
+        if options
+            .source_if_match
+            .as_ref()
+            .is_some_and(|etag| !matches_if_match(&source_object.etag, etag))
+        {
+            return Err(StorageError::PreconditionFailed);
+        }
+        let destination_conditions = ConditionalHeaders {
+            if_none_match: options.destination_if_none_match,
+            ..ConditionalHeaders::default()
+        };
+        evaluate_write_preconditions(inner.objects.get(&destination_key), &destination_conditions)?;
+        let etag = source_object.etag.clone();
+        inner.objects.insert(
+            destination_key,
+            StoredObject {
+                bytes: source_object.bytes,
+                content_type: options.content_type.or(source_object.content_type),
                 etag: etag.clone(),
                 last_modified: SystemTime::now(),
             },

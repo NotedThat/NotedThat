@@ -8,7 +8,7 @@ mod mime;
 pub mod patch;
 pub mod replace;
 
-pub use commit::{MAX_UPLOAD_BYTES, check_size, commit, commit_delete};
+pub use commit::{MAX_UPLOAD_BYTES, check_size, commit, commit_copy, commit_delete};
 pub use error::WriteError;
 pub use mime::sniff_content_type;
 pub use patch::{PatchMode, patch};

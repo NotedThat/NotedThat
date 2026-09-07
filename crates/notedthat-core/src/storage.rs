@@ -8,6 +8,34 @@ use crate::range::ByteRange;
 use crate::slug::KbSlug;
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::Stream;
+use std::pin::Pin;
+
+use crate::staging::StagedBody;
+
+/// Ordered chunks returned by a streaming object read.
+pub type ObjectChunkStream = Pin<Box<dyn Stream<Item = Result<Bytes, StorageError>> + Send>>;
+
+/// Metadata and ordered chunks returned without materializing the object.
+pub struct ObjectStream {
+    /// Ordered object body chunks.
+    pub chunks: ObjectChunkStream,
+    /// Associated metadata.
+    pub meta: ObjectMeta,
+    /// Backend `Content-Range` value for range reads.
+    pub content_range: Option<String>,
+}
+
+/// Preconditions and metadata for a server-side object copy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CopyObjectOptions {
+    /// Required source `ETag` match when present.
+    pub source_if_match: Option<String>,
+    /// Required destination non-match condition when present.
+    pub destination_if_none_match: Option<String>,
+    /// Content type stored on the destination.
+    pub content_type: Option<String>,
+}
 
 /// The bytes and metadata returned by a GET or HEAD operation.
 pub struct ObjectRead {
@@ -97,6 +125,15 @@ pub trait Storage: Send + Sync {
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError>;
 
+    /// Fetch metadata and an ordered body stream without whole-object buffering.
+    async fn get_object_stream(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<Vec<ByteRange>>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectStream, StorageError>;
+
     /// Store an object, overwriting any existing object at the same path.
     ///
     /// The `content_type` is stored with the object and echoed on GET/HEAD.
@@ -108,6 +145,25 @@ pub trait Storage: Send + Sync {
         bytes: Bytes,
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError>;
+
+    /// Store an owned staged body without loading file-backed bodies into memory.
+    async fn put_staged_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        body: StagedBody,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError>;
+
+    /// Copy an object within one KB using backend-native conditional copy.
+    async fn copy_object(
+        &self,
+        kb: &KbSlug,
+        source: &ObjectPath,
+        destination: &ObjectPath,
+        options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError>;
 
     /// Delete an object.

@@ -1,7 +1,9 @@
 //! Shared commit operations for object writes and deletes.
 
-use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, PutOutcome, Storage, StorageError};
+use notedthat_core::{
+    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, PutOutcome, StagedBody, Storage,
+    StorageError,
+};
 use notedthat_indexer::IndexEvent;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
@@ -22,21 +24,53 @@ pub fn check_size(size: u64, limit: u64) -> Result<(), WriteError> {
 }
 
 /// Store an object and enqueue a best-effort index upsert event.
-pub async fn commit(
+pub async fn commit<B: Into<StagedBody>>(
     storage: &dyn Storage,
     indexer_tx: &Sender<IndexEvent>,
     kb: &KbSlug,
     path: &ObjectPath,
-    bytes: Bytes,
+    body: B,
     caller_content_type: Option<&str>,
     conditionals: ConditionalHeaders,
 ) -> Result<PutOutcome, WriteError> {
-    check_size(bytes.len() as u64, MAX_UPLOAD_BYTES)?;
+    let body = body.into();
+    check_size(body.len(), MAX_UPLOAD_BYTES)?;
+    let _prefix = body.prefix(512).await.map_err(|source| {
+        WriteError::Storage(StorageError::Other {
+            source: Box::new(source),
+        })
+    })?;
     let mime = sniff_content_type(caller_content_type, path);
     let outcome = storage
-        .put_object(kb, path, bytes, Some(&mime), conditionals)
+        .put_staged_object(kb, path, body, Some(&mime), conditionals)
         .await?;
 
+    enqueue_upsert(indexer_tx, kb, path, &outcome)?;
+    Ok(outcome)
+}
+
+/// Copy an object natively and enqueue its destination for indexing.
+pub async fn commit_copy(
+    storage: &dyn Storage,
+    indexer_tx: &Sender<IndexEvent>,
+    kb: &KbSlug,
+    source: &ObjectPath,
+    destination: &ObjectPath,
+    options: CopyObjectOptions,
+) -> Result<PutOutcome, WriteError> {
+    let outcome = storage
+        .copy_object(kb, source, destination, options)
+        .await?;
+    enqueue_upsert(indexer_tx, kb, destination, &outcome)?;
+    Ok(outcome)
+}
+
+fn enqueue_upsert(
+    indexer_tx: &Sender<IndexEvent>,
+    kb: &KbSlug,
+    path: &ObjectPath,
+    outcome: &PutOutcome,
+) -> Result<(), WriteError> {
     let event = IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: path.clone(),
@@ -58,7 +92,7 @@ pub async fn commit(
         }
     }
 
-    Ok(outcome)
+    Ok(())
 }
 
 /// Delete an object idempotently and enqueue a best-effort tombstone event.
@@ -105,6 +139,7 @@ fn current_unix_seconds() -> i64 {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use bytes::Bytes;
     use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -152,6 +187,16 @@ mod tests {
             unimplemented!()
         }
 
+        async fn get_object_stream(
+            &self,
+            _kb: &KbSlug,
+            _path: &ObjectPath,
+            _range: Option<Vec<notedthat_core::ByteRange>>,
+            _conditionals: ConditionalHeaders,
+        ) -> Result<notedthat_core::ObjectStream, StorageError> {
+            unimplemented!()
+        }
+
         async fn put_object(
             &self,
             kb: &KbSlug,
@@ -169,6 +214,38 @@ mod tests {
                 return Err(StorageError::PreconditionFailed);
             }
 
+            let etag = format!("\"etag-{}\"", objects.len() + 1);
+            objects.insert(key, etag.clone());
+            Ok(PutOutcome { etag: Some(etag) })
+        }
+
+        async fn put_staged_object(
+            &self,
+            kb: &KbSlug,
+            path: &ObjectPath,
+            body: StagedBody,
+            content_type: Option<&str>,
+            conditionals: ConditionalHeaders,
+        ) -> Result<PutOutcome, StorageError> {
+            let bytes =
+                body.memory_bytes()
+                    .cloned()
+                    .ok_or_else(|| StorageError::BackendUnavailable {
+                        message: "file staging is outside this commit unit test".into(),
+                    })?;
+            self.put_object(kb, path, bytes, content_type, conditionals)
+                .await
+        }
+
+        async fn copy_object(
+            &self,
+            kb: &KbSlug,
+            _source: &ObjectPath,
+            destination: &ObjectPath,
+            _options: CopyObjectOptions,
+        ) -> Result<PutOutcome, StorageError> {
+            let key = format!("{}/{}", kb.as_str(), destination.as_str());
+            let mut objects = self.objects.lock().expect("mutex not poisoned");
             let etag = format!("\"etag-{}\"", objects.len() + 1);
             objects.insert(key, etag.clone());
             Ok(PutOutcome { etag: Some(etag) })
@@ -235,6 +312,30 @@ mod tests {
         let event = rx.recv().await.expect("event should be enqueued");
         assert_eq!(event.kb().as_str(), "test-kb");
         assert_eq!(event.object_key().as_str(), "test.md");
+    }
+
+    #[tokio::test]
+    async fn successful_native_copy_enqueues_destination_event() {
+        let storage = TestStorage::default();
+        let kb = kb();
+        let source = path_named("source.md");
+        let destination = path_named("destination.md");
+        let (indexer_tx, mut rx) = mpsc::channel(1);
+
+        let outcome = commit_copy(
+            &storage,
+            &indexer_tx,
+            &kb,
+            &source,
+            &destination,
+            CopyObjectOptions::default(),
+        )
+        .await
+        .expect("copy succeeds");
+
+        assert!(outcome.etag.is_some());
+        let event = rx.recv().await.expect("destination event");
+        assert_eq!(event.object_key(), &destination);
     }
 
     #[tokio::test]

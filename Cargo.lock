@@ -2159,6 +2159,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "futures",
  "hex",
  "http 1.4.2",
  "httpdate",
@@ -2167,8 +2168,10 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -2279,13 +2282,17 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "bytes",
+ "futures",
  "httpdate",
  "notedthat-core",
+ "percent-encoding",
  "serde_json",
  "temp-env",
+ "tempfile",
  "testcontainers",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -3561,6 +3568,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96374855068f47402c3121c6eed88d29cb1de8f3ab27090e273e420bdabcf050"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix 1.1.4",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
