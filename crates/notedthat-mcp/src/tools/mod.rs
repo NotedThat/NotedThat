@@ -16,8 +16,8 @@ use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
     model::{
-        CallToolResult, ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
-        ReadResourceResult, ServerInfo,
+        CallToolResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, ServerInfo,
     },
     service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
@@ -115,6 +115,17 @@ impl NotedThatMcp {
 
 #[tool_handler]
 impl rmcp::handler::server::ServerHandler for NotedThatMcp {
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send {
+        std::future::ready(Ok(ListToolsResult {
+            tools: Self::tool_router().list_all(),
+            ..Default::default()
+        }))
+    }
+
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
