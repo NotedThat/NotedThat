@@ -5,7 +5,7 @@
 # Layout:
 #   Stage 1 (chef)    — base image with cargo-chef preinstalled.
 #   Stage 2 (planner) — compute a dependency-only build recipe (recipe.json).
-#   Stage 3 (builder) — cook deps (cached), then compile the server binary.
+#   Stage 3 (builder) — cook deps (cached), then compile the server and MCP stdio binaries.
 #   Stage 4 (runtime) — minimal Debian slim + CA certs + curl for HEALTHCHECK.
 #
 # Build:
@@ -49,12 +49,16 @@ FROM chef AS builder
 # Cook only the dependencies. This layer is cached until Cargo.lock or any
 # workspace Cargo.toml changes — source edits do not invalidate it.
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json --bin notedthat-server
+RUN cargo chef cook --release --recipe-path recipe.json \
+    --bin notedthat-server \
+    --bin notedthat-mcp-stdio
 
-# Copy the actual sources and compile the server binary against the cooked deps.
+# Copy the actual sources and compile the distributable binaries against the cooked deps.
 COPY . .
-RUN cargo build --release --locked --bin notedthat-server \
- && strip target/release/notedthat-server
+RUN cargo build --release --locked \
+    --bin notedthat-server \
+    --bin notedthat-mcp-stdio \
+ && strip target/release/notedthat-server target/release/notedthat-mcp-stdio
 
 # ------------------------------------------------------------------------------
 # Stage 4: runtime — small Debian slim with the binary and just enough tooling.
@@ -82,6 +86,7 @@ RUN groupadd --system --gid 10001 notedthat \
         --home-dir /nonexistent --shell /usr/sbin/nologin notedthat
 
 COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedthat-server
+COPY --from=builder /app/target/release/notedthat-mcp-stdio /usr/local/bin/notedthat-mcp-stdio
 
 USER notedthat:notedthat
 EXPOSE 8080

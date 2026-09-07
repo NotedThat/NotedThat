@@ -24,7 +24,16 @@ mcp-stdio:
 
 mcp-stdio-from-image:
 	@mkdir -p $(PREFIX)/bin
-	@tmp=$$(docker create $(IMAGE)) \
-	  && docker cp $$tmp:/usr/local/bin/notedthat-mcp-stdio $(BIN) \
-	  && docker rm $$tmp >/dev/null
+	@set -eu; \
+	container=''; temp_file=''; \
+	cleanup() { \
+	  test -z "$$temp_file" || rm -f "$$temp_file"; \
+	  test -z "$$container" || docker rm "$$container" >/dev/null 2>&1 || true; \
+	}; \
+	trap cleanup EXIT HUP INT TERM; \
+	container=$$(docker create $(IMAGE)); \
+	temp_file=$$(mktemp "$(PREFIX)/bin/.notedthat-mcp-stdio.XXXXXX"); \
+	docker cp "$$container:/usr/local/bin/notedthat-mcp-stdio" "$$temp_file"; \
+	mv -f "$$temp_file" "$(BIN)"; \
+	temp_file=''
 	@echo "installed: $(BIN)"
