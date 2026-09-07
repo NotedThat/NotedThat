@@ -4,7 +4,7 @@ use notedthat_storage_s3::S3Config;
 use std::collections::BTreeMap;
 use testcontainers::{
     GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
+    core::{IntoContainerPort, Mount, WaitFor},
     runners::AsyncRunner,
 };
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::path};
@@ -83,8 +83,15 @@ async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
         .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
+        .with_mount(Mount::tmpfs_mount("/data").with_size_bytes(256 * 1024 * 1024))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
-        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
+        .with_cmd([
+            "server",
+            "-s3",
+            "-filer",
+            "-s3.config=/tmp/s3.json",
+            "-master.volumeSizeLimitMB=16",
+        ])
         .start()
         .await
         .expect("failed to start SeaweedFS testcontainer");
@@ -145,7 +152,7 @@ fn test_config(
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dimensions: 4,
-            batch_size: 32,
+            batch_size: 1,
             timeout_ms: 30_000,
             max_retries: 3,
             max_input_tokens: 8192,
