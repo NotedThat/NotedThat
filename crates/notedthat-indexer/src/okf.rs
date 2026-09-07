@@ -14,7 +14,7 @@ pub struct Document {
 
 /// Recognize OKF concepts, falling back to ordinary Markdown for other documents.
 pub fn parse(path: &str, raw: &str) -> Document {
-    let Some((metadata, body_start)) = concept(path, raw) else {
+    let Some((metadata, body_start)) = concept_prefix(path, raw) else {
         return Document {
             metadata: None,
             chunks: chunk(raw),
@@ -31,12 +31,12 @@ pub fn parse(path: &str, raw: &str) -> Document {
     }
 }
 
-fn concept(path: &str, raw: &str) -> Option<(ConceptMetadata, usize)> {
+pub(crate) fn concept_prefix(path: &str, prefix: &str) -> Option<(ConceptMetadata, usize)> {
     let concept_id = path.strip_suffix(".md")?;
     if matches!(path.rsplit('/').next(), Some("index.md" | "log.md")) {
         return None;
     }
-    let mut lines = raw.split_inclusive('\n');
+    let mut lines = prefix.split_inclusive('\n');
     let opening = lines.next()?;
     if opening.trim_end_matches(['\r', '\n']) != "---" {
         return None;
@@ -44,7 +44,8 @@ fn concept(path: &str, raw: &str) -> Option<(ConceptMetadata, usize)> {
     let mut closing_start = opening.len();
     for line in lines {
         if line.trim_end_matches(['\r', '\n']) == "---" {
-            let value: Value = serde_yaml_ng::from_str(&raw[opening.len()..closing_start]).ok()?;
+            let value: Value =
+                serde_yaml_ng::from_str(&prefix[opening.len()..closing_start]).ok()?;
             let concept_type = value.get("type")?.as_str()?;
             if concept_type.trim().is_empty() {
                 return None;
@@ -76,4 +77,38 @@ fn concept(path: &str, raw: &str) -> Option<(ConceptMetadata, usize)> {
         closing_start += line.len();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concept_prefix_returns_metadata_and_absolute_body_start() {
+        // Given: a complete OKF frontmatter prefix without the document body.
+        let prefix = "---\r\ntype: Metric\r\ntitle: Revenue\r\ntags: [finance]\r\n---\r\n";
+
+        // When: the prefix is parsed independently of the rest of the snapshot.
+        let (metadata, body_start) =
+            concept_prefix("metrics/revenue.md", prefix).expect("complete OKF prefix should parse");
+
+        // Then: metadata and the byte offset into the full source are preserved.
+        assert_eq!(metadata.concept_id, "metrics/revenue");
+        assert_eq!(metadata.concept_type, "Metric");
+        assert_eq!(metadata.title.as_deref(), Some("Revenue"));
+        assert_eq!(metadata.tags, ["finance"]);
+        assert_eq!(body_start, prefix.len());
+    }
+
+    #[test]
+    fn concept_prefix_rejects_frontmatter_without_closing_delimiter() {
+        // Given: the maximum retained prefix ends inside OKF frontmatter.
+        let prefix = "---\ntype: Metric\ntitle: Revenue";
+
+        // When: bounded metadata recognition examines that prefix.
+        let parsed = concept_prefix("metrics/revenue.md", prefix);
+
+        // Then: it falls back to ordinary Markdown instead of reading beyond the cap.
+        assert!(parsed.is_none());
+    }
 }
