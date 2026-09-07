@@ -1,6 +1,6 @@
 //! `SearchHit` — one hit in a search result set.
 
-use super::ObjectKey;
+use super::{ConceptMetadata, ObjectKey};
 use serde::{Deserialize, Serialize};
 
 /// One hit in a search result set.
@@ -23,6 +23,9 @@ pub struct SearchHit {
     pub score: f32,
     /// Preview text — a UTF-8-safe truncation of the chunk to at most 500 characters.
     pub preview: String,
+    /// OKF concept metadata, absent for ordinary Markdown documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf: Option<ConceptMetadata>,
 }
 
 #[cfg(test)]
@@ -37,6 +40,7 @@ mod tests {
             heading_path: vec!["Section 1".into(), "Subsection 1.2".into()],
             score: 0.0163_f32,
             preview: "RFC 7231 defines HTTP semantics.".into(),
+            okf: None,
         }
     }
 
@@ -62,10 +66,12 @@ mod tests {
             heading_path: vec![],
             score: 0.5,
             preview: "preview text".into(),
+            okf: None,
         };
         let json = serde_json::to_string(&hit).unwrap();
         // heading_path is skip_serializing_if = "Vec::is_empty", so it should not appear
         assert!(!json.contains("heading_path"));
+        assert!(!json.contains("okf"));
     }
 
     #[test]
@@ -73,6 +79,7 @@ mod tests {
         let json = r#"{"object_key":"notes/a.md","byte_start":0,"byte_end":100,"score":0.5,"preview":"hello"}"#;
         let hit: SearchHit = serde_json::from_str(json).unwrap();
         assert!(hit.heading_path.is_empty());
+        assert!(hit.okf.is_none());
     }
 
     #[test]
@@ -84,6 +91,7 @@ mod tests {
             heading_path: vec![],
             score: 0.1,
             preview: "Hello 🚀 World".into(),
+            okf: None,
         };
         let json = serde_json::to_string(&hit).unwrap();
         let back: SearchHit = serde_json::from_str(&json).unwrap();

@@ -569,6 +569,56 @@ async fn non_markdown_content_type_skipped() {
 
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
+async fn oversized_replacement_removes_previous_okf_points() {
+    let _guard = integration_guard().await;
+    let (_container, url) = start_qdrant().await;
+    let kb = kb();
+    let (qdrant, provisioner) = make_qdrant(&url);
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let storage = Arc::new(MockStorage::new());
+    for (body, expected_points) in [("short".to_owned(), 1), ("large ".repeat(100), 0)] {
+        storage.insert(
+            "test-kb",
+            "metric.md",
+            &format!("---\ntype: Metric\ntags: [finance]\n---\n{body}"),
+            "text/markdown",
+        );
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("metric.md"),
+            etag: "test".to_owned(),
+            mtime: 0,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        make_worker(
+            Arc::clone(&storage),
+            make_embedder_with_limits(&mock.uri(), 4, 32, 1),
+            Arc::clone(&qdrant),
+            rx,
+            CancellationToken::new(),
+        )
+        .run()
+        .await;
+        assert_eq!(
+            count_points(&url, &coll(&kb), "metric.md").await,
+            expected_points,
+            "oversized replacement must not preserve previous content or metadata"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn oversized_chunk_dropped_with_warn() {
     let _guard = integration_guard().await;
     let (container, qdrant_url) = start_qdrant().await;

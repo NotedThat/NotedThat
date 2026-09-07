@@ -21,7 +21,15 @@ fn make_config(url: &str) -> QdrantConfig {
 }
 
 /// The payload indexes `ensure_collection` is expected to create.
-const EXPECTED_INDEXES: [&str; 5] = ["object_key", "etag", "mime", "mtime", "heading_path"];
+const EXPECTED_INDEXES: [&str; 7] = [
+    "object_key",
+    "etag",
+    "mime",
+    "mtime",
+    "heading_path",
+    "tags",
+    "okf.type",
+];
 
 /// Poll until every expected payload index appears, or fail at the deadline.
 ///
@@ -158,36 +166,14 @@ async fn payload_indexes_created() {
         .expect("ensure_collection");
 
     let raw = raw_client(&url);
-    let schema = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let info = raw
-                .collection_info("kb_index-kb_v1")
-                .await
-                .expect("collection_info");
-            let schema = info
-                .result
-                .expect("collection info should have a result")
-                .payload_schema;
-            if schema.len() >= 5 || std::time::Instant::now() >= deadline {
-                break schema;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-    };
+    let schema = await_indexes(&raw, "kb_index-kb_v1").await;
 
-    assert!(
-        schema.contains_key("object_key"),
-        "object_key index missing"
-    );
-    assert!(schema.contains_key("etag"), "etag index missing");
-    assert!(schema.contains_key("mime"), "mime index missing");
-    assert!(schema.contains_key("mtime"), "mtime index missing");
-    assert!(
-        schema.contains_key("heading_path"),
-        "heading_path index missing"
-    );
-    assert!(!schema.contains_key("tags"), "tags should NOT be indexed");
+    for field in EXPECTED_INDEXES {
+        assert!(
+            schema.contains_key(field),
+            "payload index {field:?} missing"
+        );
+    }
 }
 
 #[tokio::test]

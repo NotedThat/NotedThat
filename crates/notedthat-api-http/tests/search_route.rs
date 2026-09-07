@@ -124,6 +124,7 @@ async fn test2_mock_searcher_returns_two_hits_with_correct_shape() {
             heading_path: vec!["Getting Started".into()],
             score: 0.92,
             preview: "Install cargo by running rustup install.".into(),
+            okf: None,
         },
         SearchHit {
             object_key: ObjectKey::try_new("docs/setup.md").unwrap(),
@@ -132,6 +133,7 @@ async fn test2_mock_searcher_returns_two_hits_with_correct_shape() {
             heading_path: vec![],
             score: 0.75,
             preview: "Cargo setup and configuration guide.".into(),
+            okf: None,
         },
     ])));
 

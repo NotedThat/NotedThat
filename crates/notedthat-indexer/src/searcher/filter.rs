@@ -52,6 +52,10 @@ pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
         conditions.push(Condition::matches("mime", mime.clone()));
     }
 
+    if let Some(concept_type) = &filter.concept_type {
+        conditions.push(Condition::matches("okf.type", concept_type.clone()));
+    }
+
     // heading_path_prefix: enforce "heading_path starts with these segments" via
     // per-index equality on heading_path[0], heading_path[1], etc.
     for (i, segment) in filter.heading_path_prefix.iter().enumerate() {
@@ -124,6 +128,20 @@ mod tests {
         let t = translate_filter(&SearchFilter::default());
         assert!(t.qdrant.is_none());
         assert!(t.post.is_empty());
+    }
+
+    #[test]
+    fn concept_type_matches_nested_okf_payload() {
+        let filter = SearchFilter {
+            concept_type: Some("custom-policy".into()),
+            ..Default::default()
+        };
+        let translated = translate_filter(&filter);
+        assert_eq!(
+            translated.qdrant.unwrap().must,
+            vec![Condition::matches("okf.type", "custom-policy".to_string())]
+        );
+        assert!(translated.post.is_empty());
     }
 
     #[test]
@@ -216,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_all_fields_produces_5_qdrant_conditions_plus_post() {
+    fn combined_all_fields_produces_6_qdrant_conditions_plus_post() {
         let f = SearchFilter {
             object_key_prefix: Some("docs/".into()),
             mime: Some("text/markdown".into()),
@@ -224,10 +242,11 @@ mod tests {
             updated_after: Some(1_000),
             updated_before: Some(2_000),
             tags: vec!["rust".into()],
+            concept_type: Some("business-glossary".into()),
         };
         let t = translate_filter(&f);
         let filter = t.qdrant.unwrap();
-        assert_eq!(filter.must.len(), 5);
+        assert_eq!(filter.must.len(), 6);
         assert_eq!(t.post.object_key_prefix.as_deref(), Some("docs/"));
     }
 

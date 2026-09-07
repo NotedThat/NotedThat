@@ -36,7 +36,7 @@ Three logical layers:
 | D12 | Chunking strategy | **Heading-aware.** Split at markdown H1/H2/H3 boundaries with a soft size cap; every chunk carries `byte_start`/`byte_end`. |
 | D13 | Search shape | **Hybrid BM25 + dense vector,** fused. Qdrant is the vector store. |
 | D14 | Qdrant hybrid impl | **Server-side BM25 via `qdrant/bm25` inference model** (no client tokenizer). Named vectors: `dense` + `sparse_bm25` (with `Modifier::Idf`). Query API with `prefetch` + `fusion: RRF` (default) or `DBSF`. `qdrant-client` Rust crate ≥ 1.15.2 (minimum for server-side `qdrant/bm25` inference). |
-| D15 | Markdown parsing stack | v1 uses `pulldown-cmark` byte-offset iteration + a heading-aware chunker (§6.3). `comrak` rejected: line/column spans, not bytes. `gray_matter` / frontmatter parsing is `[POST-v1]` per D33. |
+| D15 | Markdown parsing stack | `pulldown-cmark` byte-offset iteration + a heading-aware chunker (§6.3). OKF YAML metadata is parsed with `serde_yaml_ng` before body chunking, retaining source byte offsets (D33). |
 | D16 | WebDAV crate | **`dav-server` v0.11** (github.com/messense/dav-server-rs). Custom `DavFileSystem` backed by our HTTP API (per D29 all surfaces wrap the API). Reference impl: RustFS `WebDavDriver`. Streaming PUT accumulates into a write buffer (S3 has no streaming PUT). |
 | D17 | WebDAV LOCK | **Not implemented, ever.** S3 Object Lock is a retention primitive, not a coordination primitive — semantically incompatible with WebDAV LOCK. Optimistic concurrency (D9) is the only concurrency contract we offer. v1 rejects `LOCK`/`UNLOCK`; FakeLs is deferred (D34). |
 | D18 | Embeddings | **External endpoints only.** No local embedding models. Pluggable adapter over an OpenAI-compatible HTTP interface (works with OpenAI, Voyage, Cohere, self-hosted vLLM/Ollama/TEI). Config via env vars per D10. Same endpoint used at index time and query time. |
@@ -54,7 +54,7 @@ Three logical layers:
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other backends (§8.1) are supported at deployer-choice; NotedThat itself makes no runtime distinction. |
 | D31 | MCP transport (v1) | **stdio only in v1; streamable HTTP added in M8.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport (streamable) shipped in M8: `notedthat-server` binds a third listener (`NOTEDTHAT_MCP_HTTP_BIND`, default `0.0.0.0:8082`) serving stateless JSON-response MCP at `POST /mcp` with Bearer auth. Legacy SSE paths return 405. |
 | D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared in env vars** — no admin API, no CLI in v1. A `NOTEDTHAT_KBS` env var lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
-| D33 | Frontmatter handling (v1) | **Fully raw.** Frontmatter is not parsed, skipped, mapped, or interpreted in v1. If a markdown file starts with YAML/TOML/JSON frontmatter, those bytes are treated as ordinary markdown text for chunking, indexing, and byte offsets. Frontmatter-aware tag extraction and payload mapping are `[POST-v1]`. |
+| D33 | Frontmatter handling | **OKF-aware indexing, raw storage.** Non-reserved `.md` files with YAML frontmatter and a non-empty string `type` expose concept metadata and tags in search; only their bodies are chunked, with original source offsets. Other documents retain raw Markdown indexing. Unknown fields remain in the original bytes. See [OKF support](docs/OKF.md). |
 | D34 | WebDAV FakeLs | **`[POST-v1]`** Not enabled in v1. Consequence: WebDAV clients that require `LOCK` before `PUT` (macOS Finder for saving, some Office suites, some mobile Files apps) will treat the mount as read-only or refuse to save. Read-only browsing works. API + MCP writes are unaffected. Add `FakeLs` when a real client scenario demands it. |
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D36 | Multipart upload | Switch to S3 multipart above **32 MiB** total size; part size **8 MiB** (matches `aws-sdk-s3` defaults). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
@@ -177,9 +177,10 @@ Payload schema:
 | `mtime`            | int      | last-modified Unix timestamp |
 | `mime`             | string   | source MIME |
 | `heading_path`     | string[] | markdown headings, e.g. `["Introduction", "Motivation"]` |
-| `tags` `[POST-v1]` | string[] | Deferred — no source until frontmatter parsing lands (D33). Not indexed. |
+| `tags` | string[] | OKF frontmatter tags; empty for ordinary documents. |
+| `okf` | object, optional | Concept ID derived from the path, type, optional title/description/resource, and tags. |
 
-Payload indexes (created at collection provisioning): `object_key`, `etag`, `mtime`, `heading_path`. Adding indexes requires a schema-version bump on the collection name.
+Payload indexes (ensured at startup on new and existing collections): `object_key`, `etag`, `mime`, `mtime`, `heading_path`, `tags`, `okf.type`. Existing objects require re-PUT to backfill new payload fields.
 
 Search: `prefetch` on `dense` + `prefetch` on `sparse_bm25` fused via RRF. Sparse prefetch limit bumped when a selective payload filter is present (§8.6).
 
@@ -189,7 +190,10 @@ Search: `prefetch` on `dense` + `prefetch` on `sparse_bm25` fused via RRF. Spars
 raw markdown bytes
      │
      ▼
-[pulldown-cmark::into_offset_iter()]  ── (Event, Range<usize>) in bytes over the full raw file
+[OKF metadata extraction]  ── use body for concepts; otherwise use the full file
+     │
+     ▼
+[pulldown-cmark::into_offset_iter()]  ── (Event, Range<usize>); add body offset for concepts
      │
      ▼   accumulate heading stack [H1, H2, H3] per span
 [heading-aware chunker]
@@ -563,7 +567,7 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - **Auth**: JWT (D27), per-KB + per-prefix ACL, HTTP admin endpoints for KB create / token mint.
 - **WebDAV**: `FakeLs` for save-workflow clients (D34).
 - **KB lifecycle**: delete + rename (D32).
-- **Content**: frontmatter parsing → payload mapping (D33).
+- **Content**: additional frontmatter conventions beyond OKF metadata extraction (D33).
 - **MCP**: `subscribe`/`listChanged` Resources capability (post-v1); per-KB access control for Resources.
 - **Tuning**: env-var overrides for upload buffer / multipart thresholds (D35, D36).
 - **Storage**: full-rebuild-from-S3 as a first-class operation.
@@ -639,7 +643,7 @@ Qdrant applies payload filters *after* sparse top-k. Selective filters starve fu
 - **RustFS `WebDavDriver`** (github.com/rustfs/rustfs → `crates/protocols/src/webdav/driver.rs`) — S3-backed `DavFileSystem` with write-buffer PUT pattern
 - **`qdrant-client` v1.18** (github.com/qdrant/rust-client) — Query API with `PrefetchQueryBuilder`, `RrfBuilder`, `DocumentBuilder("qdrant/bm25")`
 - **`pulldown-cmark` v0.13** — `Parser::new(...).into_offset_iter()` for byte-offset iteration
-- **`gray_matter` v0.3** — frontmatter YAML/TOML/JSON (`[POST-v1]`)
+- **`serde_yaml_ng` v0.10** — OKF YAML frontmatter parsing
 - **`aws-sdk-s3`** — with `path_style` for Garage/SeaweedFS/MinIO/Ceph/RustFS
 - **`rmcp`** — official Rust MCP SDK
 - **`jsonwebtoken`** (github.com/Keats/jsonwebtoken) — HS256 sign/verify

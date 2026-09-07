@@ -169,6 +169,8 @@ impl QdrantProvisioner {
             ("mime", FieldType::Keyword),
             ("mtime", FieldType::Integer),
             ("heading_path", FieldType::Keyword),
+            ("tags", FieldType::Keyword),
+            ("okf.type", FieldType::Keyword),
         ] {
             inner
                 .create_field_index(CreateFieldIndexCollectionBuilder::new(

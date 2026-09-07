@@ -62,11 +62,12 @@ aws-config = { version = "1.1", default-features = false, features = ["behavior-
 aws-smithy-runtime-api = "1"
 
 # Vector DB
-qdrant-client = { version = "1.15", default-features = false }
+qdrant-client = { version = "1.15", default-features = false, features = ["serde"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml_ng = "0.10"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
