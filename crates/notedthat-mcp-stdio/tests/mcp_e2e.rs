@@ -166,7 +166,7 @@ fn test_config(
     qdrant_url: &str,
     embedder_url: &str,
 ) -> notedthat_server::config::Config {
-    use notedthat_core::{KbSlug, TenantSlug};
+    use notedthat_core::{KbSlug, StagingConfig, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
     use notedthat_storage_s3::S3Config;
     use std::collections::BTreeMap;
@@ -186,6 +186,7 @@ fn test_config(
             secret_access_key: "any".to_string(),
             force_path_style: true,
         },
+        staging: StagingConfig::default(),
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),

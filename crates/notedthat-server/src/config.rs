@@ -3,7 +3,7 @@
 //! There are no CLI flags and no config files — env vars are the only
 //! configuration surface. See `docs/CONFIGURATION.md` for the full reference.
 
-use notedthat_core::{Error, KbSlug, TenantSlug};
+use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug};
 use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -43,6 +43,8 @@ pub struct Config {
     pub mcp_http_allowed_hosts: Vec<String>,
     /// Maximum patchable object size in bytes (`NOTEDTHAT_MAX_PATCHABLE_SIZE`; default 100 MiB).
     pub max_patchable_size: u64,
+    /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
+    pub staging: StagingConfig,
 }
 
 /// Tracing output format.
@@ -206,6 +208,10 @@ impl Config {
             });
         }
 
+        let staging = StagingConfig::from_env().map_err(|error| Error::Config {
+            message: error.to_string(),
+        })?;
+
         Ok(Self {
             api_token,
             kbs,
@@ -223,6 +229,7 @@ impl Config {
             mcp_http_allowed_origins,
             mcp_http_allowed_hosts,
             max_patchable_size,
+            staging,
         })
     }
 }
@@ -368,7 +375,7 @@ impl EmbedderConfig {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 27] = [
+    const ALL_ENV_KEYS: [&str; 28] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_S3_REGION",
@@ -388,6 +395,7 @@ mod tests {
         "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+        "NOTEDTHAT_UPLOAD_TMP_DIR",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -419,6 +427,7 @@ mod tests {
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
+            ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -484,6 +493,12 @@ mod tests {
     fn test_default_listen_addr() {
         let cfg = run_with_env(&[], Config::from_env).unwrap();
         assert_eq!(cfg.listen_addr.to_string(), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn test_default_staging_directory() {
+        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        assert_eq!(cfg.staging.directory(), std::env::temp_dir());
     }
 
     #[test]
@@ -611,7 +626,7 @@ mod tests {
 
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 27);
+        assert_eq!(ALL_ENV_KEYS.len(), 28);
     }
 
     #[test]

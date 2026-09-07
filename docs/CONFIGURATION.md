@@ -35,6 +35,26 @@ These have defaults and can be omitted.
 | `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
 | `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | NOTEDTHAT_MAX_PATCHABLE_SIZE | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
+| `NOTEDTHAT_UPLOAD_TMP_DIR` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+
+## Upload and index staging directory
+
+`NOTEDTHAT_UPLOAD_TMP_DIR` selects one private directory used by both WebDAV uploads and
+the background indexer. If it is unset, NotedThat uses the platform temporary directory.
+The server refuses startup when the selected path is missing, is not a directory, or is not
+writable; this happens before listener binding and storage provisioning.
+
+Size the filesystem for at least **5 GiB per concurrently accepted maximum-size upload**, plus
+space for the corresponding index snapshot, backend working space, and image/build needs. Use a
+disk-backed volume for containers. A `tmpfs` consumes host RAM and can turn a burst of uploads
+into memory pressure or an out-of-memory kill.
+
+Each staged file is created privately. Successful uploads, failures, and cancelled requests clean
+up their temporary files automatically. A forced `SIGKILL` prevents cleanup, so operators should
+periodically inspect an otherwise idle staging directory for orphaned files after unclean stops.
+
+OKF metadata recognition reads at most 16 MiB of frontmatter. Unusually large frontmatter falls
+back to raw Markdown indexing rather than requiring more staging memory.
 
 ## Shutdown behaviour
 

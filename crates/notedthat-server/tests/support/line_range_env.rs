@@ -228,6 +228,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
             "::1".to_string(),
         ],
         max_patchable_size: 10 * 1024 * 1024,
+        staging: notedthat_core::StagingConfig::default(),
     }
 }
 

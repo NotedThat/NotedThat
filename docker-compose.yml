@@ -76,6 +76,7 @@ services:
       NOTEDTHAT_WEBDAV_USERNAME: ${NOTEDTHAT_WEBDAV_USERNAME:-webdav-user-please-change}
       NOTEDTHAT_WEBDAV_PASSWORD: ${NOTEDTHAT_WEBDAV_PASSWORD:-webdav-pass-please-change}
       NOTEDTHAT_WEBDAV_LISTEN_ADDR: 0.0.0.0:8081
+      NOTEDTHAT_UPLOAD_TMP_DIR: /var/lib/notedthat/uploads
       # MCP HTTP defaults (from config.rs): enabled=true, bind 0.0.0.0:8082,
       # allowed_hosts=[127.0.0.1,localhost,::1], allowed_origins=[null].
       # Override any of NOTEDTHAT_MCP_HTTP_{ENABLED,BIND,ALLOWED_HOSTS,ALLOWED_ORIGINS} in .env if needed.
@@ -88,6 +89,8 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:?set in .env — see docs/CONFIGURATION.md}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?set in .env — see docs/CONFIGURATION.md}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:?set in .env — see docs/CONFIGURATION.md}
+    volumes:
+      - notedthat-upload-staging:/var/lib/notedthat/uploads
     depends_on:
       seaweedfs:
         condition: service_healthy
@@ -98,3 +101,4 @@ services:
 volumes:
   seaweedfs-data:
   qdrant-data:
+  notedthat-upload-staging:
