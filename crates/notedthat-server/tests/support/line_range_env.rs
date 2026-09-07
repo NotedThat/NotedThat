@@ -195,6 +195,8 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
         qdrant: ServerQdrantConfig {
             url: backends.qdrant.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: backends.embedder.to_string(),

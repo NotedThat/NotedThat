@@ -200,6 +200,7 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     let qdrant_cfg = QdrantConfig {
         url: qdrant_url.clone(),
         api_key: None,
+        ..Default::default()
     };
     let qdrant_client = Arc::new(QdrantClient::new(&qdrant_cfg).expect("qdrant client creation"));
     let provisioner =

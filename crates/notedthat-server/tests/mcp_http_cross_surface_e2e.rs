@@ -97,6 +97,8 @@ fn test_config_with_mcp_http(
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
@@ -159,6 +161,8 @@ fn test_config_with_kbs_and_mcp_http(
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: embedder_url.to_string(),

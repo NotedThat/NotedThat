@@ -103,6 +103,8 @@ fn test_config_with_webdav(
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.

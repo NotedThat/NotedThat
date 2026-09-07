@@ -32,6 +32,7 @@ fn make_config(url: &str) -> QdrantConfig {
     QdrantConfig {
         url: url.to_string(),
         api_key: None,
+        ..Default::default()
     }
 }
 

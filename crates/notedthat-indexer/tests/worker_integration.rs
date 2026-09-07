@@ -278,6 +278,7 @@ fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
     let cfg = QdrantConfig {
         url: url.to_string(),
         api_key: None,
+        ..Default::default()
     };
     let client = Arc::new(QdrantClient::new(&cfg).unwrap());
     let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
@@ -742,6 +743,7 @@ async fn qdrant_down_logs_indexing_failed() {
         QdrantClient::new(&QdrantConfig {
             url: "http://127.0.0.1:1".to_string(),
             api_key: None,
+            ..Default::default()
         })
         .unwrap(),
     );

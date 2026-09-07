@@ -227,6 +227,8 @@ fn test_config(
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: embedder_url.to_string(),

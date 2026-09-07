@@ -61,6 +61,8 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:6334".to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: "http://127.0.0.1:9999".to_string(),
