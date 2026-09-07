@@ -320,6 +320,43 @@ async fn copy_overwrite_true_replaces_destination_and_preserves_mime() {
 }
 
 #[tokio::test]
+async fn copy_infers_markdown_mime_from_destination_path() {
+    // Given
+    let storage = Arc::new(MockStorage::default());
+    storage.insert_with_content_type(
+        "notes",
+        "src.tmp",
+        Bytes::from_static(b"# source"),
+        "\"src\"",
+        "application/octet-stream",
+    );
+
+    // When
+    let resp = app(storage.clone())
+        .oneshot(
+            HttpRequest::builder()
+                .method("COPY")
+                .uri("/notes/src.tmp")
+                .header("destination", "/notes/dst.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Then
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        storage
+            .get_stored("notes", "dst.md")
+            .expect("COPY creates the destination")
+            .content_type
+            .as_deref(),
+        Some("text/markdown")
+    );
+}
+
+#[tokio::test]
 async fn copy_invalid_overwrite_returns_400_before_storage() {
     let storage = Arc::new(MockStorage::default());
     let resp = app(storage.clone())

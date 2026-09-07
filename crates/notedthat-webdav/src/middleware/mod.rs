@@ -691,11 +691,22 @@ mod intercept_write_methods {
             }
 
             fn insert(&self, kb: &str, path: &str, bytes: impl Into<Bytes>, etag: &str) {
+                self.insert_with_content_type(kb, path, bytes, etag, "text/markdown");
+            }
+
+            fn insert_with_content_type(
+                &self,
+                kb: &str,
+                path: &str,
+                bytes: impl Into<Bytes>,
+                etag: &str,
+                content_type: &str,
+            ) {
                 self.objects.lock().expect("mutex not poisoned").insert(
                     format!("{kb}/{path}"),
                     StoredObject {
                         bytes: bytes.into(),
-                        content_type: Some("text/markdown".to_string()),
+                        content_type: Some(content_type.to_string()),
                         etag: etag.to_string(),
                     },
                 );

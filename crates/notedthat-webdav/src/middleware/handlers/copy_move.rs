@@ -2,6 +2,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, CopyObjectOptions, StorageError};
+use notedthat_write::sniff_content_type;
 
 use crate::state::WebDavState;
 
@@ -123,7 +124,10 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         CopyObjectOptions {
             source_if_match: Some(source_etag.clone()),
             destination_if_none_match: (!overwrite).then(|| "*".to_string()),
-            content_type: src_meta.content_type,
+            content_type: Some(sniff_content_type(
+                src_meta.content_type.as_deref(),
+                &dst_obj,
+            )),
         },
     )
     .await
