@@ -16,6 +16,14 @@ use wiremock::{
     matchers::{method, path},
 };
 
+/// How long to wait for the server to bind after `run()` starts.
+///
+/// Startup provisions two containers' worth of backends — buckets, manifests and
+/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
+/// machine that takes about 9s, against the 10s this used to allow: under a
+/// second of margin, which is why these tests failed intermittently.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 const UNIQUE_PHRASE: &str = "unique-phrase-cross-surface-42";
 const WEBDAV_USER: &str = "e2e-webdav-user";
 const WEBDAV_PASS: &str = "e2e-webdav-pass";
@@ -33,7 +41,7 @@ fn basic_auth(user: &str, pass: &str) -> String {
 async fn start_seaweedfs() -> (impl std::any::Any, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .start()
@@ -49,7 +57,7 @@ async fn start_seaweedfs() -> (impl std::any::Any, String) {
 async fn start_qdrant() -> (impl std::any::Any, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
@@ -103,6 +111,8 @@ fn test_config_with_webdav(
         qdrant: ServerQdrantConfig {
             url: qdrant_url.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
@@ -274,7 +284,7 @@ async fn webdav_put_becomes_searchable_via_http() {
 
     let http_url = format!("http://{http_addr}");
     let dav_url = format!("http://{dav_addr}");
-    wait_for_http(&format!("{http_url}/healthz"), Duration::from_secs(10)).await;
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
     wait_for_dav_options(&dav_url, Duration::from_secs(10)).await;
 
     let client = reqwest::Client::new();

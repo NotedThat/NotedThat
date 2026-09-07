@@ -234,6 +234,14 @@ pub struct ServerQdrantConfig {
     pub url: String,
     /// Optional Qdrant API key (`NOTEDTHAT_QDRANT_API_KEY`).
     pub api_key: Option<String>,
+    /// Per-RPC timeout in milliseconds (`NOTEDTHAT_QDRANT_TIMEOUT_MS`; default 30 000).
+    ///
+    /// `qdrant-client`'s own default is 5 s, which is too tight for a full
+    /// embedding batch upserted with `wait(true)`.
+    pub timeout_ms: u64,
+    /// Connection-establishment timeout in milliseconds
+    /// (`NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS`; default 10 000).
+    pub connect_timeout_ms: u64,
 }
 
 impl ServerQdrantConfig {
@@ -247,8 +255,31 @@ impl ServerQdrantConfig {
             message: "NOTEDTHAT_QDRANT_URL is required".into(),
         })?;
         let api_key = std::env::var("NOTEDTHAT_QDRANT_API_KEY").ok();
-        Ok(Self { url, api_key })
+        let timeout_ms = parse_millis("NOTEDTHAT_QDRANT_TIMEOUT_MS", 30_000)?;
+        let connect_timeout_ms = parse_millis("NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", 10_000)?;
+        Ok(Self {
+            url,
+            api_key,
+            timeout_ms,
+            connect_timeout_ms,
+        })
     }
+}
+
+/// Parse a millisecond duration from the environment, rejecting zero.
+fn parse_millis(var: &str, default: u64) -> Result<u64, Error> {
+    let Ok(raw) = std::env::var(var) else {
+        return Ok(default);
+    };
+    let value = raw.parse::<u64>().map_err(|_| Error::Config {
+        message: format!("{var} must be a valid u64 integer"),
+    })?;
+    if value == 0 {
+        return Err(Error::Config {
+            message: format!("{var} must be > 0"),
+        });
+    }
+    Ok(value)
 }
 
 /// Embedder configuration, parsed from env vars.

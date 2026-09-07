@@ -30,7 +30,7 @@ async fn start_seaweedfs() -> (impl std::any::Any, String) {
     let config_bytes = serde_json::to_vec(&s3_iam).expect("serialize IAM config");
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .with_copy_to("/tmp/s3.json", config_bytes)
         .start()

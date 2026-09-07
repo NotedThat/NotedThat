@@ -45,6 +45,8 @@ async fn build_infrastructure(
     let qdrant_config = QdrantConfig {
         url: config.qdrant.url.clone(),
         api_key: config.qdrant.api_key.clone(),
+        timeout: Duration::from_millis(config.qdrant.timeout_ms),
+        connect_timeout: Duration::from_millis(config.qdrant.connect_timeout_ms),
     };
     let qdrant_client =
         Arc::new(QdrantClient::new(&qdrant_config).context("failed to build Qdrant client")?);

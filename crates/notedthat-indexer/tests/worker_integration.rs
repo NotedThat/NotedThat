@@ -6,6 +6,9 @@
 
 #![allow(missing_docs)]
 
+mod support;
+use support::start_qdrant;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use notedthat_core::{
@@ -24,11 +27,6 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
-};
-use testcontainers::{
-    GenericImage,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -194,21 +192,6 @@ impl Storage for MockStorage {
     }
 }
 
-/// Drop the returned guard to stop and remove the container.
-async fn start_qdrant_url() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
-        .start()
-        .await
-        .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let grpc_port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{grpc_port}"))
-}
-
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
         .map(|i| {
@@ -278,6 +261,7 @@ fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
     let cfg = QdrantConfig {
         url: url.to_string(),
         api_key: None,
+        ..Default::default()
     };
     let client = Arc::new(QdrantClient::new(&cfg).unwrap());
     let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
@@ -297,6 +281,8 @@ async fn scroll_points(
     with_vectors: bool,
 ) -> Vec<RetrievedPoint> {
     let qdrant = qdrant_client::Qdrant::from_url(qdrant_url)
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("qdrant build failed");
     let filter = Filter::must([Condition::matches("object_key", key.to_string())]);
@@ -344,7 +330,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
         .with_test_writer()
         .try_init();
 
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -421,7 +407,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn tombstone_removes_points() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -484,7 +470,7 @@ async fn tombstone_removes_points() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn not_found_on_reread_implicit_tombstone() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -535,7 +521,7 @@ async fn not_found_on_reread_implicit_tombstone() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn non_markdown_content_type_skipped() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -585,7 +571,7 @@ async fn non_markdown_content_type_skipped() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn oversized_chunk_dropped_with_warn() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -669,7 +655,7 @@ async fn queue_full_logs_index_queue_full() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn graceful_shutdown_drains_queue() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -742,6 +728,7 @@ async fn qdrant_down_logs_indexing_failed() {
         QdrantClient::new(&QdrantConfig {
             url: "http://127.0.0.1:1".to_string(),
             api_key: None,
+            ..Default::default()
         })
         .unwrap(),
     );
@@ -786,7 +773,7 @@ async fn qdrant_down_logs_indexing_failed() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retry_on_429_succeeds() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -849,7 +836,7 @@ async fn embedder_retry_on_429_succeeds() {
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retries_exhausted_logs_indexing_failed() {
     let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant_url().await;
+    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
     let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
     provisioner.ensure_collection(&kb, 4).await.unwrap();

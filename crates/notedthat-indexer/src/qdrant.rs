@@ -9,6 +9,20 @@
 
 use qdrant_client::Qdrant;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Default per-RPC timeout.
+///
+/// `qdrant-client` defaults to **5 seconds for every RPC**, and nothing here
+/// used to override it. That is too tight for this workload: a full embedding
+/// batch upserted with `wait(true)`, against a collection that is still building
+/// payload indexes, on a busy host, can exceed it. When it does, the failure
+/// surfaces as an opaque `Cancelled: Timeout expired` that reads like a Qdrant
+/// fault rather than a deadline, and the document silently goes unindexed.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default connection-establishment timeout.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Qdrant client configuration, parsed from `NOTEDTHAT_QDRANT_*` env vars.
 #[derive(Debug, Clone)]
@@ -17,6 +31,21 @@ pub struct QdrantConfig {
     pub url: String,
     /// Optional API key for authentication.
     pub api_key: Option<String>,
+    /// Per-RPC timeout. See [`DEFAULT_TIMEOUT`] for why this is set explicitly.
+    pub timeout: Duration,
+    /// Connection-establishment timeout.
+    pub connect_timeout: Duration,
+}
+
+impl Default for QdrantConfig {
+    fn default() -> Self {
+        Self {
+            url: "http://127.0.0.1:6334".to_string(),
+            api_key: None,
+            timeout: DEFAULT_TIMEOUT,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+        }
+    }
 }
 
 /// Errors from the Qdrant wrapper.
@@ -48,6 +77,8 @@ impl QdrantClient {
             builder
         };
         let client = builder
+            .timeout(config.timeout)
+            .connect_timeout(config.connect_timeout)
             .build()
             .map_err(|e| QdrantWrapperError::ClientBuild(e.to_string()))?;
         Ok(Self {
@@ -73,6 +104,7 @@ mod tests {
         let c = QdrantConfig {
             url: "http://localhost:6334".into(),
             api_key: None,
+            ..Default::default()
         };
         let _c2 = c.clone();
         let _s = format!("{c:?}");
@@ -83,6 +115,7 @@ mod tests {
         let config = QdrantConfig {
             url: "http://localhost:6334".into(),
             api_key: None,
+            ..Default::default()
         };
         // Construction should succeed (no network until first RPC)
         let result = QdrantClient::new(&config);
@@ -94,6 +127,7 @@ mod tests {
         let config = QdrantConfig {
             url: "http://localhost:6334".into(),
             api_key: Some("test-key".into()),
+            ..Default::default()
         };
         let result = QdrantClient::new(&config);
         assert!(result.is_ok());
@@ -104,6 +138,7 @@ mod tests {
         let config = QdrantConfig {
             url: "http://localhost:6334".into(),
             api_key: None,
+            ..Default::default()
         };
         let client = QdrantClient::new(&config).unwrap();
         let _cloned = client.clone();

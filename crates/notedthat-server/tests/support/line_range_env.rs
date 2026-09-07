@@ -12,6 +12,14 @@ use testcontainers::{
 use tokio::task::JoinHandle;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::path};
 
+/// How long to wait for the server to bind after `run()` starts.
+///
+/// Startup provisions two containers' worth of backends — buckets, manifests and
+/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
+/// machine that takes about 9s, against the 10s this used to allow: under a
+/// second of margin, which is why these tests failed intermittently.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub const API_TOKEN: &str = "e2e-test-token";
 pub const TWENTY_LINE_FIXTURE: &str = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\n";
 pub const LINES_1_TO_5: &str = "line 1\nline 2\nline 3\nline 4\nline 5\n";
@@ -76,7 +84,7 @@ impl RunningServer {
                 .expect("server run failed");
         });
 
-        wait_for_http(&format!("{base_url}/healthz"), Duration::from_secs(10)).await;
+        wait_for_http(&format!("{base_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
         Self {
             client: reqwest::Client::new(),
@@ -145,7 +153,7 @@ pub fn assert_content_range_bytes(response: &reqwest::Response, expected: &str) 
 async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
     let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
         .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
         .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
         .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
         .start()
@@ -161,7 +169,7 @@ async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
 async fn start_qdrant() -> (impl std::any::Any + Send, String) {
     let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
         .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
+        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
         .start()
         .await
         .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
@@ -195,6 +203,8 @@ fn test_config(kb: &str, listeners: ListenerAddrs, backends: BackendUrls<'_>) ->
         qdrant: ServerQdrantConfig {
             url: backends.qdrant.to_string(),
             api_key: None,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             endpoint_url: backends.embedder.to_string(),

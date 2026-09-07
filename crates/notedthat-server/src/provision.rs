@@ -132,6 +132,7 @@ mod tests {
             QdrantClient::new(&QdrantConfig {
                 url: "http://127.0.0.1:6334".to_string(),
                 api_key: None,
+                ..Default::default()
             })
             .expect("qdrant client construction does not connect"),
         )

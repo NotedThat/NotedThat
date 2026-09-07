@@ -167,6 +167,17 @@ NotedThat uses [Qdrant](https://qdrant.tech/) for vector search indexing (M4+). 
 |---|---|---|---|
 | `NOTEDTHAT_QDRANT_URL` | Yes | | Qdrant gRPC endpoint (e.g. `http://127.0.0.1:6334`) |
 | `NOTEDTHAT_QDRANT_API_KEY` | No | | API key for authenticated Qdrant instances |
+| `NOTEDTHAT_QDRANT_TIMEOUT_MS` | No | `30000` | Per-RPC timeout in milliseconds. Must be > 0. |
+| `NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS` | No | `10000` | Connection-establishment timeout in milliseconds. Must be > 0. |
+
+> **Why the timeout is set explicitly.** `qdrant-client` defaults to **5 seconds
+> for every RPC**, and NotedThat did not override it. That is too tight for this
+> workload: a full embedding batch upserted with `wait(true)`, against a collection
+> that is still building payload indexes, on a busy host, can exceed it. When it
+> does, the failure surfaces as an opaque `Cancelled: Timeout expired` — which
+> reads like a Qdrant fault rather than a deadline — and the document silently
+> goes unindexed. Raise `NOTEDTHAT_QDRANT_TIMEOUT_MS` further if you run large
+> batches on slow storage.
 
 **Example**:
 

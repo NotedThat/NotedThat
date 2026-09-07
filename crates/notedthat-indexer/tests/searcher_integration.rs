@@ -5,6 +5,9 @@
 
 #![allow(missing_docs)]
 
+mod support;
+use support::{raw_client, start_qdrant};
+
 use notedthat_core::{
     KbSlug,
     search::{SearchError, SearchFilter, SearchRequest},
@@ -14,31 +17,12 @@ use notedthat_indexer::{
     QdrantProvisioner, Searcher, searcher::HybridSearcher,
 };
 use std::{sync::Arc, time::Duration};
-use testcontainers::{
-    GenericImage,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
 
 static INTEGRATION_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-async fn start_qdrant() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::seconds(5))
-        .start()
-        .await
-        .expect("failed to start Qdrant testcontainer — is Docker running?");
-    let port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
 
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
@@ -71,16 +55,11 @@ fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
     let cfg = QdrantConfig {
         url: url.to_string(),
         api_key: None,
+        ..Default::default()
     };
     let client = Arc::new(QdrantClient::new(&cfg).unwrap());
     let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
     (client, provisioner)
-}
-
-fn raw_client(url: &str) -> qdrant_client::Qdrant {
-    qdrant_client::Qdrant::from_url(url)
-        .build()
-        .expect("raw qdrant client build failed")
 }
 
 fn kb() -> KbSlug {
