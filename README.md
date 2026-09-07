@@ -30,60 +30,80 @@ All 9 crates share a single version via ecosystem-level Semantic Versioning. See
 
 ## Running locally
 
-NotedThat requires an S3-compatible object store. For local development, we use
-[SeaweedFS](https://github.com/seaweedfs/seaweedfs) >= 4.18 in Docker.
+NotedThat needs an S3-compatible object store, Qdrant, and an OpenAI-compatible
+embedding provider. It does not bundle an embedding model or provider credentials.
+Use one of the supported flows below and keep provider credentials in ignored local
+environment files; never commit them.
+
+### Compose: local storage and search with your embedding provider
 
 ```sh
-# 1. Start SeaweedFS on the S3 gateway port (8333)
-docker run -d --name nt-seaweedfs \
-  -p 8333:8333 \
-  chrislusf/seaweedfs:4.18 server -s3 -filer
+# Create an ignored local configuration, then replace all four embedding values.
+cp .env.example .env
+$EDITOR .env
+docker compose up --build -d
 
-# 2. Start the NotedThat server
-NOTEDTHAT_API_TOKEN=dev-token \
-NOTEDTHAT_KBS=notes,scratch \
-NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333 \
-NOTEDTHAT_S3_REGION=us-east-1 \
-NOTEDTHAT_S3_ACCESS_KEY_ID=any \
-NOTEDTHAT_S3_SECRET_ACCESS_KEY=any \
-NOTEDTHAT_S3_FORCE_PATH_STYLE=true \
-NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080 \
-RUST_LOG=info,notedthat=debug \
-cargo run -p notedthat-server
-
-# 3. Verify the server is running
-curl http://127.0.0.1:8080/healthz
-
-# 4. Try the API
-curl -H "Authorization: Bearer dev-token" \
-     http://127.0.0.1:8080/v1/knowledgebases
-
-# 5. Upload a file
-echo "# Hello World" | curl -X PUT \
-  -H "Authorization: Bearer dev-token" \
-  -H "Content-Type: text/markdown" \
-  --data-binary @- \
+# Verify HTTP, upload, read, and semantic search.
+TOKEN=dev-token-please-change
+curl --fail http://127.0.0.1:8080/healthz
+printf '# Hello NotedThat\nsemantic search works\n' | curl --fail -X PUT \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: text/markdown' \
+  --data-binary @- http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+curl --fail -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
-
-# 6. Read it back
-curl -H "Authorization: Bearer dev-token" \
-     http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+curl --fail -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"query":"semantic search"}' \
+  http://127.0.0.1:8080/v1/knowledgebases/notes/search
 ```
 
-### Docker (prebuilt image)
+The search result is asynchronous: retry the final request until the uploaded document
+appears. Stop the local stack with `docker compose down`; add `-v` only when you
+intentionally want to delete its SeaweedFS and Qdrant data.
+
+`docker-compose.yml` fixes its internal listener, SeaweedFS, and Qdrant addresses.
+It forwards documented size, Qdrant-timeout, and embedding-tuning settings from
+`.env`. The bundled Qdrant service is deliberately unauthenticated, so it does not
+accept a Qdrant API key. A custom `NOTEDTHAT_UPLOAD_TMP_DIR` also needs an explicit
+writable mount at that exact path in a custom Compose deployment.
+
+### Native server: Compose-managed dependencies
+
+Start SeaweedFS and Qdrant, then export host-facing settings before running the
+server natively. Reuse your local embedding values from `.env` without committing it.
+
+```sh
+docker compose up -d seaweedfs qdrant
+set -a; . ./.env; set +a
+export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
+export NOTEDTHAT_WEBDAV_LISTEN_ADDR=127.0.0.1:8081
+export NOTEDTHAT_MCP_HTTP_BIND=127.0.0.1:8082
+export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
+export NOTEDTHAT_S3_FORCE_PATH_STYLE=true
+export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
+cargo run -p notedthat-server
+```
+
+Use the upload, read, and search commands from the Compose flow against this server.
+
+### Docker image
 
 Once the first tagged release exists, the server image is published to GHCR at `ghcr.io/notedthat/server`. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation.
 
 ```sh
 docker pull ghcr.io/notedthat/server:latest
 
-docker run --rm -p 8080:8080 -p 8081:8081 -p 8082:8082 \
-  -e NOTEDTHAT_API_TOKEN=dev-token \
-  -e NOTEDTHAT_KBS=notes,scratch \
+# Start the storage/index dependencies first. On Linux, use --add-host below.
+docker compose up -d seaweedfs qdrant
+set -a; . ./.env; set +a
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  -p 8080:8080 -p 8081:8081 -p 8082:8082 \
+  -e NOTEDTHAT_API_TOKEN -e NOTEDTHAT_KBS \
+  -e NOTEDTHAT_S3_REGION -e NOTEDTHAT_S3_ACCESS_KEY_ID -e NOTEDTHAT_S3_SECRET_ACCESS_KEY \
+  -e NOTEDTHAT_WEBDAV_USERNAME -e NOTEDTHAT_WEBDAV_PASSWORD \
+  -e EMBEDDING_ENDPOINT_URL -e EMBEDDING_MODEL -e EMBEDDING_API_KEY -e EMBEDDING_DIMENSIONS \
   -e NOTEDTHAT_S3_ENDPOINT_URL=http://host.docker.internal:8333 \
-  -e NOTEDTHAT_S3_REGION=us-east-1 \
-  -e NOTEDTHAT_S3_ACCESS_KEY_ID=any \
-  -e NOTEDTHAT_S3_SECRET_ACCESS_KEY=any \
+  -e NOTEDTHAT_S3_FORCE_PATH_STYLE=true \
+  -e NOTEDTHAT_QDRANT_URL=http://host.docker.internal:6334 \
   ghcr.io/notedthat/server:latest
 ```
 
@@ -92,8 +112,6 @@ Ports published:
 - **8080** — HTTP API
 - **8081** — WebDAV
 - **8082** — MCP HTTP (Streamable HTTP, `POST /mcp`; TLS-terminate at a reverse proxy before exposing publicly)
-
-Or use `docker compose up` with the bundled [docker-compose.yml](docker-compose.yml) for a full local stack (SeaweedFS + Qdrant + server).
 
 The default temporary directory stages uploads and index snapshots. For production-sized uploads,
 ensure its backing filesystem has at least 5 GiB for every concurrent maximum-size upload, plus
@@ -110,7 +128,7 @@ gh attestation verify oci://ghcr.io/notedthat/server:0.2.0 --owner NotedThat
 
 ### WebDAV
 
-With the server running (steps 1-2 above), also set the WebDAV credentials:
+With the server running, configure a WebDAV client with the credentials from your local `.env`:
 
 ```sh
 export NOTEDTHAT_WEBDAV_USERNAME=webdav-user-please-change
@@ -139,7 +157,7 @@ curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
 
 ### MCP (Claude Desktop, Cursor, Zed)
 
-With the server running (steps 1-2 above), configure your MCP client to launch `notedthat-mcp-stdio` as a subprocess.
+With the server running, configure your MCP client to launch `notedthat-mcp-stdio` as a subprocess.
 
 #### Remote MCP hosting
 
@@ -153,7 +171,15 @@ See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protoc
 
 #### Install options
 
-Three ways to get `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Installer scripts become available after the first tagged release.
+Four ways to get `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Installer scripts become available after the first tagged release.
+
+**Build or extract locally:**
+
+```sh
+make mcp-stdio                         # build from this checkout
+make mcp-stdio-from-image              # extract from notedthat-server:local
+# Override PREFIX=/some/dir or IMAGE=ghcr.io/notedthat/server:tag as needed.
+```
 
 **Shell installer** (macOS / Linux):
 

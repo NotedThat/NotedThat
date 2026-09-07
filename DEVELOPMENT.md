@@ -25,6 +25,18 @@ cargo fmt --all -- --check
 cargo fmt --all
 ```
 
+## Local service setup
+
+The supported development paths are documented in the root [README](README.md):
+
+- **Compose** builds the server and runs SeaweedFS and Qdrant, while you supply an
+  OpenAI-compatible embedding provider in an ignored local `.env` file.
+- **Native server** uses Compose-managed SeaweedFS and Qdrant with host-facing
+  endpoints, then runs `cargo run -p notedthat-server`.
+
+Do not commit provider credentials. Copy `.env.example` to `.env`, replace its
+embedding endpoint, model, key, and dimensions, then follow the chosen README flow.
+
 ## Running a Specific Crate
 
 ```sh
