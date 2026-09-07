@@ -42,6 +42,38 @@ fn raw_client(url: &str) -> qdrant_client::Qdrant {
         .expect("raw qdrant client build")
 }
 
+/// The payload indexes `ensure_collection` is expected to create.
+const EXPECTED_INDEXES: [&str; 5] = ["object_key", "etag", "mime", "mtime", "heading_path"];
+
+/// Poll until every expected payload index appears, or fail at the deadline.
+///
+/// `create_field_index` is not called with `wait`, because blocking startup on
+/// background index building would cost minutes on a large collection.
+async fn await_indexes(
+    raw: &qdrant_client::Qdrant,
+    collection: &str,
+) -> std::collections::HashMap<String, qdrant_client::qdrant::PayloadSchemaInfo> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let schema = raw
+            .collection_info(collection)
+            .await
+            .expect("collection_info")
+            .result
+            .expect("collection info should have a result")
+            .payload_schema;
+        if EXPECTED_INDEXES.iter().all(|f| schema.contains_key(*f)) {
+            return schema;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "payload indexes did not appear within 30s; have {:?}",
+            schema.keys().collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn ensure_collection_creates_with_correct_schema() {
@@ -178,4 +210,59 @@ async fn payload_indexes_created() {
         "heading_path index missing"
     );
     assert!(!schema.contains_key("tags"), "tags should NOT be indexed");
+}
+
+#[tokio::test]
+#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
+async fn ensure_collection_backfills_indexes_on_an_existing_collection() {
+    // The upgrade path. `ensure_collection` used to return early when the
+    // collection existed, so a release that added a payload index never applied
+    // it to a running deployment. Without the fix this test fails on the second
+    // call finding no indexes.
+    let (_container, url) = start_qdrant().await;
+    let provisioner = QdrantProvisioner::new(QdrantClient::new(&make_config(&url)).unwrap());
+    let kb = KbSlug::try_new("backfill-kb").expect("valid slug");
+
+    // Create the collection with no payload indexes at all, standing in for a
+    // collection provisioned by an older release.
+    let raw = raw_client(&url);
+    {
+        use qdrant_client::qdrant::{
+            CreateCollectionBuilder, Distance, Modifier, SparseVectorParamsBuilder,
+            SparseVectorsConfigBuilder, VectorParamsBuilder, VectorsConfigBuilder,
+        };
+        let mut vectors = VectorsConfigBuilder::default();
+        vectors.add_named_vector_params("dense", VectorParamsBuilder::new(4, Distance::Cosine));
+        let mut sparse = SparseVectorsConfigBuilder::default();
+        sparse.add_named_vector_params(
+            "sparse_bm25",
+            SparseVectorParamsBuilder::default().modifier(Modifier::Idf),
+        );
+        raw.create_collection(
+            CreateCollectionBuilder::new("kb_backfill-kb_v1")
+                .vectors_config(vectors)
+                .sparse_vectors_config(sparse),
+        )
+        .await
+        .expect("pre-create collection");
+    }
+
+    provisioner
+        .ensure_collection(&kb, 4)
+        .await
+        .expect("ensure_collection over an existing collection");
+    // Idempotent: a second call must also succeed.
+    provisioner
+        .ensure_collection(&kb, 4)
+        .await
+        .expect("ensure_collection is idempotent");
+
+    let schema = await_indexes(&raw, "kb_backfill-kb_v1").await;
+    for field in EXPECTED_INDEXES {
+        assert!(
+            schema.contains_key(field),
+            "payload index {field:?} was not backfilled; have {:?}",
+            schema.keys().collect::<Vec<_>>()
+        );
+    }
 }

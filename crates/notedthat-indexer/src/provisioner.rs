@@ -77,13 +77,21 @@ impl QdrantProvisioner {
 
     /// Ensure the Qdrant collection for `kb` exists with the expected schema.
     ///
-    /// Idempotent: checks existence first, creates only if absent.
+    /// Idempotent. Collection creation is conditional, but **payload indexes are
+    /// ensured on every call**, including for a collection that already exists.
+    ///
+    /// That last part fixes a real bug. This method used to return early when the
+    /// collection existed, so a server upgraded in place never gained the payload
+    /// indexes a new release added — and the remedy documented for the M4 → M5
+    /// payload extension ("re-PUT your objects to backfill") could not help,
+    /// because a re-PUT rewrites point payloads and does not create indexes. The
+    /// only recovery was to delete the collection.
     pub async fn ensure_collection(
         &self,
         kb: &KbSlug,
         dense_dim: u64,
     ) -> Result<(), ProvisionError> {
-        let collection_name = format!("kb_{}_v1", kb.as_str());
+        let collection_name = crate::worker::collection_name(kb);
         let inner = self.client.inner();
 
         let exists = inner
@@ -94,16 +102,13 @@ impl QdrantProvisioner {
                 source: e.to_string(),
             })?;
 
-        if exists {
-            return Ok(());
+        if !exists {
+            self.create_collection_with_schema(inner, &collection_name, dense_dim)
+                .await?;
         }
 
-        self.create_collection_with_schema(inner, &collection_name, dense_dim)
-            .await?;
         self.create_payload_indexes(inner, &collection_name, kb)
-            .await?;
-
-        Ok(())
+            .await
     }
 
     async fn create_collection_with_schema(
@@ -144,6 +149,12 @@ impl QdrantProvisioner {
         Ok(())
     }
 
+    /// Create every payload index the search surface relies on.
+    ///
+    /// Deliberately no `wait`: Qdrant builds payload indexes in the background,
+    /// and blocking startup until they are built would cost minutes on a large
+    /// collection — the opposite of D39's fail-fast startup. Readers that need an
+    /// index to exist poll for it.
     async fn create_payload_indexes(
         &self,
         inner: &qdrant_client::Qdrant,
