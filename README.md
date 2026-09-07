@@ -8,6 +8,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
 - [DEVELOPMENT.md](DEVELOPMENT.md) — developer commands and test conventions
+- [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
 - [RELEASING.md](RELEASING.md) — release runbook and Trusted Publishing setup
 - [LICENSE](LICENSE) — Mozilla Public License 2.0
 

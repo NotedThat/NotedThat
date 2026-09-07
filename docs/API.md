@@ -962,7 +962,8 @@ Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RR
     "heading_path_prefix": ["Introduction"],
     "updated_after": 1700000000,
     "updated_before": 1800000000,
-    "tags": ["rust"]
+    "tags": ["rust"],
+    "concept_type": "Reference"
   },
   "limit": 10
 }
@@ -1019,7 +1020,7 @@ curl -sSf -X POST \
 
 - **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
 
-- **Tags filter**: The `tags` field in `SearchFilter` is reserved shape. Tags are not populated in v1 (D33 defers frontmatter extraction to post-v1). Tag filter values will match nothing until tag extraction ships.
+- **OKF metadata and filters**: Concept hits include an optional `okf` object containing `concept_id`, `type`, and available `title`, `description`, `resource`, and `tags`. `concept_type` matches the type exactly; `tags` matches at least one supplied tag. Both are indexed in Qdrant. MCP exposes these through its `filters` argument. See [OKF support and upgrade instructions](OKF.md).
 
 - **`content_hash`**: Stored in the Qdrant payload for idempotent reindex detection but is **not** exposed in `SearchHit`.
 
