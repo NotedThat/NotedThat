@@ -119,10 +119,11 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send {
+    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         std::future::ready(Ok(ListToolsResult {
             tools: Self::tool_router().list_all(),
-            ..Default::default()
+            meta: None,
+            next_cursor: None,
         }))
     }
 
