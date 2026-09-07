@@ -13,6 +13,10 @@ pub struct SearchFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
 
+    /// Only return hits with exactly this OKF concept type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+
     /// Only return hits whose `heading_path` array starts with these segments (prefix match).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heading_path_prefix: Vec<String>,
@@ -26,7 +30,6 @@ pub struct SearchFilter {
     pub updated_before: Option<i64>,
 
     /// Only return hits tagged with at least one of these tags.
-    /// Reserved shape — tags are not populated in M5 (D33).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -36,6 +39,7 @@ impl SearchFilter {
     pub fn is_empty(&self) -> bool {
         self.object_key_prefix.is_none()
             && self.mime.is_none()
+            && self.concept_type.is_none()
             && self.heading_path_prefix.is_empty()
             && self.updated_after.is_none()
             && self.updated_before.is_none()
@@ -46,6 +50,19 @@ impl SearchFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concept_type_is_retained_when_deserializing_filter() {
+        let filter: SearchFilter = serde_json::from_value(serde_json::json!({
+            "concept_type": "business-glossary"
+        }))
+        .unwrap();
+        assert!(!filter.is_empty());
+        assert_eq!(
+            serde_json::to_value(filter).unwrap()["concept_type"],
+            "business-glossary"
+        );
+    }
 
     #[test]
     fn default_is_empty() {

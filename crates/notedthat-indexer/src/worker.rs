@@ -149,15 +149,16 @@ impl IndexerWorker {
             }
         };
 
-        let chunks = chunker::chunk(&text);
+        let document = crate::okf::parse(object_key.as_str(), &text);
+        let chunks = &document.chunks;
         if chunks.is_empty() {
             tracing::debug!(
                 target: "notedthat::indexing",
                 kb = %kb.as_str(),
                 path = %object_key.as_str(),
-                "no chunks produced; skipping"
+                "no chunks produced; removing previous index entries"
             );
-            return Ok(());
+            return self.handle_tombstone(kb, object_key).await;
         }
 
         let max_chars = self.embedder.max_input_tokens();
@@ -211,10 +212,9 @@ impl IndexerWorker {
             &filtered,
             &all_embeddings,
             &object_key,
-            object_read.meta.etag.as_deref().unwrap_or(""),
-            object_read.meta.last_modified.unwrap_or(0),
-            &mime,
+            &object_read.meta,
             &content_hash,
+            document.metadata.as_ref(),
         )?;
 
         self.qdrant
@@ -225,6 +225,28 @@ impl IndexerWorker {
             )
             .await
             .map_err(|err| format!("qdrant upsert failed: {err}"))?;
+
+        let mut obsolete =
+            qdrant_client::qdrant::Filter::must([qdrant_client::qdrant::Condition::matches(
+                "object_key",
+                object_key.as_str().to_owned(),
+            )]);
+        obsolete
+            .must_not
+            .push(qdrant_client::qdrant::Condition::has_id(
+                filtered
+                    .iter()
+                    .map(|(index, _)| point_id(&object_key, *index)),
+            ));
+        self.qdrant
+            .inner()
+            .delete_points(
+                qdrant_client::qdrant::DeletePointsBuilder::new(collection_name(&kb))
+                    .points(obsolete)
+                    .wait(true),
+            )
+            .await
+            .map_err(|err| format!("qdrant obsolete chunk cleanup failed: {err}"))?;
 
         tracing::info!(
             target: "notedthat::indexing",
@@ -245,7 +267,11 @@ impl IndexerWorker {
         )]);
         self.qdrant
             .inner()
-            .delete_points(DeletePointsBuilder::new(collection_name(&kb)).points(filter))
+            .delete_points(
+                DeletePointsBuilder::new(collection_name(&kb))
+                    .points(filter)
+                    .wait(true),
+            )
             .await
             .map_err(|err| format!("qdrant delete_points failed: {err}"))?;
 
@@ -263,10 +289,9 @@ fn build_points(
     filtered: &[(usize, &chunker::Chunk)],
     embeddings: &[Vec<f32>],
     object_key: &ObjectPath,
-    etag: &str,
-    mtime: i64,
-    object_mime: &str,
+    meta: &notedthat_core::ObjectMeta,
     content_hash: &str,
+    metadata: Option<&notedthat_core::search::ConceptMetadata>,
 ) -> Result<Vec<qdrant_client::qdrant::PointStruct>, String> {
     use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
     use std::collections::HashMap;
@@ -300,14 +325,26 @@ fn build_points(
                 "byte_end".to_string(),
                 i64::try_from(chunk.byte_end).unwrap_or(i64::MAX).into(),
             );
-            payload.insert("etag".to_string(), etag.to_string().into());
-            payload.insert("mime".to_string(), object_mime.to_string().into());
-            payload.insert("mtime".to_string(), mtime.into());
+            payload.insert(
+                "etag".to_string(),
+                meta.etag.as_deref().unwrap_or("").into(),
+            );
+            payload.insert(
+                "mime".to_string(),
+                meta.content_type.as_deref().unwrap_or("").into(),
+            );
+            payload.insert("mtime".to_string(), meta.last_modified.unwrap_or(0).into());
             payload.insert(
                 "heading_path".to_string(),
                 chunk.heading_path.clone().into(),
             );
-            payload.insert("tags".to_string(), Value::from(Vec::<Value>::new()));
+            payload.insert(
+                "tags".to_string(),
+                metadata.map(|m| m.tags.clone()).unwrap_or_default().into(),
+            );
+            if let Some(metadata) = metadata {
+                payload.insert("okf".to_string(), serde_json::json!(metadata).into());
+            }
             payload.insert("content_hash".to_string(), content_hash.to_string().into());
             payload.insert("text".to_string(), chunk.text.clone().into());
 

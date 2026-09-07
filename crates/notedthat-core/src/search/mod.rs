@@ -19,6 +19,9 @@ pub use error::SearchError;
 mod hit;
 pub use hit::SearchHit;
 
+mod concept;
+pub use concept::ConceptMetadata;
+
 mod response;
 pub use response::SearchResponse;
 

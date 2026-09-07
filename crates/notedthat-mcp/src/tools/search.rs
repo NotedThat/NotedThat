@@ -19,7 +19,12 @@ pub struct SearchArgs {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SearchFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,11 +69,38 @@ mod tests {
     use crate::client::NotedThatClient;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{body_string_contains, method, path},
+        matchers::{body_partial_json, body_string_contains, method, path},
     };
 
     fn client(url: &str) -> NotedThatClient {
         NotedThatClient::new(url, "tok").unwrap()
+    }
+
+    #[tokio::test]
+    async fn okf_filters_and_hit_metadata_are_forwarded() {
+        let server = MockServer::start().await;
+        let metadata = serde_json::json!({"concept_id": "revenue", "type": "business-glossary", "tags": ["finance"]});
+        Mock::given(method("POST"))
+            .and(path("/v1/knowledgebases/notes/search"))
+            .and(body_partial_json(serde_json::json!({"filter": {"concept_type": "business-glossary", "tags": ["finance"]}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": [{
+                "object_key": "revenue.md", "byte_start": 0, "byte_end": 10, "score": 0.9, "preview": "Revenue", "okf": metadata
+            }]})))
+            .expect(1)
+            .mount(&server).await;
+        let args = serde_json::from_value(serde_json::json!({"kb": "notes", "query": "revenue", "filters": {"concept_type": "business-glossary", "tags": ["finance"]}})).unwrap();
+        let result = run(&client(&server.uri()), args).await.unwrap();
+        let content = serde_json::to_value(result).unwrap();
+        let text = content["content"][0]["text"].as_str().unwrap();
+        let response: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(response["hits"][0]["okf"], metadata);
+    }
+
+    #[test]
+    fn schema_exposes_okf_filter_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchFilter)).unwrap();
+        assert!(schema["properties"]["concept_type"].is_object());
+        assert!(schema["properties"]["tags"].is_object());
     }
 
     #[tokio::test]
@@ -110,6 +142,8 @@ mod tests {
             query: "q".into(),
             filters: Some(SearchFilter {
                 mime: Some("text/markdown".into()),
+                concept_type: None,
+                tags: vec![],
             }),
             limit: None,
         };

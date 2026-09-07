@@ -21,7 +21,15 @@ fn make_config(url: &str) -> QdrantConfig {
 }
 
 /// The payload indexes `ensure_collection` is expected to create.
-const EXPECTED_INDEXES: [&str; 5] = ["object_key", "etag", "mime", "mtime", "heading_path"];
+const EXPECTED_INDEXES: [&str; 7] = [
+    "object_key",
+    "etag",
+    "mime",
+    "mtime",
+    "heading_path",
+    "tags",
+    "okf.type",
+];
 
 /// Poll until every expected payload index appears, or fail at the deadline.
 ///

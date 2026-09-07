@@ -6,7 +6,8 @@
 //! Per §6.3 / D15: uses `pulldown-cmark::into_offset_iter` for byte offsets and
 //! `text-splitter::MarkdownSplitter` as the secondary splitter for oversized sections.
 //!
-//! Frontmatter is treated as raw markdown per D33.
+//! This low-level chunker treats frontmatter as raw Markdown; OKF indexing passes
+//! the body through it and translates offsets back into the original document.
 //!
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use text_splitter::MarkdownSplitter;
