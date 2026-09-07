@@ -1,14 +1,10 @@
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
-pub(super) enum HtmlEnd {
-    Marker(&'static str),
-    BlankLine,
-}
-
 pub(super) struct Fence {
     marker: u8,
     count: usize,
     pub(super) quote_depth: usize,
+    list_indent: Option<usize>,
 }
 
 pub(super) fn parse_heading(
@@ -52,7 +48,11 @@ pub(super) fn container_content(mut line: &str) -> &str {
     }
 }
 
-pub(super) fn opens_fence(content: &str, quote_depth: usize) -> Option<Fence> {
+pub(super) fn opens_fence(
+    content: &str,
+    quote_depth: usize,
+    list_indent: Option<usize>,
+) -> Option<Fence> {
     let marker = *content.as_bytes().first()?;
     if !matches!(marker, b'`' | b'~') {
         return None;
@@ -65,7 +65,34 @@ pub(super) fn opens_fence(content: &str, quote_depth: usize) -> Option<Fence> {
         marker,
         count,
         quote_depth,
+        list_indent,
     })
+}
+
+pub(super) fn fence_continues(fence: &Fence, line: &str) -> bool {
+    fence
+        .list_indent
+        .is_none_or(|indent| list_continuation_indent(line).is_some_and(|actual| actual >= indent))
+}
+
+pub(super) fn list_fence_indent(mut line: &str) -> Option<usize> {
+    loop {
+        let trimmed = markdown_indent(line);
+        if let Some(rest) = trimmed.strip_prefix('>') {
+            line = rest.strip_prefix(' ').unwrap_or(rest);
+            continue;
+        }
+        let marker_end = trimmed
+            .find([' ', '\t'])
+            .filter(|end| is_list_marker(&trimmed[..*end]));
+        return marker_end.map(|end| {
+            let whitespace = trimmed[end..]
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            end + whitespace
+        });
+    }
 }
 
 pub(super) fn closes_fence(content: &str, fence: &Fence) -> bool {
@@ -75,116 +102,6 @@ pub(super) fn closes_fence(content: &str, fence: &Fence) -> bool {
         .take_while(|byte| *byte == fence.marker)
         .count();
     count >= fence.count && trimmed[count..].trim().is_empty()
-}
-
-pub(super) fn opens_html(content: &str) -> Option<HtmlEnd> {
-    let lower = content.trim_start().to_ascii_lowercase();
-    if lower.starts_with("<!--") {
-        Some(HtmlEnd::Marker("-->"))
-    } else if lower.starts_with("<?") {
-        Some(HtmlEnd::Marker("?>"))
-    } else if lower.starts_with("<![cdata[") {
-        Some(HtmlEnd::Marker("]]>"))
-    } else if lower.starts_with("<!") {
-        Some(HtmlEnd::Marker(">"))
-    } else if lower.starts_with("<script") {
-        Some(HtmlEnd::Marker("</script>"))
-    } else if lower.starts_with("<pre") {
-        Some(HtmlEnd::Marker("</pre>"))
-    } else if lower.starts_with("<style") {
-        Some(HtmlEnd::Marker("</style>"))
-    } else if lower.starts_with("<textarea") {
-        Some(HtmlEnd::Marker("</textarea>"))
-    } else if is_block_html_tag(&lower) {
-        Some(HtmlEnd::BlankLine)
-    } else {
-        None
-    }
-}
-
-fn is_block_html_tag(lower: &str) -> bool {
-    let tag = lower.strip_prefix('<').map_or("", |value| {
-        let value = value.strip_prefix('/').unwrap_or(value);
-        value
-            .split(|character: char| !character.is_ascii_alphanumeric())
-            .next()
-            .unwrap_or("")
-    });
-    matches!(
-        tag,
-        "address"
-            | "article"
-            | "aside"
-            | "base"
-            | "basefont"
-            | "blockquote"
-            | "body"
-            | "caption"
-            | "center"
-            | "col"
-            | "colgroup"
-            | "dd"
-            | "details"
-            | "dialog"
-            | "dir"
-            | "div"
-            | "dl"
-            | "dt"
-            | "fieldset"
-            | "figcaption"
-            | "figure"
-            | "footer"
-            | "form"
-            | "frame"
-            | "frameset"
-            | "h1"
-            | "h2"
-            | "h3"
-            | "h4"
-            | "h5"
-            | "h6"
-            | "head"
-            | "header"
-            | "hr"
-            | "html"
-            | "iframe"
-            | "legend"
-            | "li"
-            | "link"
-            | "main"
-            | "menu"
-            | "menuitem"
-            | "nav"
-            | "noframes"
-            | "ol"
-            | "optgroup"
-            | "option"
-            | "p"
-            | "param"
-            | "search"
-            | "section"
-            | "summary"
-            | "table"
-            | "tbody"
-            | "td"
-            | "tfoot"
-            | "th"
-            | "thead"
-            | "title"
-            | "tr"
-            | "track"
-            | "ul"
-    )
-}
-
-pub(super) fn html_continues(end: &HtmlEnd, content: &str, tail: &str) -> bool {
-    match end {
-        HtmlEnd::Marker(marker) => {
-            !content.to_ascii_lowercase().contains(marker)
-                && !tail.to_ascii_lowercase().contains(marker)
-        }
-        HtmlEnd::BlankLine => !content.trim().is_empty(),
-    }
 }
 
 pub(super) fn is_setext_underline(content: &str) -> bool {
@@ -216,6 +133,18 @@ pub(super) fn parse_giant_atx(content: &str, label_char_cap: usize) -> Option<(u
 fn markdown_indent(line: &str) -> &str {
     let spaces = line.bytes().take_while(|byte| *byte == b' ').count();
     if spaces <= 3 { &line[spaces..] } else { line }
+}
+
+fn list_continuation_indent(mut line: &str) -> Option<usize> {
+    loop {
+        let spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+        let trimmed = if spaces <= 3 { &line[spaces..] } else { line };
+        if let Some(rest) = trimmed.strip_prefix('>') {
+            line = rest.strip_prefix(' ').unwrap_or(rest);
+            continue;
+        }
+        return Some(line.bytes().take_while(|byte| *byte == b' ').count());
+    }
 }
 
 pub(super) fn quote_depth(mut line: &str) -> usize {

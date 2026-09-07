@@ -3,11 +3,13 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
 };
 
+mod html;
 mod syntax;
 
+use html::{HTML_MARKERS, HtmlEnd, html_continues, opens_html};
 use syntax::{
-    Fence, HtmlEnd, closes_fence, container_content, html_continues, is_setext_underline,
-    opens_fence, opens_html, parse_giant_atx, parse_heading, quote_depth,
+    Fence, closes_fence, container_content, fence_continues, is_setext_underline,
+    list_fence_indent, opens_fence, parse_giant_atx, parse_heading, quote_depth,
 };
 
 const READ_BUFFER_BYTES: usize = 8 * 1_024;
@@ -30,6 +32,7 @@ pub(super) struct HeadingScanner {
     line_start: u64,
     line: Vec<u8>,
     line_tail: VecDeque<u8>,
+    html_marker_seen: [bool; HTML_MARKERS.len()],
     line_overflowed: bool,
     paragraph: Option<CapturedParagraph>,
     fence: Option<Fence>,
@@ -46,6 +49,7 @@ impl HeadingScanner {
             line_start: 0,
             line: Vec::with_capacity(LINE_CAPTURE_BYTES),
             line_tail: VecDeque::with_capacity(64),
+            html_marker_seen: [false; HTML_MARKERS.len()],
             line_overflowed: false,
             paragraph: None,
             fence: None,
@@ -89,6 +93,7 @@ impl HeadingScanner {
                     self.line_tail.pop_front();
                 }
                 self.line_tail.push_back(*byte);
+                self.record_html_markers();
                 if *byte == b'\n' {
                     let heading = self.finish_line()?;
                     self.line_start = self.position;
@@ -108,15 +113,15 @@ impl HeadingScanner {
             overflowed: std::mem::take(&mut self.line_overflowed),
         };
         let line = captured_utf8(&current.bytes);
-        let tail: Vec<_> = self.line_tail.drain(..).collect();
-        let tail = captured_utf8(&tail);
+        self.line_tail.clear();
         let content = container_content(line);
         let quote_depth = quote_depth(line);
+        let html_marker_seen = std::mem::take(&mut self.html_marker_seen);
 
         if let Some(html_end) = self.html.take()
             && quote_depth >= self.html_quote_depth
         {
-            if html_continues(&html_end, content, tail) {
+            if html_continues(&html_end, content, html_marker_seen) {
                 self.html = Some(html_end);
             }
             self.paragraph = None;
@@ -126,21 +131,21 @@ impl HeadingScanner {
         if let Some(fence) = self.fence.take()
             && quote_depth >= fence.quote_depth
         {
-            if !closes_fence(content, &fence) {
+            if !closes_fence(content, &fence) && fence_continues(&fence, line) {
                 self.fence = Some(fence);
             }
             self.paragraph = None;
             return Ok(None);
         }
 
-        if let Some(fence) = opens_fence(content, quote_depth) {
+        if let Some(fence) = opens_fence(content, quote_depth, list_fence_indent(line)) {
             self.fence = Some(fence);
             self.paragraph = None;
             return Ok(None);
         }
 
         if let Some(html_end) = opens_html(content) {
-            if html_continues(&html_end, content, tail) {
+            if html_continues(&html_end, content, html_marker_seen) {
                 self.html = Some(html_end);
                 self.html_quote_depth = quote_depth;
             }
@@ -198,6 +203,22 @@ impl HeadingScanner {
             self.paragraph = Some(current);
         }
         Ok(None)
+    }
+
+    fn record_html_markers(&mut self) {
+        for (index, marker) in HTML_MARKERS.iter().enumerate() {
+            if !self.html_marker_seen[index]
+                && self.line_tail.len() >= marker.len()
+                && self
+                    .line_tail
+                    .iter()
+                    .rev()
+                    .zip(marker.as_bytes().iter().rev())
+                    .all(|(byte, marker_byte)| byte.eq_ignore_ascii_case(marker_byte))
+            {
+                self.html_marker_seen[index] = true;
+            }
+        }
     }
 }
 

@@ -272,3 +272,75 @@ fn rejects_zero_bound_and_invalid_utf8() {
     );
     assert!(invalid.next().is_none());
 }
+
+#[test]
+fn preserves_headings_after_indented_html_like_code() {
+    // Given
+    let raw = "    <script>\n\n# Real\nbody\n";
+
+    // When
+    let chunks = collect(raw, 3_000, 0);
+
+    // Then
+    assert!(chunks.iter().any(|chunk| {
+        chunk
+            .heading_path
+            .last()
+            .is_some_and(|heading| heading == "Real")
+    }));
+}
+
+#[test]
+fn ends_unclosed_list_fences_when_the_list_ends() {
+    // Given
+    let raw = "- ```\n  code\n\n# Real\nbody\n";
+
+    // When
+    let chunks = collect(raw, 3_000, 0);
+
+    // Then
+    assert!(chunks.iter().any(|chunk| {
+        chunk
+            .heading_path
+            .last()
+            .is_some_and(|heading| heading == "Real")
+    }));
+}
+
+#[test]
+fn treats_html_tag_prefixes_as_ordinary_markdown() {
+    // Given
+    let raw = "<scripture>\n\n# Real\nbody\n";
+
+    // When
+    let chunks = collect(raw, 3_000, 0);
+
+    // Then
+    assert!(chunks.iter().any(|chunk| {
+        chunk
+            .heading_path
+            .last()
+            .is_some_and(|heading| heading == "Real")
+    }));
+}
+
+#[test]
+fn finds_html_terminators_anywhere_in_long_lines() {
+    // Given
+    let raw = format!(
+        "<!--{}-->{}\n# Real\nbody\n",
+        "x".repeat(17_000),
+        "y".repeat(100)
+    );
+
+    // When
+    let chunks = collect(&raw, 3_000, 0);
+
+    // Then
+    assert!(chunks.iter().any(|chunk| {
+        chunk
+            .heading_path
+            .last()
+            .is_some_and(|heading| heading == "Real")
+    }));
+}
