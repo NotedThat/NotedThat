@@ -21,6 +21,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::propfind::PropfindListing;
 use crate::{metadata::WebDavMetaData, state::WebDavState};
 
 /// Maximum number of objects returned by a single `WebDAV` PROPFIND in v1.
@@ -93,13 +94,27 @@ pub(crate) fn parse_dav_path(
 pub struct WebDavStorage {
     /// Shared `WebDAV` state containing storage and declared knowledge bases.
     pub(crate) state: Arc<WebDavState>,
+    propfind_listing: Option<PropfindListing>,
 }
 
 impl WebDavStorage {
     /// Create a new `WebDAV` filesystem wrapper around shared state.
     #[must_use]
     pub fn new(state: Arc<WebDavState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            propfind_listing: None,
+        }
+    }
+
+    pub(crate) fn with_propfind_listing(
+        state: Arc<WebDavState>,
+        propfind_listing: PropfindListing,
+    ) -> Self {
+        Self {
+            state,
+            propfind_listing: Some(propfind_listing),
+        }
     }
 }
 
@@ -142,10 +157,12 @@ impl DavFileSystem for WebDavStorage {
         Box::pin(async move {
             match parse_dav_path(path, state.declared_kbs.as_ref())? {
                 DavTarget::Root => Ok(stream_entries(root_entries(&state))),
-                DavTarget::KbRoot(kb) => list_entries(state, kb, None).await,
+                DavTarget::KbRoot(kb) => {
+                    list_entries(state, kb, None, self.propfind_listing.as_ref()).await
+                }
                 DavTarget::Object(kb, path) => {
                     let prefix = format!("{}/", path.as_str());
-                    list_entries(state, kb, Some(prefix)).await
+                    list_entries(state, kb, Some(prefix), self.propfind_listing.as_ref()).await
                 }
                 DavTarget::NonDeclaredKb => Err(FsError::Forbidden),
             }
@@ -203,7 +220,17 @@ async fn list_entries(
     state: Arc<WebDavState>,
     kb: KbSlug,
     prefix: Option<String>,
+    propfind_listing: Option<&PropfindListing>,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
+    if let Some(listing) =
+        propfind_listing.filter(|listing| listing.matches(&kb, prefix.as_deref()))
+    {
+        return Ok(stream_entries(entries_from_objects(
+            listing.objects().iter().cloned(),
+            prefix.as_deref(),
+        )));
+    }
+
     let objects = collect_propfind_objects(&state, &kb, prefix.as_deref()).await?;
     let response = ListResponse {
         objects,
@@ -217,31 +244,7 @@ async fn list_entries(
     )))
 }
 
-pub(crate) async fn ensure_propfind_target_within_cap(
-    state: &WebDavState,
-    target: &DavTarget,
-) -> FsResult<()> {
-    match target {
-        DavTarget::Root | DavTarget::NonDeclaredKb => Ok(()),
-        DavTarget::KbRoot(kb) => collect_propfind_objects(state, kb, None).await.map(|_| ()),
-        DavTarget::Object(kb, path) => match state
-            .storage
-            .head_object(kb, path, ConditionalHeaders::default())
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(err) if err.is_not_found() => {
-                let prefix = format!("{}/", path.as_str());
-                collect_propfind_objects(state, kb, Some(&prefix))
-                    .await
-                    .map(|_| ())
-            }
-            Err(err) => Err(storage_error_to_fs(&err)),
-        },
-    }
-}
-
-async fn collect_propfind_objects(
+pub(crate) async fn collect_propfind_objects(
     state: &WebDavState,
     kb: &KbSlug,
     prefix: Option<&str>,
@@ -321,11 +324,18 @@ fn root_entries(state: &WebDavState) -> Vec<Box<dyn DavDirEntry>> {
 }
 
 fn entries_from_list(response: ListResponse, prefix: Option<&str>) -> Vec<Box<dyn DavDirEntry>> {
+    entries_from_objects(response.objects, prefix)
+}
+
+fn entries_from_objects(
+    objects: impl IntoIterator<Item = ObjectMeta>,
+    prefix: Option<&str>,
+) -> Vec<Box<dyn DavDirEntry>> {
     let mut virtual_dirs = BTreeSet::new();
     let mut files = BTreeMap::new();
     let prefix = prefix.unwrap_or("");
 
-    for meta in response.objects {
+    for meta in objects {
         let Some(relative) = meta.key.strip_prefix(prefix) else {
             continue;
         };
@@ -357,7 +367,7 @@ fn stream_entries(entries: Vec<Box<dyn DavDirEntry>>) -> FsStream<Box<dyn DavDir
     Box::pin(futures::stream::iter(entries).map(Ok))
 }
 
-fn storage_error_to_fs(err: &StorageError) -> FsError {
+pub(crate) fn storage_error_to_fs(err: &StorageError) -> FsError {
     match err {
         StorageError::NotFound { .. } | StorageError::BucketNotFound { .. } => FsError::NotFound,
         StorageError::PreconditionFailed | StorageError::RangeNotSatisfiable { .. } => {
@@ -751,6 +761,16 @@ mod tests {
             Err(unavailable())
         }
 
+        async fn get_object_stream(
+            &self,
+            _kb: &KbSlug,
+            _path: &ObjectPath,
+            _range: Option<Vec<ByteRange>>,
+            _conditionals: ConditionalHeaders,
+        ) -> Result<notedthat_core::ObjectStream, StorageError> {
+            Err(unavailable())
+        }
+
         async fn put_object(
             &self,
             _kb: &KbSlug,
@@ -760,6 +780,27 @@ mod tests {
             _conditionals: ConditionalHeaders,
         ) -> Result<PutOutcome, StorageError> {
             self.record("put_object");
+            Err(unavailable())
+        }
+
+        async fn put_staged_object(
+            &self,
+            _kb: &KbSlug,
+            _path: &ObjectPath,
+            _body: notedthat_core::StagedBody,
+            _content_type: Option<&str>,
+            _conditionals: ConditionalHeaders,
+        ) -> Result<PutOutcome, StorageError> {
+            Err(unavailable())
+        }
+
+        async fn copy_object(
+            &self,
+            _kb: &KbSlug,
+            _source: &ObjectPath,
+            _destination: &ObjectPath,
+            _options: notedthat_core::CopyObjectOptions,
+        ) -> Result<PutOutcome, StorageError> {
             Err(unavailable())
         }
 
@@ -805,7 +846,14 @@ mod tests {
             }
 
             Ok(ListResponse {
-                objects: self.objects.lock().expect("mutex not poisoned").clone(),
+                objects: self
+                    .objects
+                    .lock()
+                    .expect("mutex not poisoned")
+                    .iter()
+                    .filter(|object| prefix.is_none_or(|prefix| object.key.starts_with(prefix)))
+                    .cloned()
+                    .collect(),
                 truncated: self.truncated,
                 next_cursor: self.next_cursor.clone(),
             })
@@ -868,6 +916,7 @@ mod tests {
             username: Arc::new("user".to_string()),
             password: Arc::new("pass".to_string()),
             storage,
+            staging_config: notedthat_core::StagingConfig::default(),
             declared_kbs: Arc::new(declared_kbs),
             indexer_tx,
         })
@@ -882,11 +931,26 @@ mod tests {
     }
 
     fn propfind_request(uri: &str) -> Request<Body> {
+        propfind_request_with_depth(uri, "1")
+    }
+
+    fn propfind_request_with_depth(uri: &str, depth: &str) -> Request<Body> {
         Request::builder()
             .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
             .uri(uri)
             .header("Authorization", "Basic dXNlcjpwYXNz")
-            .header("Depth", "1")
+            .header("Depth", depth)
+            .body(Body::from(
+                r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#,
+            ))
+            .expect("valid PROPFIND request")
+    }
+
+    fn propfind_request_without_depth(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
+            .uri(uri)
+            .header("Authorization", "Basic dXNlcjpwYXNz")
             .body(Body::from(
                 r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#,
             ))
@@ -1077,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn propfind_exactly_10000_returns_207() {
         let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_000)));
-        let state = test_state(storage, declared_kbs(&["notes"]));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
         let response = app
@@ -1093,12 +1157,226 @@ mod tests {
         assert_eq!(status, StatusCode::MULTI_STATUS);
         assert_eq!(body.matches("<D:response>").count(), 10_001);
         assert!(body.contains("file-09999.md"));
+        assert_eq!(storage.list_calls().len(), 10);
+    }
+
+    #[tokio::test]
+    async fn propfind_depth_zero_skips_enumeration_when_target_exceeds_cap() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_001)));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request_with_depth("/notes/", "0"))
+            .await
+            .expect("PROPFIND request succeeds");
+
+        assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+        assert!(
+            storage.list_calls().is_empty(),
+            "Depth: 0 must not list objects before handling the target metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn propfind_depth_one_reuses_paginated_cap_listing() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1_500)));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request("/notes/"))
+            .await
+            .expect("PROPFIND request succeeds");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
+        assert!(body.contains("file-01499.md"));
+        assert_eq!(
+            storage.list_calls(),
+            vec![
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: None,
+                    limit: 1000,
+                    cursor: None,
+                },
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: None,
+                    limit: 1000,
+                    cursor: Some("page-1".to_string()),
+                },
+            ],
+            "the capped traversal must be the only directory listing for this request"
+        );
+    }
+
+    #[tokio::test]
+    async fn propfind_without_depth_keeps_dav_server_default_listing() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1_500)));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request_without_depth("/notes/"))
+            .await
+            .expect("PROPFIND request succeeds");
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body bytes")
+                .to_vec(),
+        )
+        .expect("UTF-8 body");
+
+        assert!(body.contains("file-01499.md"));
+        assert_eq!(storage.list_calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn propfind_depth_one_virtual_directory_reuses_listing_after_metadata_probe() {
+        let storage = Arc::new(MockStorage {
+            head_not_found: true,
+            ..MockStorage::with_objects(vec![object_meta("folder/bravo.md")])
+        });
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let response = app
+            .oneshot(propfind_request("/notes/folder/"))
+            .await
+            .expect("PROPFIND request succeeds");
+
+        assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+        assert_eq!(
+            storage.list_calls(),
+            vec![
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: Some("folder/".to_string()),
+                    limit: 1000,
+                    cursor: None,
+                },
+                ListCall {
+                    kb: "notes".to_string(),
+                    prefix: Some("folder/".to_string()),
+                    limit: 1,
+                    cursor: None,
+                },
+            ],
+            "the existing virtual-directory metadata probe is allowed, but read_dir must use the cap listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn propfind_infinity_with_litmus_returns_not_implemented() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1)));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+        let mut request = propfind_request_with_depth("/notes/", "infinity");
+        request
+            .headers_mut()
+            .insert("X-Litmus", "props".parse().expect("valid header"));
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("PROPFIND request succeeds");
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert!(storage.list_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn propfind_duplicate_depth_is_rejected_before_listing() {
+        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1)));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+        let request = Request::builder()
+            .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
+            .uri("/notes/")
+            .header("Authorization", "Basic dXNlcjpwYXNz")
+            .header("Depth", "1")
+            .header("Depth", "infinity")
+            .body(Body::from(
+                r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#,
+            ))
+            .expect("valid PROPFIND request");
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("PROPFIND request succeeds");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(storage.list_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn propfind_concurrent_virtual_directories_keep_listings_request_scoped() {
+        let storage = Arc::new(MockStorage {
+            head_not_found: true,
+            ..MockStorage::with_objects(vec![
+                object_meta("alpha/one.md"),
+                object_meta("beta/two.md"),
+            ])
+        });
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+        let app = crate::router::build_router((*state).clone());
+
+        let alpha = app.clone().oneshot(propfind_request("/notes/alpha/"));
+        let beta = app.oneshot(propfind_request("/notes/beta/"));
+        let (alpha, beta) = tokio::join!(alpha, beta);
+        let alpha = alpha.expect("alpha PROPFIND succeeds");
+        let beta = beta.expect("beta PROPFIND succeeds");
+        let alpha_body = String::from_utf8(
+            to_bytes(alpha.into_body(), usize::MAX)
+                .await
+                .expect("alpha body bytes")
+                .to_vec(),
+        )
+        .expect("alpha body is UTF-8");
+        let beta_body = String::from_utf8(
+            to_bytes(beta.into_body(), usize::MAX)
+                .await
+                .expect("beta body bytes")
+                .to_vec(),
+        )
+        .expect("beta body is UTF-8");
+
+        assert!(alpha_body.contains("one.md"));
+        assert!(!alpha_body.contains("two.md"));
+        assert!(beta_body.contains("two.md"));
+        assert!(!beta_body.contains("one.md"));
+
+        let calls = storage.list_calls();
+        for prefix in ["alpha/", "beta/"] {
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| { call.prefix.as_deref() == Some(prefix) && call.limit == 1000 })
+                    .count(),
+                1,
+                "each request must perform its own cached cap traversal"
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| call.prefix.as_deref() == Some(prefix) && call.limit == 1)
+                    .count(),
+                1,
+                "each request retains only its own virtual-directory metadata probe"
+            );
+        }
     }
 
     #[tokio::test]
     async fn propfind_over_10000_returns_507() {
         let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_001)));
-        let state = test_state(storage, declared_kbs(&["notes"]));
+        let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
         let response = app
@@ -1113,6 +1391,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
         assert_eq!(body, PROPFIND_TOO_LARGE_DAV_XML);
+        assert_eq!(storage.list_calls().len(), 11);
     }
 
     #[tokio::test]

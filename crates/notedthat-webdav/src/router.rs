@@ -16,19 +16,33 @@ use crate::{
         intercept_propfind_too_large, intercept_proppatch, intercept_read_methods,
         intercept_write_methods,
     },
+    propfind::PropfindListing,
     state::WebDavState,
 };
 
 /// Build the `WebDAV` axum router with dav-server fallback and guard middleware.
 pub fn build_router(state: WebDavState) -> Router {
+    let storage_state = Arc::new(state.clone());
     let dav_handler = DavHandler::builder()
-        .filesystem(Box::new(WebDavStorage::new(Arc::new(state.clone()))))
+        .filesystem(Box::new(WebDavStorage::new(Arc::clone(&storage_state))))
         .autoindex(false)
         .build_handler();
 
     let dav_service = move |req: axum::extract::Request| {
         let handler = dav_handler.clone();
-        async move { handler.handle(req).await }
+        let storage_state = Arc::clone(&storage_state);
+        async move {
+            let listing = req.extensions().get::<PropfindListing>().cloned();
+            match listing {
+                Some(listing) => {
+                    let request_config = DavHandler::builder().filesystem(Box::new(
+                        WebDavStorage::with_propfind_listing(storage_state, listing),
+                    ));
+                    handler.handle_with(request_config, req).await
+                }
+                None => handler.handle(req).await,
+            }
+        }
     };
 
     Router::new().fallback(dav_service).layer(

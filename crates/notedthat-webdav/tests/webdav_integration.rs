@@ -81,6 +81,7 @@ async fn start_webdav_server(
         username: Arc::new(username.clone()),
         password: Arc::new(password.clone()),
         storage: storage as Arc<dyn notedthat_core::Storage>,
+        staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared_kbs),
         indexer_tx: tx,
     };

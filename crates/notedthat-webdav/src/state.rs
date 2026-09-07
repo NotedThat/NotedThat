@@ -1,6 +1,6 @@
 //! Shared state for the `WebDAV` surface.
 
-use notedthat_core::{KbSlug, Storage};
+use notedthat_core::{KbSlug, StagingConfig, Storage};
 use notedthat_indexer::IndexEvent;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,4 +19,6 @@ pub struct WebDavState {
     pub declared_kbs: Arc<BTreeMap<String, KbSlug>>,
     /// Indexer event channel used after write operations.
     pub indexer_tx: Sender<IndexEvent>,
+    /// Shared private directory used to spool upload bodies.
+    pub staging_config: StagingConfig,
 }
