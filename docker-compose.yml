@@ -100,6 +100,7 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+    stop_grace_period: 45s
     restart: unless-stopped
 
 volumes:

@@ -26,10 +26,6 @@ mod mcp_http;
 #[path = "run/mcp_http_listener.rs"]
 mod mcp_http_listener;
 
-/// Grace period for in-flight `WebDAV` uploads after shutdown signal.
-/// Runs BEFORE the existing 31-second indexer drain.
-pub const WEBDAV_INFLIGHT_GRACE: Duration = Duration::from_mins(1);
-
 /// Build infrastructure components (S3, Qdrant, embedder, indexer, app state).
 async fn build_infrastructure(
     config: Config,
@@ -239,15 +235,16 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         dav_result?;
     }
 
-    tracing::info!(
-        "listeners quiesced; waiting {}s for in-flight WebDAV uploads",
-        WEBDAV_INFLIGHT_GRACE.as_secs()
-    );
-    tokio::time::sleep(WEBDAV_INFLIGHT_GRACE).await;
-    drain_indexer(indexer_shutdown, worker_handle).await;
-
-    info!("shutdown complete");
+    complete_shutdown(indexer_shutdown, worker_handle).await;
     Ok(())
+}
+
+async fn complete_shutdown(
+    indexer_shutdown: CancellationToken,
+    worker_handle: tokio::task::JoinHandle<()>,
+) {
+    drain_indexer(indexer_shutdown, worker_handle).await;
+    info!("shutdown complete");
 }
 
 async fn drain_indexer(
@@ -298,5 +295,35 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => tracing::info!("SIGINT received, shutting down"),
         () = terminate => tracing::info!("SIGTERM received, shutting down"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn completes_shutdown_by_cancelling_and_draining_indexer_immediately() {
+        let indexer_shutdown = CancellationToken::new();
+        let worker_shutdown = indexer_shutdown.clone();
+        let (cancelled_tx, cancelled_rx) = oneshot::channel();
+        let worker_handle = tokio::spawn(async move {
+            worker_shutdown.cancelled().await;
+            cancelled_tx
+                .send(())
+                .expect("test observes indexer cancellation once");
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            complete_shutdown(indexer_shutdown, worker_handle),
+        )
+        .await
+        .expect("shutdown completion should not wait after listeners quiesce");
+
+        cancelled_rx
+            .await
+            .expect("indexer worker should receive cancellation");
     }
 }

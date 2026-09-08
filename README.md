@@ -95,7 +95,7 @@ docker pull ghcr.io/notedthat/server:latest
 # Start the storage/index dependencies first. On Linux, use --add-host below.
 docker compose up -d seaweedfs qdrant
 set -a; . ./.env; set +a
-docker run --rm --add-host=host.docker.internal:host-gateway \
+docker run --rm --stop-timeout 45 --add-host=host.docker.internal:host-gateway \
   -p 8080:8080 -p 8081:8081 -p 8082:8082 \
   -e NOTEDTHAT_API_TOKEN -e NOTEDTHAT_KBS \
   -e NOTEDTHAT_S3_REGION -e NOTEDTHAT_S3_ACCESS_KEY_ID -e NOTEDTHAT_S3_SECRET_ACCESS_KEY \
