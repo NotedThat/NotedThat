@@ -2,8 +2,9 @@
 
 use crate::error::ApiErrorResponse;
 use crate::state::AppState;
+use axum::RequestExt;
 use axum::body::Body;
-use axum::extract::{MatchedPath, State};
+use axum::extract::{MatchedPath, Path, State};
 use axum::http::{Method, Request, header::AUTHORIZATION};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -57,7 +58,8 @@ pub async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    if anonymous_capability(&req, &state).is_some() || AUTH_EXEMPT_PATHS.contains(&req.uri().path())
+    if anonymous_capability(&mut req, &state).await.is_some()
+        || AUTH_EXEMPT_PATHS.contains(&req.uri().path())
     {
         req.extensions_mut().insert(AuthContext::Anonymous);
         return Ok(next.run(req).await);
@@ -66,19 +68,38 @@ pub async fn auth_middleware(
     Err(ApiErrorResponse::unauthorized(request_id))
 }
 
-fn anonymous_capability(req: &Request<Body>, state: &AppState) -> Option<PublicReadCapability> {
-    let path = req.uri().path();
+async fn anonymous_capability(
+    req: &mut Request<Body>,
+    state: &AppState,
+) -> Option<PublicReadCapability> {
     let matched_path = req.extensions().get::<MatchedPath>()?.as_str();
     let capability = match (req.method(), matched_path) {
-        (&Method::GET, "/v1/knowledgebases") => return Some(PublicReadCapability::Discover),
-        (&Method::GET, "/v1/knowledgebases/{kb_slug}") => PublicReadCapability::Browse,
+        (&Method::GET | &Method::HEAD, "/v1/knowledgebases") => {
+            return state
+                .declared_kbs
+                .keys()
+                .any(|slug| {
+                    state
+                        .public_read_policies
+                        .get(slug)
+                        .is_some_and(|policy| policy.allows(PublicReadCapability::Discover))
+                })
+                .then_some(PublicReadCapability::Discover);
+        }
+        (&Method::GET | &Method::HEAD, "/v1/knowledgebases/{kb_slug}") => {
+            PublicReadCapability::Browse
+        }
         (&Method::GET | &Method::HEAD, "/v1/knowledgebases/{kb_slug}/{*object_path}") => {
             PublicReadCapability::Content
         }
         (&Method::POST, "/v1/knowledgebases/{kb_slug}/search") => PublicReadCapability::Search,
         _ => return None,
     };
-    let kb_slug = path.split('/').nth(3)?;
+    let Path(params) = req
+        .extract_parts::<Path<std::collections::BTreeMap<String, String>>>()
+        .await
+        .ok()?;
+    let kb_slug = params.get("kb_slug")?;
     state
         .public_read_policies
         .get(kb_slug)
@@ -86,19 +107,15 @@ fn anonymous_capability(req: &Request<Body>, state: &AppState) -> Option<PublicR
         .map(|_| capability)
 }
 
-/// Return the request authentication context, defaulting conservatively to authenticated.
+/// Return the request authentication context, defaulting to anonymous when the auth layer has not run.
 pub fn auth_context<B>(req: &Request<B>) -> AuthContext {
     req.extensions()
         .get::<AuthContext>()
         .copied()
-        .unwrap_or(AuthContext::Authenticated)
+        .unwrap_or(AuthContext::Anonymous)
 }
 
-/// Return whether an object key belongs to `NotedThat`'s private control namespace.
-#[must_use]
-pub fn is_internal_path(path: &str) -> bool {
-    path == ".notedthat" || path.starts_with(".notedthat/")
-}
+pub use notedthat_core::is_internal_path;
 
 /// Extract the `x-request-id` value from request extensions, falling back to a
 /// generated UUID if the `SetRequestId` middleware hasn't run yet.

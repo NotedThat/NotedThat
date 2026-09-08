@@ -135,7 +135,7 @@ async fn llms_txt_is_plain_text_without_authentication() {
 // ─── Auth tests ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_kbs_without_discover_policy_returns_empty_public_list() {
+async fn list_kbs_without_discover_policy_requires_auth() {
     let resp = app()
         .oneshot(
             Request::builder()
@@ -145,11 +145,8 @@ async fn list_kbs_without_discover_policy_returns_empty_public_list() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(resp).await["knowledgebases"],
-        serde_json::json!([])
-    );
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response_json(resp).await["error"], "unauthorized");
 }
 
 #[tokio::test]
