@@ -117,17 +117,19 @@ async fn llms_txt_is_plain_text_without_authentication() {
     // When: it requests the LLM navigation document.
 
     // Then: the service provides a successful plain-text response.
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/plain; charset=utf-8"
-    );
-    assert!(
-        !to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    println!("GET /llms.txt without Authorization -> {status}; Content-Type={content_type}");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "text/plain; charset=utf-8");
+    assert!(!body.is_empty());
 }
 
 // ─── Auth tests ─────────────────────────────────────────────────────────────

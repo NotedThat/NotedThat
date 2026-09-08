@@ -25,22 +25,51 @@ discover and navigate the API. It contains generic route and authentication guid
 includes credentials, configured knowledge-base names, or deployment-specific details.
 
 Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
-The document directs it to authenticated `/v1/` discovery, object, and search operations.
+The document explains when `/v1/` discovery, object, and search operations require authentication
+and when a configured anonymous capability may be used without a header.
 
 ## Authentication
 
-All `/v1/` routes require a Bearer token. Pass it in the `Authorization` header:
+Authenticated callers use a Bearer token. A valid token has full access to every declared knowledge
+base. Pass it in the `Authorization` header:
 
 ```
 Authorization: Bearer <token>
 ```
 
 The token is compared against `NOTEDTHAT_API_TOKEN` using a constant-time comparison. There is no
-token rotation, no scopes, and no per-KB access control in v1. Either you have the token or you
-don't.
+token rotation and no per-token scopes or per-KB access control in v1. Either you have the token or
+you don't.
 
-Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) do **not**
-require authentication.
+Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
+public. An installation may additionally expose a per-knowledge-base anonymous read capability
+through its manifest. A client must omit `Authorization` only when it knows the requested
+capability is configured: a supplied malformed or invalid credential always returns `401
+unauthorized` and never falls back to anonymous access.
+
+### Manifest-controlled anonymous reads
+
+The optional version-1 manifest field `public_read` is an array of independent capability names.
+Missing or empty means private. The policy is scoped to one knowledge base (one bucket), not to a
+namespace or path prefix.
+
+| Capability | Anonymous route | Meaning |
+| --- | --- | --- |
+| `discover` | `GET /v1/knowledgebases` | Includes that knowledge base in discovery |
+| `browse` | `GET /v1/knowledgebases/{kb_slug}` | Lists its object metadata |
+| `content` | `GET` or `HEAD /v1/knowledgebases/{kb_slug}/{path}` | Reads one object's bytes or metadata |
+| `search` | `POST /v1/knowledgebases/{kb_slug}/search` | Searches that knowledge base |
+
+Capabilities do not imply one another. In particular, anonymous search can return matching object
+paths and snippets while browse and content remain private. Anonymous callers never see
+`.notedthat` or its descendants through reads, listings, search, or WebDAV `PROPFIND`.
+
+All mutations remain authenticated, including HTTP `PUT`, `PATCH`, `POST` write actions, and
+`DELETE`, plus WebDAV `PUT`, `DELETE`, `MOVE`, `COPY`, and `MKCOL`. Public-read policy does not
+apply to MCP: both MCP transports continue to require Bearer authentication. Policies are loaded
+at startup and require a server restart after a manifest edit; there is no hot reload, namespace
+grant, or built-in rate-limit setting. Operators enabling anonymous search must configure reverse-
+proxy rate and burst controls.
 
 **401 response when the token is missing or wrong:**
 
@@ -348,7 +377,9 @@ curl http://localhost:8080/readyz
 
 List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sorted order.
 
-**Authentication:** Required.
+**Authentication:** A valid Bearer token returns every declared knowledge base. Without an
+`Authorization` header, this is anonymous discovery: the response contains only knowledge bases
+whose manifest grants `discover` (and can be empty). A supplied invalid credential returns `401`.
 
 **Response:**
 
@@ -380,7 +411,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 List objects in a knowledge base. Supports optional prefix filtering and a result limit.
 
-**Authentication:** Required.
+**Authentication:** Required unless the client omits `Authorization` and this knowledge base's
+manifest grants `browse`. A supplied invalid credential returns `401`.
 
 **Path parameters:**
 
@@ -514,7 +546,8 @@ Cursors are for immediate continuation of a live listing, not a stable snapshot.
 
 Check whether an object exists and retrieve its metadata without downloading the body.
 
-**Authentication:** Required.
+**Authentication:** Required unless the client omits `Authorization` and this knowledge base's
+manifest grants `content`. A supplied invalid credential returns `401`.
 
 **Path parameters:**
 
@@ -555,7 +588,8 @@ curl -I -H "Authorization: Bearer $TOKEN" \
 Download an object. Returns the raw bytes with appropriate `Content-Type` and `Content-Length`
 headers. Supports byte-range reads and conditional requests.
 
-**Authentication:** Required.
+**Authentication:** Required unless the client omits `Authorization` and this knowledge base's
+manifest grants `content`. A supplied invalid credential returns `401`.
 
 **Path parameters:**
 
@@ -954,7 +988,8 @@ curl -X POST \
 
 Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RRF fusion) against a knowledge base.
 
-**Authentication**: Requires the static Bearer token (see [Authentication](#authentication)).
+**Authentication**: Requires the static Bearer token unless this knowledge base has the `search`
+anonymous capability and the client omits `Authorization` (see [Authentication](#authentication)).
 
 **Path parameters**:
 
@@ -1069,6 +1104,14 @@ curl -sSf -X POST \
 
 NotedThat exposes a WebDAV read-write surface on a second listener (default `0.0.0.0:8081`).
 Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` / `NOTEDTHAT_WEBDAV_PASSWORD`).
+
+WebDAV supports the same optional manifest-controlled anonymous reads as the HTTP API. `discover`
+allows a root `PROPFIND` to reveal the knowledge base; `browse` allows `PROPFIND` within it; and
+`content` allows `GET` and `HEAD`. `search` has no WebDAV equivalent. Anonymous `OPTIONS` returns
+only the read methods allowed by the policy at its target path; authenticated `OPTIONS` returns the
+normal read-write method set. `.notedthat` and descendants stay hidden from anonymous direct
+reads and `PROPFIND` responses. Supplying invalid Basic credentials returns `401` with a Basic
+challenge rather than falling back to anonymous access. All WebDAV writes remain authenticated.
 
 ### Path normalization and traversal rejection
 

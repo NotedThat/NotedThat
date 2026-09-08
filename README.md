@@ -7,6 +7,8 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 ## Documentation
 
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
+- [API reference](docs/API.md) — HTTP, WebDAV, MCP, and anonymous-read behavior
+- [Configuration](docs/CONFIGURATION.md) — environment and manifest operations
 - [DEVELOPMENT.md](DEVELOPMENT.md) — developer commands and test conventions
 - [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
 - [RELEASING.md](RELEASING.md) — release runbook and Trusted Publishing setup
@@ -27,6 +29,20 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 
 All 9 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+
+## Anonymous public reads
+
+Each knowledge base has its own S3 bucket, and that bucket is the policy boundary. Its
+`.notedthat/manifest.json` may add a `public_read` array with independent `discover`, `browse`,
+`content`, and `search` capabilities. Missing or empty means private. This does not create an
+anonymous write mode: every HTTP and WebDAV mutation remains authenticated, valid credentials
+retain full access, and supplied invalid credentials receive `401` rather than anonymous access.
+
+The server reads policies once during startup; restart it after changing a manifest. Public-read
+policy does not apply to MCP authentication, does not support namespace or path-prefix grants, and
+does not add an application rate limiter. Configure reverse-proxy rate and burst limits before
+exposing anonymous search. See [Configuration](docs/CONFIGURATION.md#manifest-controlled-anonymous-reads)
+for the manifest and operational procedure.
 
 ## Running locally
 

@@ -47,7 +47,7 @@ Three logical layers:
 | D23 | WebDAV URL scheme | **Unified path-based root.** One mount URL (`https://dav.host/`). In v1, root `PROPFIND` returns every KB declared in `NOTEDTHAT_KBS`, listed by KB `slug` (no per-token filtering until JWT v2). Nested paths route to `/<kb_slug>/<object_path>`. No subdomain sharding, no per-KB URLs. |
 | D24 | KB identity | Every KB has a stable `slug` (`[a-z0-9-]{1,40}`, immutable in v1) **and** a mutable `display_name` (Unicode-friendly, shown as WebDAV `DAV:displayname`). The `slug` is the internal identifier — used directly for the S3 bucket name (D20) and Qdrant collection name. No separate UUID identifier in v1; single-tenant, and slugs are unique per tenant (§6.8). |
 | D25 | MCP tool surface | Each MCP tool takes a `kb` (slug) argument. In v1, one static token can address every KB declared in `NOTEDTHAT_KBS`. A **`list_knowledgebases()`** discovery tool returns that declared KB list (matching WebDAV root PROPFIND). JWT-filtered visibility is v2. Full list in §6.10. |
-| D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
+| D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 optionally adds a per-bucket `public_read` policy. Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
 | D27 | JWT model (v2, deferred) | **`[POST-v1]`** When we outgrow D21/D22's static tokens: HS256 self-signed, self-contained claims, no denylist DB. See §6.9 for the design. v1 ships with the static-token flow instead. |
 | D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
 | D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
@@ -282,24 +282,38 @@ nt-{tenant_slug}-{kb_slug}
   "tenant_slug": "default",
   "kb_slug": "my-notes",
   "display_name": "My Notes",
-  "created_at": "2026-07-02T12:00:00Z",
+  "created_at": 1782993600,
   "embedding": {
     "endpoint_url_hint": "https://api.openai.com",
     "model": "text-embedding-3-small",
     "dimensions": 1536
   },
-  "chunker": {
-    "version": "v1",
-    "strategy": "heading-aware",
-    "soft_cap_chars": 3000
-  },
-  "qdrant_collection": "kb_my-notes_v1"
+  "qdrant_collection": "kb_my-notes_v1",
+  "public_read": ["discover", "browse", "content", "search"]
 }
 ```
 
 The `(tenant_slug, kb_slug)` pair *is* the identifier — no separate UUID field. Manifest is a sanity-check record, not the source of truth for identity (D20, D24).
 
-Read at KB open time to sanity-check config vs deployment env. Not on hot path. Rebuildable if lost.
+`public_read` is additive in manifest version `1`; missing or `[]` means private. It must be an
+array whose only string values are `discover`, `browse`, `content`, and `search`. Unknown names or
+wrong JSON types fail startup validation. Duplicates collapse to a canonical serialized order.
+
+Each KB has one bucket, and one bucket is one policy boundary: there are no namespace or
+path-prefix public grants. Capabilities are independent: `discover` lists the KB, `browse` lists
+objects, `content` reads object bytes/metadata, and `search` searches the KB. Thus search may expose
+paths and snippets without browse or content. `.notedthat` and descendants are never exposed to
+anonymous callers.
+
+Policies are validated and loaded once during startup provisioning, then retained as a process
+snapshot. Editing a manifest requires restarting the server; there is no hot reload. Valid static
+credentials retain full access, while supplied invalid credentials return `401` rather than falling
+back to anonymous access. All writes remain authenticated. The policy does not change MCP
+authentication, and it provides no application-level rate setting; operators enable reverse-proxy
+rate and burst controls before exposing anonymous search.
+
+The manifest is read during startup to sanity-check config versus deployment environment. It is not
+on the request hot path and is rebuildable if lost.
 
 ### 6.8 KB identity `[DECIDED — D24]`
 
@@ -426,7 +440,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 1. Parse `NOTEDTHAT_KBS` as comma-separated `slug:Display Name` pairs.
 2. Validate every slug (`[a-z0-9-]{1,40}`, no leading/trailing hyphen; reject empty display names). Reject any `(tenant_slug, kb_slug)` whose derived bucket name (§6.6) exceeds 63 chars.
 3. Ensure each bucket exists; `BucketAlreadyOwnedByYou` is success.
-4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions.
+4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions; validate and load its `public_read` policy into the startup snapshot.
 5. Ensure each Qdrant collection exists with the expected dense dimension and sparse BM25 vector.
 6. If any step fails: log the exact KB + backend error and exit non-zero. No partial startup.
 
@@ -519,6 +533,7 @@ All routes are prefixed with `/v1`. Object paths are percent-encoded into a sing
 |---|---|---|
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
 | `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
+| `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
 | `GET` | `/v1/knowledgebases` | List declared KBs — matches MCP `list_knowledgebases()` (§6.10) and WebDAV root PROPFIND (D23) |
 | `GET` | `/v1/knowledgebases/{kb_slug}` | List objects in a KB. Query params: `prefix`, `limit` (default 100, max 1000), `cursor` (opaque continuation token per §6.12) |
 | `HEAD` | `/v1/knowledgebases/{kb_slug}/{path}` | Object metadata (ETag, `Content-Length`, `Last-Modified`) |
@@ -538,7 +553,13 @@ All routes are prefixed with `/v1`. Object paths are percent-encoded into a sing
 
 #### Auth
 
-Health probes (`/healthz`, `/readyz`) are unauthenticated. Every other route requires the static Bearer token in v1 (D21); JWT in v2 (D27).
+`/healthz`, `/readyz`, and `/llms.txt` are globally unauthenticated. Other HTTP routes use the
+static Bearer token in v1 (D21), except for an omitted `Authorization` header on a manifest-granted
+anonymous read capability: `discover` for the KB list, `browse` for object listing, `content` for
+GET/HEAD object reads, or `search` for search. These grants are independent and never authorize
+writes. A supplied invalid credential always returns `401`; it never falls back to anonymous
+access. MCP authentication is unchanged, and anonymous search rate/burst control belongs at a
+reverse proxy rather than in application configuration.
 
 Rationale: single-segment paths avoid multi-segment wildcard routing and eliminate KB-vs-object boundary ambiguity. WebDAV keeps its native multi-segment path semantics per D23 — the two surfaces are logically equivalent but wire-format-distinct.
 
