@@ -10,12 +10,12 @@ use axum::response::Response;
 use notedthat_core::{extract_bearer_from_header, verify_bearer_token};
 use tower_http::request_id::RequestId;
 
-/// Health-check paths that bypass Bearer authentication.
-const AUTH_EXEMPT_PATHS: &[&str] = &["/healthz", "/readyz"];
+/// Root-level paths that bypass Bearer authentication.
+const AUTH_EXEMPT_PATHS: &[&str] = &["/healthz", "/readyz", "/llms.txt"];
 
 /// Axum middleware that validates the `Authorization: Bearer <token>` header.
 ///
-/// Requests to health-check paths pass through without authentication.
+/// Requests to root-level public paths pass through without authentication.
 /// All other requests must present a valid Bearer token that matches
 /// `state.bearer_token` (compared in constant time).
 pub async fn auth_middleware(
