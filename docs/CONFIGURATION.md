@@ -61,18 +61,18 @@ back to raw Markdown indexing rather than requiring more staging memory.
 
 NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT:
 
-1. **Both listeners stop accepting new connections** — the HTTP API listener (port 8080) and the
-   WebDAV listener (port 8081) both stop accepting immediately.
-2. **WebDAV in-flight grace period (60 seconds)** — in-flight WebDAV uploads have up to 60 seconds
-   to complete their storage writes and enqueue index events. This window is hardcoded as
-   `WEBDAV_INFLIGHT_GRACE` and is not configurable.
-3. **Indexer drain (31 seconds)** — the background indexer worker is signalled to stop and given
-   up to 31 seconds to flush its queue. Any events not processed within this window are abandoned.
+1. **Listeners stop accepting new connections and finish accepted work** — Axum graceful shutdown
+   completes the HTTP API listener (port 8080), WebDAV listener (port 8081), and enabled MCP HTTP
+   listener only after their in-flight requests have finished.
+2. **Indexer drain (up to 31 seconds)** — once the listeners have completed, the background indexer
+   worker is signalled to stop and given up to 31 seconds to flush its queue. Any events not
+   processed within this window are abandoned.
 
-**Total worst-case shutdown time: approximately 91 seconds** (60 s WebDAV grace + 31 s indexer drain).
-
-Plan your container `terminationGracePeriodSeconds` (Kubernetes) or `stop_grace_period` (Docker
-Compose) accordingly — a value of at least 120 seconds is recommended.
+Size a container's `terminationGracePeriodSeconds` (Kubernetes) or `stop_grace_period` (Docker
+Compose) for the longest allowed in-flight request plus the 31-second indexer drain and operational
+margin. The bundled Compose configuration uses `45s`, leaving 14 seconds beyond the drain budget;
+deployments that permit longer requests must configure a larger grace period. Standalone Docker
+users can set the equivalent timeout with `docker run --stop-timeout 45`.
 
 ## WebDAV operational notes
 
@@ -273,7 +273,7 @@ Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 - If the queue is full, the object is stored to S3 but the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` and `INDEX_QUEUE_FULL` is logged. The client should retry to re-enqueue the indexing event.
 - **Conditional writes under backpressure: retry semantics interact with 412.** A conditional `PUT`/`DELETE` using `If-Match` or `If-None-Match` can complete the S3 mutation and then return HTTP 503 because the indexer queue is full. A naive retry with the same conditional headers may then return HTTP 412 `precondition_failed` because the object now exists or its ETag changed. Clients that use conditional headers must treat a 503 → 412 sequence as a possible stored-but-not-indexed ghost state and either accept that state or use a stronger consistency mechanism; v1 does not automatically replay or repair it.
 - If Qdrant is unreachable during indexing, `INDEXING_FAILED` is logged and the write still succeeds. The next write of the same object re-enqueues automatically.
-- On graceful shutdown (SIGTERM), the server drains the queue with a **30-second bounded timeout** before stopping.
+- On graceful shutdown (SIGTERM), the server drains the queue with a **31-second bounded timeout** after in-flight listener work completes.
 
 No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.
 
