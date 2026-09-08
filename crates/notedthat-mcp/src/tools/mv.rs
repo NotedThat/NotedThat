@@ -1,6 +1,7 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
+use notedthat_core::ObjectPath;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -20,9 +21,26 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: MoveArgs,
 ) -> Result<CallToolResult, McpError> {
+    let from = ObjectPath::try_from(args.from.as_str()).map_err(|error| {
+        McpError::from(McpToolError::InvalidRequest(format!(
+            "invalid from path: {error}"
+        )))
+    })?;
+    let to = ObjectPath::try_from(args.to.as_str()).map_err(|error| {
+        McpError::from(McpToolError::InvalidRequest(format!(
+            "invalid to path: {error}"
+        )))
+    })?;
+    if from == to {
+        return Err(McpToolError::InvalidRequest(
+            "from and to paths resolve to the same object".into(),
+        )
+        .into());
+    }
+
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let get_url = client.v1_url(&["knowledgebases", &kb_enc, &args.from]);
+    let get_url = client.v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
     let mut get_req = client.authorized(client.http.get(get_url));
     if let Some(ref if_match) = args.if_match {
         get_req = get_req.header("If-Match", if_match.as_str());
@@ -46,7 +64,7 @@ pub(super) async fn run(
         .map_err(McpToolError::Transport)
         .map_err(McpError::from)?;
 
-    let put_url = client.v1_url(&["knowledgebases", &kb_enc, &args.to]);
+    let put_url = client.v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
     let mut put_req = client.authorized(client.http.put(put_url)).body(body_bytes);
     if let Some(ct) = content_type {
         put_req = put_req.header("Content-Type", ct);
@@ -54,7 +72,7 @@ pub(super) async fn run(
     let put_resp = put_req.send().await.map_err(McpToolError::Transport)?;
     map_response(put_resp).await.map_err(McpError::from)?;
 
-    let del_url = client.v1_url(&["knowledgebases", &kb_enc, &args.from]);
+    let del_url = client.v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
     let mut del_req = client.authorized(client.http.delete(del_url));
     if let Some(etag) = source_etag {
         del_req = del_req.header("If-Match", etag);
@@ -80,7 +98,7 @@ mod tests {
     use crate::client::NotedThatClient;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
+        matchers::{header, method, path},
     };
 
     fn client(url: &str) -> NotedThatClient {
@@ -123,6 +141,36 @@ mod tests {
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn same_normalized_paths_are_invalid_without_outbound_requests() {
+        for (from, to) in [("a.md", "a.md"), ("a.md", "/a.md")] {
+            let server = MockServer::start().await;
+            let c = client(&server.uri());
+            let args = MoveArgs {
+                kb: "notes".into(),
+                from: from.into(),
+                to: to.into(),
+                if_match: None,
+            };
+
+            let error = run(&c, args).await.unwrap_err();
+
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(
+                error.message.contains("paths resolve to the same object"),
+                "unexpected error: {error:?}"
+            );
+            assert!(
+                server
+                    .received_requests()
+                    .await
+                    .expect("request log")
+                    .is_empty(),
+                "self-move must not send HTTP requests"
+            );
+        }
     }
 
     #[tokio::test]
@@ -191,6 +239,52 @@ mod tests {
         assert!(msg.contains("a.md"), "message: {msg}");
         assert!(msg.contains("b.md"), "message: {msg}");
         assert!(!msg.contains("SECRET_REQ"), "request_id leaked: {msg}");
+    }
+
+    #[tokio::test]
+    async fn changed_source_after_copy_returns_partial_move_error_without_deletion() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/knowledgebases/notes/a.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"source-etag\"")
+                    .set_body_bytes(b"source".to_vec()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/knowledgebases/notes/b.md"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(header("If-Match", "\"source-etag\""))
+            .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
+                "error": "precondition_failed",
+                "message": "source changed",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = MoveArgs {
+            kb: "notes".into(),
+            from: "a.md".into(),
+            to: "b.md".into(),
+            if_match: None,
+        };
+
+        let error = run(&c, args).await.unwrap_err();
+
+        assert!(
+            error.message.contains("MOVE partially completed"),
+            "unexpected error: {error:?}"
+        );
+        server.verify().await;
     }
 
     #[tokio::test]

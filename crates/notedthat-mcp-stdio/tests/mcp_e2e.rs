@@ -476,6 +476,39 @@ fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>)
     stdin.flush().unwrap();
 }
 
+async fn authenticated_object_state(
+    fixture: &NotedThatServerFixture,
+    path: &str,
+) -> (Vec<u8>, String, String) {
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/v1/knowledgebases/notes/{path}",
+            fixture.http_url
+        ))
+        .bearer_auth(fixture.token)
+        .send()
+        .await
+        .expect("authenticated object read")
+        .error_for_status()
+        .expect("object read succeeds");
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .expect("content type header")
+        .to_str()
+        .expect("content type is valid")
+        .to_string();
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .expect("etag header")
+        .to_str()
+        .expect("etag is valid")
+        .to_string();
+    let body = response.bytes().await.expect("object body").to_vec();
+    (body, content_type, etag)
+}
+
 // ─── W4.3: Happy-path chain ─────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -700,6 +733,95 @@ async fn mcp_move_happy() {
     assert!(
         del_resp.get("result").is_some(),
         "delete dst should succeed: {del_resp}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires docker-compose stack"]
+async fn mcp_move_self_rejected_without_mutating_source() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    let source_path = "self-move.md";
+    let source_content = "self-move source content";
+    let write_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        &serde_json::json!({
+            "kb": "notes",
+            "path": source_path,
+            "content": source_content,
+            "mime_type": "text/plain",
+        }),
+    );
+    assert!(
+        write_resp.get("result").is_some(),
+        "source write should succeed: {write_resp}"
+    );
+    let before = authenticated_object_state(&fixture, source_path).await;
+
+    for (id, to) in [(2, source_path), (3, "/self-move.md")] {
+        let response = mcp_call_tool(
+            &mut stdin,
+            &mut stdout,
+            id,
+            "move",
+            &serde_json::json!({
+                "kb": "notes",
+                "from": source_path,
+                "to": to,
+            }),
+        );
+        assert_eq!(
+            response["error"]["code"].as_i64(),
+            Some(-32602),
+            "self-move should be invalid params: {response}"
+        );
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("paths resolve to the same object")),
+            "self-move should name the normalized-path conflict: {response}"
+        );
+    }
+
+    let read_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "read",
+        &serde_json::json!({ "kb": "notes", "path": source_path }),
+    );
+    assert_eq!(
+        read_resp["result"]["content"][0]["text"].as_str(),
+        Some(source_content),
+        "MCP read must retain the source bytes: {read_resp}"
+    );
+    assert_eq!(
+        authenticated_object_state(&fixture, source_path).await,
+        before,
+        "authenticated HTTP read must retain bytes, content type, and content-derived ETag"
+    );
+
+    let del_resp = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "delete",
+        &serde_json::json!({ "kb": "notes", "path": source_path }),
+    );
+    assert!(
+        del_resp.get("result").is_some(),
+        "cleanup should succeed: {del_resp}"
     );
 
     drop(stdin);
