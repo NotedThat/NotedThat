@@ -180,6 +180,7 @@ fn make_state() -> WebDavState {
             );
             m
         }),
+        public_read_policies: Arc::new(BTreeMap::new()),
         indexer_tx: tx,
     }
 }

@@ -70,27 +70,30 @@ async fn build_infrastructure(
     let indexer_shutdown = CancellationToken::new();
     let declared_kbs = Arc::new(config.kbs.clone());
 
+    let kb_list: Vec<_> = config.kbs.values().cloned().collect();
+    let provisioner = QdrantProvisioner::new((*qdrant_client).clone());
+    let public_read_policies = Arc::new(
+        provision_kbs(
+            storage.as_ref(),
+            &config.tenant_slug,
+            &kb_list,
+            &provisioner,
+            &config.embedder.model,
+            config.embedder.dimensions,
+            Some(config.embedder.endpoint_url.as_str()),
+        )
+        .await?,
+    );
+
     let dav_state = WebDavState {
         username: Arc::new(config.webdav_username.clone()),
         password: Arc::new(config.webdav_password.clone()),
         storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
         declared_kbs: declared_kbs.clone(),
+        public_read_policies: public_read_policies.clone(),
         indexer_tx: indexer_tx.clone(),
         staging_config: config.staging.clone(),
     };
-
-    let kb_list: Vec<_> = config.kbs.values().cloned().collect();
-    let provisioner = QdrantProvisioner::new((*qdrant_client).clone());
-    provision_kbs(
-        storage.as_ref(),
-        &config.tenant_slug,
-        &kb_list,
-        &provisioner,
-        &config.embedder.model,
-        config.embedder.dimensions,
-        Some(config.embedder.endpoint_url.as_str()),
-    )
-    .await?;
 
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
     // Using separate instances risks model or endpoint drift between write and query paths.
@@ -101,6 +104,7 @@ async fn build_infrastructure(
     let state = AppState {
         storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
         declared_kbs,
+        public_read_policies,
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,

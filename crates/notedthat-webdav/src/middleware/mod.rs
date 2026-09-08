@@ -350,6 +350,7 @@ mod basic_auth {
                 storage: Arc::new(MockStorage),
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(BTreeMap::new()),
+                public_read_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
             }
         }
@@ -1058,6 +1059,7 @@ mod intercept_write_methods {
                 storage,
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
+                public_read_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
             }
         }

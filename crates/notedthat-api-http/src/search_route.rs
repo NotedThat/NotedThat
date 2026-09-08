@@ -91,6 +91,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new("token".to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size: 16 * 1024 * 1024,

@@ -129,6 +129,7 @@ mod patch_route {
         let router = build_router(AppState {
             storage,
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -169,6 +170,7 @@ mod patch_route {
         build_router(AppState {
             storage,
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -689,6 +691,7 @@ mod line_range_get {
         build_router(AppState {
             storage,
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -847,6 +850,7 @@ mod tests {
         build_router(AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1059,6 +1063,7 @@ mod tests {
         let state = AppState {
             storage: storage.clone(),
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1148,6 +1153,7 @@ mod tests {
         let state = AppState {
             storage: storage.clone(),
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,

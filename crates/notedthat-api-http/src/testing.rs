@@ -104,6 +104,7 @@ pub fn test_app_state_with_default_channel(
     crate::state::AppState {
         storage,
         declared_kbs,
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token,
         max_body_size,
         max_patchable_size: max_body_size,
@@ -127,6 +128,7 @@ pub fn test_app_state_with_channel(
         crate::state::AppState {
             storage,
             declared_kbs,
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token,
             max_body_size,
             max_patchable_size: max_body_size,

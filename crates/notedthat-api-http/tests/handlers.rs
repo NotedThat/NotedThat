@@ -28,6 +28,7 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
         max_patchable_size: max_body_size,
@@ -681,6 +682,7 @@ async fn delete_enqueues_tombstone_on_success() {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -735,6 +737,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

@@ -8,6 +8,7 @@ pub mod conditional;
 pub mod error;
 pub mod kb;
 pub mod object_path;
+mod public_read;
 pub mod range;
 pub mod search;
 pub mod slug;
@@ -28,6 +29,7 @@ pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use object_path::ObjectPath;
+pub use public_read::{PublicReadCapability, PublicReadPolicy};
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,
     parse_range_header,
