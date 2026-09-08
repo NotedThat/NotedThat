@@ -30,6 +30,9 @@ uuid = { workspace = true, features = ["v7"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+# `test-support` carries InMemoryVectorStore, which backs search_e2e.rs in place
+# of a Qdrant testcontainer.
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6", features = ["test-support"] }
 notedthat-api-http = { path = ".", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }

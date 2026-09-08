@@ -3,7 +3,7 @@
 //! See SPECIFICATIONS.md §6.10 (search API), §6.11 (crate dependency rules),
 //! §9.5 (RRF fusion), §9.6 (filter selectivity mitigation).
 
-mod filter;
+pub(crate) mod filter;
 mod hybrid;
 mod preview;
 

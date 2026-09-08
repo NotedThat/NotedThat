@@ -2,14 +2,12 @@
 //! with Qdrant's server-side RRF fusion.
 
 use crate::embedder::Embedder;
-use crate::qdrant::QdrantClient;
+use crate::vector_store::{HybridQuery, VectorStore, VectorStoreError};
 use crate::worker::collection_name;
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse, ValidatedRequest};
-use qdrant_client::qdrant::{
-    Document, Fusion, PrefetchQueryBuilder, Query, QueryPointsBuilder, ScoredPoint,
-};
+use qdrant_client::qdrant::ScoredPoint;
 use std::sync::Arc;
 
 const POST_FILTER_OVER_FETCH_MULTIPLIER: u64 = 10;
@@ -23,17 +21,17 @@ const POST_FILTER_OVER_FETCH_CAP: u64 = 500;
 /// (§6.4, D18).
 #[allow(dead_code)]
 pub struct HybridSearcher {
-    qdrant: Arc<QdrantClient>,
+    store: Arc<dyn VectorStore>,
     embedder: Arc<dyn Embedder>,
 }
 
 impl HybridSearcher {
     /// Create a new `HybridSearcher`.
     ///
-    /// Must receive the SAME `qdrant` and `embedder` instances used by the
+    /// Must receive the SAME `store` and `embedder` instances used by the
     /// `IndexerWorker` — different instances risk model or endpoint drift.
-    pub fn new(qdrant: Arc<QdrantClient>, embedder: Arc<dyn Embedder>) -> Self {
-        Self { qdrant, embedder }
+    pub fn new(store: Arc<dyn VectorStore>, embedder: Arc<dyn Embedder>) -> Self {
+        Self { store, embedder }
     }
 
     /// Returns the Qdrant collection name for the given knowledge base.
@@ -101,37 +99,22 @@ impl super::Searcher for HybridSearcher {
                 .min(POST_FILTER_OVER_FETCH_CAP)
         };
 
-        let mut query_builder = QueryPointsBuilder::new(collection.clone())
-            .add_prefetch(
-                PrefetchQueryBuilder::default()
-                    .query(Query::new_nearest(dense_vec))
-                    .using("dense")
-                    .limit(prefetch_limit),
+        let points = self
+            .store
+            .hybrid_search(
+                kb,
+                HybridQuery {
+                    text: query_text,
+                    dense: dense_vec,
+                    filter: request.filter.clone(),
+                    prefetch_limit,
+                    limit: outer_limit,
+                },
             )
-            .add_prefetch(
-                PrefetchQueryBuilder::default()
-                    .query(Query::new_nearest(Document::new(query_text, "qdrant/bm25")))
-                    .using("sparse_bm25")
-                    .limit(prefetch_limit),
-            )
-            .query(Query::new_fusion(Fusion::Rrf))
-            .limit(outer_limit)
-            .with_payload(true)
-            .with_vectors(false);
-
-        if let Some(filter) = translated.qdrant {
-            query_builder = query_builder.filter(filter);
-        }
-
-        let response = self
-            .qdrant
-            .inner()
-            .query(query_builder)
             .await
-            .map_err(|err| search_error_from_qdrant(&collection, err))?;
+            .map_err(|err| search_error_from_store(&collection, err))?;
 
-        let mut hits: Vec<SearchHit> = response
-            .result
+        let mut hits: Vec<SearchHit> = points
             .into_iter()
             .map(point_to_hit)
             .collect::<Result<Vec<_>, _>>()?;
@@ -217,23 +200,28 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn search_error_from_qdrant(
-    collection: &str,
-    err: qdrant_client::QdrantError,
-) -> SearchError {
-    let message = err.to_string();
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("not found")
-        || lower.contains("doesn't exist")
-        || lower.contains("does not exist")
-    {
-        let slug = collection
-            .trim_start_matches("kb_")
-            .trim_end_matches("_v1")
-            .to_string();
-        SearchError::UnknownKb { slug }
-    } else {
-        SearchError::BackendUnavailable { message }
+pub(crate) fn search_error_from_store(collection: &str, err: VectorStoreError) -> SearchError {
+    match err {
+        VectorStoreError::CollectionNotFound { kb } => SearchError::UnknownKb { slug: kb },
+        VectorStoreError::Backend { message } => {
+            // A backend that reports a missing collection as a plain transport
+            // error still has to be classified as an unknown KB rather than an
+            // outage, so the message is inspected as a fallback.
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("not found")
+                || lower.contains("doesn't exist")
+                || lower.contains("does not exist")
+            {
+                SearchError::UnknownKb {
+                    slug: collection
+                        .trim_start_matches("kb_")
+                        .trim_end_matches("_v1")
+                        .to_string(),
+                }
+            } else {
+                SearchError::BackendUnavailable { message }
+            }
+        }
     }
 }
 

@@ -133,17 +133,10 @@ fn current_unix_ts() -> i64 {
 mod tests {
     use super::*;
     use notedthat_api_http::testing::InMemoryStorage;
-    use notedthat_indexer::{QdrantClient, QdrantConfig};
+    use notedthat_indexer::testing::InMemoryVectorStore;
 
     fn provisioner() -> QdrantProvisioner {
-        QdrantProvisioner::new(
-            QdrantClient::new(&QdrantConfig {
-                url: "http://127.0.0.1:6334".to_string(),
-                api_key: None,
-                ..Default::default()
-            })
-            .expect("qdrant client construction does not connect"),
-        )
+        QdrantProvisioner::new(std::sync::Arc::new(InMemoryVectorStore::new()))
     }
 
     #[tokio::test]

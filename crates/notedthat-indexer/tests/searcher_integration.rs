@@ -1,28 +1,33 @@
 //! Integration tests for `HybridSearcher`.
 //!
-//! Each test requires a running Qdrant container (Docker) and is marked `#[ignore]`.
-//! Run with: `cargo test -p notedthat-indexer --test searcher_integration -- --ignored --nocapture`
+//! The subject is the searcher's own behaviour — how it builds a hybrid query,
+//! applies filters, truncates to the requested limit, and maps a missing
+//! collection onto `UnknownKb`. It runs against [`InMemoryVectorStore`], whose
+//! retrieval shape (dense cosine arm, sparse BM25 arm, RRF fusion) mirrors the
+//! Qdrant configuration and is itself covered by
+//! `tests/in_memory_vector_store.rs`.
+//!
+//! The embedder is a wiremock server, as it always was.
+//!
+//! Run with: `cargo test -p notedthat-indexer --test searcher_integration`
 
 #![allow(missing_docs)]
-
-mod support;
-use support::{raw_client, start_qdrant};
 
 use notedthat_core::{
     KbSlug,
     search::{SearchError, SearchFilter, SearchRequest},
 };
+use notedthat_indexer::testing::InMemoryVectorStore;
+use notedthat_indexer::vector_store::VectorStore;
 use notedthat_indexer::{
-    Embedder, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantClient, QdrantConfig,
-    QdrantProvisioner, Searcher, searcher::HybridSearcher,
+    Embedder, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner, Searcher,
+    searcher::HybridSearcher,
 };
 use std::{sync::Arc, time::Duration};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
-
-static INTEGRATION_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
@@ -51,32 +56,27 @@ fn make_embedder(server_uri: &str, dim: usize) -> Arc<dyn Embedder> {
     )
 }
 
-fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
-    let cfg = QdrantConfig {
-        url: url.to_string(),
-        api_key: None,
-        ..Default::default()
-    };
-    let client = Arc::new(QdrantClient::new(&cfg).unwrap());
-    let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
-    (client, provisioner)
+/// A store and a provisioner sharing it, mirroring how the server wires one
+/// backend into both.
+fn make_store() -> (InMemoryVectorStore, QdrantProvisioner) {
+    let store = InMemoryVectorStore::new();
+    let provisioner = QdrantProvisioner::new(Arc::new(store.clone()));
+    (store, provisioner)
 }
 
 fn kb() -> KbSlug {
     KbSlug::try_new("test-kb").unwrap()
 }
 
-fn coll(kb: &KbSlug) -> String {
-    format!("kb_{}_v1", kb.as_str())
-}
-
-/// Directly upsert a point into Qdrant for test isolation.
-/// Writes BOTH `dense` (fixed 4-dim vector) AND `sparse_bm25` (Document inference) vectors.
-/// This mirrors the T1 fix where M4 only wrote `dense`.
+/// Upsert a point directly, bypassing the indexing pipeline, so each test
+/// controls exactly what is in the collection.
+///
+/// Writes BOTH `dense` (fixed 4-dim vector) AND `sparse_bm25` (BM25 document)
+/// vectors. This mirrors the T1 fix where M4 only wrote `dense`.
 #[allow(clippy::too_many_arguments)]
-async fn raw_upsert_point(
-    qdrant: &qdrant_client::Qdrant,
-    collection: &str,
+async fn upsert_point(
+    store: &InMemoryVectorStore,
+    kb: &KbSlug,
     id: u64,
     text: &str,
     object_key: &str,
@@ -84,7 +84,7 @@ async fn raw_upsert_point(
     heading_path: Vec<String>,
     mtime: i64,
 ) {
-    use qdrant_client::qdrant::{Document, PointStruct, UpsertPointsBuilder, Vector};
+    use qdrant_client::qdrant::{Document, PointStruct, Vector};
     use std::collections::HashMap;
 
     let mut payload = HashMap::<String, qdrant_client::qdrant::Value>::new();
@@ -114,30 +114,24 @@ async fn raw_upsert_point(
         ),
     ]);
 
-    let point = PointStruct::new(id, vectors, payload);
-    qdrant
-        .upsert_points(UpsertPointsBuilder::new(collection, vec![point]).wait(true))
+    store
+        .upsert_points(kb, vec![PointStruct::new(id, vectors, payload)])
         .await
-        .expect("raw_upsert_point failed");
+        .expect("upsert_point failed");
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn search_returns_upserted_chunks() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         "the quick brown fox",
         "fox.md",
@@ -146,9 +140,9 @@ async fn search_returns_upserted_chunks() {
         1000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         2,
         "lazy dog sits still",
         "dog.md",
@@ -157,9 +151,9 @@ async fn search_returns_upserted_chunks() {
         2000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         3,
         "hello world greeting",
         "hello.md",
@@ -177,7 +171,7 @@ async fn search_returns_upserted_chunks() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "quick".to_string(),
@@ -200,27 +194,20 @@ async fn search_returns_upserted_chunks() {
         "expected score > 0.0, got {}",
         hits[0].score
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn filter_by_mime_excludes_non_matching() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         "markdown document content",
         "md-file.md",
@@ -229,9 +216,9 @@ async fn filter_by_mime_excludes_non_matching() {
         1000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         2,
         "plain text document content",
         "txt-file.md",
@@ -240,9 +227,9 @@ async fn filter_by_mime_excludes_non_matching() {
         2000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         3,
         "pdf document content binary",
         "pdf-file.md",
@@ -260,7 +247,7 @@ async fn filter_by_mime_excludes_non_matching() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "document content".to_string(),
@@ -283,27 +270,20 @@ async fn filter_by_mime_excludes_non_matching() {
             hit.object_key.as_str()
         );
     }
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn filter_by_heading_path_prefix() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         "section A overview",
         "a.md",
@@ -312,9 +292,9 @@ async fn filter_by_heading_path_prefix() {
         1000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         2,
         "section A sub B details",
         "ab.md",
@@ -323,9 +303,9 @@ async fn filter_by_heading_path_prefix() {
         2000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         3,
         "section C unrelated",
         "c.md",
@@ -343,7 +323,7 @@ async fn filter_by_heading_path_prefix() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "section".to_string(),
@@ -366,27 +346,20 @@ async fn filter_by_heading_path_prefix() {
             hit.object_key.as_str()
         );
     }
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn filter_by_updated_after() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         "old document content here",
         "old.md",
@@ -395,9 +368,9 @@ async fn filter_by_updated_after() {
         1000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         2,
         "mid document content here",
         "mid.md",
@@ -406,9 +379,9 @@ async fn filter_by_updated_after() {
         2000,
     )
     .await;
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         3,
         "new document content here",
         "new.md",
@@ -426,7 +399,7 @@ async fn filter_by_updated_after() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "document content".to_string(),
@@ -448,16 +421,11 @@ async fn filter_by_updated_after() {
             "old.md (mtime=1000) should be excluded by updated_after=2000"
         );
     }
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn empty_collection_returns_empty_hits() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
@@ -471,7 +439,7 @@ async fn empty_collection_returns_empty_hits() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "anything".to_string(),
@@ -491,16 +459,11 @@ async fn empty_collection_returns_empty_hits() {
         "expected 0 hits on empty collection, got {}",
         response.hits.len()
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn missing_collection_returns_unknown_kb() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, _provisioner) = make_qdrant(&url);
+    let (store, _provisioner) = make_store();
     let kb = kb();
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -510,7 +473,7 @@ async fn missing_collection_returns_unknown_kb() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "anything".to_string(),
@@ -529,28 +492,21 @@ async fn missing_collection_returns_unknown_kb() {
         matches!(err, SearchError::UnknownKb { .. }),
         "expected SearchError::UnknownKb, got {err:?}"
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn preview_truncates_multi_byte() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
     let long_text = "日本語".repeat(300);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         &long_text,
         "long.md",
@@ -568,7 +524,7 @@ async fn preview_truncates_multi_byte() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "日本語".to_string(),
@@ -586,28 +542,21 @@ async fn preview_truncates_multi_byte() {
         preview_len, 500,
         "expected preview truncated to exactly 500 chars, got {preview_len}"
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn limit_capped_by_request() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
     for i in 1_u64..=10 {
-        raw_upsert_point(
-            &raw,
-            &collection,
+        upsert_point(
+            &store,
+            &kb,
             i,
             &format!("document entry number {i}"),
             &format!("doc{i}.md"),
@@ -626,7 +575,7 @@ async fn limit_capped_by_request() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "document".to_string(),
@@ -642,24 +591,17 @@ async fn limit_capped_by_request() {
         "expected ≤3 hits for limit=3, got {}",
         response.hits.len()
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn object_key_prefix_post_filter() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
     let entries = [
         (1_u64, "docs/a.md"),
         (2, "docs/b.md"),
@@ -669,9 +611,9 @@ async fn object_key_prefix_post_filter() {
         (6, "notes/z.md"),
     ];
     for (id, key) in &entries {
-        raw_upsert_point(
-            &raw,
-            &collection,
+        upsert_point(
+            &store,
+            &kb,
             *id,
             &format!("content in file {key}"),
             key,
@@ -690,7 +632,7 @@ async fn object_key_prefix_post_filter() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "content file".to_string(),
@@ -713,27 +655,20 @@ async fn object_key_prefix_post_filter() {
             hit.object_key.as_str()
         );
     }
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant testcontainer + docker"]
 async fn sparse_only_query_finds_bm25_match() {
-    let _guard = INTEGRATION_MUTEX.lock().await;
-    let (container, url) = start_qdrant().await;
-    let (qdrant_client, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     let kb = kb();
     provisioner
         .ensure_collection(&kb, 4)
         .await
         .expect("ensure_collection failed");
 
-    let raw = raw_client(&url);
-    let collection = coll(&kb);
-    raw_upsert_point(
-        &raw,
-        &collection,
+    upsert_point(
+        &store,
+        &kb,
         1,
         "the anaconda coils around its prey",
         "anaconda.md",
@@ -751,7 +686,7 @@ async fn sparse_only_query_finds_bm25_match() {
         .await;
 
     let embedder = make_embedder(&mock_server.uri(), 4);
-    let searcher = HybridSearcher::new(Arc::clone(&qdrant_client), embedder);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
 
     let request = SearchRequest {
         query: "anaconda".to_string(),
@@ -771,6 +706,4 @@ async fn sparse_only_query_finds_bm25_match() {
         "anaconda.md",
         "expected 'anaconda.md' as top hit"
     );
-
-    drop(container);
 }

@@ -8,7 +8,7 @@ use notedthat_api_http::{
     state::AppState,
 };
 use notedthat_indexer::{
-    IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner,
+    IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
 };
 use notedthat_storage_s3::S3Storage;
@@ -50,7 +50,10 @@ async fn build_infrastructure(
         timeout: Duration::from_millis(config.qdrant.timeout_ms),
         connect_timeout: Duration::from_millis(config.qdrant.connect_timeout_ms),
     };
-    let qdrant_client =
+    // Held as the VectorStore seam rather than as the concrete client, so the
+    // provisioner, searcher and indexer worker all share one substitutable
+    // backend (see notedthat_indexer::vector_store).
+    let store: Arc<dyn VectorStore> =
         Arc::new(QdrantClient::new(&qdrant_config).context("failed to build Qdrant client")?);
 
     let embedder_config = OpenAiCompatibleConfig {
@@ -71,7 +74,7 @@ async fn build_infrastructure(
     let declared_kbs = Arc::new(config.kbs.clone());
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
-    let provisioner = QdrantProvisioner::new((*qdrant_client).clone());
+    let provisioner = QdrantProvisioner::new(store.clone());
     let public_read_policies = Arc::new(
         provision_kbs(
             storage.as_ref(),
@@ -98,7 +101,7 @@ async fn build_infrastructure(
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
     // Using separate instances risks model or endpoint drift between write and query paths.
     let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
-        notedthat_indexer::searcher::HybridSearcher::new(qdrant_client.clone(), embedder.clone()),
+        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embedder.clone()),
     );
 
     let state = AppState {
@@ -116,7 +119,7 @@ async fn build_infrastructure(
         IndexerWorker::new(
             storage.clone() as Arc<dyn notedthat_core::Storage>,
             embedder.clone(),
-            qdrant_client.clone(),
+            store.clone(),
             indexer_rx,
             indexer_shutdown.clone(),
             config.embedder.batch_size,

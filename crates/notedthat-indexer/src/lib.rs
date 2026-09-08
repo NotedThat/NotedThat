@@ -9,6 +9,9 @@ pub mod okf;
 pub mod provisioner;
 pub mod qdrant;
 pub mod searcher;
+#[cfg(feature = "test-support")]
+pub mod testing;
+pub mod vector_store;
 pub mod worker;
 
 pub use chunker::{Chunk, SOFT_CHAR_CAP, chunk};
@@ -18,4 +21,7 @@ pub use event::IndexEvent;
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
 pub use searcher::Searcher;
+pub use vector_store::{
+    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+};
 pub use worker::{DRAIN_TIMEOUT, IndexerWorker};

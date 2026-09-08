@@ -7,7 +7,11 @@ mod pipeline;
 mod points;
 mod snapshot;
 
-use crate::{embedder::Embedder, event::IndexEvent, qdrant::QdrantClient};
+use crate::{
+    embedder::Embedder,
+    event::IndexEvent,
+    vector_store::{PointSelector, VectorStore},
+};
 use notedthat_core::{KbSlug, ObjectPath, StagingConfig, Storage};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +27,8 @@ pub struct IndexerWorker {
     pub storage: Arc<dyn Storage>,
     /// Embedding endpoint used to turn chunks into dense vectors.
     pub embedder: Arc<dyn Embedder>,
-    /// Qdrant client wrapper used for point writes and deletes.
-    pub qdrant: Arc<QdrantClient>,
+    /// Vector store used for point writes and deletes.
+    pub store: Arc<dyn VectorStore>,
     /// Event receiver drained by the worker loop.
     pub rx: mpsc::Receiver<IndexEvent>,
     /// Cancellation token that triggers graceful draining.
@@ -40,7 +44,7 @@ impl IndexerWorker {
     pub fn new(
         storage: Arc<dyn Storage>,
         embedder: Arc<dyn Embedder>,
-        qdrant: Arc<QdrantClient>,
+        store: Arc<dyn VectorStore>,
         rx: mpsc::Receiver<IndexEvent>,
         shutdown: CancellationToken,
         batch_size: usize,
@@ -48,7 +52,7 @@ impl IndexerWorker {
         Self {
             storage,
             embedder,
-            qdrant,
+            store,
             rx,
             shutdown,
             batch_size,
@@ -118,21 +122,15 @@ impl IndexerWorker {
     }
 
     async fn handle_tombstone(&self, kb: KbSlug, object_key: ObjectPath) -> Result<(), String> {
-        use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter};
-
-        let filter = Filter::must([Condition::matches(
-            "object_key",
-            object_key.as_str().to_string(),
-        )]);
-        self.qdrant
-            .inner()
+        self.store
             .delete_points(
-                DeletePointsBuilder::new(collection_name(&kb))
-                    .points(filter)
-                    .wait(true),
+                &kb,
+                PointSelector::Object {
+                    object_key: object_key.as_str().to_string(),
+                },
             )
             .await
-            .map_err(|err| format!("qdrant delete_points failed: {err}"))?;
+            .map_err(|err| format!("vector store delete failed: {err}"))?;
 
         tracing::info!(
             target: "notedthat::indexing",

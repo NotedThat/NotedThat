@@ -1,7 +1,9 @@
 //! Qdrant collection provisioning (§6.11) with idempotent create + manifest cross-check.
 
-use crate::qdrant::{QdrantClient, QdrantWrapperError};
+use crate::qdrant::QdrantWrapperError;
+use crate::vector_store::{PayloadFieldKind, VectorStore, VectorStoreError};
 use notedthat_core::{KbManifest, KbSlug, ManifestEmbedding};
+use std::sync::Arc;
 
 /// Errors returned by Qdrant collection provisioning and manifest cross-checks.
 #[derive(Debug)]
@@ -64,15 +66,29 @@ impl From<QdrantWrapperError> for ProvisionError {
     }
 }
 
-/// Provisions Qdrant collection schema for a `NotedThat` knowledge base.
+/// Every payload index the search surface relies on.
+///
+/// Ensured on every startup, not only at collection-creation time — see
+/// [`QdrantProvisioner::ensure_collection`].
+const PAYLOAD_INDEXES: [(&str, PayloadFieldKind); 7] = [
+    ("object_key", PayloadFieldKind::Keyword),
+    ("etag", PayloadFieldKind::Keyword),
+    ("mime", PayloadFieldKind::Keyword),
+    ("mtime", PayloadFieldKind::Integer),
+    ("heading_path", PayloadFieldKind::Keyword),
+    ("tags", PayloadFieldKind::Keyword),
+    ("okf.type", PayloadFieldKind::Keyword),
+];
+
+/// Provisions vector-store collection schema for a `NotedThat` knowledge base.
 pub struct QdrantProvisioner {
-    client: QdrantClient,
+    store: Arc<dyn VectorStore>,
 }
 
 impl QdrantProvisioner {
-    /// Construct a provisioner around the shared Qdrant client wrapper.
-    pub fn new(client: QdrantClient) -> Self {
-        Self { client }
+    /// Construct a provisioner around the shared vector store.
+    pub fn new(store: Arc<dyn VectorStore>) -> Self {
+        Self { store }
     }
 
     /// Ensure the Qdrant collection for `kb` exists with the expected schema.
@@ -91,98 +107,28 @@ impl QdrantProvisioner {
         kb: &KbSlug,
         dense_dim: u64,
     ) -> Result<(), ProvisionError> {
-        let collection_name = crate::worker::collection_name(kb);
-        let inner = self.client.inner();
-
-        let exists = inner
-            .collection_exists(&collection_name)
+        let exists = self
+            .store
+            .collection_exists(kb)
             .await
-            .map_err(|e| ProvisionError::Qdrant {
-                kb: kb.as_str().to_string(),
-                source: e.to_string(),
-            })?;
+            .map_err(|err| provision_error(kb, &err))?;
 
         if !exists {
-            self.create_collection_with_schema(inner, &collection_name, dense_dim)
-                .await?;
+            self.store
+                .create_collection(kb, dense_dim)
+                .await
+                .map_err(|err| provision_error(kb, &err))?;
         }
 
-        self.create_payload_indexes(inner, &collection_name, kb)
-            .await
-    }
-
-    async fn create_collection_with_schema(
-        &self,
-        inner: &qdrant_client::Qdrant,
-        collection_name: &str,
-        dense_dim: u64,
-    ) -> Result<(), ProvisionError> {
-        use qdrant_client::qdrant::{
-            CreateCollectionBuilder, Distance, Modifier, SparseVectorParamsBuilder,
-            SparseVectorsConfigBuilder, VectorParamsBuilder, VectorsConfigBuilder,
-        };
-
-        let mut vectors_config = VectorsConfigBuilder::default();
-        vectors_config.add_named_vector_params(
-            "dense",
-            VectorParamsBuilder::new(dense_dim, Distance::Cosine),
-        );
-
-        let mut sparse_vectors_config = SparseVectorsConfigBuilder::default();
-        sparse_vectors_config.add_named_vector_params(
-            "sparse_bm25",
-            SparseVectorParamsBuilder::default().modifier(Modifier::Idf),
-        );
-
-        let create = CreateCollectionBuilder::new(collection_name)
-            .vectors_config(vectors_config)
-            .sparse_vectors_config(sparse_vectors_config);
-
-        inner
-            .create_collection(create)
-            .await
-            .map_err(|e| ProvisionError::Qdrant {
-                kb: collection_name.to_string(),
-                source: e.to_string(),
-            })?;
-
-        Ok(())
-    }
-
-    /// Create every payload index the search surface relies on.
-    ///
-    /// Deliberately no `wait`: Qdrant builds payload indexes in the background,
-    /// and blocking startup until they are built would cost minutes on a large
-    /// collection — the opposite of D39's fail-fast startup. Readers that need an
-    /// index to exist poll for it.
-    async fn create_payload_indexes(
-        &self,
-        inner: &qdrant_client::Qdrant,
-        collection_name: &str,
-        kb: &KbSlug,
-    ) -> Result<(), ProvisionError> {
-        use qdrant_client::qdrant::{CreateFieldIndexCollectionBuilder, FieldType};
-
-        for (field, ftype) in [
-            ("object_key", FieldType::Keyword),
-            ("etag", FieldType::Keyword),
-            ("mime", FieldType::Keyword),
-            ("mtime", FieldType::Integer),
-            ("heading_path", FieldType::Keyword),
-            ("tags", FieldType::Keyword),
-            ("okf.type", FieldType::Keyword),
-        ] {
-            inner
-                .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                    collection_name,
-                    field,
-                    ftype,
-                ))
+        // Deliberately no waiting: the backend builds payload indexes in the
+        // background, and blocking startup until they are built would cost
+        // minutes on a large collection — the opposite of D39's fail-fast
+        // startup. Readers that need an index to exist poll for it.
+        for (field, kind) in PAYLOAD_INDEXES {
+            self.store
+                .create_payload_index(kb, field, kind)
                 .await
-                .map_err(|e| ProvisionError::Qdrant {
-                    kb: kb.as_str().to_string(),
-                    source: e.to_string(),
-                })?;
+                .map_err(|err| provision_error(kb, &err))?;
         }
 
         Ok(())
@@ -221,6 +167,14 @@ impl QdrantProvisioner {
             dimensions,
             endpoint_url_hint,
         }
+    }
+}
+
+/// Map a vector-store failure onto the provisioning error surface.
+fn provision_error(kb: &KbSlug, err: &VectorStoreError) -> ProvisionError {
+    ProvisionError::Qdrant {
+        kb: kb.as_str().to_string(),
+        source: err.to_string(),
     }
 }
 

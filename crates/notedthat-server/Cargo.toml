@@ -40,6 +40,7 @@ dist = true
 
 [dev-dependencies]
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.6", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6", features = ["test-support"] }
 # Path-only (no version): mcp-stdio has notedthat-server as a dev-dep for its
 # in-process fixtures, which would create a publish-time cycle. Dropping the
 # version keeps this dev-dep for local `cargo test` (binary is spawned via
