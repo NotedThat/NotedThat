@@ -21,7 +21,7 @@ async fn anonymous_discovery_is_filtered_while_authenticated_discovery_is_unfilt
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -30,7 +30,7 @@ async fn anonymous_discovery_is_filtered_while_authenticated_discovery_is_unfilt
     let authenticated = app
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(Body::empty())
                 .expect("request"),
@@ -67,7 +67,7 @@ async fn anonymous_content_allows_get_and_head_but_rejects_internal_paths() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes/public.md")
+                .uri("/api/v1/knowledgebases/notes/public.md")
                 .header("range", "bytes=0-5")
                 .body(Body::empty())
                 .expect("request"),
@@ -79,7 +79,7 @@ async fn anonymous_content_allows_get_and_head_but_rejects_internal_paths() {
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri("/v1/knowledgebases/notes/public.md")
+                .uri("/api/v1/knowledgebases/notes/public.md")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -88,7 +88,7 @@ async fn anonymous_content_allows_get_and_head_but_rejects_internal_paths() {
     let internal = app
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes/.notedthat/manifest.json")
+                .uri("/api/v1/knowledgebases/notes/.notedthat/manifest.json")
                 .body(Body::empty())
                 .expect("request"),
         )

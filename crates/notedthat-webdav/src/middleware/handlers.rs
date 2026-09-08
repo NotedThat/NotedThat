@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, StorageError};
 
 use super::backpressure::delete_backpressure_response;
-use super::path_validation::parse_uri_path;
+use super::path_validation::parse_webdav_uri_path;
 use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
 
@@ -18,7 +18,7 @@ pub(super) use put::handle_put;
 
 pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response {
     let uri_path = req.uri().path().to_string();
-    let Ok(target) = parse_uri_path(&uri_path, &state.declared_kbs) else {
+    let Ok(target) = parse_webdav_uri_path(&uri_path, &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let (kb, path) = match target {

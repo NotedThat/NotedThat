@@ -25,7 +25,7 @@ async fn absent_credentials_can_fall_back_but_supplied_bad_credentials_cannot() 
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/v1/knowledgebases/notes/public.md")
+                    .uri("/api/v1/knowledgebases/notes/public.md")
                     .header("authorization", authorization)
                     .body(Body::empty())
                     .expect("request"),
@@ -41,7 +41,7 @@ async fn absent_credentials_can_fall_back_but_supplied_bad_credentials_cannot() 
 
     // When
     let mut non_utf8 = Request::builder()
-        .uri("/v1/knowledgebases/notes/public.md")
+        .uri("/api/v1/knowledgebases/notes/public.md")
         .body(Body::empty())
         .expect("request");
     non_utf8.headers_mut().insert(
@@ -50,7 +50,7 @@ async fn absent_credentials_can_fall_back_but_supplied_bad_credentials_cannot() 
     );
     let non_utf8_response = app.clone().oneshot(non_utf8).await.expect("response");
     let mut duplicated = Request::builder()
-        .uri("/v1/knowledgebases/notes/public.md")
+        .uri("/api/v1/knowledgebases/notes/public.md")
         .header("authorization", format!("Bearer {TOKEN}"))
         .body(Body::empty())
         .expect("request");
@@ -86,7 +86,7 @@ async fn anonymous_mutation_remains_unauthorized_and_storage_is_unchanged() {
             .oneshot(
                 Request::builder()
                     .method(method)
-                    .uri("/v1/knowledgebases/notes/new.md")
+                    .uri("/api/v1/knowledgebases/notes/new.md")
                     .body(Body::from("new body"))
                     .expect("request"),
             )
@@ -97,7 +97,7 @@ async fn anonymous_mutation_remains_unauthorized_and_storage_is_unchanged() {
     let read = app
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes/new.md")
+                .uri("/api/v1/knowledgebases/notes/new.md")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -129,7 +129,7 @@ async fn denied_anonymous_search_does_not_call_backend() {
     let request = |authenticated: bool| {
         let mut builder = Request::builder()
             .method("POST")
-            .uri("/v1/knowledgebases/notes/search")
+            .uri("/api/v1/knowledgebases/notes/search")
             .header("content-type", "application/json");
         if authenticated {
             builder = builder.header("authorization", format!("Bearer {TOKEN}"));

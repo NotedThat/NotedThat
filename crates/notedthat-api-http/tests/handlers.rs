@@ -54,7 +54,7 @@ fn authed_request(method: &str, uri: String, body: Body) -> Request<Body> {
 async fn put_text(app: axum::Router, kb: &str, path: &str, body: &str) -> StatusCode {
     app.oneshot(authed_request(
         "PUT",
-        format!("/v1/knowledgebases/{kb}/{path}"),
+        format!("/api/v1/knowledgebases/{kb}/{path}"),
         Body::from(body.to_string()),
     ))
     .await
@@ -139,7 +139,7 @@ async fn list_kbs_without_discover_policy_requires_auth() {
     let resp = app()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -150,11 +150,62 @@ async fn list_kbs_without_discover_policy_requires_auth() {
 }
 
 #[tokio::test]
+async fn legacy_v1_routes_are_not_registered() {
+    // Given: a caller with otherwise valid API credentials.
+    let application = app();
+
+    // When: it calls the retired unprefixed API route.
+    let response = application
+        .oneshot(
+            Request::builder()
+                .uri("/v1/knowledgebases")
+                .header(auth().0, auth().1)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Then: no compatibility route or redirect is available.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn legacy_v1_routes_are_not_authenticated_before_404() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/knowledgebases")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reserved_browse_paths_are_not_authenticated_before_404() {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .uri("/browse/notes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn list_kbs_wrong_token() {
     let resp = app()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .header("authorization", "Bearer wrong-token")
                 .body(Body::empty())
                 .unwrap(),
@@ -170,7 +221,7 @@ async fn put_requires_auth() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/file.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/file.md"))
                 .body(Body::from("content"))
                 .unwrap(),
         )
@@ -184,7 +235,7 @@ async fn lowercase_bearer_is_accepted() {
     let resp = app()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .header("authorization", "bearer test-token-abc")
                 .body(Body::empty())
                 .unwrap(),
@@ -201,7 +252,7 @@ async fn list_kbs_returns_declared_kbs() {
     let resp = app()
         .oneshot(authed_request(
             "GET",
-            "/v1/knowledgebases".to_string(),
+            "/api/v1/knowledgebases".to_string(),
             Body::empty(),
         ))
         .await
@@ -219,7 +270,7 @@ async fn list_kbs_has_request_id_header() {
     let resp = app()
         .oneshot(authed_request(
             "GET",
-            "/v1/knowledgebases".to_string(),
+            "/api/v1/knowledgebases".to_string(),
             Body::empty(),
         ))
         .await
@@ -237,7 +288,7 @@ async fn put_get_round_trip_preserves_content() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/hello.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/hello.md"))
                 .header(auth().0, auth().1)
                 .header("content-type", "text/markdown")
                 .body(Body::from("# Hello\n\nTest.\n"))
@@ -250,7 +301,7 @@ async fn put_get_round_trip_preserves_content() {
     let get_resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/hello.md"),
+            format!("/api/v1/knowledgebases/{KB}/hello.md"),
             Body::empty(),
         ))
         .await
@@ -265,7 +316,7 @@ async fn put_returns_201_with_location() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/file.md"),
+            format!("/api/v1/knowledgebases/{KB}/file.md"),
             Body::from("content"),
         ))
         .await
@@ -273,7 +324,7 @@ async fn put_returns_201_with_location() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(
         resp.headers().get("location").unwrap().to_str().unwrap(),
-        format!("/v1/knowledgebases/{KB}/file.md")
+        format!("/api/v1/knowledgebases/{KB}/file.md")
     );
 }
 
@@ -282,7 +333,7 @@ async fn put_returns_etag() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/etag.md"),
+            format!("/api/v1/knowledgebases/{KB}/etag.md"),
             Body::from("1234567890123456789012"),
         ))
         .await
@@ -291,7 +342,7 @@ async fn put_returns_etag() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(
         resp.headers().get("location").unwrap().to_str().unwrap(),
-        format!("/v1/knowledgebases/{KB}/etag.md")
+        format!("/api/v1/knowledgebases/{KB}/etag.md")
     );
     let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
     assert!(!etag.is_empty(), "PUT must return a non-empty ETag");
@@ -304,7 +355,7 @@ async fn put_if_match_correct_returns_new_etag() {
         .clone()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/if-match-ok.md"),
+            format!("/api/v1/knowledgebases/{KB}/if-match-ok.md"),
             Body::from("first"),
         ))
         .await
@@ -316,7 +367,7 @@ async fn put_if_match_correct_returns_new_etag() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/if-match-ok.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/if-match-ok.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", first_etag)
                 .body(Body::from("second"))
@@ -346,7 +397,7 @@ async fn put_if_match_412() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/if-match-wrong.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/if-match-wrong.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", "\"wrong\"")
                 .body(Body::from("second"))
@@ -370,7 +421,9 @@ async fn put_if_none_match_wildcard_conflict() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/if-none-match-existing.md"))
+                .uri(format!(
+                    "/api/v1/knowledgebases/{KB}/if-none-match-existing.md"
+                ))
                 .header(auth().0, auth().1)
                 .header("if-none-match", "*")
                 .body(Body::from("second"))
@@ -388,7 +441,7 @@ async fn put_if_none_match_wildcard_new() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/if-none-match-new.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/if-none-match-new.md"))
                 .header(auth().0, auth().1)
                 .header("if-none-match", "*")
                 .body(Body::from("content"))
@@ -408,7 +461,7 @@ async fn put_if_modified_since_is_ignored() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/if-modified-since.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/if-modified-since.md"))
                 .header(auth().0, auth().1)
                 .header("if-modified-since", "Wed, 21 Oct 2015 07:28:00 GMT")
                 .body(Body::from("content"))
@@ -425,7 +478,7 @@ async fn put_percent_encodes_location_for_non_ascii_paths() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/caf%C3%A9%20notes.md"),
+            format!("/api/v1/knowledgebases/{KB}/caf%C3%A9%20notes.md"),
             Body::from("content"),
         ))
         .await
@@ -433,7 +486,7 @@ async fn put_percent_encodes_location_for_non_ascii_paths() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(
         resp.headers().get("location").unwrap().to_str().unwrap(),
-        format!("/v1/knowledgebases/{KB}/caf%C3%A9%20notes.md")
+        format!("/api/v1/knowledgebases/{KB}/caf%C3%A9%20notes.md")
     );
 }
 
@@ -452,7 +505,7 @@ async fn put_overwrites_existing_object() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/same.md"),
+            format!("/api/v1/knowledgebases/{KB}/same.md"),
             Body::empty(),
         ))
         .await
@@ -472,7 +525,7 @@ async fn head_returns_content_length_no_body() {
     let head_resp = a
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/file.txt"),
+            format!("/api/v1/knowledgebases/{KB}/file.txt"),
             Body::empty(),
         ))
         .await
@@ -491,7 +544,7 @@ async fn head_echoes_content_type() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/typed.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/typed.txt"))
                 .header(auth().0, auth().1)
                 .header("content-type", "text/plain")
                 .body(Body::from("hello"))
@@ -504,7 +557,7 @@ async fn head_echoes_content_type() {
     let head_resp = a
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/typed.txt"),
+            format!("/api/v1/knowledgebases/{KB}/typed.txt"),
             Body::empty(),
         ))
         .await
@@ -526,7 +579,7 @@ async fn delete_returns_204() {
     let del_resp = a
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/todel.md"),
+            format!("/api/v1/knowledgebases/{KB}/todel.md"),
             Body::empty(),
         ))
         .await
@@ -539,7 +592,7 @@ async fn delete_idempotent_non_existent_returns_204() {
     let resp = app()
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/does-not-exist.md"),
+            format!("/api/v1/knowledgebases/{KB}/does-not-exist.md"),
             Body::empty(),
         ))
         .await
@@ -558,7 +611,7 @@ async fn delete_removes_object() {
         .clone()
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/gone.md"),
+            format!("/api/v1/knowledgebases/{KB}/gone.md"),
             Body::empty(),
         ))
         .await
@@ -568,7 +621,7 @@ async fn delete_removes_object() {
     let get_resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/gone.md"),
+            format!("/api/v1/knowledgebases/{KB}/gone.md"),
             Body::empty(),
         ))
         .await
@@ -593,7 +646,7 @@ async fn delete_if_match_correct() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/v1/knowledgebases/{KB}/cond-del.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/cond-del.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", etag.as_str())
                 .body(Body::empty())
@@ -617,7 +670,7 @@ async fn delete_if_match_wrong() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/v1/knowledgebases/{KB}/protected.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/protected.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", "\"wrong-etag\"")
                 .body(Body::empty())
@@ -630,7 +683,7 @@ async fn delete_if_match_wrong() {
     let get_resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/protected.md"),
+            format!("/api/v1/knowledgebases/{KB}/protected.md"),
             Body::empty(),
         ))
         .await
@@ -650,7 +703,7 @@ async fn delete_ignores_extra_conditionals() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/v1/knowledgebases/{KB}/extra-cond.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/extra-cond.md"))
                 .header(auth().0, auth().1)
                 .header("if-none-match", "\"some-etag\"")
                 .body(Body::empty())
@@ -666,7 +719,7 @@ async fn delete_missing_object() {
     let resp = app()
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/no-such-file.md"),
+            format!("/api/v1/knowledgebases/{KB}/no-such-file.md"),
             Body::empty(),
         ))
         .await
@@ -708,7 +761,7 @@ async fn delete_enqueues_tombstone_on_success() {
         .clone()
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/to-delete.md"),
+            format!("/api/v1/knowledgebases/{KB}/to-delete.md"),
             Body::empty(),
         ))
         .await
@@ -752,7 +805,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let del_resp = router
         .oneshot(authed_request(
             "DELETE",
-            format!("/v1/knowledgebases/{KB}/does-not-exist.md"),
+            format!("/api/v1/knowledgebases/{KB}/does-not-exist.md"),
             Body::empty(),
         ))
         .await
@@ -783,7 +836,7 @@ async fn get_default_content_type_for_untyped_put() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/raw.bin"),
+            format!("/api/v1/knowledgebases/{KB}/raw.bin"),
             Body::empty(),
         ))
         .await
@@ -805,7 +858,7 @@ async fn get_returns_etag() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/etag.txt"),
+            format!("/api/v1/knowledgebases/{KB}/etag.txt"),
             Body::empty(),
         ))
         .await
@@ -827,7 +880,7 @@ async fn get_range_206() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/range.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/range.txt"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=0-9")
                 .body(Body::empty())
@@ -860,7 +913,7 @@ async fn get_range_416() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/range-416.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/range-416.txt"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=200-300")
                 .body(Body::empty())
@@ -880,7 +933,7 @@ async fn get_range_malformed() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/malformed.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/malformed.txt"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=abc")
                 .body(Body::empty())
@@ -904,7 +957,7 @@ async fn get_range_unknown_unit() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/range-unit.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/range-unit.txt"))
                 .header(auth().0, auth().1)
                 .header("range", "items=0-10")
                 .body(Body::empty())
@@ -929,7 +982,7 @@ async fn get_if_none_match_304() {
         .clone()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/conditional-304.txt"),
+            format!("/api/v1/knowledgebases/{KB}/conditional-304.txt"),
             Body::empty(),
         ))
         .await
@@ -940,7 +993,7 @@ async fn get_if_none_match_304() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/conditional-304.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/conditional-304.txt"))
                 .header(auth().0, auth().1)
                 .header("if-none-match", etag)
                 .body(Body::empty())
@@ -965,7 +1018,7 @@ async fn get_if_match_412() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/conditional-412.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/conditional-412.txt"))
                 .header(auth().0, auth().1)
                 .header("if-match", "\"wrong\"")
                 .body(Body::empty())
@@ -991,7 +1044,7 @@ async fn objects_are_scoped_by_kb() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB2}/shared.md"),
+            format!("/api/v1/knowledgebases/{KB2}/shared.md"),
             Body::empty(),
         ))
         .await
@@ -1021,7 +1074,7 @@ async fn list_objects_returns_objects() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}"),
+            format!("/api/v1/knowledgebases/{KB}"),
             Body::empty(),
         ))
         .await
@@ -1051,7 +1104,7 @@ async fn list_objects_truncated_at_limit() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}?limit=2"),
+            format!("/api/v1/knowledgebases/{KB}?limit=2"),
             Body::empty(),
         ))
         .await
@@ -1081,7 +1134,7 @@ async fn list_objects_filters_by_prefix() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}?prefix=a/"),
+            format!("/api/v1/knowledgebases/{KB}?prefix=a/"),
             Body::empty(),
         ))
         .await
@@ -1109,7 +1162,7 @@ async fn list_objects_limit_zero_uses_default() {
     let resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}?limit=0"),
+            format!("/api/v1/knowledgebases/{KB}?limit=0"),
             Body::empty(),
         ))
         .await
@@ -1124,7 +1177,7 @@ async fn list_objects_undeclared_kb_returns_404() {
     let resp = app()
         .oneshot(authed_request(
             "GET",
-            "/v1/knowledgebases/undeclared".to_string(),
+            "/api/v1/knowledgebases/undeclared".to_string(),
             Body::empty(),
         ))
         .await
@@ -1139,7 +1192,7 @@ async fn put_to_undeclared_kb_returns_404() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            "/v1/knowledgebases/undeclared/foo.md".to_string(),
+            "/api/v1/knowledgebases/undeclared/foo.md".to_string(),
             Body::from("data"),
         ))
         .await
@@ -1152,7 +1205,7 @@ async fn get_non_existent_object_returns_404() {
     let resp = app()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/no-such.md"),
+            format!("/api/v1/knowledgebases/{KB}/no-such.md"),
             Body::empty(),
         ))
         .await
@@ -1165,7 +1218,7 @@ async fn head_non_existent_object_returns_404() {
     let resp = app()
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/no-such.md"),
+            format!("/api/v1/knowledgebases/{KB}/no-such.md"),
             Body::empty(),
         ))
         .await
@@ -1178,7 +1231,7 @@ async fn put_with_path_traversal_returns_400_or_404() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/../etc/passwd"),
+            format!("/api/v1/knowledgebases/{KB}/../etc/passwd"),
             Body::from("evil"),
         ))
         .await
@@ -1195,7 +1248,7 @@ async fn put_with_double_slash_path_returns_400_or_404() {
     let resp = app()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/foo//bar.md"),
+            format!("/api/v1/knowledgebases/{KB}/foo//bar.md"),
             Body::from("bad"),
         ))
         .await
@@ -1210,7 +1263,7 @@ async fn unsupported_post_action_returns_not_found() {
     let resp = app()
         .oneshot(authed_request(
             "POST",
-            format!("/v1/knowledgebases/{KB}/file.md"),
+            format!("/api/v1/knowledgebases/{KB}/file.md"),
             Body::empty(),
         ))
         .await
@@ -1223,7 +1276,7 @@ async fn error_body_contains_request_id() {
     let resp = app()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .header("authorization", "Bearer wrong-token")
                 .body(Body::empty())
                 .unwrap(),
@@ -1244,7 +1297,7 @@ async fn custom_request_id_is_echoed_in_error_body() {
     let resp = app()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases")
+                .uri("/api/v1/knowledgebases")
                 .header("authorization", "Bearer wrong-token")
                 .header("x-request-id", "req-custom")
                 .body(Body::empty())
@@ -1264,7 +1317,7 @@ async fn get_content_type_echoed_from_put() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/doc.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/doc.md"))
                 .header(auth().0, auth().1)
                 .header("content-type", "text/markdown; charset=utf-8")
                 .body(Body::from("# Doc"))
@@ -1277,7 +1330,7 @@ async fn get_content_type_echoed_from_put() {
     let get_resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/doc.md"),
+            format!("/api/v1/knowledgebases/{KB}/doc.md"),
             Body::empty(),
         ))
         .await
@@ -1301,7 +1354,7 @@ async fn put_rejects_content_length_above_limit() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/too-big.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/too-big.md"))
                 .header(auth().0, auth().1)
                 .header("content-length", "5")
                 .body(Body::from("x"))
@@ -1317,7 +1370,7 @@ async fn put_rejects_actual_body_above_limit() {
     let resp = app_with_max_body_size(4)
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/too-big.md"),
+            format!("/api/v1/knowledgebases/{KB}/too-big.md"),
             Body::from("12345"),
         ))
         .await
@@ -1330,7 +1383,7 @@ async fn put_allows_body_at_exact_limit() {
     let resp = app_with_max_body_size(4)
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/exact.md"),
+            format!("/api/v1/knowledgebases/{KB}/exact.md"),
             Body::from("1234"),
         ))
         .await
@@ -1352,7 +1405,7 @@ async fn head_returns_etag() {
     let resp = a
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/head-etag.txt"),
+            format!("/api/v1/knowledgebases/{KB}/head-etag.txt"),
             Body::empty(),
         ))
         .await
@@ -1381,7 +1434,7 @@ async fn head_ignores_range() {
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri(format!("/v1/knowledgebases/{KB}/head-range.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/head-range.txt"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=0-9")
                 .body(Body::empty())
@@ -1414,7 +1467,7 @@ async fn head_if_none_match_304() {
         .clone()
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/head-304.txt"),
+            format!("/api/v1/knowledgebases/{KB}/head-304.txt"),
             Body::empty(),
         ))
         .await
@@ -1432,7 +1485,7 @@ async fn head_if_none_match_304() {
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri(format!("/v1/knowledgebases/{KB}/head-304.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/head-304.txt"))
                 .header(auth().0, auth().1)
                 .header("if-none-match", &etag)
                 .body(Body::empty())
@@ -1458,7 +1511,7 @@ async fn head_if_match_412() {
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri(format!("/v1/knowledgebases/{KB}/head-412.txt"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/head-412.txt"))
                 .header(auth().0, auth().1)
                 .header("if-match", "\"wrong-etag\"")
                 .body(Body::empty())
@@ -1484,7 +1537,7 @@ async fn m3_round_trip() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/round-trip.md"))
                 .header(auth().0, auth().1)
                 .body(Body::from("first body"))
                 .unwrap(),
@@ -1506,7 +1559,7 @@ async fn m3_round_trip() {
         .clone()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            format!("/api/v1/knowledgebases/{KB}/round-trip.md"),
             Body::empty(),
         ))
         .await
@@ -1525,7 +1578,7 @@ async fn m3_round_trip() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/round-trip.md"))
                 .header(auth().0, auth().1)
                 .header("if-none-match", &e1)
                 .body(Body::empty())
@@ -1541,7 +1594,7 @@ async fn m3_round_trip() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/round-trip.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", &e1)
                 .body(Body::from("second body"))
@@ -1564,7 +1617,7 @@ async fn m3_round_trip() {
         .clone()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            format!("/api/v1/knowledgebases/{KB}/round-trip.md"),
             Body::empty(),
         ))
         .await
@@ -1583,7 +1636,7 @@ async fn m3_round_trip() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/v1/knowledgebases/{KB}/round-trip.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/round-trip.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", &e2)
                 .body(Body::empty())
@@ -1597,7 +1650,7 @@ async fn m3_round_trip() {
     let get3_resp = a
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/round-trip.md"),
+            format!("/api/v1/knowledgebases/{KB}/round-trip.md"),
             Body::empty(),
         ))
         .await
@@ -1614,7 +1667,7 @@ async fn m3_precondition_precedence() {
         .clone()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/prec-precedence.md"),
+            format!("/api/v1/knowledgebases/{KB}/prec-precedence.md"),
             Body::from("data"),
         ))
         .await
@@ -1633,7 +1686,7 @@ async fn m3_precondition_precedence() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/prec-precedence.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/prec-precedence.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", &e)
                 .header("if-none-match", "*")
@@ -1658,7 +1711,7 @@ async fn m3_multi_etag_if_match() {
         .clone()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/multi-etag.md"),
+            format!("/api/v1/knowledgebases/{KB}/multi-etag.md"),
             Body::from("content"),
         ))
         .await
@@ -1678,7 +1731,7 @@ async fn m3_multi_etag_if_match() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/multi-etag.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/multi-etag.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", "\"wrong1\", \"wrong2\"")
                 .body(Body::from("rejected"))
@@ -1698,7 +1751,7 @@ async fn m3_multi_etag_if_match() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{KB}/multi-etag.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/multi-etag.md"))
                 .header(auth().0, auth().1)
                 .header("if-match", if_match_with_e.as_str())
                 .body(Body::from("accepted"))
@@ -1726,7 +1779,7 @@ async fn m3_zero_byte_object_range_416() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/zero-byte.bin"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/zero-byte.bin"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=0-0")
                 .body(Body::empty())
@@ -1757,7 +1810,7 @@ async fn m3_suffix_range_clamped_206() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/suffix-clamp.bin"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/suffix-clamp.bin"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=-9999")
                 .body(Body::empty())
@@ -1793,7 +1846,7 @@ async fn m3_range_start_gt_end() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/range-inverted.bin"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/range-inverted.bin"))
                 .header(auth().0, auth().1)
                 .header("range", "bytes=50-10")
                 .body(Body::empty())
@@ -1818,7 +1871,7 @@ async fn m3_etag_round_trip() {
         .clone()
         .oneshot(authed_request(
             "PUT",
-            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            format!("/api/v1/knowledgebases/{KB}/etag-rt.md"),
             Body::from("etag round trip content"),
         ))
         .await
@@ -1837,7 +1890,7 @@ async fn m3_etag_round_trip() {
         .clone()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            format!("/api/v1/knowledgebases/{KB}/etag-rt.md"),
             Body::empty(),
         ))
         .await
@@ -1856,7 +1909,7 @@ async fn m3_etag_round_trip() {
     let head_resp = a
         .oneshot(authed_request(
             "HEAD",
-            format!("/v1/knowledgebases/{KB}/etag-rt.md"),
+            format!("/api/v1/knowledgebases/{KB}/etag-rt.md"),
             Body::empty(),
         ))
         .await
@@ -1885,7 +1938,7 @@ async fn m3_malformed_date_if_unmodified_since() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/knowledgebases/{KB}/bad-date.md"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/bad-date.md"))
                 .header(auth().0, auth().1)
                 .header("if-unmodified-since", "not-a-valid-http-date")
                 .body(Body::empty())
@@ -1924,8 +1977,8 @@ async fn list_route_cursor_round_trip() {
 
     let last = loop {
         let uri = match &cursor {
-            Some(c) => format!("/v1/knowledgebases/{KB}?limit=2&cursor={c}"),
-            None => format!("/v1/knowledgebases/{KB}?limit=2"),
+            Some(c) => format!("/api/v1/knowledgebases/{KB}?limit=2&cursor={c}"),
+            None => format!("/api/v1/knowledgebases/{KB}?limit=2"),
         };
         let resp = a
             .clone()
@@ -1962,7 +2015,7 @@ async fn list_route_invalid_cursor_is_503() {
     let resp = app()
         .oneshot(authed_request(
             "GET",
-            format!("/v1/knowledgebases/{KB}?cursor=garbage-cursor-that-does-not-exist"),
+            format!("/api/v1/knowledgebases/{KB}?cursor=garbage-cursor-that-does-not-exist"),
             Body::empty(),
         ))
         .await

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `byte_start` and `byte_end` are the byte offsets in the original object
 /// that delimit this chunk. Use them with a `Range: bytes=<byte_start>-<byte_end-1>`
-/// header against `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the exact bytes.
+/// header against `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the exact bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchHit {
     /// The S3 object key (relative path within the knowledge base).

@@ -22,7 +22,7 @@ async fn anonymous_root_propfind_lists_only_discoverable_kbs() {
     ));
     let request = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").expect("valid method"))
-        .uri("/")
+        .uri("/webdav")
         .header("Depth", "1")
         .body(Body::from(PROPFIND_BODY))
         .expect("valid request");
@@ -111,7 +111,7 @@ async fn anonymous_internal_paths_are_challenged_and_filtered_across_pages() {
         .oneshot(
             Request::builder()
                 .method("PROPFIND")
-                .uri("/discoverable")
+                .uri("/webdav/discoverable")
                 .header("Depth", "1")
                 .body(Body::from(PROPFIND_BODY))
                 .expect("valid request"),
@@ -154,7 +154,7 @@ async fn authenticated_access_remains_unfiltered() {
         .oneshot(
             Request::builder()
                 .method("PROPFIND")
-                .uri("/")
+                .uri("/webdav")
                 .header("Authorization", "Basic dXNlcjpwYXNz")
                 .header("Depth", "1")
                 .body(Body::from(PROPFIND_BODY))
@@ -165,7 +165,7 @@ async fn authenticated_access_remains_unfiltered() {
     let internal = app
         .oneshot(
             Request::builder()
-                .uri("/private/.notedthat/manifest.json")
+                .uri("/webdav/private/.notedthat/manifest.json")
                 .header("Authorization", "Basic dXNlcjpwYXNz")
                 .body(Body::empty())
                 .expect("valid request"),

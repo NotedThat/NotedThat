@@ -36,9 +36,7 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
 }
 
 fn test_config_with_mcp_http(
-    http_addr: std::net::SocketAddr,
-    dav_addr: std::net::SocketAddr,
-    mcp_addr: std::net::SocketAddr,
+    listen_addr: std::net::SocketAddr,
 ) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -52,7 +50,7 @@ fn test_config_with_mcp_http(
         api_token: API_TOKEN.to_string(),
         kbs,
         tenant_slug: TenantSlug::default(),
-        listen_addr: http_addr,
+        listen_addr,
         s3: S3Config {
             endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
@@ -78,11 +76,8 @@ fn test_config_with_mcp_http(
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: dav_addr,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: mcp_addr,
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -96,9 +91,7 @@ fn test_config_with_mcp_http(
 
 fn test_config_with_kbs_and_mcp_http(
     kbs: &[&str],
-    http_addr: std::net::SocketAddr,
-    dav_addr: std::net::SocketAddr,
-    mcp_addr: std::net::SocketAddr,
+    listen_addr: std::net::SocketAddr,
 ) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -114,7 +107,7 @@ fn test_config_with_kbs_and_mcp_http(
         api_token: API_TOKEN.to_string(),
         kbs: kb_map,
         tenant_slug: TenantSlug::default(),
-        listen_addr: http_addr,
+        listen_addr,
         s3: S3Config {
             endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
@@ -139,11 +132,8 @@ fn test_config_with_kbs_and_mcp_http(
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: dav_addr,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: mcp_addr,
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -414,9 +404,7 @@ async fn poll_mcp_search_hit(
 async fn mcp_http_initialize_tools() {
     // Given: all three server listeners are configured on random loopback ports.
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_mcp_http(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -426,7 +414,7 @@ async fn mcp_http_initialize_tools() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
+    let mcp_url = format!("http://{http_addr}/mcp");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -494,9 +482,7 @@ async fn mcp_http_initialize_tools() {
 async fn mcp_http_write_search_identity() {
     // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_mcp_http(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -506,7 +492,7 @@ async fn mcp_http_write_search_identity() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
+    let mcp_url = format!("http://{http_addr}/mcp");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -581,9 +567,7 @@ async fn mcp_http_write_search_identity() {
 async fn mcp_http_write_stdio_search_identity() {
     // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_mcp_http(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -593,7 +577,7 @@ async fn mcp_http_write_stdio_search_identity() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
+    let mcp_url = format!("http://{http_addr}/mcp");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -697,14 +681,12 @@ async fn mcp_http_write_stdio_search_identity() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn mcp_http_auth_and_sse_refusal() {
+async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
     const EXACT_SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
 
-    // Given: all three server listeners configured on random loopback ports.
+    // Given: every HTTP surface is mounted on one random loopback listener.
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_mcp_http(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -714,8 +696,11 @@ async fn mcp_http_auth_and_sse_refusal() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
-    let sse_url = format!("http://{mcp_addr}/sse");
+    let mcp_url = format!("http://{http_addr}/mcp");
+    let sse_url = format!("http://{http_addr}/sse");
+    let api_url = format!("http://{http_addr}/api/v1/knowledgebases");
+    let old_api_url = format!("http://{http_addr}/v1/knowledgebases");
+    let webdav_url = format!("http://{http_addr}/webdav");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     // Raw reqwest client — no MCP library, no redirect following.
@@ -749,6 +734,68 @@ async fn mcp_http_auth_and_sse_refusal() {
         resp.status().as_u16(),
         401,
         "POST /mcp with wrong Bearer token must return 401"
+    );
+
+    let resp = client
+        .get(&api_url)
+        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .send()
+        .await
+        .expect("GET API with Basic credentials failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "WebDAV Basic credentials must not authorize API requests"
+    );
+
+    let resp = client
+        .post(&mcp_url)
+        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .header("Content-Type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+        .send()
+        .await
+        .expect("POST MCP with Basic credentials failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "WebDAV Basic credentials must not authorize MCP requests"
+    );
+
+    let resp = client
+        .request(reqwest::Method::OPTIONS, &webdav_url)
+        .bearer_auth(API_TOKEN)
+        .send()
+        .await
+        .expect("OPTIONS WebDAV with Bearer credentials failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "API Bearer credentials must not authorize WebDAV requests"
+    );
+
+    let resp = client
+        .request(reqwest::Method::OPTIONS, &webdav_url)
+        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .send()
+        .await
+        .expect("OPTIONS WebDAV with Basic credentials failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        204,
+        "valid Basic credentials must reach WebDAV on the shared listener"
+    );
+
+    let resp = client
+        .get(&old_api_url)
+        .bearer_auth(API_TOKEN)
+        .send()
+        .await
+        .expect("GET removed /v1 route failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "the removed /v1 API prefix must not redirect or alias"
     );
 
     //    SSE refusal fires before auth, so no Authorization header needed.
@@ -838,9 +885,7 @@ async fn mcp_resources_list_and_read() {
     const BINARY_KEY: &str = "binary-data.bin";
 
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_kbs_and_mcp_http(KBS, http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_kbs_and_mcp_http(KBS, http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -850,7 +895,7 @@ async fn mcp_resources_list_and_read() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
+    let mcp_url = format!("http://{http_addr}/mcp");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -893,7 +938,7 @@ async fn mcp_resources_list_and_read() {
     let binary_bytes: Vec<u8> = vec![0x00, 0xFF, 0xFE, 0xAB, 0xCD, 0xEF, 0x01, 0x80];
     let binary_put = client
         .put(format!(
-            "{http_url}/v1/knowledgebases/{BINARY_KB}/{BINARY_KEY}"
+            "{http_url}/api/v1/knowledgebases/{BINARY_KB}/{BINARY_KEY}"
         ))
         .header("Authorization", format!("Bearer {API_TOKEN}"))
         .header("Content-Type", "application/octet-stream")
@@ -1074,9 +1119,7 @@ async fn mcp_resources_list_and_read() {
 async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     // Given: MCP HTTP and the HTTP API are running over the in-process backends.
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let mcp_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
+    let config = test_config_with_mcp_http(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -1086,14 +1129,16 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{mcp_addr}/mcp");
+    let mcp_url = format!("http://{http_addr}/mcp");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
 
     // When: HTTP PUT writes initial content and captures ETag.
     let put_response = client
-        .put(format!("{http_url}/v1/knowledgebases/notes/mcp-replace.md"))
+        .put(format!(
+            "{http_url}/api/v1/knowledgebases/notes/mcp-replace.md"
+        ))
         .header("Authorization", format!("Bearer {API_TOKEN}"))
         .header("Content-Type", "text/markdown")
         .body("hello world")
@@ -1148,7 +1193,9 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
 
     // Then: HTTP GET verifies the content was updated.
     let get_response = client
-        .get(format!("{http_url}/v1/knowledgebases/notes/mcp-replace.md"))
+        .get(format!(
+            "{http_url}/api/v1/knowledgebases/notes/mcp-replace.md"
+        ))
         .header("Authorization", format!("Bearer {API_TOKEN}"))
         .send()
         .await

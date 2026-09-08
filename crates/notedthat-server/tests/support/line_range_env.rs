@@ -35,16 +35,12 @@ pub struct RunningServer {
 #[derive(Clone, Copy)]
 struct ListenerAddrs {
     http: std::net::SocketAddr,
-    dav: std::net::SocketAddr,
-    mcp: std::net::SocketAddr,
 }
 
 impl RunningServer {
     async fn start(kb: String) -> Self {
         let listeners = ListenerAddrs {
             http: notedthat_api_http::testing::reserve_addr(),
-            dav: notedthat_api_http::testing::reserve_addr(),
-            mcp: notedthat_api_http::testing::reserve_addr(),
         };
         let config = test_config(&kb, listeners);
         let backends = Backends {
@@ -53,7 +49,7 @@ impl RunningServer {
             embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
         };
         let base_url = format!("http://{}", config.listen_addr);
-        let mcp_url = format!("http://{}/mcp", config.mcp_http_bind);
+        let mcp_url = format!("{base_url}/mcp");
         let server_handle = tokio::spawn(async move {
             notedthat_server::run::run_with(config, backends)
                 .await
@@ -75,7 +71,7 @@ impl RunningServer {
         let response = self
             .client
             .put(format!(
-                "{}/v1/knowledgebases/{}/hello.md",
+                "{}/api/v1/knowledgebases/{}/hello.md",
                 self.base_url, self.kb
             ))
             .header("Authorization", format!("Bearer {API_TOKEN}"))
@@ -90,7 +86,7 @@ impl RunningServer {
     pub async fn get_hello_with_range(&self, range: &str) -> reqwest::Response {
         self.client
             .get(format!(
-                "{}/v1/knowledgebases/{}/hello.md",
+                "{}/api/v1/knowledgebases/{}/hello.md",
                 self.base_url, self.kb
             ))
             .header("Authorization", format!("Bearer {API_TOKEN}"))
@@ -165,11 +161,8 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: listeners.dav,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: listeners.mcp,
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),

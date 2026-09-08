@@ -8,7 +8,7 @@ use crate::state::WebDavState;
 
 use super::super::backpressure::backpressure_response;
 use super::super::helpers::response_with_optional_etag;
-use super::super::path_validation::parse_uri_path;
+use super::super::path_validation::parse_webdav_uri_path;
 
 fn content_length(headers: &HeaderMap) -> Result<Option<u64>, ()> {
     let mut values = headers.get_all("content-length").iter();
@@ -29,7 +29,7 @@ fn content_length(headers: &HeaderMap) -> Result<Option<u64>, ()> {
 
 pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
     let uri_path = req.uri().path().to_string();
-    let Ok(target) = parse_uri_path(&uri_path, &state.declared_kbs) else {
+    let Ok(target) = parse_webdav_uri_path(&uri_path, &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let (kb, path) = match target {

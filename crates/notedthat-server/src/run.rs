@@ -233,102 +233,42 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
     let (state, dav_state, indexer_shutdown, worker_handle) =
         build_infrastructure(config.clone(), backends).await?;
-
-    // Bind every enabled listener before serving any of them (G11: atomic startup failure).
-    // HTTP binds first because the MCP listener talks back through the actual HTTP API socket.
-    let http_listener = TcpListener::bind(config.listen_addr)
-        .await
-        .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
-    let internal_api_url = mcp_http::internal_http_api_url(http_listener.local_addr()?);
-    let dav_listener = TcpListener::bind(config.webdav_listen_addr)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to bind WebDAV listener on {}",
-                config.webdav_listen_addr
-            )
-        })?;
-    let mcp_listener = mcp_http::bind_listener(&config).await?;
-
-    info!(
-        http = %config.listen_addr,
-        dav = %config.webdav_listen_addr,
-        mcp = ?mcp_listener.as_ref().and_then(|listener| listener.local_addr().ok()),
-        "notedthat-server listening"
-    );
-
-    let http_app = build_router(state);
-    let dav_app = build_dav_router(dav_state);
     let shutdown_token = CancellationToken::new();
-    let http_shutdown = shutdown_token.clone();
-    let dav_shutdown = shutdown_token.clone();
-    let shutdown_on_http_error = shutdown_token.clone();
-    let shutdown_on_dav_error = shutdown_token.clone();
-    let mcp_shutdown = shutdown_token.child_token();
-    let mcp_serve = match mcp_listener {
-        Some(listener) => {
-            let mcp_app = mcp_http::build_router(&config, &internal_api_url, mcp_shutdown.clone())?;
-            Some(
-                axum::serve(listener, mcp_app)
-                    .with_graceful_shutdown(async move { mcp_shutdown.cancelled().await }),
-            )
-        }
-        None => None,
-    };
-    let shutdown_on_mcp_error = shutdown_token.clone();
+    let serve_result = async {
+        let listener = TcpListener::bind(config.listen_addr)
+            .await
+            .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
+        let bound_addr = listener.local_addr()?;
+        let internal_api_url = mcp_http::internal_http_api_url(bound_addr);
 
-    let http_serve = axum::serve(http_listener, http_app)
-        .with_graceful_shutdown(async move { http_shutdown.cancelled().await });
-    let dav_serve = axum::serve(dav_listener, dav_app)
-        .with_graceful_shutdown(async move { dav_shutdown.cancelled().await });
+        info!(http = %bound_addr, "notedthat-server listening");
 
-    let shutdown_trigger = tokio::spawn(async move {
-        shutdown_signal().await;
-        shutdown_token.cancel();
-    });
+        let app = build_router(state)
+            .merge(build_dav_router(dav_state))
+            .merge(mcp_http::build_router(
+                &config,
+                &internal_api_url,
+                shutdown_token.child_token(),
+            )?);
 
-    let http_handle = tokio::spawn(async move {
-        let result = http_serve.await.context("HTTP listener failed");
-        if result.is_err() {
-            shutdown_on_http_error.cancel();
-        }
-        result
-    });
-    let dav_handle = tokio::spawn(async move {
-        let result = dav_serve.await.context("WebDAV listener failed");
-        if result.is_err() {
-            shutdown_on_dav_error.cancel();
-        }
-        result
-    });
-    let mcp_handle = mcp_serve.map(|serve| {
-        tokio::spawn(async move {
-            let result = serve.await.context("MCP HTTP listener failed");
-            if result.is_err() {
-                shutdown_on_mcp_error.cancel();
-            }
-            result
-        })
-    });
+        let graceful_shutdown = shutdown_token.clone();
+        let signal_shutdown = shutdown_token.clone();
+        let shutdown_trigger = tokio::spawn(async move {
+            shutdown_signal().await;
+            signal_shutdown.cancel();
+        });
 
-    if let Some(mcp_handle) = mcp_handle {
-        let serve_result = tokio::try_join!(http_handle, dav_handle, mcp_handle);
+        let result = axum::serve(listener, app)
+            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
+            .await
+            .context("HTTP listener failed");
         shutdown_trigger.abort();
-        let (http_result, dav_result, mcp_result) =
-            serve_result.context("server task join failed")?;
-        http_result?;
-        dav_result?;
-        mcp_result?;
-    } else {
-        let serve_result = tokio::try_join!(http_handle, dav_handle);
-        shutdown_trigger.abort();
-        let (http_result, dav_result) = serve_result.context("server task join failed")?;
-        http_result?;
-        dav_result?;
+        result
     }
-
+    .await;
+    shutdown_token.cancel();
     complete_shutdown(indexer_shutdown, worker_handle).await;
-    Ok(())
+    serve_result
 }
 
 async fn complete_shutdown(

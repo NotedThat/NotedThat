@@ -126,7 +126,7 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 - *(api-http)* POST /replace/{*path} route + handler (issue #39)
 - *(api-http)* add ReplaceAmbiguousBody for ambiguous_match count (issue #39)
 - *(api-http)* PATCH error mapping + 416 line-mode headers
-- *(api-http)* PATCH /v1/knowledgebases/{kb}/{path} route
+- *(api-http)* PATCH /api/v1/knowledgebases/{kb}/{path} route
 - *(api-http)* 400/416 line-mode errors + X-Content-Range-Bytes on 416
 - *(api-http)* emit Content-Range: lines + X-Content-Range-Bytes on line-mode 206
 - *(api-http)* GET slices object with Range: lines=…

@@ -280,7 +280,7 @@ async fn e2e_put_then_search_finds_hit() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{kb}/getting-started.md"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/getting-started.md"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "text/markdown")
                 .body(Body::from(
@@ -302,7 +302,7 @@ async fn e2e_put_then_search_finds_hit() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{kb}/search"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/search"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"getting started guide"}"#))
@@ -334,7 +334,7 @@ async fn e2e_search_limit_clamped() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{kb}/doc.md"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/doc.md"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "text/markdown")
                 .body(Body::from(
@@ -356,7 +356,7 @@ async fn e2e_search_limit_clamped() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{kb}/search"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/search"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"content","limit":999}"#))
@@ -394,7 +394,7 @@ async fn e2e_filter_by_heading_path_prefix() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{kb}/install.md"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/install.md"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "text/markdown")
                 .body(Body::from(
@@ -416,7 +416,7 @@ async fn e2e_filter_by_heading_path_prefix() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{kb}/search"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/search"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -461,7 +461,7 @@ async fn e2e_delete_removes_from_search() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/v1/knowledgebases/{kb}/to-delete.md"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/to-delete.md"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "text/markdown")
                 .body(Body::from(format!(
@@ -483,7 +483,7 @@ async fn e2e_delete_removes_from_search() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/v1/knowledgebases/{kb}/to-delete.md"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/to-delete.md"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -506,7 +506,7 @@ async fn e2e_delete_removes_from_search() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{kb}/search"))
+                .uri(format!("/api/v1/knowledgebases/{kb}/search"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(format!(r#"{{"query":"{unique_term}"}}"#)))
@@ -534,7 +534,7 @@ async fn e2e_401_on_missing_bearer() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"test"}"#))
                 .unwrap(),
@@ -553,7 +553,7 @@ async fn e2e_404_on_unknown_kb() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/knowledgebases/unknown-kb-xyz/search")
+                .uri("/api/v1/knowledgebases/unknown-kb-xyz/search")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"test"}"#))
@@ -581,7 +581,7 @@ async fn e2e_413_on_body_too_large() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(big_body))

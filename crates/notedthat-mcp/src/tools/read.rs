@@ -85,7 +85,7 @@ pub(super) async fn run(
 
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client.authorized(client.http.get(url));
     if let Some(range) = range_header {
@@ -132,7 +132,7 @@ mod tests {
     async fn exclusive_to_inclusive_conversion() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/file.md"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
             .and(header("range", "bytes=0-9"))
             .respond_with(
                 ResponseTemplate::new(206)
@@ -155,7 +155,7 @@ mod tests {
     async fn range_not_satisfiable_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/file.md"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
             .respond_with(ResponseTemplate::new(416).insert_header("Content-Range", "bytes */50"))
             .mount(&server)
             .await;
@@ -198,7 +198,7 @@ mod tests {
     async fn line_range_sends_range_header() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/file.md"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
             .and(header("range", "lines=1-5"))
             .respond_with(ResponseTemplate::new(206).set_body_string("one\ntwo\nthree\nfour\nfive"))
             .expect(1)
@@ -275,7 +275,7 @@ mod tests {
     async fn line_start_without_line_end_sends_open_range_header() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/file.md"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
             .and(header("range", "lines=3-"))
             .respond_with(ResponseTemplate::new(206).set_body_string("three\nfour"))
             .expect(1)
@@ -295,7 +295,7 @@ mod tests {
     async fn insert_point_line_range_is_accepted() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/file.md"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
             .and(header("range", "lines=5-4"))
             .respond_with(ResponseTemplate::new(206).set_body_string(""))
             .expect(1)
@@ -316,14 +316,14 @@ mod tests {
     async fn read_nested_path_wiremock_red_gate() {
         // RED GATE: Before the fix, the read tool pre-encodes `docs/rfc/7231.md`
         // via `encode_object_path` producing `docs%2Frfc%2F7231.md`, then
-        // `v1_url` encodes the `%` again via PATH_SEGMENT push, resulting in
+        // `api_v1_url` encodes the `%` again via PATH_SEGMENT push, resulting in
         // `docs%252Frfc%252F7231.md` on the wire. This mock matches the CORRECT
-        // single-encoded path `/v1/knowledgebases/notes/docs%2Frfc%2F7231.md`.
+        // single-encoded path `/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md`.
         // Before the fix: server.verify() FAILS because the mock is never called.
         // After the fix (Task 2): this test PASSES.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# RFC 7231"))
             .expect(1)
             .mount(&server)
@@ -347,7 +347,7 @@ mod tests {
     async fn nested_path_is_encoded_once() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# RFC 7231"))
             .expect(1)
             .mount(&server)

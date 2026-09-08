@@ -16,7 +16,7 @@ async fn search(server: &PatchServer, filter: Value) -> Vec<Value> {
     let response = server
         .client
         .post(format!(
-            "{}/v1/knowledgebases/{}/search",
+            "{}/api/v1/knowledgebases/{}/search",
             server.base_url, server.kb
         ))
         .bearer_auth(API_TOKEN)

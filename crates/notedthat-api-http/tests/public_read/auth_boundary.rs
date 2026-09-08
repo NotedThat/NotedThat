@@ -29,7 +29,7 @@ async fn browse_head_follows_get_including_encoded_slug() {
                 .oneshot(
                     Request::builder()
                         .method(method)
-                        .uri(format!("/v1/knowledgebases/{slug}"))
+                        .uri(format!("/api/v1/knowledgebases/{slug}"))
                         .body(Body::empty())
                         .expect("request"),
                 )
@@ -56,7 +56,7 @@ async fn discovery_requires_opt_in_by_a_declared_kb() {
                 .oneshot(
                     Request::builder()
                         .method(method)
-                        .uri("/v1/knowledgebases")
+                        .uri("/api/v1/knowledgebases")
                         .body(Body::empty())
                         .expect("request"),
                 )
@@ -77,7 +77,7 @@ async fn discovery_head_is_public_when_discover_is_granted() {
     .oneshot(
         Request::builder()
             .method("HEAD")
-            .uri("/v1/knowledgebases")
+            .uri("/api/v1/knowledgebases")
             .body(Body::empty())
             .expect("request"),
     )

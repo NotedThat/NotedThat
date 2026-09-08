@@ -30,7 +30,7 @@ pub async fn read_resource(
     uri: &str,
 ) -> Result<ReadResourceResult, McpError> {
     let parsed = parse_resource_uri(uri)?;
-    let url = client.v1_url(&["knowledgebases", &parsed.kb_slug, &parsed.object_key]);
+    let url = client.api_v1_url(&["knowledgebases", &parsed.kb_slug, &parsed.object_key]);
     let resp = client
         .authorized(client.http.get(url))
         .send()
@@ -85,7 +85,7 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpError> {
     }
 
     // Apply percent-decoding EXACTLY ONCE: resource URIs carry one encoded object key,
-    // and `NotedThatClient::v1_url` performs the single HTTP path encoding pass.
+    // and `NotedThatClient::api_v1_url` performs the single HTTP path encoding pass.
     let object_key = percent_decode_str(encoded_path)
         .decode_utf8()
         .map_err(|err| invalid_params(format!("resource object path is not valid UTF-8: {err}")))?
@@ -141,7 +141,7 @@ mod tests {
     async fn note_md_utf8_returns_text_resource_contents() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/note.md"))
+            .and(path("/api/v1/knowledgebases/kb/note.md"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# Hello"))
             .mount(&server)
             .await;
@@ -170,7 +170,7 @@ mod tests {
     async fn image_png_non_utf8_returns_blob_resource_contents() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/image.png"))
+            .and(path("/api/v1/knowledgebases/kb/image.png"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x89, b'P', b'N', b'G']))
             .mount(&server)
             .await;
@@ -199,7 +199,7 @@ mod tests {
     async fn data_bin_non_utf8_returns_octet_stream_blob() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/data.bin"))
+            .and(path("/api/v1/knowledgebases/kb/data.bin"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x00, 0xFF, 0x10]))
             .mount(&server)
             .await;
@@ -246,7 +246,7 @@ mod tests {
     async fn nonexistent_kb_http_error_is_propagated() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/nonexistent-kb/x"))
+            .and(path("/api/v1/knowledgebases/nonexistent-kb/x"))
             .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                 "error": "not_found",
                 "message": "KB not declared"

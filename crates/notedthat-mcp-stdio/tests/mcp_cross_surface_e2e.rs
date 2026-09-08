@@ -158,10 +158,7 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
     }
 }
 
-fn test_config(
-    http_addr: std::net::SocketAddr,
-    dav_addr: std::net::SocketAddr,
-) -> notedthat_server::config::Config {
+fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, StagingConfig, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
     use notedthat_storage_s3::S3Config;
@@ -203,11 +200,8 @@ fn test_config(
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: dav_addr,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_enabled: false,
-        mcp_http_bind: "127.0.0.1:0".parse().expect("valid addr"),
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -253,8 +247,7 @@ impl Drop for NotedThatServerFixture {
 async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
     let _guard = test_mutex().lock().await;
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config(http_addr, dav_addr);
+    let config = test_config(http_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {

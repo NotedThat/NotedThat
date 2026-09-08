@@ -1,7 +1,7 @@
 //! RFC 3986 percent-encoding for object paths and KB slugs.
 //!
 //! SPEC §6.13 example: `docs/rfc/7231.md` in KB `my-notes`
-//! → `GET /v1/knowledgebases/my-notes/docs%2Frfc%2F7231.md`
+//! → `GET /api/v1/knowledgebases/my-notes/docs%2Frfc%2F7231.md`
 //!
 //! We encode everything except RFC 3986 §2.3 unreserved characters:
 //! `A-Z a-z 0-9 - . _ ~`
@@ -57,10 +57,10 @@ pub const OBJECT_PATH_ENCODE: &AsciiSet = &CONTROLS
 /// to `%2F`, preserving the full path as a single URL segment.
 ///
 /// # Warning
-/// Do **NOT** pass the output of this function to [`crate::client::NotedThatClient::v1_url`].
-/// `v1_url` uses `url::Url::path_segments_mut().push()` which percent-encodes its input,
+/// Do **NOT** pass the output of this function to [`crate::client::NotedThatClient::api_v1_url`].
+/// `api_v1_url` uses `url::Url::path_segments_mut().push()` which percent-encodes its input,
 /// so composing the two will double-encode `%` → `%25` (e.g. `%2F` → `%252F`).
-/// Use this function only for manual URL string construction outside of `v1_url`.
+/// Use this function only for manual URL string construction outside of `api_v1_url`.
 ///
 /// # Example
 /// ```

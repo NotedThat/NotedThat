@@ -30,7 +30,7 @@ pub(super) async fn run(
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client
         .authorized(client.http.put(url))
@@ -81,11 +81,11 @@ mod tests {
     async fn happy_put_returns_etag() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .respond_with(
                 ResponseTemplate::new(201)
                     .insert_header("ETag", "\"abc123\"")
-                    .insert_header("Location", "/v1/knowledgebases/notes/hello.md"),
+                    .insert_header("Location", "/api/v1/knowledgebases/notes/hello.md"),
             )
             .mount(&server)
             .await;
@@ -106,7 +106,7 @@ mod tests {
     async fn precondition_failed_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error":"precondition_failed","message":"etag mismatch"
             })))
@@ -128,7 +128,7 @@ mod tests {
     async fn no_content_type_when_mime_omitted() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/f.md"))
+            .and(path("/api/v1/knowledgebases/notes/f.md"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
@@ -149,11 +149,14 @@ mod tests {
     async fn nested_path_is_encoded_once() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(
                 ResponseTemplate::new(201)
                     .insert_header("ETag", "\"abc123\"")
-                    .insert_header("Location", "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"),
+                    .insert_header(
+                        "Location",
+                        "/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
+                    ),
             )
             .expect(1)
             .mount(&server)

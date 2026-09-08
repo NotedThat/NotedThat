@@ -68,11 +68,8 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: notedthat_api_http::testing::reserve_addr(),
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: notedthat_api_http::testing::reserve_addr(),
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -125,6 +122,9 @@ async fn e2e_healthz_and_put_get() {
     let resp = client.get(format!("{base}/healthz")).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 
+    let resp = client.get(format!("{base}/readyz")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
     let resp = client.get(format!("{base}/llms.txt")).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(
@@ -133,14 +133,14 @@ async fn e2e_healthz_and_put_get() {
     );
 
     let resp = client
-        .get(format!("{base}/v1/knowledgebases"))
+        .get(format!("{base}/api/v1/knowledgebases"))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 
     let resp = client
-        .put(format!("{base}/v1/knowledgebases/notes/hello.md"))
+        .put(format!("{base}/api/v1/knowledgebases/notes/hello.md"))
         .header("authorization", "Bearer e2e-test-token")
         .header("content-type", "text/markdown")
         .body("# Hello")
@@ -148,9 +148,13 @@ async fn e2e_healthz_and_put_get() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201);
+    assert_eq!(
+        resp.headers().get("location").unwrap(),
+        "/api/v1/knowledgebases/notes/hello.md"
+    );
 
     let resp = client
-        .get(format!("{base}/v1/knowledgebases/notes/hello.md"))
+        .get(format!("{base}/api/v1/knowledgebases/notes/hello.md"))
         .header("authorization", "Bearer e2e-test-token")
         .send()
         .await
@@ -180,7 +184,7 @@ async fn e2e_list_and_delete() {
 
     for name in &["file1.md", "file2.md"] {
         client
-            .put(format!("{base}/v1/knowledgebases/notes/{name}"))
+            .put(format!("{base}/api/v1/knowledgebases/notes/{name}"))
             .header("authorization", "Bearer e2e-test-token")
             .body("content")
             .send()
@@ -189,7 +193,7 @@ async fn e2e_list_and_delete() {
     }
 
     let resp = client
-        .get(format!("{base}/v1/knowledgebases/notes"))
+        .get(format!("{base}/api/v1/knowledgebases/notes"))
         .header("authorization", "Bearer e2e-test-token")
         .send()
         .await
@@ -200,7 +204,7 @@ async fn e2e_list_and_delete() {
     assert!(count >= 2, "expected at least 2 objects, got {count}");
 
     let resp = client
-        .delete(format!("{base}/v1/knowledgebases/notes/file1.md"))
+        .delete(format!("{base}/api/v1/knowledgebases/notes/file1.md"))
         .header("authorization", "Bearer e2e-test-token")
         .send()
         .await
@@ -208,7 +212,7 @@ async fn e2e_list_and_delete() {
     assert_eq!(resp.status().as_u16(), 204);
 
     let resp = client
-        .delete(format!("{base}/v1/knowledgebases/notes/file1.md"))
+        .delete(format!("{base}/api/v1/knowledgebases/notes/file1.md"))
         .header("authorization", "Bearer e2e-test-token")
         .send()
         .await

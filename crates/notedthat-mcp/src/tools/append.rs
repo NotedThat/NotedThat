@@ -32,7 +32,7 @@ pub(super) async fn run(
     args: AppendArgs,
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client
         .authorized(client.http.patch(url))
@@ -87,7 +87,7 @@ mod tests {
     async fn sends_single_patch_with_append_mode_and_if_match_when_supplied() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("nt-patch-mode", "append"))
             .and(header("if-match", "\"abc\""))
             .and(|req: &Request| !req.headers.contains_key("content-range"))
@@ -108,7 +108,7 @@ mod tests {
     async fn sends_single_patch_with_append_mode_and_no_if_match_when_omitted() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("nt-patch-mode", "append"))
             .and(|req: &Request| !req.headers.contains_key("if-match"))
             .and(|req: &Request| !req.headers.contains_key("content-range"))
@@ -129,12 +129,12 @@ mod tests {
     async fn ok_response_returns_etag() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("nt-patch-mode", "append"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"next\"")
-                    .insert_header("Location", "/v1/knowledgebases/notes/hello.md"),
+                    .insert_header("Location", "/api/v1/knowledgebases/notes/hello.md"),
             )
             .mount(&server)
             .await;
@@ -150,7 +150,7 @@ mod tests {
     async fn precondition_failed_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header_exists("nt-patch-mode"))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error": "precondition_failed",
@@ -168,7 +168,7 @@ mod tests {
     async fn not_found_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header_exists("nt-patch-mode"))
             .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                 "error": "not_found",
@@ -186,12 +186,15 @@ mod tests {
     async fn nested_path_is_encoded_once() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .and(header("nt-patch-mode", "append"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"abc123\"")
-                    .insert_header("Location", "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"),
+                    .insert_header(
+                        "Location",
+                        "/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
+                    ),
             )
             .expect(1)
             .mount(&server)

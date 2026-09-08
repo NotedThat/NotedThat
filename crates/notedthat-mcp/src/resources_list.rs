@@ -71,7 +71,7 @@ pub async fn list_resources(
 }
 
 async fn list_kbs(client: &NotedThatClient) -> Result<Vec<String>, McpError> {
-    let url = client.v1_url(&["knowledgebases"]);
+    let url = client.api_v1_url(&["knowledgebases"]);
     let resp = client
         .authorized(client.http.get(url))
         .send()
@@ -87,7 +87,7 @@ async fn list_objects(
     kb_slug: &str,
     cursor: Option<&str>,
 ) -> Result<ListObjectsResponse, McpError> {
-    let url = client.v1_url(&["knowledgebases", kb_slug]);
+    let url = client.api_v1_url(&["knowledgebases", kb_slug]);
     let mut query = Vec::new();
     if let Some(cursor) = cursor {
         query.push(("cursor", cursor));

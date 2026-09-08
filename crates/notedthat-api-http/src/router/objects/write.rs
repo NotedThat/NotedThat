@@ -74,7 +74,7 @@ pub(in crate::router) async fn put_object(
     .map_err(|e| err(ApiError::from(e)))?;
 
     let location = format!(
-        "/v1/knowledgebases/{kb_slug}/{}",
+        "/api/v1/knowledgebases/{kb_slug}/{}",
         percent_encode_path(path.as_str())
     );
     let mut builder = Response::builder()

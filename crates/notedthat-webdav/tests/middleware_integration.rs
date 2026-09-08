@@ -207,11 +207,63 @@ async fn body_string(response: axum::response::Response) -> String {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn router_serves_only_webdav_prefix() {
+    // Given: the WebDAV router is mounted alongside other HTTP surfaces.
+    let app = build_router(make_state());
+
+    // When: callers request the old root and knowledge-base paths.
+    let root = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let old_kb_path = app
+        .oneshot(
+            Request::builder()
+                .uri("/notes/file.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Then: neither path is consumed by WebDAV or its authentication middleware.
+    assert_eq!(root.status(), StatusCode::NOT_FOUND);
+    assert_eq!(old_kb_path.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn webdav_prefix_reaches_basic_authentication() {
+    // Given: a request targets the scoped WebDAV root.
+    let app = build_router(make_state());
+
+    // When: the request has no credentials.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::from_bytes(b"PROPFIND").unwrap())
+                .uri("/webdav")
+                .header("Depth", "0")
+                .body(Body::from(PROPFIND_BODY))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Then: WebDAV's Basic challenge is returned from the scoped route.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get("www-authenticate").unwrap(),
+        "Basic realm=\"NotedThat\""
+    );
+}
+
+#[tokio::test]
 async fn missing_auth_returns_401() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .header("Depth", "0")
         .body(Body::from(PROPFIND_BODY))
         .unwrap();
@@ -226,7 +278,7 @@ async fn wrong_username_returns_401() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .header("Authorization", basic_auth("baduser", "testpass"))
         .header("Depth", "0")
         .body(Body::from(PROPFIND_BODY))
@@ -242,7 +294,7 @@ async fn wrong_password_returns_401() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .header("Authorization", basic_auth("testuser", "badpass"))
         .header("Depth", "0")
         .body(Body::from(PROPFIND_BODY))
@@ -258,7 +310,7 @@ async fn correct_credentials_reach_handler() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .header("Authorization", good_auth())
         .header("Depth", "0")
         .body(Body::from(PROPFIND_BODY))
@@ -274,7 +326,7 @@ async fn www_authenticate_header_present_on_401() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .body(Body::empty())
         .unwrap();
 
@@ -296,7 +348,7 @@ async fn options_returns_204_dav_1() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::OPTIONS)
-        .uri("/")
+        .uri("/webdav")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -316,7 +368,7 @@ async fn options_dav_header_not_class_2_or_3() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::OPTIONS)
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -345,7 +397,7 @@ async fn proppatch_returns_405() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPPATCH").unwrap())
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -364,7 +416,7 @@ async fn lock_returns_405() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"LOCK").unwrap())
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -379,7 +431,7 @@ async fn unlock_returns_405() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"UNLOCK").unwrap())
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -398,7 +450,7 @@ async fn put_calls_commit_and_returns_201() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::PUT)
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .header("Content-Type", "text/markdown")
         .body(Body::from("# Test Note"))
@@ -415,7 +467,7 @@ async fn delete_returns_204() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::DELETE)
-        .uri("/notes/test.md")
+        .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -430,10 +482,13 @@ async fn move_with_cross_kb_destination_returns_403() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"MOVE").unwrap())
-        .uri("/notes/source.md")
+        .uri("/webdav/notes/source.md")
         .header("Authorization", good_auth())
         .header("Host", "localhost:8081")
-        .header("Destination", "http://localhost:8081/scratch/dest.md")
+        .header(
+            "Destination",
+            "http://localhost:8081/webdav/scratch/dest.md",
+        )
         .body(Body::empty())
         .unwrap();
 
@@ -452,7 +507,7 @@ async fn move_with_missing_destination_returns_400() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"MOVE").unwrap())
-        .uri("/notes/source.md")
+        .uri("/webdav/notes/source.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -463,11 +518,31 @@ async fn move_with_missing_destination_returns_400() {
 }
 
 #[tokio::test]
+async fn move_with_destination_outside_webdav_returns_400() {
+    // Given: a MOVE source is inside WebDAV but its destination names another surface.
+    let app = build_router(make_state());
+    let req = Request::builder()
+        .method(Method::from_bytes(b"MOVE").unwrap())
+        .uri("/webdav/notes/source.md")
+        .header("Authorization", good_auth())
+        .header("Host", "localhost:8081")
+        .header("Destination", "http://localhost:8081/api/v1/notes/dest.md")
+        .body(Body::empty())
+        .unwrap();
+
+    // When: the scoped router handles the MOVE request.
+    let resp = app.oneshot(req).await.unwrap();
+
+    // Then: the destination is rejected before any storage operation.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn move_cross_server_returns_502() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"MOVE").unwrap())
-        .uri("/notes/source.md")
+        .uri("/webdav/notes/source.md")
         .header("Authorization", good_auth())
         .header("Host", "localhost:8081")
         .header("Destination", "http://other-host.example.com/notes/dest.md")
@@ -489,7 +564,7 @@ async fn options_without_auth_returns_401() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::OPTIONS)
-        .uri("/")
+        .uri("/webdav")
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -509,7 +584,7 @@ async fn read_methods_reject_encoded_dotdot_get() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method("GET")
-        .uri("/notes/%2e%2e/scratch/secret.md")
+        .uri("/webdav/notes/%2e%2e/scratch/secret.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -522,7 +597,7 @@ async fn read_methods_reject_encoded_dotdot_propfind() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/notes/%2e%2e/scratch/")
+        .uri("/webdav/notes/%2e%2e/scratch/")
         .header("Authorization", good_auth())
         .header("Depth", "1")
         .body(Body::from(PROPFIND_BODY))
@@ -540,7 +615,7 @@ async fn propfind_traversal_rejected_before_size_cap() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/notes/%2e%2e/scratch/")
+        .uri("/webdav/notes/%2e%2e/scratch/")
         .header("Authorization", good_auth())
         .header("Depth", "1")
         .body(Body::from(PROPFIND_BODY))
@@ -556,7 +631,7 @@ async fn propfind_traversal_rejected_before_size_cap() {
 #[tokio::test]
 async fn read_matrix_get_dotdot_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/../secret.md";
+    let uri = "/webdav/notes/../secret.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -570,7 +645,7 @@ async fn read_matrix_get_dotdot_declared() {
 #[tokio::test]
 async fn read_matrix_get_single_dot_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/./hello.md";
+    let uri = "/webdav/notes/./hello.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -584,7 +659,7 @@ async fn read_matrix_get_single_dot_declared() {
 #[tokio::test]
 async fn read_matrix_get_empty_segment_declared() {
     let app = build_router(make_state());
-    let uri = "/notes//hello.md";
+    let uri = "/webdav/notes//hello.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -598,7 +673,7 @@ async fn read_matrix_get_empty_segment_declared() {
 #[tokio::test]
 async fn read_matrix_get_encoded_slash_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/foo%2fbar.md";
+    let uri = "/webdav/notes/foo%2fbar.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -612,7 +687,7 @@ async fn read_matrix_get_encoded_slash_declared() {
 #[tokio::test]
 async fn read_matrix_get_encoded_backslash_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/foo%5cbar.md";
+    let uri = "/webdav/notes/foo%5cbar.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -626,7 +701,7 @@ async fn read_matrix_get_encoded_backslash_declared() {
 #[tokio::test]
 async fn read_matrix_head_dotdot_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/%2e%2e/hello.md";
+    let uri = "/webdav/notes/%2e%2e/hello.md";
     let req = Request::builder()
         .method("HEAD")
         .uri(uri)
@@ -640,7 +715,7 @@ async fn read_matrix_head_dotdot_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_dotdot_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/%2e%2e/scratch/";
+    let uri = "/webdav/notes/%2e%2e/scratch/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -655,7 +730,7 @@ async fn read_matrix_propfind_dotdot_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_encoded_slash_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/foo%2fbar/";
+    let uri = "/webdav/notes/foo%2fbar/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -670,7 +745,7 @@ async fn read_matrix_propfind_encoded_slash_declared() {
 #[tokio::test]
 async fn read_matrix_get_dotdot_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/%2e%2e/notes/hello.md";
+    let uri = "/webdav/unknown/%2e%2e/notes/hello.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -684,7 +759,7 @@ async fn read_matrix_get_dotdot_non_declared() {
 #[tokio::test]
 async fn read_matrix_head_dotdot_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/%2e%2e/notes/hello.md";
+    let uri = "/webdav/unknown/%2e%2e/notes/hello.md";
     let req = Request::builder()
         .method("HEAD")
         .uri(uri)
@@ -698,7 +773,7 @@ async fn read_matrix_head_dotdot_non_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_dotdot_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/%2e%2e/notes/";
+    let uri = "/webdav/unknown/%2e%2e/notes/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -713,7 +788,7 @@ async fn read_matrix_propfind_dotdot_non_declared() {
 #[tokio::test]
 async fn read_matrix_get_dotslash_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/./x.md";
+    let uri = "/webdav/unknown/./x.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -727,7 +802,7 @@ async fn read_matrix_get_dotslash_non_declared() {
 #[tokio::test]
 async fn read_matrix_get_empty_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown//x.md";
+    let uri = "/webdav/unknown//x.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -741,7 +816,7 @@ async fn read_matrix_get_empty_non_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_encoded_slash_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/foo%2fbar/";
+    let uri = "/webdav/unknown/foo%2fbar/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -756,7 +831,7 @@ async fn read_matrix_propfind_encoded_slash_non_declared() {
 #[tokio::test]
 async fn read_matrix_get_encoded_dotdot_mid_segment() {
     let app = build_router(make_state());
-    let uri = "/notes/%2e%2e/scratch/deep.md";
+    let uri = "/webdav/notes/%2e%2e/scratch/deep.md";
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -770,7 +845,7 @@ async fn read_matrix_get_encoded_dotdot_mid_segment() {
 #[tokio::test]
 async fn read_matrix_propfind_double_slash_root() {
     let app = build_router(make_state());
-    let uri = "//notes/hello";
+    let uri = "/webdav//notes/hello";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -785,7 +860,7 @@ async fn read_matrix_propfind_double_slash_root() {
 #[tokio::test]
 async fn read_matrix_propfind_single_dot_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/./folder/";
+    let uri = "/webdav/notes/./folder/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -800,7 +875,7 @@ async fn read_matrix_propfind_single_dot_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_empty_segment_declared() {
     let app = build_router(make_state());
-    let uri = "/notes//folder/";
+    let uri = "/webdav/notes//folder/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -815,7 +890,7 @@ async fn read_matrix_propfind_empty_segment_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_encoded_backslash_declared() {
     let app = build_router(make_state());
-    let uri = "/notes/foo%5cbar/";
+    let uri = "/webdav/notes/foo%5cbar/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -830,7 +905,7 @@ async fn read_matrix_propfind_encoded_backslash_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_encoded_backslash_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/foo%5cbar/";
+    let uri = "/webdav/unknown/foo%5cbar/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -845,7 +920,7 @@ async fn read_matrix_propfind_encoded_backslash_non_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_single_dot_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown/./x/";
+    let uri = "/webdav/unknown/./x/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -860,7 +935,7 @@ async fn read_matrix_propfind_single_dot_non_declared() {
 #[tokio::test]
 async fn read_matrix_propfind_empty_segment_non_declared() {
     let app = build_router(make_state());
-    let uri = "/unknown//x/";
+    let uri = "/webdav/unknown//x/";
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
         .uri(uri)
@@ -877,7 +952,7 @@ async fn get_legitimate_object_not_rejected() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method("GET")
-        .uri("/notes/hello.md")
+        .uri("/webdav/notes/hello.md")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();
@@ -891,20 +966,66 @@ async fn get_legitimate_object_not_rejected() {
 
 #[tokio::test]
 async fn propfind_root_not_rejected() {
+    // Given: an authenticated PROPFIND targets the scoped WebDAV root.
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/")
+        .uri("/webdav")
         .header("Authorization", good_auth())
         .header("Depth", "0")
         .body(Body::from(PROPFIND_BODY))
         .unwrap();
+    // When: dav-server produces the multistatus response.
     let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = body_string(resp).await;
+
+    // Then: the canonical href retains the public WebDAV prefix.
     assert_eq!(
-        resp.status(),
+        status,
         StatusCode::MULTI_STATUS,
         "PROPFIND / must return 207 listing declared KBs"
     );
+    assert!(
+        body.contains("<D:href>/webdav/</D:href>"),
+        "canonical root href must include /webdav; body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn actual_http_propfind_keeps_webdav_in_canonical_href() {
+    // Given: the scoped router is serving on a real ephemeral TCP listener.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_router(make_state()))
+            .await
+            .unwrap();
+    });
+
+    // When: a WebDAV client sends PROPFIND over HTTP.
+    let response = reqwest::Client::new()
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+            format!("http://{address}/webdav"),
+        )
+        .header("Authorization", good_auth())
+        .header("Depth", "0")
+        .body(PROPFIND_BODY)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    server.abort();
+
+    // Then: the wire response exposes the scoped canonical href.
+    println!(
+        "status={status} canonical_href_present={}",
+        body.contains("<D:href>/webdav/</D:href>")
+    );
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert!(body.contains("<D:href>/webdav/</D:href>"));
 }
 
 #[tokio::test]
@@ -912,7 +1033,7 @@ async fn propfind_kb_root_not_rejected() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/notes/")
+        .uri("/webdav/notes/")
         .header("Authorization", good_auth())
         .header("Depth", "1")
         .body(Body::from(PROPFIND_BODY))
@@ -933,7 +1054,7 @@ async fn propfind_collection_prefix_trailing_slash_returns_207() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPFIND").unwrap())
-        .uri("/notes/folder/")
+        .uri("/webdav/notes/folder/")
         .header("Authorization", good_auth())
         .header("Depth", "1")
         .body(Body::from(PROPFIND_BODY))
@@ -951,7 +1072,7 @@ async fn head_collection_prefix_trailing_slash_not_rejected() {
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::HEAD)
-        .uri("/notes/folder/")
+        .uri("/webdav/notes/folder/")
         .header("Authorization", good_auth())
         .body(Body::empty())
         .unwrap();

@@ -1,16 +1,20 @@
-use super::mcp_http::{bind_listener, build_router, internal_http_api_url};
+use super::mcp_http::{build_router, internal_http_api_url};
 use crate::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use anyhow::Context as _;
 use axum::{Router, routing::get};
 use notedthat_core::{KbSlug, TenantSlug};
 use notedthat_storage_s3::S3Config;
-use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
-use tokio::{io::AsyncReadExt as _, net::TcpStream};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::TcpStream,
+    sync::Notify,
+};
 use tokio_util::sync::CancellationToken;
 
 const SHUTDOWN_BOUND: Duration = Duration::from_secs(15);
 
-fn test_config(mcp_http_bind: SocketAddr) -> Config {
+fn test_config() -> Config {
     let mut kbs = BTreeMap::new();
     kbs.insert(
         "notes".to_string(),
@@ -45,11 +49,8 @@ fn test_config(mcp_http_bind: SocketAddr) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: "127.0.0.1:0".parse().expect("test DAV addr is valid"),
         webdav_username: "webdav-user".to_string(),
         webdav_password: "webdav-pass".to_string(),
-        mcp_http_bind,
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -72,7 +73,7 @@ async fn invalid_staging_directory_fails_before_infrastructure_setup() {
         "notedthat-staging-config-missing-{}",
         std::process::id()
     ));
-    let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
+    let mut config = test_config();
     config.staging = notedthat_core::StagingConfig::new(missing_directory);
     config.qdrant.url = String::new();
 
@@ -97,147 +98,141 @@ async fn invalid_staging_directory_fails_before_infrastructure_setup() {
     );
 }
 
-#[tokio::test]
-async fn enabled_mcp_http_listener_binds_and_logs_address() {
-    // Given: MCP HTTP is enabled on an ephemeral loopback port.
-    let config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
-
-    // When: the MCP listener is bound before serving starts.
-    let listener = bind_listener(&config)
-        .await
-        .expect("MCP listener should bind")
-        .expect("MCP listener should be enabled");
-
-    // Then: the actual bound address is available for logging and serving.
-    let addr = listener
-        .local_addr()
-        .expect("bound listener has local addr");
-    assert_eq!(
-        addr.ip(),
-        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-    );
-    assert_ne!(addr.port(), 0);
-}
-
 #[test]
 fn internal_http_api_url_uses_actual_bound_socket() {
-    // Given: actual listener addresses after binding, including ephemeral ports.
     let wildcard_v4 = SocketAddr::from(([0, 0, 0, 0], 49_123));
     let wildcard_v6 = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 49_124));
     let concrete = SocketAddr::from(([192, 0, 2, 10], 49_125));
 
-    // When/Then: wildcard binds are mapped to loopback with the same actual port.
     assert_eq!(internal_http_api_url(wildcard_v4), "http://127.0.0.1:49123");
     assert_eq!(internal_http_api_url(wildcard_v6), "http://[::1]:49124");
     assert_eq!(internal_http_api_url(concrete), "http://192.0.2.10:49125");
 }
 
-#[tokio::test]
-async fn disabled_mcp_http_listener_returns_none() {
-    // Given: MCP HTTP is disabled in config.
-    let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
-    config.mcp_http_enabled = false;
-
-    // When: the MCP listener is bound.
-    let listener = bind_listener(&config)
+async fn initialize_mcp(addr: SocketAddr) {
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/mcp"))
+        .bearer_auth("test-token")
+        .header("accept", "application/json, text/event-stream")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "listener-test", "version": "1" }
+            }
+        }))
+        .send()
         .await
-        .expect("bind_listener should succeed");
-
-    // Then: no listener is returned (MCP HTTP is skipped).
-    assert!(listener.is_none());
+        .expect("MCP initialize request should succeed");
+    assert!(response.status().is_success());
 }
 
 #[tokio::test]
-async fn three_listener_shutdown_closes_listeners_and_active_mcp_session() {
-    // Given: HTTP API, WebDAV, and MCP HTTP listeners are all bound to ephemeral loopback ports.
-    let config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
-    let http_listener = tokio::net::TcpListener::bind(config.listen_addr)
+async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
+    let config = test_config();
+    let api_started = Arc::new(Notify::new());
+    let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("HTTP listener should bind");
-    let http_addr = http_listener
+        .expect("controlled API backend should bind");
+    let backend_addr = backend_listener
         .local_addr()
-        .expect("HTTP listener exposes its bound addr");
-    let dav_listener = tokio::net::TcpListener::bind(config.webdav_listen_addr)
-        .await
-        .expect("WebDAV listener should bind");
-    let dav_addr = dav_listener
-        .local_addr()
-        .expect("WebDAV listener exposes its bound addr");
-    let mcp_listener = bind_listener(&config)
-        .await
-        .expect("MCP listener bind should succeed")
-        .expect("MCP listener should be enabled");
-    let mcp_addr = mcp_listener
-        .local_addr()
-        .expect("MCP listener exposes its bound addr");
-
-    let shutdown_token = CancellationToken::new();
-    let http_shutdown = shutdown_token.clone();
-    let dav_shutdown = shutdown_token.clone();
-    let mcp_shutdown = shutdown_token.child_token();
-    let internal_api_url = internal_http_api_url(http_addr);
-    let mcp_app = build_router(&config, &internal_api_url, mcp_shutdown.clone())
-        .expect("MCP router should build without external infrastructure");
-
-    let http_handle = tokio::spawn(async move {
+        .expect("controlled API backend exposes its address");
+    let backend_started = Arc::clone(&api_started);
+    let backend = tokio::spawn(async move {
         axum::serve(
-            http_listener,
-            Router::new().route("/healthz", get(|| async { "ok" })),
+            backend_listener,
+            Router::new().route(
+                "/api/v1/knowledgebases",
+                get(move || {
+                    let request_started = Arc::clone(&backend_started);
+                    async move {
+                        request_started.notify_one();
+                        std::future::pending::<axum::Json<serde_json::Value>>().await
+                    }
+                }),
+            ),
         )
-        .with_graceful_shutdown(async move { http_shutdown.cancelled().await })
         .await
-        .context("HTTP listener failed")
+        .context("controlled API backend failed")
     });
-    let dav_handle = tokio::spawn(async move {
-        axum::serve(
-            dav_listener,
-            Router::new().route("/", get(|| async { "ok" })),
-        )
-        .with_graceful_shutdown(async move { dav_shutdown.cancelled().await })
+    let listener = tokio::net::TcpListener::bind(config.listen_addr)
         .await
-        .context("WebDAV listener failed")
-    });
-    let mcp_handle = tokio::spawn(async move {
-        axum::serve(mcp_listener, mcp_app)
-            .with_graceful_shutdown(async move { mcp_shutdown.cancelled().await })
+        .expect("unified listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("unified listener exposes its address");
+    let shutdown = CancellationToken::new();
+    let graceful_shutdown = shutdown.clone();
+    let mcp_shutdown = shutdown.child_token();
+    let app = Router::new()
+        .route("/api/v1/probe", get(|| async { "api" }))
+        .route("/webdav", get(|| async { "webdav" }))
+        .merge(
+            build_router(&config, &internal_http_api_url(backend_addr), mcp_shutdown)
+                .expect("MCP router should build"),
+        );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
             .await
-            .context("MCP HTTP listener failed")
+            .context("unified listener failed")
     });
 
-    // When: each listener accepts connections and an MCP connection is held open across shutdown.
-    let http_stream = TcpStream::connect(http_addr)
-        .await
-        .expect("HTTP listener should accept connections");
-    let dav_stream = TcpStream::connect(dav_addr)
-        .await
-        .expect("WebDAV listener should accept connections");
-    let mut mcp_stream = TcpStream::connect(mcp_addr)
-        .await
-        .expect("MCP listener should accept a held-open connection");
-    drop(http_stream);
-    drop(dav_stream);
+    let client = reqwest::Client::new();
+    for (path, expected) in [("/api/v1/probe", "api"), ("/webdav", "webdav")] {
+        let response = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .expect("surface request should succeed");
+        assert_eq!(response.text().await.expect("response has body"), expected);
+    }
+    initialize_mcp(addr).await;
 
-    shutdown_token.cancel();
-    let server_result = tokio::time::timeout(SHUTDOWN_BOUND, async move {
-        let (http_result, dav_result, mcp_result) =
-            tokio::try_join!(http_handle, dav_handle, mcp_handle).expect("listeners should join");
-        http_result?;
-        dav_result?;
-        mcp_result?;
-        anyhow::Ok(())
+    let mut mcp_connection = TcpStream::connect(addr)
+        .await
+        .expect("active MCP connection should connect");
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "list_knowledgebases", "arguments": {} }
+    })
+    .to_string();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer test-token\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+        body.len()
+    );
+    mcp_connection
+        .write_all(request.as_bytes())
+        .await
+        .expect("MCP tool request should be written");
+    tokio::time::timeout(SHUTDOWN_BOUND, api_started.notified())
+        .await
+        .expect("MCP tool call should reach the blocked API backend");
+
+    shutdown.cancel();
+    tokio::time::timeout(SHUTDOWN_BOUND, server)
+        .await
+        .expect("unified listener should quiesce within 15 seconds")
+        .expect("server task should join")
+        .expect("unified listener should stop cleanly");
+    let mut response = [0_u8; 1024];
+    tokio::time::timeout(SHUTDOWN_BOUND, async {
+        loop {
+            let bytes_read = mcp_connection
+                .read(&mut response)
+                .await
+                .expect("MCP connection read should resolve");
+            if bytes_read == 0 {
+                break;
+            }
+        }
     })
     .await
-    .expect("all three listeners should quiesce within 15s");
-    server_result.expect("all three listeners should exit cleanly");
-
-    // Then: the held-open MCP connection is closed within the same bounded shutdown budget.
-    let mut byte = [0_u8; 1];
-    let bytes_read = tokio::time::timeout(SHUTDOWN_BOUND, mcp_stream.read(&mut byte))
-        .await
-        .expect("held-open MCP connection should close within 15s")
-        .expect("MCP stream read should resolve cleanly");
-    assert_eq!(bytes_read, 0, "MCP connection should close on cancellation");
-    eprintln!(
-        "all three listeners quiesced within 15s; held-open MCP connection closed within 15s"
-    );
+    .expect("active MCP connection should reach EOF within 15 seconds");
+    backend.abort();
 }

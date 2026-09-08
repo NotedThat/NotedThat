@@ -74,7 +74,7 @@ async fn anonymous_capability(
 ) -> Option<PublicReadCapability> {
     let matched_path = req.extensions().get::<MatchedPath>()?.as_str();
     let capability = match (req.method(), matched_path) {
-        (&Method::GET | &Method::HEAD, "/v1/knowledgebases") => {
+        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases") => {
             return state
                 .declared_kbs
                 .keys()
@@ -86,13 +86,13 @@ async fn anonymous_capability(
                 })
                 .then_some(PublicReadCapability::Discover);
         }
-        (&Method::GET | &Method::HEAD, "/v1/knowledgebases/{kb_slug}") => {
+        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases/{kb_slug}") => {
             PublicReadCapability::Browse
         }
-        (&Method::GET | &Method::HEAD, "/v1/knowledgebases/{kb_slug}/{*object_path}") => {
+        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases/{kb_slug}/{*object_path}") => {
             PublicReadCapability::Content
         }
-        (&Method::POST, "/v1/knowledgebases/{kb_slug}/search") => PublicReadCapability::Search,
+        (&Method::POST, "/api/v1/knowledgebases/{kb_slug}/search") => PublicReadCapability::Search,
         _ => return None,
     };
     let Path(params) = req

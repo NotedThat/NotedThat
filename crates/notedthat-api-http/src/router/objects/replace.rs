@@ -141,7 +141,7 @@ async fn replace_object(
         total_bytes: meta.size,
     };
     let content_location = format!(
-        "/v1/knowledgebases/{kb_slug}/{}",
+        "/api/v1/knowledgebases/{kb_slug}/{}",
         percent_encode_path(path.as_str())
     );
 

@@ -21,7 +21,7 @@ pub(super) async fn run(
     args: ListArgs,
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.v1_url(&["knowledgebases", &kb_enc]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc]);
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(prefix) = args.prefix {
         query.push(("prefix", prefix));
@@ -64,7 +64,7 @@ mod tests {
     async fn prefix_passed_as_query_param() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes"))
+            .and(path("/api/v1/knowledgebases/notes"))
             .and(query_param("prefix", "docs/"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -87,7 +87,7 @@ mod tests {
     async fn cursor_passed_through() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes"))
+            .and(path("/api/v1/knowledgebases/notes"))
             .and(query_param("cursor", "opaque-token-xyz"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -110,7 +110,7 @@ mod tests {
     async fn missing_kb_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/nonexistent"))
+            .and(path("/api/v1/knowledgebases/nonexistent"))
             .respond_with(ResponseTemplate::new(404).set_body_json(
                 serde_json::json!({"error":"not_found","message":"KB not declared"}),
             ))

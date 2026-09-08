@@ -7,11 +7,13 @@ responses and plain bytes for object bodies.
 
 ## Base URL and versioning
 
-All data-plane routes are prefixed with `/v1/`. Health probes (`/healthz`, `/readyz`) and the LLM
+All API data-plane routes are prefixed with `/api/v1/`. WebDAV is mounted at `/webdav`, and
+streamable MCP is mounted at `/mcp`. Health probes (`/healthz`, `/readyz`) and the LLM
 navigation document (`/llms.txt`) sit at the root with no version prefix.
+`/browse/...` is reserved for a future browse surface and is currently unimplemented.
 
 ```
-http://HOST:PORT/v1/knowledgebases/...
+http://HOST:PORT/api/v1/knowledgebases/...
 http://HOST:PORT/healthz
 http://HOST:PORT/llms.txt
 ```
@@ -25,7 +27,7 @@ discover and navigate the API. It contains generic route and authentication guid
 includes credentials, configured knowledge-base names, or deployment-specific details.
 
 Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
-The document explains when `/v1/` discovery, object, and search operations require authentication
+The document explains when `/api/v1/` discovery, object, and search operations require authentication
 and when a configured anonymous capability may be used without a header.
 
 ## Authentication
@@ -55,10 +57,10 @@ namespace or path prefix.
 
 | Capability | Anonymous route | Meaning |
 | --- | --- | --- |
-| `discover` | `GET /v1/knowledgebases` | Includes that knowledge base in discovery |
-| `browse` | `GET /v1/knowledgebases/{kb_slug}` | Lists its object metadata |
-| `content` | `GET` or `HEAD /v1/knowledgebases/{kb_slug}/{path}` | Reads one object's bytes or metadata |
-| `search` | `POST /v1/knowledgebases/{kb_slug}/search` | Searches that knowledge base |
+| `discover` | `GET /api/v1/knowledgebases` | Includes that knowledge base in discovery |
+| `browse` | `GET /api/v1/knowledgebases/{kb_slug}` | Lists its object metadata |
+| `content` | `GET` or `HEAD /api/v1/knowledgebases/{kb_slug}/{path}` | Reads one object's bytes or metadata |
+| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` | Searches that knowledge base |
 
 Capabilities do not imply one another. In particular, anonymous search can return matching object
 paths and snippets while browse and content remain private. Anonymous callers never see
@@ -84,7 +86,7 @@ proxy rate and burst controls.
 **Example:**
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/knowledgebases
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/knowledgebases
 ```
 
 ## Request ID
@@ -158,7 +160,7 @@ Clients can request a partial object body by including a `Range` header:
 # Request first 100 bytes
 curl -H "Authorization: Bearer $TOKEN" \
      -H "Range: bytes=0-99" \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 
 # Response: HTTP/1.1 206 Partial Content
 # Content-Range: bytes 0-99/1234
@@ -199,7 +201,7 @@ Request a slice of an object by line number rather than byte offset. Line number
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
      -H "Range: lines=1-5" \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 **Response snippet:**
@@ -224,7 +226,7 @@ GET, HEAD, and PUT responses include an `ETag` header when the backend provides 
 - Use the ETag with conditional request headers to implement optimistic concurrency control
 
 ```sh
-curl -sI http://localhost:8080/v1/knowledgebases/notes/hello.md \
+curl -sI http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
      -H "Authorization: Bearer $TOKEN" | grep -i etag
 # ETag: "d41d8cd98f00b204e9800998ecf8427e"
 ```
@@ -256,14 +258,14 @@ that method. This is intentional per the NotedThat pass-through architecture (SP
 
 ```sh
 # GET: return 304 if ETag hasn't changed (cache validation)
-curl -sI http://localhost:8080/v1/knowledgebases/notes/hello.md \
+curl -sI http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
      -H "Authorization: Bearer $TOKEN" \
      -H 'If-None-Match: "abc123"'
 # HTTP/1.1 304 Not Modified (if ETag matches)
 # HTTP/1.1 200 OK (if ETag has changed)
 
 # PUT: only overwrite if ETag matches (optimistic lock)
-curl -sI -X PUT http://localhost:8080/v1/knowledgebases/notes/hello.md \
+curl -sI -X PUT http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: text/markdown" \
      -H 'If-Match: "abc123"' \
@@ -272,7 +274,7 @@ curl -sI -X PUT http://localhost:8080/v1/knowledgebases/notes/hello.md \
 # HTTP/1.1 412 Precondition Failed (if ETag didn't match)
 
 # PUT: only create if object doesn't exist
-curl -sI -X PUT http://localhost:8080/v1/knowledgebases/notes/new.md \
+curl -sI -X PUT http://localhost:8080/api/v1/knowledgebases/notes/new.md \
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: text/markdown" \
      -H 'If-None-Match: *' \
@@ -281,7 +283,7 @@ curl -sI -X PUT http://localhost:8080/v1/knowledgebases/notes/new.md \
 # HTTP/1.1 412 Precondition Failed (if object already exists)
 
 # DELETE: only delete if ETag matches
-curl -sI -X DELETE http://localhost:8080/v1/knowledgebases/notes/hello.md \
+curl -sI -X DELETE http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
      -H "Authorization: Bearer $TOKEN" \
      -H 'If-Match: "abc123"'
 # HTTP/1.1 204 No Content (if ETag matched)
@@ -373,7 +375,7 @@ curl http://localhost:8080/readyz
 
 ---
 
-### GET /v1/knowledgebases
+### GET /api/v1/knowledgebases
 
 List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sorted order.
 
@@ -396,7 +398,7 @@ lexicographically.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-     http://localhost:8080/v1/knowledgebases
+     http://localhost:8080/api/v1/knowledgebases
 ```
 
 **Response body:**
@@ -409,7 +411,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-### GET /v1/knowledgebases/{kb_slug}
+### GET /api/v1/knowledgebases/{kb_slug}
 
 List objects in a knowledge base. Supports optional prefix filtering and a result limit.
 
@@ -464,14 +466,14 @@ Each object in the array has:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-     "http://localhost:8080/v1/knowledgebases/notes"
+     "http://localhost:8080/api/v1/knowledgebases/notes"
 ```
 
 **With prefix and limit:**
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-     "http://localhost:8080/v1/knowledgebases/notes?prefix=2024/&limit=50"
+     "http://localhost:8080/api/v1/knowledgebases/notes?prefix=2024/&limit=50"
 ```
 
 **Response body:**
@@ -497,7 +499,7 @@ Page 1 (first request — no cursor):
 
 ```sh
 curl -H "Authorization: Bearer <token>" \
-  "https://example.com/v1/knowledgebases/notes?limit=100"
+  "https://example.com/api/v1/knowledgebases/notes?limit=100"
 ```
 
 Response body (truncated — more pages exist):
@@ -514,7 +516,7 @@ Page 2 (pass `next_cursor` as `cursor`):
 
 ```sh
 curl -H "Authorization: Bearer <token>" \
-  "https://example.com/v1/knowledgebases/notes?limit=100&cursor=CgBkb2MtMDA5OS5tZA=="
+  "https://example.com/api/v1/knowledgebases/notes?limit=100&cursor=CgBkb2MtMDA5OS5tZA=="
 ```
 
 Final page (no more results):
@@ -544,7 +546,7 @@ Cursors are for immediate continuation of a live listing, not a stable snapshot.
 
 ---
 
-### HEAD /v1/knowledgebases/{kb_slug}/{path}
+### HEAD /api/v1/knowledgebases/{kb_slug}/{path}
 
 Check whether an object exists and retrieve its metadata without downloading the body.
 
@@ -580,12 +582,12 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 
 ```sh
 curl -I -H "Authorization: Bearer $TOKEN" \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 ---
 
-### GET /v1/knowledgebases/{kb_slug}/{path}
+### GET /api/v1/knowledgebases/{kb_slug}/{path}
 
 Download an object. Returns the raw bytes with appropriate `Content-Type` and `Content-Length`
 headers. Supports byte-range reads and conditional requests.
@@ -636,14 +638,14 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 **Multi-segment path:**
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-     http://localhost:8080/v1/knowledgebases/notes/2024/january/meeting-notes.md
+     http://localhost:8080/api/v1/knowledgebases/notes/2024/january/meeting-notes.md
 ```
 
 **Partial download (first 100 bytes):**
@@ -651,7 +653,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
      -H "Range: bytes=0-99" \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 # HTTP/1.1 206 Partial Content
 # Content-Range: bytes 0-99/1234
 ```
@@ -661,13 +663,13 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
      -H 'If-None-Match: "abc123"' \
-     http://localhost:8080/v1/knowledgebases/notes/hello.md
+     http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 # HTTP/1.1 304 Not Modified (if ETag matches)
 ```
 
 ---
 
-### PUT /v1/knowledgebases/{kb_slug}/{path}
+### PUT /api/v1/knowledgebases/{kb_slug}/{path}
 
 Upload or replace an object. The operation is idempotent: uploading to an existing path overwrites
 it. Use `If-None-Match: *` to create-only, or `If-Match: <etag>` for optimistic concurrency.
@@ -707,7 +709,7 @@ it. Use `If-None-Match: *` to create-only, or `If-Match: <etag>` for optimistic 
 
 | Header | Description |
 |--------|-------------|
-| `location` | Path to the created object, e.g. `/v1/knowledgebases/notes/hello.md` |
+| `location` | Path to the created object, e.g. `/api/v1/knowledgebases/notes/hello.md` |
 | `etag` | Object ETag, if provided by the backend |
 
 The response body is empty on success.
@@ -719,7 +721,7 @@ curl -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/markdown" \
   --data-binary @hello.md \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 **Example — upload from stdin:**
@@ -729,7 +731,7 @@ echo "# Hello World" | curl -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/markdown" \
   --data-binary @- \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 **Example — upload a nested path:**
@@ -739,7 +741,7 @@ curl -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: text/markdown" \
   --data-binary @jan.md \
-  http://localhost:8080/v1/knowledgebases/notes/2024/january/meeting-notes.md
+  http://localhost:8080/api/v1/knowledgebases/notes/2024/january/meeting-notes.md
 ```
 
 **Example — create-only (fail if exists):**
@@ -750,7 +752,7 @@ curl -X PUT \
   -H "Content-Type: text/markdown" \
   -H 'If-None-Match: *' \
   --data-binary @hello.md \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 # HTTP/1.1 201 Created (if object didn't exist)
 # HTTP/1.1 412 Precondition Failed (if object already exists)
 ```
@@ -763,14 +765,14 @@ curl -X PUT \
   -H "Content-Type: text/markdown" \
   -H 'If-Match: "abc123"' \
   --data-binary @hello.md \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 # HTTP/1.1 201 Created (if ETag matched)
 # HTTP/1.1 412 Precondition Failed (if ETag didn't match)
 ```
 
 ---
 
-### DELETE /v1/knowledgebases/{kb_slug}/{path}
+### DELETE /api/v1/knowledgebases/{kb_slug}/{path}
 
 Delete an object. The operation is idempotent: deleting a non-existent object returns `204` just
 like deleting one that exists. Use `If-Match` to guard against deleting a version you didn't intend.
@@ -807,7 +809,7 @@ The response body is always empty on success.
 ```sh
 curl -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 **Example — delete a nested path:**
@@ -815,7 +817,7 @@ curl -X DELETE \
 ```sh
 curl -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/knowledgebases/notes/2024/january/meeting-notes.md
+  http://localhost:8080/api/v1/knowledgebases/notes/2024/january/meeting-notes.md
 ```
 
 **Example — conditional delete (only if ETag matches):**
@@ -824,14 +826,14 @@ curl -X DELETE \
 curl -X DELETE \
   -H "Authorization: Bearer $TOKEN" \
   -H 'If-Match: "abc123"' \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 # HTTP/1.1 204 No Content (if ETag matched)
 # HTTP/1.1 412 Precondition Failed (if ETag didn't match)
 ```
 
 ---
 
-### PATCH /v1/knowledgebases/{kb_slug}/{path}
+### PATCH /api/v1/knowledgebases/{kb_slug}/{path}
 
 Partial write — replaces a byte range, a line range, or appends to the end of an object without uploading the full object.
 
@@ -862,13 +864,13 @@ Partial write — replaces a byte range, a line range, or appends to the end of 
 
 ```bash
 # Replace lines 2-3
-ETAG=$(curl -sI -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/knowledgebases/notes/hello.md | grep -i etag | cut -d' ' -f2 | tr -d '\r')
+ETAG=$(curl -sI -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/knowledgebases/notes/hello.md | grep -i etag | cut -d' ' -f2 | tr -d '\r')
 curl -X PATCH \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Range: lines 2-3/*" \
   -H "If-Match: $ETAG" \
   -d "new line 2\nnew line 3\n" \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 
 # Insert before line 5 (Content-Range: lines 5-4/*)
 curl -X PATCH \
@@ -876,14 +878,14 @@ curl -X PATCH \
   -H "Content-Range: lines 5-4/*" \
   -H "If-Match: $ETAG" \
   -d "inserted line\n" \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 
 # Append (single round-trip; no prior HEAD needed)
 curl -X PATCH \
   -H "Authorization: Bearer $TOKEN" \
   -H "NT-Patch-Mode: append" \
   -d "appended text\n" \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 #### Backend compatibility
@@ -896,7 +898,7 @@ When PATCH returns `503 backend_unavailable`, the splice has been applied to sto
 
 ---
 
-### POST /v1/knowledgebases/{kb_slug}/replace/{path}
+### POST /api/v1/knowledgebases/{kb_slug}/replace/{path}
 
 String replace — find and replace an exact UTF-8 substring within an object without uploading the full body.
 
@@ -934,7 +936,7 @@ Response headers:
 | Header | Description |
 |--------|-------------|
 | `ETag` | New ETag of the object after the splice |
-| `Content-Location` | `/v1/knowledgebases/{kb_slug}/{percent_encoded_path}` |
+| `Content-Location` | `/api/v1/knowledgebases/{kb_slug}/{percent_encoded_path}` |
 
 Response body:
 
@@ -972,7 +974,7 @@ The replace action lives at `.../replace/<path>`. To replace content in an objec
 ```bash
 # Fetch the current ETag
 ETAG=$(curl -sI -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md \
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
   | grep -i '^etag:' | awk '{print $2}' | tr -d '\r')
 
 # Replace the first occurrence of "old text" with "new text"
@@ -981,12 +983,12 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -H "If-Match: $ETAG" \
   -d '{"old_string": "old text", "new_string": "new text"}' \
-  http://localhost:8080/v1/knowledgebases/notes/hello.md
+  http://localhost:8080/api/v1/knowledgebases/notes/hello.md
 ```
 
 ---
 
-### POST /v1/knowledgebases/{kb_slug}/search
+### POST /api/v1/knowledgebases/{kb_slug}/search
 
 Perform a hybrid semantic search (dense cosine + sparse BM25 with server-side RRF fusion) against a knowledge base.
 
@@ -1057,7 +1059,7 @@ curl -sSf -X POST \
   -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query": "install cargo", "limit": 5}' \
-  http://127.0.0.1:8080/v1/knowledgebases/notes/search
+  http://127.0.0.1:8080/api/v1/knowledgebases/notes/search
 ```
 
 **Notes**:
@@ -1066,7 +1068,7 @@ curl -sSf -X POST \
 
 - **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results. **Exception**: if the indexing queue is full, the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` (not ordinary async lag) — the object is stored but not yet searchable, and the client should retry to re-enqueue the indexing event.
 
-- **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
+- **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
 
 - **OKF metadata and filters**: Concept hits include an optional `okf` object containing `concept_id`, `type`, and available `title`, `description`, `resource`, and `tags`. `concept_type` matches the type exactly; `tags` matches at least one supplied tag. Both are indexed in Qdrant. MCP exposes these through its `filters` argument. See [OKF support and upgrade instructions](OKF.md).
 
@@ -1076,7 +1078,7 @@ curl -sSf -X POST \
 
 #### Upgrade notes (M4 → M5)
 
-> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /v1/knowledgebases/{kb_slug}/{path}`.
+> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
@@ -1089,23 +1091,24 @@ curl -sSf -X POST \
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
-| GET | `/v1/knowledgebases` | Yes | List declared KBs |
-| GET | `/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
-| HEAD | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Object metadata, no body |
-| GET | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Download object; supports `Range`, conditional headers |
-| PUT | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Upload or replace object; supports `If-Match`, `If-None-Match` |
-| DELETE | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Delete object (idempotent); supports `If-Match` |
-| PATCH | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write; supports `Content-Range: bytes|lines` and `NT-Patch-Mode: append` |
-| POST | `/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
-| POST | `/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
+| GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
+| GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
+| HEAD | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Object metadata, no body |
+| GET | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Download object; supports `Range`, conditional headers |
+| PUT | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Upload or replace object; supports `If-Match`, `If-None-Match` |
+| DELETE | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Delete object (idempotent); supports `If-Match` |
+| PATCH | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write; supports `Content-Range: bytes|lines` and `NT-Patch-Mode: append` |
+| POST | `/api/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
+| POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 
 
 ---
 
 ## WebDAV
 
-NotedThat exposes a WebDAV read-write surface on a second listener (default `0.0.0.0:8081`).
-Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` / `NOTEDTHAT_WEBDAV_PASSWORD`).
+NotedThat exposes a WebDAV read-write surface at `/webdav` on the same listener as the HTTP API
+and MCP. Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` /
+`NOTEDTHAT_WEBDAV_PASSWORD`).
 
 WebDAV supports the same optional manifest-controlled anonymous reads as the HTTP API. `discover`
 allows a root `PROPFIND` to reveal the knowledge base; `browse` allows `PROPFIND` within it; and
@@ -1139,9 +1142,9 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 
 | Path | Meaning |
 |------|---------|
-| `/` | Virtual root — lists all declared knowledge bases |
-| `/{kb}/` | Knowledge base root — lists objects in the KB |
-| `/{kb}/{path}` | Object — multi-segment paths are native (unlike the HTTP API's percent-encoded single segment) |
+| `/webdav/` | Virtual root — lists all declared knowledge bases |
+| `/webdav/{kb}/` | Knowledge base root — lists objects in the KB |
+| `/webdav/{kb}/{path}` | Object — multi-segment paths are native (unlike the HTTP API's percent-encoded single segment) |
 
 ### Supported methods
 
@@ -1183,7 +1186,7 @@ Current custom conditions:
 
 ### v1 quirks
 
-- **MKCOL is a no-op**: `curl -X MKCOL http://127.0.0.1:8081/notes/newfolder/` returns 201, but the
+- **MKCOL is a no-op**: `curl -X MKCOL http://127.0.0.1:8080/webdav/notes/newfolder/` returns 201, but the
   empty folder does not persist across PROPFIND until a file is written into it. S3 has no directory
   primitive; folders are virtual prefixes derived from object keys.
 
@@ -1294,7 +1297,8 @@ MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your
 
 #### Streamable HTTP transport
 
-MCP is also available over HTTP at a dedicated listener (default `0.0.0.0:8082`). Configure the bind address with `NOTEDTHAT_MCP_HTTP_BIND`.
+MCP is also available over HTTP at `POST /mcp` on the unified listener. It is always mounted with
+the API and WebDAV.
 
 **Endpoint:** `POST /mcp`
 
@@ -1319,7 +1323,10 @@ The 405 response body is always:
 {"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}
 ```
 
-**HTTPS requirement:** Bearer tokens must not travel over plaintext HTTP on untrusted networks. Terminate TLS at a reverse proxy (nginx, Caddy, Traefik) before exposing the MCP HTTP listener to the internet. Bearer over plaintext HTTP is only acceptable on loopback or private trusted links (e.g., `127.0.0.1` in a local dev setup).
+**HTTPS requirement:** Bearer tokens must not travel over plaintext HTTP on untrusted networks.
+Terminate TLS at one reverse proxy (nginx, Caddy, Traefik) before exposing the unified listener to
+the internet, and forward all routes to it. Bearer over plaintext HTTP is only acceptable on
+loopback or private trusted links (e.g., `127.0.0.1` in a local dev setup).
 
 ### Tools
 

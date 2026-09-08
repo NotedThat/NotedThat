@@ -9,7 +9,7 @@ use tower_http::request_id::RequestId;
 
 use crate::{filesystem::DavTarget, state::WebDavState};
 
-use super::path_validation::{parse_uri_path, validate_read_uri_path};
+use super::path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
 const AUTH_GUIDANCE: &str = "valid credentials are required; anonymous access is available only \
 for configured public-read capabilities, and invalid credentials are not treated as anonymous.";
@@ -124,7 +124,7 @@ pub async fn basic_auth_middleware(
     ) {
         return challenge(&request_id);
     }
-    if validate_read_uri_path(req.uri().path(), &state.declared_kbs).is_err() {
+    if validate_webdav_read_uri_path(req.uri().path(), &state.declared_kbs).is_err() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let target_path = req
@@ -133,7 +133,7 @@ pub async fn basic_auth_middleware(
         .strip_suffix('/')
         .filter(|path| !path.is_empty())
         .unwrap_or(req.uri().path());
-    let Ok(target) = parse_uri_path(target_path, &state.declared_kbs) else {
+    let Ok(target) = parse_webdav_uri_path(target_path, &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     if is_internal_target(&target) {

@@ -31,15 +31,11 @@ pub(super) struct RuntimeParts {
 #[derive(Clone, Copy)]
 struct ListenerAddrs {
     http: std::net::SocketAddr,
-    dav: std::net::SocketAddr,
-    mcp: std::net::SocketAddr,
 }
 
 pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
     let listeners = ListenerAddrs {
         http: notedthat_api_http::testing::reserve_addr(),
-        dav: notedthat_api_http::testing::reserve_addr(),
-        mcp: notedthat_api_http::testing::reserve_addr(),
     };
     let kb = unique_kb();
     let config = test_config(&kb, listeners, max_patchable_size);
@@ -103,11 +99,8 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: listeners.dav,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: listeners.mcp,
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),

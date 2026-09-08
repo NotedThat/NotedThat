@@ -6,6 +6,23 @@ use std::collections::BTreeMap;
 
 use crate::filesystem::DavTarget;
 
+pub(crate) const WEBDAV_PREFIX: &str = "/webdav";
+
+pub(super) fn strip_webdav_prefix(uri_path: &str) -> Result<&str, ()> {
+    match uri_path.strip_prefix(WEBDAV_PREFIX) {
+        Some("") => Ok("/"),
+        Some(path) if path.starts_with('/') => Ok(path),
+        Some(_) | None => Err(()),
+    }
+}
+
+pub(super) fn parse_webdav_uri_path(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<DavTarget, ()> {
+    parse_uri_path(strip_webdav_prefix(uri_path)?, declared_kbs)
+}
+
 pub(super) fn decode_uri_segment(raw_segment: &str) -> Result<Cow<'_, str>, ()> {
     percent_encoding::percent_decode_str(raw_segment)
         .decode_utf8()
@@ -113,4 +130,11 @@ pub(super) fn validate_read_uri_path(
         uri_path
     };
     parse_uri_path(candidate_uri, declared_kbs).map(|_| ())
+}
+
+pub(super) fn validate_webdav_read_uri_path(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<(), ()> {
+    validate_read_uri_path(strip_webdav_prefix(uri_path)?, declared_kbs)
 }

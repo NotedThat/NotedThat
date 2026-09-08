@@ -47,20 +47,17 @@ impl MakeRequestId for MakeRequestUuidV7 {
 /// Build the complete axum [`Router`] with all routes and middleware.
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/llms.txt", get(llms_txt))
-        .route("/v1/knowledgebases", get(list_kbs))
-        .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
+    let api_routes = Router::new()
+        .route("/knowledgebases", get(list_kbs))
+        .route("/knowledgebases/{kb_slug}", get(list_objects))
         .route(
-            "/v1/knowledgebases/{kb_slug}/search",
+            "/knowledgebases/{kb_slug}/search",
             axum::routing::post(crate::search_route::search_kb).layer(
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
         .route(
-            "/v1/knowledgebases/{kb_slug}/{*object_path}",
+            "/knowledgebases/{kb_slug}/{*object_path}",
             get(get_object)
                 .head(head_object)
                 .put(put_object)
@@ -81,7 +78,13 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(TraceLayer::new_for_http())
                 .layer(from_fn_with_state(state.clone(), auth_middleware)),
         )
-        .with_state(state)
+        .with_state(state);
+
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/llms.txt", get(llms_txt))
+        .nest("/api/v1", api_routes)
 }
 
 #[cfg(test)]
@@ -188,7 +191,7 @@ mod patch_route {
     ) -> Response {
         let mut builder = Request::builder()
             .method("PATCH")
-            .uri(format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}"))
+            .uri(format!("/api/v1/knowledgebases/{KB}/{OBJECT_PATH}"))
             .header("authorization", format!("Bearer {TOKEN}"))
             .header(header_name, header_value);
         if let Some(etag) = if_match {
@@ -228,7 +231,7 @@ mod patch_route {
                 .headers()
                 .get(axum::http::header::LOCATION)
                 .unwrap(),
-            &format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}")
+            &format!("/api/v1/knowledgebases/{KB}/{OBJECT_PATH}")
         );
         assert!(
             response
@@ -343,7 +346,7 @@ mod patch_route {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri(format!("/v1/knowledgebases/{KB}/missing.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/missing.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("content-range", "bytes 0-1/*")
                     .header(axum::http::header::IF_MATCH, etag)
@@ -705,7 +708,7 @@ mod line_range_get {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/ranges.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::RANGE, range)
                     .body(Body::empty())
@@ -864,7 +867,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "text/markdown")
                     .body(Body::from(Bytes::from_static(body)))
@@ -891,7 +894,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -910,7 +913,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, if_match)
@@ -942,7 +945,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/bar.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/bar.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_RANGE, "lines 1-1/*")
                     .header(axum::http::header::IF_MATCH, etag)
@@ -965,7 +968,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/delete.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/delete.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -981,7 +984,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/foo.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/foo.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1077,7 +1080,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/cond.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("if-none-match", "*")
                     .body(Body::from(Bytes::from_static(b"first content")))
@@ -1103,7 +1106,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/cond.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("if-none-match", "*")
                     .body(Body::from(Bytes::from_static(b"second content")))
@@ -1166,7 +1169,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/v1/knowledgebases/{KB}/to-delete.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/to-delete.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),

@@ -41,7 +41,7 @@ pub(super) async fn run(
     args: SearchArgs,
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.v1_url(&["knowledgebases", &kb_enc, "search"]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, "search"]);
     let body = SearchBody {
         query: args.query,
         filter: args.filters,
@@ -81,7 +81,7 @@ mod tests {
         let server = MockServer::start().await;
         let metadata = serde_json::json!({"concept_id": "revenue", "type": "business-glossary", "tags": ["finance"]});
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/search"))
+            .and(path("/api/v1/knowledgebases/notes/search"))
             .and(body_partial_json(serde_json::json!({"filter": {"concept_type": "business-glossary", "tags": ["finance"]}})))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": [{
                 "object_key": "revenue.md", "byte_start": 0, "byte_end": 10, "score": 0.9, "preview": "Revenue", "okf": metadata
@@ -107,7 +107,7 @@ mod tests {
     async fn happy_returns_hits() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/search"))
+            .and(path("/api/v1/knowledgebases/notes/search"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits":[{
                     "object_key":"a.md","byte_start":0,"byte_end":10,
@@ -131,7 +131,7 @@ mod tests {
     async fn filter_field_renamed_to_singular() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/search"))
+            .and(path("/api/v1/knowledgebases/notes/search"))
             .and(body_string_contains("\"filter\""))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits":[]})))
             .mount(&server)
@@ -155,7 +155,7 @@ mod tests {
     async fn kb_not_found_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/nonexistent/search"))
+            .and(path("/api/v1/knowledgebases/nonexistent/search"))
             .respond_with(
                 ResponseTemplate::new(404)
                     .set_body_json(serde_json::json!({"error":"not_found","message":"KB missing"})),

@@ -48,7 +48,7 @@ pub async fn search(
 ) -> WireResponse {
     let mut request = client
         .post(format!(
-            "{}/v1/knowledgebases/{PUBLIC_KB}/search",
+            "{}/api/v1/knowledgebases/{PUBLIC_KB}/search",
             server.http_url
         ))
         .json(&serde_json::json!({"query": query, "limit": 10}));
@@ -71,7 +71,7 @@ pub async fn wait_indexed(client: &reqwest::Client, server: &ServerInstance, key
         );
         let response = client
             .post(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/search",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/search",
                 server.http_url
             ))
             .bearer_auth(API_TOKEN)
