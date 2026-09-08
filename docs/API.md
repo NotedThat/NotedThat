@@ -379,7 +379,9 @@ List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sor
 
 **Authentication:** A valid Bearer token returns every declared knowledge base. Without an
 `Authorization` header, this is anonymous discovery: the response contains only knowledge bases
-whose manifest grants `discover` (and can be empty). A supplied invalid credential returns `401`.
+whose manifest grants `discover`. If no declared knowledge base grants `discover`, the request
+returns `401`. `HEAD` follows the same authorization policy as `GET`. A supplied invalid credential
+returns `401`.
 
 **Response:**
 

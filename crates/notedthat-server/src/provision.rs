@@ -62,6 +62,9 @@ pub async fn provision_kbs(
             }
             Err(e) => return Err(Error::Storage(e)),
         };
+
+        // Storage implementations need not validate manifests on read. Reject
+        // unsupported schemas before publishing their public-read policies.
         manifest.validate()?;
 
         match QdrantProvisioner::cross_check_manifest(&manifest, embedder_model, embedder_dim) {

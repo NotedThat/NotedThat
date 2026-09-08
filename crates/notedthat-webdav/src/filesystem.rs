@@ -11,6 +11,7 @@ use dav_server::{
 use futures::StreamExt as _;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, KbSlug, ListResponse, ObjectMeta, ObjectPath, StorageError,
+    is_internal_path,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -248,7 +249,7 @@ async fn list_entries(
             listing
                 .objects()
                 .iter()
-                .filter(|meta| !anonymous || !is_internal_object_key(&meta.key))
+                .filter(|meta| !anonymous || !is_internal_path(&meta.key))
                 .cloned(),
             prefix.as_deref(),
         )));
@@ -287,7 +288,7 @@ pub(crate) async fn collect_propfind_objects(
             .map_err(|err| storage_error_to_fs(&err))?;
 
         for object in response.objects {
-            if anonymous && is_internal_object_key(&object.key) {
+            if anonymous && is_internal_path(&object.key) {
                 continue;
             }
             if all_objects.len() >= PROPFIND_MAX_ENTRIES as usize {
@@ -357,10 +358,6 @@ fn root_entries(state: &WebDavState, anonymous: bool) -> Vec<Box<dyn DavDirEntry
         })
         .map(|(name, kb)| Box::new(KbDirEntry::new(name.clone(), kb)) as Box<dyn DavDirEntry>)
         .collect()
-}
-
-fn is_internal_object_key(key: &str) -> bool {
-    key == ".notedthat" || key.starts_with(".notedthat/")
 }
 
 fn entries_from_list(response: ListResponse, prefix: Option<&str>) -> Vec<Box<dyn DavDirEntry>> {

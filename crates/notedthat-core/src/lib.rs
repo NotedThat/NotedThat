@@ -28,7 +28,7 @@ pub use bucket_name::{
 pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
-pub use object_path::ObjectPath;
+pub use object_path::{ObjectPath, is_internal_path};
 pub use public_read::{PublicReadCapability, PublicReadPolicy};
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,

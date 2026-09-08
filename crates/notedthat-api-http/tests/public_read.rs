@@ -1,5 +1,7 @@
 #![allow(missing_docs)]
 
+#[path = "public_read/auth_boundary.rs"]
+mod auth_boundary;
 #[path = "public_read/auth_writes.rs"]
 mod auth_writes;
 #[path = "public_read/browse_search.rs"]

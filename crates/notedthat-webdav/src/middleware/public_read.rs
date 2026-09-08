@@ -36,6 +36,9 @@ fn challenge(request_id: &str) -> Response {
 fn anonymous_access(state: &WebDavState, target: &DavTarget) -> AnonymousAccess {
     match target {
         DavTarget::Root => {
+            // The PROPFIND interceptor's depth_infinity_response() rejects recursive
+            // walks. Supporting recursion must re-check browse before entering a KB;
+            // discover alone only permits listing the KB directory itself.
             let allows = |capability| {
                 state.declared_kbs.values().any(|kb| {
                     state
@@ -67,7 +70,7 @@ fn is_internal_target(target: &DavTarget) -> bool {
     matches!(
         target,
         DavTarget::Object(_, path)
-            if path.as_str() == ".notedthat" || path.as_str().starts_with(".notedthat/")
+            if notedthat_core::is_internal_path(path.as_str())
     )
 }
 
