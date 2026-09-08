@@ -125,6 +125,13 @@ async fn e2e_healthz_and_put_get() {
     let resp = client.get(format!("{base}/healthz")).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 
+    let resp = client.get(format!("{base}/llms.txt")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "text/plain; charset=utf-8"
+    );
+
     let resp = client
         .get(format!("{base}/v1/knowledgebases"))
         .send()

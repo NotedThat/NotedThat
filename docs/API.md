@@ -7,15 +7,25 @@ responses and plain bytes for object bodies.
 
 ## Base URL and versioning
 
-All data-plane routes are prefixed with `/v1/`. Health probes (`/healthz`, `/readyz`) sit at the
-root with no version prefix.
+All data-plane routes are prefixed with `/v1/`. Health probes (`/healthz`, `/readyz`) and the LLM
+navigation document (`/llms.txt`) sit at the root with no version prefix.
 
 ```
 http://HOST:PORT/v1/knowledgebases/...
 http://HOST:PORT/healthz
+http://HOST:PORT/llms.txt
 ```
 
 The default listen address is `0.0.0.0:8080`. Override it with `NOTEDTHAT_LISTEN_ADDR`.
+
+## LLM navigation document
+
+`GET /llms.txt` returns a public `text/plain; charset=utf-8` document that explains how an LLM can
+discover and navigate the API. It contains generic route and authentication guidance only: it never
+includes credentials, configured knowledge-base names, or deployment-specific details.
+
+Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
+The document directs it to authenticated `/v1/` discovery, object, and search operations.
 
 ## Authentication
 
@@ -29,7 +39,8 @@ The token is compared against `NOTEDTHAT_API_TOKEN` using a constant-time compar
 token rotation, no scopes, and no per-KB access control in v1. Either you have the token or you
 don't.
 
-Health probes (`/healthz`, `/readyz`) do **not** require authentication.
+Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) do **not**
+require authentication.
 
 **401 response when the token is missing or wrong:**
 
@@ -1040,6 +1051,7 @@ curl -sSf -X POST \
 |--------|------|------|-------------|
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
+| GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
 | GET | `/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
 | HEAD | `/v1/knowledgebases/{kb_slug}/{path}` | Yes | Object metadata, no body |

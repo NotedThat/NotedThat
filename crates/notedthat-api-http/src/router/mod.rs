@@ -3,6 +3,7 @@
 mod health;
 mod helpers;
 mod kbs;
+mod llms;
 mod objects;
 
 use crate::middleware::auth_middleware;
@@ -25,6 +26,7 @@ pub(crate) use helpers::lookup_kb;
 
 use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
+use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
 
 /// Maximum body size for PUT requests: 16 MiB (D35).
@@ -48,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/llms.txt", get(llms_txt))
         .route("/v1/knowledgebases", get(list_kbs))
         .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
         .route(
