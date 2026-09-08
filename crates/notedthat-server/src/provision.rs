@@ -3,9 +3,11 @@
 //! See `SPECIFICATIONS.md` §6.12 provisioning steps and D39 (fail-fast startup).
 
 use notedthat_core::{
-    Error, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name, validate_bucket_name,
+    Error, KbManifest, KbSlug, PublicReadPolicy, Storage, TenantSlug, derive_bucket_name,
+    validate_bucket_name,
 };
 use notedthat_indexer::{ProvisionError, QdrantProvisioner};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
@@ -26,7 +28,8 @@ pub async fn provision_kbs(
     embedder_model: &str,
     embedder_dim: u32,
     embedder_endpoint_hint: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<BTreeMap<String, PublicReadPolicy>, Error> {
+    let mut public_read_policies = BTreeMap::new();
     for kb in kbs {
         validate_bucket_name(tenant, kb)?;
 
@@ -59,6 +62,10 @@ pub async fn provision_kbs(
             }
             Err(e) => return Err(Error::Storage(e)),
         };
+
+        // Storage implementations need not validate manifests on read. Reject
+        // unsupported schemas before publishing their public-read policies.
+        manifest.validate()?;
 
         match QdrantProvisioner::cross_check_manifest(&manifest, embedder_model, embedder_dim) {
             Ok(None) => match provisioner
@@ -101,8 +108,9 @@ pub async fn provision_kbs(
                 "qdrant manifest cross-check failed; continuing startup"
             ),
         }
+        public_read_policies.insert(kb.as_str().to_string(), manifest.public_read.clone());
     }
-    Ok(())
+    Ok(public_read_policies)
 }
 
 fn provision_error(err: &ProvisionError) -> Error {

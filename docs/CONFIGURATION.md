@@ -14,7 +14,7 @@ are missing or invalid.
 
 | Variable | Type | Description | Example |
 |----------|------|-------------|---------|
-| `NOTEDTHAT_API_TOKEN` | string (non-empty) | Static Bearer token for API authentication. All `/v1/` requests must present this token in the `Authorization: Bearer` header. | `s3cr3t-token` |
+| `NOTEDTHAT_API_TOKEN` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A read request may omit it only for its configured manifest `public_read` capability. | `s3cr3t-token` |
 | `NOTEDTHAT_WEBDAV_USERNAME` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
 | `NOTEDTHAT_WEBDAV_PASSWORD` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
 | `NOTEDTHAT_KBS` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
@@ -36,6 +36,52 @@ These have defaults and can be omitted.
 | `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | NOTEDTHAT_MAX_PATCHABLE_SIZE | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
 | `NOTEDTHAT_UPLOAD_TMP_DIR` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+
+## Manifest-controlled anonymous reads
+
+Anonymous access is configured in each knowledge base's existing
+`s3://<kb_bucket>/.notedthat/manifest.json`, not with an environment variable. One knowledge base
+uses one bucket, so one bucket is one public-read policy boundary; there are no namespace or
+path-prefix grants.
+
+`public_read` is an additive optional field in manifest version `1`:
+
+```json
+"public_read": ["discover", "browse", "content", "search"]
+```
+
+Missing `public_read` and `public_read: []` both keep the knowledge base private. The only accepted
+string values are `discover`, `browse`, `content`, and `search`; the field must be an array of those
+strings. Unknown names and wrong JSON types make startup fail. Duplicate values are harmless and
+are stored in canonical order when the manifest is serialized.
+
+| Capability | Anonymous HTTP behavior | Anonymous WebDAV behavior |
+| --- | --- | --- |
+| `discover` | `GET /v1/knowledgebases` includes this knowledge base | Root `PROPFIND` includes this knowledge base |
+| `browse` | `GET /v1/knowledgebases/{kb_slug}` lists object metadata | `PROPFIND` within the knowledge base is allowed |
+| `content` | `GET` and `HEAD` on object paths are allowed | `GET` and `HEAD` are allowed |
+| `search` | `POST /v1/knowledgebases/{kb_slug}/search` is allowed | Not applicable |
+
+Capabilities are independent. For example, `search` can expose matching object paths and snippets
+without granting anonymous browse or content access. Conversely, discovery does not imply browse.
+For anonymous callers, `.notedthat` and all of its descendants are hidden from direct reads,
+listings, WebDAV `PROPFIND`, and search.
+
+The server validates and loads every policy once during startup provisioning. It does not watch
+manifests or hot-reload policy changes: edit the manifest through your storage administration
+workflow, then restart the server. A valid HTTP Bearer token or valid WebDAV Basic credential still
+has full access to every declared knowledge base. If a client supplies an invalid credential, the
+server returns `401 unauthorized` (and WebDAV supplies its Basic challenge) instead of treating that
+request as anonymous. Every HTTP and WebDAV write remains authenticated.
+
+`/healthz`, `/readyz`, and `/llms.txt` are globally public. MCP authentication is unchanged and
+always requires its Bearer token; public-read capabilities do not grant MCP access. Anonymous
+WebDAV `OPTIONS` returns only the read methods allowed at that path, while authenticated `OPTIONS`
+advertises the normal method set.
+
+There are no built-in public-read rate or burst settings. Before enabling anonymous `search`, set
+rate and burst controls at the reverse proxy for that route, and tune them to the capacity of the
+embedding and search backends. Do not add an application configuration variable for this control.
 
 ## Upload and index staging directory
 
@@ -173,7 +219,8 @@ and causes a non-zero exit before any listener binds.
 - **Tenant slug:** Hardcoded to `"default"`. There is no `NOTEDTHAT_TENANT_SLUG` variable.
 - **Upload buffer sizes:** Fixed at 16 MiB. Configurable buffer sizes are planned for a later
   release.
-- **Rate limits:** No per-client or global rate limiting in M2.
+- **Rate limits:** No built-in per-client or global rate limiter. Operators exposing anonymous
+  search must configure rate and burst controls at their reverse proxy.
 - **TLS:** The server speaks plain HTTP. Terminate TLS at a reverse proxy (Traefik, nginx, Caddy).
 - **Multiple tokens:** Only one API token is supported. Per-KB tokens and scopes are planned for
   a later release.

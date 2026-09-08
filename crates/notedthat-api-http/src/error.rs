@@ -279,6 +279,14 @@ impl IntoResponse for ApiErrorResponse {
         }
 
         match &self.error {
+            ApiError::Unauthorized => {
+                let body = ErrorBody {
+                    error: "unauthorized",
+                    message: "provide a valid Bearer token in the Authorization header".to_string(),
+                    request_id: self.request_id,
+                };
+                return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+            }
             ApiError::IndexerBackpressureUpsert => {
                 let body = ErrorBody {
                     error: "backend_unavailable",
@@ -369,6 +377,7 @@ mod tests {
         crate::router::build_router(crate::state::AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
@@ -388,6 +397,7 @@ mod tests {
         crate::router::build_router(crate::state::AppState {
             storage,
             declared_kbs: Arc::new(kbs),
+            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
@@ -1105,6 +1115,7 @@ mod tests {
             crate::router::build_router(crate::state::AppState {
                 storage: Arc::new(crate::testing::InMemoryStorage::default()),
                 declared_kbs: Arc::new(kbs),
+                public_read_policies: Arc::new(BTreeMap::new()),
                 bearer_token: Arc::new(TOKEN.to_string()),
                 max_body_size: 16 * 1024 * 1024,
                 max_patchable_size: 16 * 1024 * 1024,

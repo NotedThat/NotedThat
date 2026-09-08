@@ -28,6 +28,7 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
         max_patchable_size: max_body_size,
@@ -116,23 +117,25 @@ async fn llms_txt_is_plain_text_without_authentication() {
     // When: it requests the LLM navigation document.
 
     // Then: the service provides a successful plain-text response.
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/plain; charset=utf-8"
-    );
-    assert!(
-        !to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    println!("GET /llms.txt without Authorization -> {status}; Content-Type={content_type}");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "text/plain; charset=utf-8");
+    assert!(!body.is_empty());
 }
 
 // ─── Auth tests ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_kbs_requires_auth() {
+async fn list_kbs_without_discover_policy_requires_auth() {
     let resp = app()
         .oneshot(
             Request::builder()
@@ -143,6 +146,7 @@ async fn list_kbs_requires_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response_json(resp).await["error"], "unauthorized");
 }
 
 #[tokio::test]
@@ -681,6 +685,7 @@ async fn delete_enqueues_tombstone_on_success() {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -735,6 +740,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let state = AppState {
         storage,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -1218,6 +1224,7 @@ async fn error_body_contains_request_id() {
         .oneshot(
             Request::builder()
                 .uri("/v1/knowledgebases")
+                .header("authorization", "Bearer wrong-token")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1238,6 +1245,7 @@ async fn custom_request_id_is_echoed_in_error_body() {
         .oneshot(
             Request::builder()
                 .uri("/v1/knowledgebases")
+                .header("authorization", "Bearer wrong-token")
                 .header("x-request-id", "req-custom")
                 .body(Body::empty())
                 .unwrap(),

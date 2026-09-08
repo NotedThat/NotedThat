@@ -27,10 +27,11 @@ impl PropfindListing {
 pub(crate) async fn prepare_propfind_listing(
     state: &WebDavState,
     target: &DavTarget,
+    anonymous: bool,
 ) -> FsResult<Option<PropfindListing>> {
     match target {
         DavTarget::Root | DavTarget::NonDeclaredKb => Ok(None),
-        DavTarget::KbRoot(kb) => collect_propfind_objects(state, kb, None)
+        DavTarget::KbRoot(kb) => collect_propfind_objects(state, kb, None, anonymous)
             .await
             .map(|objects| {
                 Some(PropfindListing {
@@ -47,7 +48,7 @@ pub(crate) async fn prepare_propfind_listing(
             Ok(_) => Ok(None),
             Err(err) if err.is_not_found() => {
                 let prefix = format!("{}/", path.as_str());
-                collect_propfind_objects(state, kb, Some(&prefix))
+                collect_propfind_objects(state, kb, Some(&prefix), anonymous)
                     .await
                     .map(|objects| {
                         Some(PropfindListing {

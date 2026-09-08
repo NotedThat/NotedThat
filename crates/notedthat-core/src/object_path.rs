@@ -4,6 +4,15 @@ use crate::error::Error;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
+/// Returns whether a decoded, knowledge-base-relative path is in the internal namespace.
+///
+/// The path must have no leading slash. The exact `.notedthat` segment and its
+/// descendants are internal; similarly named or nested segments are not.
+/// This predicate does not normalize, decode, or validate paths.
+pub fn is_internal_path(path: &str) -> bool {
+    path == ".notedthat" || path.starts_with(".notedthat/")
+}
+
 /// A normalized object path within a knowledge-base bucket.
 ///
 /// Rules (D40, §6.12 path normalization):
@@ -98,6 +107,33 @@ impl<'de> Deserialize<'de> for ObjectPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_path_when_root_namespace_or_descendant() {
+        for path in [
+            ".notedthat",
+            ".notedthat/",
+            ".notedthat/config.json",
+            ".notedthat/nested/file",
+        ] {
+            assert!(is_internal_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn public_path_when_outside_root_namespace() {
+        for path in [
+            "",
+            "/",
+            ".notedthat-other",
+            ".notedthat.md",
+            "notes/.notedthat/file",
+            ".NotedThat/config",
+            "notes/readme.md",
+        ] {
+            assert!(!is_internal_path(path), "{path}");
+        }
+    }
 
     #[test]
     fn test_try_from_simple_no_leading_slash() {

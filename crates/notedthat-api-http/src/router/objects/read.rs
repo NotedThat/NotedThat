@@ -25,6 +25,11 @@ pub(in crate::router) async fn head_object(
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    if crate::middleware::auth_context(&req).is_anonymous()
+        && crate::middleware::is_internal_path(path.as_str())
+    {
+        return Err(ApiErrorResponse::unauthorized(request_id));
+    }
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
     // Scope-OUT: Conditional writes (`If-Match`, `If-None-Match`) that succeed at
@@ -78,6 +83,11 @@ pub(in crate::router) async fn get_object(
 
     let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    if crate::middleware::auth_context(&req).is_anonymous()
+        && crate::middleware::is_internal_path(path.as_str())
+    {
+        return Err(ApiErrorResponse::unauthorized(request_id));
+    }
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let range = match req.headers().get(axum::http::header::RANGE) {

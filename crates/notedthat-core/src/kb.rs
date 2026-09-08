@@ -1,6 +1,7 @@
 //! Knowledge base domain structs: `KbManifest`, `Kb`, `ObjectMeta`.
 
 use crate::error::Error;
+use crate::public_read::PublicReadPolicy;
 use crate::slug::{KbSlug, TenantSlug};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,9 @@ pub struct KbManifest {
     /// Embedding configuration (optional, for provisioner cross-check).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<ManifestEmbedding>,
+    /// Read capabilities exposed without authentication. Missing or empty means private.
+    #[serde(default, skip_serializing_if = "PublicReadPolicy::is_private")]
+    pub public_read: PublicReadPolicy,
 }
 
 impl KbManifest {
@@ -55,6 +59,7 @@ impl KbManifest {
             created_at,
             qdrant_collection: None,
             embedding: None,
+            public_read: PublicReadPolicy::default(),
         }
     }
 
@@ -139,6 +144,7 @@ mod tests {
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: None,
+            public_read: PublicReadPolicy::default(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let restored: KbManifest = serde_json::from_str(&json).unwrap();
@@ -173,6 +179,7 @@ mod tests {
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: None,
+            public_read: PublicReadPolicy::default(),
         };
         assert!(
             manifest.validate().is_err(),
@@ -274,6 +281,7 @@ mod tests {
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: Some(embedding.clone()),
+            public_read: PublicReadPolicy::default(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let restored: KbManifest = serde_json::from_str(&json).unwrap();
@@ -296,6 +304,7 @@ mod tests {
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: Some(embedding),
+            public_read: PublicReadPolicy::default(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         assert!(

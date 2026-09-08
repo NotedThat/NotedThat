@@ -83,6 +83,7 @@ async fn start_webdav_server(
         storage: storage as Arc<dyn notedthat_core::Storage>,
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared_kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         indexer_tx: tx,
     };
 

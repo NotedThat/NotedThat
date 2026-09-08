@@ -267,6 +267,7 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     let state = AppState {
         storage: Arc::clone(&storage) as Arc<dyn Storage>,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -308,6 +309,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
     let state = AppState {
         storage: storage as Arc<dyn Storage>,
         declared_kbs: Arc::new(kbs),
+        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
