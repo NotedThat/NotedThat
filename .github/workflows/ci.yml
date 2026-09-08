@@ -73,13 +73,17 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
     runs-on: ubuntu-latest
-    # Container-backed tests pull SeaweedFS and Qdrant images and provision
-    # buckets, manifests and collections per test; a green run sits around
-    # 14 minutes, so the budget needs real headroom above that. Too tight a
-    # timeout does not fail this job — it *cancels* it, and a cancelled
-    # dependency silently SKIPS release-plz below, so the release never
-    # happens and nothing is reported as broken.
-    timeout-minutes: 30
+    # Keep this budget tight on purpose: it is the tripwire for the container
+    # suite getting slower, and the suite is already slow (~10 min of the ~12
+    # this job takes is testcontainer startup — every test starts its own
+    # SeaweedFS/Qdrant pair). Raising the number would hide that rather than
+    # fix it.
+    #
+    # Note what a breach costs, though: exceeding this does not FAIL the job,
+    # it CANCELS it, and a cancelled dependency silently SKIPS release-plz
+    # below — no release, and nothing reported as broken. So treat a timeout
+    # here as a release outage, not a flaky test.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

@@ -1,72 +1,38 @@
-//! Integration tests for the `WebDAV` surface against a real `SeaweedFS` testcontainer.
+//! Integration tests for the `WebDAV` surface against an in-memory `Storage`.
 //!
-//! Run with: cargo test -p notedthat-webdav --test `webdav_integration` -- --ignored --nocapture
+//! These used to run against a `SeaweedFS` testcontainer started fresh for each
+//! test — twenty-one container boots for twenty-one tests. The subject here is
+//! the `WebDAV` surface (routing, method semantics, conditional requests, COPY
+//! and MOVE, listing), not the S3 wire protocol, so the backend is
+//! `InMemoryStorage`, which implements the same `Storage` contract with the same
+//! `ETag`, conditional and range semantics. Every assertion below is unchanged.
+//!
+//! Because nothing here needs Docker any more, these are ordinary tests rather
+//! than `#[ignore]` ones, and run in the normal `cargo test` pass.
+//!
+//! Run with: cargo test -p notedthat-webdav --test `webdav_integration`
 
 #![allow(missing_docs)]
 
 use axum::http::StatusCode;
 use base64::Engine as _;
-use notedthat_core::{KbSlug, Storage, TenantSlug};
-use notedthat_storage_s3::{S3Config, S3Storage};
+use notedthat_core::{KbSlug, Storage, testing::InMemoryStorage};
 use notedthat_webdav::{router::build_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc};
-use testcontainers::{
-    GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-// SeaweedFS 4.18 requires an IAM config file to accept signed requests.
-// We embed a minimal config that authorises the "any"/"any" test credentials.
-const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
+async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, String) {
+    let storage = Arc::new(InMemoryStorage::default());
 
-async fn start_seaweedfs() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
-        .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
-        .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
-        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
-        .start()
-        .await
-        .expect("failed to start SeaweedFS testcontainer");
-    let port = container
-        .get_host_port_ipv4(8333_u16)
-        .await
-        .expect("failed to get port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
-
-async fn start_webdav_server(
-    s3_endpoint: &str,
-) -> (tokio::task::JoinHandle<()>, String, String, String) {
-    let s3_config = S3Config {
-        endpoint_url: Some(s3_endpoint.to_string()),
-        region: "us-east-1".to_string(),
-        access_key_id: "any".to_string(),
-        secret_access_key: "any".to_string(),
-        force_path_style: true,
-    };
-    let client = s3_config.build_client();
-    let storage = Arc::new(S3Storage::new(client, TenantSlug::default()));
-
-    // Provision the "notes" bucket. SeaweedFS may need extra time after
-    // container start before its S3 service accepts bucket operations, so
-    // retry with backoff for up to ~20 s.
     let kb_notes = KbSlug::try_new("notes").unwrap();
-    for attempt in 1u32..=20 {
-        match storage.ensure_bucket(&kb_notes).await {
-            Ok(()) => break,
-            Err(e) if attempt == 20 => {
-                panic!("ensure_bucket for notes failed after 20 attempts: {e:?}")
-            }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-        }
-    }
+    storage
+        .ensure_bucket(&kb_notes)
+        .await
+        .expect("ensure_bucket for notes");
 
     let (tx, _rx) = mpsc::channel(100);
 
@@ -118,10 +84,8 @@ fn webdav_method(name: &'static [u8]) -> reqwest::Method {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_options_returns_dav_1() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -150,10 +114,8 @@ async fn test_options_returns_dav_1() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_request_without_auth_returns_401() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, _username, _password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, _username, _password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -176,10 +138,8 @@ async fn test_request_without_auth_returns_401() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_propfind_root_lists_kbs() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -205,10 +165,8 @@ async fn test_propfind_root_lists_kbs() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_propfind_kb_lists_objects() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -247,10 +205,8 @@ async fn test_propfind_kb_lists_objects() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_propfind_depth_infinity_returns_501() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -271,10 +227,8 @@ async fn test_propfind_depth_infinity_returns_501() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_put_creates_object_and_returns_etag() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -300,10 +254,8 @@ async fn test_put_creates_object_and_returns_etag() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -345,10 +297,8 @@ async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_put_17mib_body_succeeds() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     // 17 MiB > the 16 MiB DefaultBodyLimit used by the HTTP API router.
     // The WebDAV router has NO DefaultBodyLimit, so this must succeed.
@@ -378,10 +328,8 @@ async fn test_put_17mib_body_succeeds() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_put_with_if_match_wrong_etag_returns_412() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -417,10 +365,8 @@ async fn test_put_with_if_match_wrong_etag_returns_412() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_get_full_body() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let content = "# Full Body Test\nHello, World!\n";
@@ -453,10 +399,8 @@ async fn test_get_full_body() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_get_range() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let content = "Hello, Range Requests!";
@@ -488,10 +432,8 @@ async fn test_get_range() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_head_returns_metadata_no_body() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -531,10 +473,8 @@ async fn test_head_returns_metadata_no_body() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_delete_idempotent_returns_204() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -573,10 +513,8 @@ async fn test_delete_idempotent_returns_204() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_mkcol_returns_201_no_persistence() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -614,10 +552,8 @@ async fn test_mkcol_returns_201_no_persistence() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_single_object_move_succeeds() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -674,10 +610,8 @@ async fn test_single_object_move_succeeds() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_single_object_copy_succeeds() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -734,10 +668,8 @@ async fn test_single_object_copy_succeeds() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_collection_move_returns_403_no_collection_move() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -764,10 +696,8 @@ async fn test_collection_move_returns_403_no_collection_move() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_cross_kb_move_returns_403_cannot_modify_source() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
 
@@ -808,10 +738,8 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_lock_returns_405() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -831,10 +759,8 @@ async fn test_lock_returns_405() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_unlock_returns_405() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -854,10 +780,8 @@ async fn test_unlock_returns_405() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn test_proppatch_returns_405() {
-    let (_container, s3_endpoint) = start_seaweedfs().await;
-    let (handle, url, username, password) = start_webdav_server(&s3_endpoint).await;
+    let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
     let resp = client

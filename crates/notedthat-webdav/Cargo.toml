@@ -30,9 +30,10 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
-testcontainers = { workspace = true }
 reqwest = { workspace = true }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.6" }
+# `test-support` carries InMemoryStorage, which backs webdav_integration.rs in
+# place of a SeaweedFS testcontainer.
+notedthat-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
