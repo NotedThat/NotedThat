@@ -15,7 +15,6 @@ use reqwest::StatusCode;
 const NORMAL_MAX_PATCHABLE_SIZE: u64 = 10 * 1024 * 1024;
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn single_match_replace_updates_content_and_advances_etag() {
     // Given: a simple object with a known ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -33,7 +32,6 @@ async fn single_match_replace_updates_content_and_advances_etag() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn replace_all_across_multiple_occurrences_completes_in_one_request() {
     // Given: an object with multiple occurrences of the target string.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -51,7 +49,6 @@ async fn replace_all_across_multiple_occurrences_completes_in_one_request() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn no_match_returns_422_and_leaves_storage_untouched() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -69,7 +66,6 @@ async fn no_match_returns_422_and_leaves_storage_untouched() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn ambiguous_match_returns_422_with_count_and_leaves_storage_untouched() {
     // Given: an object with multiple occurrences of the target string.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -92,7 +88,6 @@ async fn ambiguous_match_returns_422_with_count_and_leaves_storage_untouched() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn replace_all_true_with_zero_matches_still_returns_no_match() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -109,7 +104,6 @@ async fn replace_all_true_with_zero_matches_still_returns_no_match() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn replace_on_nonexistent_path_returns_404() {
     // Given: a server with no object at the target path.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -135,7 +129,6 @@ async fn replace_on_nonexistent_path_returns_404() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn if_match_star_on_replace_returns_400_invalid_request() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -152,7 +145,6 @@ async fn if_match_star_on_replace_returns_400_invalid_request() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn if_match_multi_value_on_replace_returns_400_invalid_request() {
     // Given: an object with known content and ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -169,7 +161,6 @@ async fn if_match_multi_value_on_replace_returns_400_invalid_request() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
     // Given: three clients share one starting ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -224,7 +215,6 @@ async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts() {
     // Given: one starting ETag shared by PATCH and replace clients.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -304,7 +294,6 @@ async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts(
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_silently() {
     // Given: one starting ETag shared by delete and replace clients.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;

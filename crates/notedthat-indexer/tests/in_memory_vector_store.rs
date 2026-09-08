@@ -448,3 +448,39 @@ async fn searching_a_missing_collection_reports_collection_not_found() {
 
     assert!(matches!(error, VectorStoreError::CollectionNotFound { .. }));
 }
+
+#[tokio::test]
+async fn concept_type_resolves_through_the_nested_okf_payload() {
+    // The indexer writes `okf` as a nested struct and the filter addresses
+    // `okf.type`, exactly as Qdrant resolves a dotted payload path. Treating it
+    // as a flat key matched nothing and silently returned an empty result set.
+    use qdrant_client::qdrant::{Struct, value::Kind};
+
+    let okf = |concept_type: &str| Value {
+        kind: Some(Kind::StructValue(Struct {
+            fields: HashMap::from([("type".to_string(), Value::from(concept_type.to_string()))]),
+        })),
+    };
+
+    let store = seeded(vec![
+        point(
+            1,
+            vec![1.0, 0.0, 0.0],
+            "alpha",
+            vec![("okf", okf("Metric"))],
+        ),
+        point(2, vec![1.0, 0.0, 0.0], "alpha", vec![("okf", okf("Rule"))]),
+    ])
+    .await;
+
+    let filter = SearchFilter {
+        concept_type: Some("Metric".to_string()),
+        ..SearchFilter::default()
+    };
+    let results = store
+        .hybrid_search(&kb(), query("alpha", vec![1.0, 0.0, 0.0], Some(filter)))
+        .await
+        .expect("search");
+
+    assert_eq!(keys(&results), vec!["doc-1.md".to_string()]);
+}

@@ -28,6 +28,10 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
+# In-memory backends for the E2E fixtures: these drive the real stdio binary
+# against a real server, with only its three external services substituted.
+notedthat-api-http = { path = "../notedthat-api-http", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"] }
 assert_cmd = "2"
 serde_json = { workspace = true }
 notedthat-server = { path = "../notedthat-server" }

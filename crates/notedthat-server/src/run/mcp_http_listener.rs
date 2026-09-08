@@ -70,7 +70,8 @@ async fn invalid_staging_directory_fails_before_infrastructure_setup() {
     let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
     config.staging = notedthat_core::StagingConfig::new(missing_directory);
 
-    let Err(error) = super::build_infrastructure(config).await else {
+    let backends = super::backends_from_config(&config).expect("connectionless backend build");
+    let Err(error) = super::build_infrastructure(config, backends).await else {
         panic!("missing staging directory must fail before infrastructure setup");
     };
 

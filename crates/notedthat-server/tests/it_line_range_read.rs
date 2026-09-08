@@ -16,7 +16,6 @@ use line_range_env::{
 use reqwest::StatusCode;
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn line_range_get_returns_206_with_correct_lines() {
     // Given: a server backed by real SeaweedFS and Qdrant contains a 20-line Markdown note.
     let server = fixture_server().await;
@@ -36,7 +35,6 @@ async fn line_range_get_returns_206_with_correct_lines() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn suffix_range_returns_last_three_lines() {
     // Given: a server backed by real SeaweedFS and Qdrant contains a 20-line Markdown note.
     let server = fixture_server().await;
@@ -55,7 +53,6 @@ async fn suffix_range_returns_last_three_lines() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn out_of_range_line_returns_416_with_dual_headers() {
     // Given: a server backed by real SeaweedFS and Qdrant contains a 20-line Markdown note.
     let server = fixture_server().await;
@@ -72,7 +69,6 @@ async fn out_of_range_line_returns_416_with_dual_headers() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn mcp_read_line_range_returns_correct_slice() {
     // Given: MCP HTTP is enabled for a server containing a 20-line Markdown note.
     let server = fixture_server().await;

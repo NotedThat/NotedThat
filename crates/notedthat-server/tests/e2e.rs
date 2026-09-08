@@ -1,48 +1,42 @@
-//! End-to-end tests for `notedthat-server` against a real `SeaweedFS` testcontainer.
+//! End-to-end tests for `notedthat-server` over in-process backends.
 //!
-//! These tests are marked `#[ignore]` because they require Docker. Run with:
-//! ```sh
-//! cargo test -p notedthat-server --locked -- --include-ignored
-//! ```
+//! The subject is the server itself — startup, the health and `llms.txt`
+//! routes, bearer auth, and an object round trip — so storage, the vector store
+//! and the embedder are substituted and handed to `run_with`. Everything else
+//! is the real path.
+//!
+//! Run with: `cargo test -p notedthat-server --test e2e`
 #![allow(missing_docs)]
 
+use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{KbSlug, TenantSlug};
+use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use notedthat_server::run::Backends;
 use notedthat_storage_s3::S3Config;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
-use testcontainers::{
-    GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
 
-async fn start_seaweedfs() -> (impl std::any::Any, String) {
-    // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests.
-    let s3_iam = serde_json::json!({
-        "identities": [{
-            "name": "test",
-            "credentials": [{"accessKey": "any", "secretKey": "any"}],
-            "actions": ["Admin", "Read", "Write", "List", "Tagging"]
-        }]
-    });
-    let config_bytes = serde_json::to_vec(&s3_iam).expect("serialize IAM config");
-    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
-        .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
-        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
-        .with_copy_to("/tmp/s3.json", config_bytes)
-        .start()
-        .await
-        .expect("failed to start SeaweedFS testcontainer");
-    let port = container
-        .get_host_port_ipv4(8333_u16)
-        .await
-        .expect("failed to get port");
-    (container, format!("http://127.0.0.1:{port}"))
+/// Vector width the stub embedder and the provisioned collection agree on.
+const EMBEDDING_DIM: u32 = 3;
+
+/// Storage, vector store and embedder, all in-process.
+fn in_memory_backends() -> Backends {
+    Backends {
+        storage: Arc::new(InMemoryStorage::default()),
+        store: Arc::new(InMemoryVectorStore::new()),
+        embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+    }
 }
 
-fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
+/// Config for a server whose backends are injected.
+///
+/// The S3, Qdrant and embedder sections still have to be populated — `Config`
+/// is the production type — but nothing reads them, because `run_with` never
+/// builds a client from them. They point at unroutable placeholders so a
+/// regression that *does* reach for them fails loudly.
+fn test_config(listen_addr: std::net::SocketAddr) -> Config {
     let mut kbs = BTreeMap::new();
     kbs.insert("notes".to_string(), KbSlug::try_new("notes").unwrap());
     Config {
@@ -51,7 +45,7 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
         tenant_slug: TenantSlug::default(),
         listen_addr,
         s3: S3Config {
-            endpoint_url: Some(endpoint.to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
@@ -68,7 +62,7 @@ fn test_config(listen_addr: std::net::SocketAddr, endpoint: &str) -> Config {
             endpoint_url: "http://127.0.0.1:9999".to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
-            dimensions: 3,
+            dimensions: EMBEDDING_DIM,
             batch_size: 32,
             timeout_ms: 30_000,
             max_retries: 3,
@@ -95,6 +89,28 @@ fn free_dav_addr() -> std::net::SocketAddr {
     listener.local_addr().expect("local_addr")
 }
 
+/// Poll `/healthz` until the server answers, or fail with a clear message.
+///
+/// Startup is in-process now, so this resolves in milliseconds; it replaces a
+/// flat two-second sleep that was sized for container startup.
+async fn wait_for_health(addr: std::net::SocketAddr) {
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/healthz");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(response) = client.get(&url).send().await
+            && response.status().is_success()
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "server did not answer /healthz within 30s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn free_addr() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -105,19 +121,17 @@ async fn free_addr() -> std::net::SocketAddr {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn e2e_healthz_and_put_get() {
-    let (_container, endpoint) = start_seaweedfs().await;
-
     let bound_addr = free_addr().await;
-    let config = test_config(bound_addr, &endpoint);
+    let config = test_config(bound_addr);
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_health(bound_addr).await;
 
     let client = reqwest::Client::new();
     let base = format!("http://{bound_addr}");
@@ -163,19 +177,17 @@ async fn e2e_healthz_and_put_get() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS testcontainer"]
 async fn e2e_list_and_delete() {
-    let (_container, endpoint) = start_seaweedfs().await;
-
     let bound_addr = free_addr().await;
-    let config = test_config(bound_addr, &endpoint);
+    let config = test_config(bound_addr);
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_health(bound_addr).await;
 
     let client = reqwest::Client::new();
     let base = format!("http://{bound_addr}");

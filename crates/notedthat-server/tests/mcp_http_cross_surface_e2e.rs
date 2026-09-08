@@ -2,25 +2,14 @@
 
 use std::process::Stdio;
 use std::time::Duration;
-use testcontainers::{
-    GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use wiremock::{
-    Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
-};
 
-/// How long to wait for the server to bind after `run()` starts.
+/// How long to wait for the server to bind after startup begins.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Provisioning is in-process now, so this is generous by a wide margin; it
+/// exists to fail with a clear message rather than hang if startup breaks.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const API_TOKEN: &str = "e2e-test-token";
 const EXPECTED_M7_TOOLS: &str =
@@ -29,57 +18,29 @@ const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 // SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
 // S3 gateway rejects all signed requests. target path is the FIRST arg in with_copy_to.
-const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
+/// Vector width the stub embedder and the provisioned collection agree on.
+const EMBEDDING_DIM: u32 = 4;
 
-async fn start_seaweedfs() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
-        .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
-        .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
-        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
-        .start()
-        .await
-        .expect("failed to start SeaweedFS testcontainer");
-    let port = container
-        .get_host_port_ipv4(8333_u16)
-        .await
-        .expect("failed to get SeaweedFS port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
-
-async fn start_qdrant() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
-        .start()
-        .await
-        .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
-
-fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
-    let data: Vec<serde_json::Value> = (0..count)
-        .map(|i| {
-            let v: Vec<f32> = (0..dim)
-                .map(|j| if j == i % dim { 1.0_f32 } else { 0.0_f32 })
-                .collect();
-            serde_json::json!({"index": i, "embedding": v, "object": "embedding"})
-        })
-        .collect();
-    serde_json::json!({"object": "list", "data": data})
+/// Storage, vector store and embedder, all in-process.
+///
+/// The subject of these tests is the server's cross-surface behaviour, not any
+/// backend's wire protocol, so the whole runtime is assembled here and handed to
+/// `run_with`. Startup, provisioning, the indexer worker and every listener are
+/// still the real path.
+fn in_memory_backends() -> notedthat_server::run::Backends {
+    notedthat_server::run::Backends {
+        storage: std::sync::Arc::new(notedthat_api_http::testing::InMemoryStorage::default()),
+        store: std::sync::Arc::new(notedthat_indexer::testing::InMemoryVectorStore::new()),
+        embedder: std::sync::Arc::new(notedthat_indexer::testing::StubEmbedder::new(
+            EMBEDDING_DIM as usize,
+        )),
+    }
 }
 
 fn test_config_with_mcp_http(
     http_addr: std::net::SocketAddr,
     dav_addr: std::net::SocketAddr,
     mcp_addr: std::net::SocketAddr,
-    s3_url: &str,
-    qdrant_url: &str,
-    embedder_url: &str,
 ) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -95,7 +56,7 @@ fn test_config_with_mcp_http(
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
         s3: S3Config {
-            endpoint_url: Some(s3_url.to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
@@ -103,17 +64,17 @@ fn test_config_with_mcp_http(
         },
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
-            url: qdrant_url.to_string(),
+            url: "http://127.0.0.1:1".to_string(),
             api_key: None,
             timeout_ms: 30_000,
             connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
             // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
-            endpoint_url: embedder_url.to_string(),
+            endpoint_url: "http://127.0.0.1:1".to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
-            dimensions: 4,
+            dimensions: EMBEDDING_DIM,
             batch_size: 32,
             timeout_ms: 30_000,
             max_retries: 3,
@@ -140,9 +101,6 @@ fn test_config_with_kbs_and_mcp_http(
     http_addr: std::net::SocketAddr,
     dav_addr: std::net::SocketAddr,
     mcp_addr: std::net::SocketAddr,
-    s3_url: &str,
-    qdrant_url: &str,
-    embedder_url: &str,
 ) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -160,7 +118,7 @@ fn test_config_with_kbs_and_mcp_http(
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
         s3: S3Config {
-            endpoint_url: Some(s3_url.to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
@@ -168,16 +126,16 @@ fn test_config_with_kbs_and_mcp_http(
         },
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
-            url: qdrant_url.to_string(),
+            url: "http://127.0.0.1:1".to_string(),
             api_key: None,
             timeout_ms: 30_000,
             connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
-            endpoint_url: embedder_url.to_string(),
+            endpoint_url: "http://127.0.0.1:1".to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
-            dimensions: 4,
+            dimensions: EMBEDDING_DIM,
             batch_size: 32,
             timeout_ms: 30_000,
             max_retries: 3,
@@ -464,33 +422,16 @@ async fn poll_mcp_search_hit(
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn mcp_http_initialize_tools() {
     // Given: all three server listeners are configured on random loopback ports.
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_mcp_http(
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -561,33 +502,16 @@ async fn mcp_http_initialize_tools() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn mcp_http_write_search_identity() {
     // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_mcp_http(
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -641,20 +565,6 @@ async fn mcp_http_write_search_identity() {
     );
 
     let found_hit = poll_mcp_search_hit(&client, &mcp_url, &phrase, Duration::from_secs(40)).await;
-    let embedder_requests = mock_embedder.received_requests().await.unwrap_or_default();
-    eprintln!(
-        "embedder wiremock hits before MCP search assertion: {}",
-        embedder_requests.len()
-    );
-    for (index, request) in embedder_requests.iter().enumerate() {
-        eprintln!(
-            "embedder wiremock hit {index}: method={} path={} body={}",
-            request.method,
-            request.url.path(),
-            String::from_utf8_lossy(&request.body),
-        );
-    }
-
     let hit = found_hit.expect("MCP HTTP search should return the written phrase within 40 s");
 
     // Then: the returned identity is the exact object and a valid byte coordinate range.
@@ -678,34 +588,17 @@ async fn mcp_http_write_search_identity() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 #[allow(clippy::too_many_lines)]
 async fn mcp_http_write_stdio_search_identity() {
     // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_mcp_http(
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -759,20 +652,6 @@ async fn mcp_http_write_stdio_search_identity() {
 
     // When: HTTP search confirms indexing, then stdio search queries the same HTTP API.
     let found_hit = poll_mcp_search_hit(&client, &mcp_url, &phrase, Duration::from_secs(40)).await;
-    let embedder_requests = mock_embedder.received_requests().await.unwrap_or_default();
-    eprintln!(
-        "embedder wiremock hits before MCP search assertion: {}",
-        embedder_requests.len()
-    );
-    for (index, request) in embedder_requests.iter().enumerate() {
-        eprintln!(
-            "embedder wiremock hit {index}: method={} path={} body={}",
-            request.method,
-            request.url.path(),
-            String::from_utf8_lossy(&request.body),
-        );
-    }
-
     let http_hit = found_hit.expect("MCP HTTP search should return the written phrase within 40 s");
     let http_identity = search_hit_identity(&http_hit);
 
@@ -828,36 +707,19 @@ async fn mcp_http_write_stdio_search_identity() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 #[allow(clippy::too_many_lines)]
 async fn mcp_http_auth_and_sse_refusal() {
     const EXACT_SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
 
     // Given: all three server listeners configured on random loopback ports.
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_mcp_http(
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -976,7 +838,6 @@ async fn mcp_http_auth_and_sse_refusal() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 #[allow(clippy::too_many_lines)]
 async fn mcp_resources_list_and_read() {
     use std::collections::HashSet;
@@ -987,31 +848,14 @@ async fn mcp_resources_list_and_read() {
     const BINARY_KB: &str = "alpha";
     const BINARY_KEY: &str = "binary-data.bin";
 
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_kbs_and_mcp_http(
-        KBS,
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_kbs_and_mcp_http(KBS, http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -1238,33 +1082,16 @@ async fn mcp_resources_list_and_read() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     // Given: MCP HTTP and HTTP API are running with SeaweedFS and Qdrant.
-    let (_seaweed, s3_url) = start_seaweedfs().await;
-    let (_qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
-    let config = test_config_with_mcp_http(
-        http_addr,
-        dav_addr,
-        mcp_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
+    let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });

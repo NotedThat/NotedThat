@@ -26,21 +26,26 @@ mod mcp_http;
 #[path = "run/mcp_http_listener.rs"]
 mod mcp_http_listener;
 
-/// Build infrastructure components (S3, Qdrant, embedder, indexer, app state).
-async fn build_infrastructure(
-    config: Config,
-) -> anyhow::Result<(
-    AppState,
-    WebDavState,
-    CancellationToken,
-    tokio::task::JoinHandle<()>,
-)> {
-    config
-        .staging
-        .validate()
-        .await
-        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
+/// The three external services the server runs on.
+///
+/// Kept as trait objects and constructed separately from the rest of startup so
+/// the server can be brought up against substitutes. Tests use that to run the
+/// real routers, indexer worker and shutdown sequence in-process, with no S3,
+/// Qdrant or embedding endpoint to reach.
+pub struct Backends {
+    /// Object storage backing every read and write.
+    pub storage: Arc<dyn notedthat_core::Storage>,
+    /// Vector store used for provisioning, indexing and search.
+    pub store: Arc<dyn VectorStore>,
+    /// Embedding endpoint shared by the indexer worker and the searcher.
+    pub embedder: Arc<dyn notedthat_indexer::embedder::Embedder>,
+}
 
+/// Build the production backends described by `config`.
+///
+/// Construction is cheap and connectionless: nothing here reaches the network,
+/// so a failure means bad configuration rather than an unreachable service.
+fn backends_from_config(config: &Config) -> anyhow::Result<Backends> {
     let client = config.s3.build_client();
     let storage = Arc::new(S3Storage::new(client, config.tenant_slug.clone()));
 
@@ -69,6 +74,35 @@ async fn build_infrastructure(
         OpenAiCompatibleEmbedder::new(embedder_config).context("failed to build embedder")?,
     );
 
+    Ok(Backends {
+        storage,
+        store,
+        embedder,
+    })
+}
+
+/// Build infrastructure components (indexer, provisioning, app state) over `backends`.
+async fn build_infrastructure(
+    config: Config,
+    backends: Backends,
+) -> anyhow::Result<(
+    AppState,
+    WebDavState,
+    CancellationToken,
+    tokio::task::JoinHandle<()>,
+)> {
+    config
+        .staging
+        .validate()
+        .await
+        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
+
+    let Backends {
+        storage,
+        store,
+        embedder,
+    } = backends;
+
     let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
     let indexer_shutdown = CancellationToken::new();
     let declared_kbs = Arc::new(config.kbs.clone());
@@ -91,7 +125,7 @@ async fn build_infrastructure(
     let dav_state = WebDavState {
         username: Arc::new(config.webdav_username.clone()),
         password: Arc::new(config.webdav_password.clone()),
-        storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
+        storage: storage.clone(),
         declared_kbs: declared_kbs.clone(),
         public_read_policies: public_read_policies.clone(),
         indexer_tx: indexer_tx.clone(),
@@ -105,7 +139,7 @@ async fn build_infrastructure(
     );
 
     let state = AppState {
-        storage: storage.clone() as Arc<dyn notedthat_core::Storage>,
+        storage: storage.clone(),
         declared_kbs,
         public_read_policies,
         bearer_token: Arc::new(config.api_token.clone()),
@@ -117,7 +151,7 @@ async fn build_infrastructure(
 
     let worker_handle = tokio::spawn(
         IndexerWorker::new(
-            storage.clone() as Arc<dyn notedthat_core::Storage>,
+            storage.clone(),
             embedder.clone(),
             store.clone(),
             indexer_rx,
@@ -146,8 +180,23 @@ async fn build_infrastructure(
 ///
 /// Returns an error if S3 provisioning fails, the listener cannot bind, or axum serving fails.
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    let backends = backends_from_config(&config)?;
+    run_with(config, backends).await
+}
+
+/// Start the HTTP server with the provided configuration and backends.
+///
+/// Same startup sequence as [`run`], but over backends the caller supplies.
+/// Tests use this to exercise the real routers, indexer worker and shutdown
+/// path against in-memory substitutes.
+///
+/// # Errors
+///
+/// Returns an error if provisioning fails, a listener cannot bind, or axum
+/// serving fails.
+pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> {
     let (state, dav_state, indexer_shutdown, worker_handle) =
-        build_infrastructure(config.clone()).await?;
+        build_infrastructure(config.clone(), backends).await?;
 
     // Bind every enabled listener before serving any of them (G11: atomic startup failure).
     // HTTP binds first because the MCP listener talks back through the actual HTTP API socket.

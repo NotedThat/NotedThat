@@ -197,6 +197,23 @@ impl InMemoryVectorStore {
     }
 }
 
+/// Resolve a dotted payload path, walking nested structs.
+///
+/// Qdrant treats `okf.type` as a path into a nested payload object, not as a
+/// key containing a dot — the indexer writes `okf` as a struct, and the search
+/// filter addresses `okf.type`. Looking it up flatly silently matched nothing.
+fn payload_path<'a>(payload: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
+    let mut segments = path.split('.');
+    let mut current = payload.get(segments.next()?)?;
+    for segment in segments {
+        match &current.kind {
+            Some(Kind::StructValue(nested)) => current = nested.fields.get(segment)?,
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
 /// Read a payload value as a string, if it is one.
 fn as_string(value: &Value) -> Option<String> {
     match &value.kind {
@@ -251,7 +268,7 @@ fn cosine(left: &[f32], right: &[f32]) -> f32 {
 /// field, including the prefix. Applying the caller's post-filter afterwards is
 /// then a no-op rather than a correction.
 fn matches_filter(payload: &HashMap<String, Value>, filter: &SearchFilter) -> bool {
-    let string_field = |field: &str| payload.get(field).and_then(as_string);
+    let string_field = |field: &str| payload_path(payload, field).and_then(as_string);
 
     if let Some(prefix) = &filter.object_key_prefix
         && !string_field("object_key").is_some_and(|key| key.starts_with(prefix))
@@ -280,7 +297,7 @@ fn matches_filter(payload: &HashMap<String, Value>, filter: &SearchFilter) -> bo
         }
     }
     if filter.updated_after.is_some() || filter.updated_before.is_some() {
-        let Some(mtime) = payload.get("mtime").and_then(as_integer) else {
+        let Some(mtime) = payload_path(payload, "mtime").and_then(as_integer) else {
             return false;
         };
         if filter.updated_after.is_some_and(|after| mtime < after) {
@@ -291,7 +308,9 @@ fn matches_filter(payload: &HashMap<String, Value>, filter: &SearchFilter) -> bo
         }
     }
     if !filter.tags.is_empty() {
-        let tags = payload.get("tags").map(as_string_list).unwrap_or_default();
+        let tags = payload_path(payload, "tags")
+            .map(as_string_list)
+            .unwrap_or_default();
         if !filter.tags.iter().any(|wanted| tags.contains(wanted)) {
             return false;
         }
@@ -569,5 +588,76 @@ impl VectorStore for InMemoryVectorStore {
                 })
             })
             .collect())
+    }
+}
+
+/// Embedder producing deterministic vectors without an embedding endpoint.
+///
+/// Used by tests that need the indexing pipeline to *succeed* — the server
+/// suites, which exercise routes end to end — rather than tests about embedding
+/// behaviour itself, which script their own embedder.
+///
+/// Vectors are derived from a hash of the text, so they are stable across runs
+/// and distinct per document, but they carry no semantic similarity: two texts
+/// about the same subject are no closer than two unrelated ones. Lexical
+/// matching in those suites therefore rests on the sparse BM25 arm, which does
+/// read the text. A test asserting on dense semantic ranking needs a real
+/// embedder, not this.
+#[derive(Debug, Clone)]
+pub struct StubEmbedder {
+    dim: usize,
+}
+
+impl StubEmbedder {
+    /// Build a stub producing `dim`-wide vectors.
+    #[must_use]
+    pub fn new(dim: usize) -> Self {
+        Self { dim }
+    }
+
+    /// Deterministic unit vector for `text`.
+    fn vector_for(&self, text: &str) -> Vec<f32> {
+        use sha2::{Digest, Sha256};
+
+        let digest = Sha256::digest(text.as_bytes());
+        let mut values: Vec<f32> = (0..self.dim)
+            .map(|index| {
+                let byte = digest[index % digest.len()];
+                // Map a byte onto [-1, 1] so directions vary across documents.
+                (f32::from(byte) - 127.5) / 127.5
+            })
+            .collect();
+
+        let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for value in &mut values {
+                *value /= norm;
+            }
+        } else if let Some(first) = values.first_mut() {
+            *first = 1.0;
+        }
+        values
+    }
+}
+
+#[async_trait]
+impl crate::embedder::Embedder for StubEmbedder {
+    async fn embed(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, crate::embedder::EmbedderError> {
+        Ok(texts.iter().map(|text| self.vector_for(text)).collect())
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn max_input_tokens(&self) -> usize {
+        8192
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-embedder"
     }
 }

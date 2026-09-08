@@ -51,7 +51,6 @@ async fn wait_for_hits(
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp() {
     // Given: an OKF concept with UTF-8 content, unknown metadata, and a nested path.
     let server = PatchServer::start(1_048_576).await;
@@ -154,7 +153,6 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn replacing_okf_with_fewer_chunks_and_metadata_only_removes_stale_search_hits() {
     // Given: an indexed OKF concept spanning several headings.
     let server = PatchServer::start(1_048_576).await;
