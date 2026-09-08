@@ -99,7 +99,7 @@ async fn put_accepts_17_mib_body_via_staging_file() {
 
 #[tokio::test]
 #[ignore = "5 GiB upload stress scenario"]
-async fn put_accepts_actual_5_gib_without_content_length() {
+async fn stress_put_accepts_actual_5_gib_without_content_length() {
     let storage = Arc::new(MockStorage::default());
     let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
     let chunk_len = u64::try_from(chunk.len()).unwrap();
@@ -127,7 +127,7 @@ async fn put_accepts_actual_5_gib_without_content_length() {
 
 #[tokio::test]
 #[ignore = "5 GiB observed oversize stress scenario"]
-async fn put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
+async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     use futures::StreamExt as _;
 
     let storage = Arc::new(MockStorage::default());

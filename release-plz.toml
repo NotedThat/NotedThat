@@ -31,8 +31,22 @@ git_release_enable = false
 # bug (release-plz#2428).
 changelog_update = false
 
-# Only publish after a release PR has been merged.
-release_always = false
+# Release whenever the workspace version is ahead of what is on crates.io,
+# instead of only on the commit that merges a release PR.
+#
+# Why: with the release-PR-only rule, a release is a ONE-SHOT event. On
+# 2026-07-14 the `chore: release v0.1.6` merge landed but its CI run did not
+# reach `release-plz-release`, and the opportunity was gone for good — main sat
+# at 0.1.6 while crates.io stayed at 0.1.5, `release` reported "current commit
+# is not from a release PR" and `release-pr` reported "the repository is already
+# up-to-date", so neither job could ever open the deadlock. Comparing against
+# the registry instead makes a missed release self-healing: the next push to
+# main simply retries it.
+#
+# The review gate is unchanged — versions only move when a release PR written by
+# `release-plz-pr` is merged. This flag only governs whether `release` insists on
+# being run on that exact merge commit.
+release_always = true
 
 # Run cargo-semver-checks before opening the release PR
 semver_check = false

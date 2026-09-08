@@ -65,6 +65,20 @@ Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install e
   fn test_full_index_round_trip() { ... }
   ```
 - **Run ignored tests**: `cargo test --workspace -- --ignored`
+- **Stress scenarios**: prefix the test name with `stress_` on top of `#[ignore]`.
+  These generate and hash multi-gibibyte bodies and are meant to be run by hand:
+
+  ```rust
+  #[test]
+  #[ignore = "generated 5 GiB staging and bounded replay stress scenario"]
+  fn stress_stages_and_replays_five_gib_without_retaining_outputs() { ... }
+  ```
+
+  CI's integration job runs `--include-ignored --skip stress_`, so the prefix is
+  what keeps them out of the release path. Without it a stress scenario runs on
+  a GitHub runner, overruns the job timeout, and the cancelled job silently skips
+  release-plz — no release, no failure report. Run them locally with
+  `cargo test --workspace -- --ignored stress_`.
 
 ### Container-backed tests
 

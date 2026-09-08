@@ -73,7 +73,13 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Container-backed tests pull SeaweedFS and Qdrant images and provision
+    # buckets, manifests and collections per test; a green run sits around
+    # 14 minutes, so the budget needs real headroom above that. Too tight a
+    # timeout does not fail this job — it *cancels* it, and a cancelled
+    # dependency silently SKIPS release-plz below, so the release never
+    # happens and nothing is reported as broken.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -82,16 +88,26 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo test --workspace --locked -- --include-ignored
+      # `--include-ignored` is how the container-backed tests get run, but it
+      # also sweeps in the `stress_*` scenarios, which generate and hash five
+      # gibibytes each and are meant to be run by hand (see DEVELOPMENT.md).
+      # They are excluded by the `stress_` name prefix, not by listing
+      # individual test names, so a newly added scenario stays out too.
+      - run: cargo test --workspace --locked -- --include-ignored --skip stress_
 
-  # release-plz-release and release-plz-pr MUST stay INDEPENDENT parallel jobs
-  # per the official release-plz quickstart. Two constraints from upstream docs
-  # (https://release-plz.dev/docs/github/quickstart#3-setup-the-workflow):
+  # Two constraints on how the release-plz jobs are wired:
   #
-  #   1. release-plz-pr MUST NOT `needs:` release-plz-release. The dependency
-  #      serializes them for no benefit, and skips the PR update whenever the
-  #      release job fails, leaving the release PR permanently stale against
-  #      the current HEAD.
+  #   1. release-plz-pr MUST `needs:` release-plz-release, so the tag and the
+  #      crates.io publish are visible before the PR job runs. Both jobs derive
+  #      the next version from the crates.io baseline; run in parallel they read
+  #      the SAME stale baseline, and the PR job re-proposes the very version the
+  #      release job is publishing right then, producing duplicate CHANGELOG
+  #      entries. This is also the order RELEASING.md documents.
+  #
+  #      The cost of the dependency — a failed release skips that run's PR update
+  #      and leaves the release PR stale — is bounded now that
+  #      `release_always = true` (see release-plz.toml) lets the next push to main
+  #      retry both jobs.
   #
   #   2. release-plz-release MUST NOT have a `concurrency:` block. GitHub
   #      cancels a *pending* run when a newer run for the same group is queued
@@ -158,7 +174,7 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, docker-build, integration-test]
+    needs: [test, clippy, fmt, docker-build, integration-test, release-plz-release]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
