@@ -16,7 +16,7 @@ notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6" }
 notedthat-write = { workspace = true }
 async-trait.workspace = true
-axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+axum = { workspace = true, features = ["http1", "json", "matched-path", "query", "tokio"] }
 bytes.workspace = true
 http.workspace = true
 httpdate.workspace = true

@@ -33,14 +33,28 @@ pub fn build_router(state: WebDavState) -> Router {
         let storage_state = Arc::clone(&storage_state);
         async move {
             let listing = req.extensions().get::<PropfindListing>().cloned();
-            match listing {
-                Some(listing) => {
+            let anonymous = req
+                .extensions()
+                .get::<crate::middleware::AnonymousAccess>()
+                .is_some();
+            match (listing, anonymous) {
+                (Some(listing), anonymous) => {
                     let request_config = DavHandler::builder().filesystem(Box::new(
-                        WebDavStorage::with_propfind_listing(storage_state, listing),
+                        WebDavStorage::with_propfind_listing(
+                            storage_state,
+                            Some(listing),
+                            anonymous,
+                        ),
                     ));
                     handler.handle_with(request_config, req).await
                 }
-                None => handler.handle(req).await,
+                (None, true) => {
+                    let request_config = DavHandler::builder().filesystem(Box::new(
+                        WebDavStorage::with_propfind_listing(storage_state, None, true),
+                    ));
+                    handler.handle_with(request_config, req).await
+                }
+                (None, false) => handler.handle(req).await,
             }
         }
     };

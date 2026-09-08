@@ -3,46 +3,101 @@
 use crate::error::ApiErrorResponse;
 use crate::state::AppState;
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::Request;
+use axum::extract::{MatchedPath, State};
+use axum::http::{Method, Request, header::AUTHORIZATION};
 use axum::middleware::Next;
 use axum::response::Response;
-use notedthat_core::{extract_bearer_from_header, verify_bearer_token};
+use notedthat_core::{PublicReadCapability, extract_bearer_from_header, verify_bearer_token};
 use tower_http::request_id::RequestId;
 
 /// Root-level paths that bypass Bearer authentication.
 const AUTH_EXEMPT_PATHS: &[&str] = &["/healthz", "/readyz", "/llms.txt"];
 
+/// Authentication state established at the HTTP boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthContext {
+    /// A valid Bearer token was supplied.
+    Authenticated,
+    /// No credentials were supplied and a public route capability allowed access.
+    Anonymous,
+}
+
+impl AuthContext {
+    /// Return whether the request is using anonymous public-read access.
+    #[must_use]
+    pub const fn is_anonymous(self) -> bool {
+        matches!(self, Self::Anonymous)
+    }
+}
+
 /// Axum middleware that validates the `Authorization: Bearer <token>` header.
 ///
-/// Requests to root-level public paths pass through without authentication.
-/// All other requests must present a valid Bearer token that matches
-/// `state.bearer_token` (compared in constant time).
+/// A supplied credential must always be a single valid Bearer token. When no
+/// credential is supplied, only root public paths and explicitly granted read
+/// capabilities pass through as anonymous requests.
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiErrorResponse> {
-    let path = req.uri().path();
-    if AUTH_EXEMPT_PATHS.contains(&path) {
+    let request_id = extract_request_id(&req);
+
+    let mut authorization_values = req.headers().get_all(AUTHORIZATION).iter();
+    if let Some(header) = authorization_values.next() {
+        if authorization_values.next().is_some() {
+            return Err(ApiErrorResponse::unauthorized(request_id));
+        }
+        header
+            .to_str()
+            .ok()
+            .and_then(extract_bearer_from_header)
+            .filter(|token| verify_bearer_token(token, &state.bearer_token))
+            .ok_or_else(|| ApiErrorResponse::unauthorized(request_id.clone()))?;
+        req.extensions_mut().insert(AuthContext::Authenticated);
         return Ok(next.run(req).await);
     }
 
-    let request_id = extract_request_id(&req);
-
-    let header_value = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-    let Some(token) = header_value.and_then(extract_bearer_from_header) else {
-        return Err(ApiErrorResponse::unauthorized(request_id));
-    };
-
-    if !verify_bearer_token(token, &state.bearer_token) {
-        return Err(ApiErrorResponse::unauthorized(request_id));
+    if anonymous_capability(&req, &state).is_some() || AUTH_EXEMPT_PATHS.contains(&req.uri().path())
+    {
+        req.extensions_mut().insert(AuthContext::Anonymous);
+        return Ok(next.run(req).await);
     }
 
-    Ok(next.run(req).await)
+    Err(ApiErrorResponse::unauthorized(request_id))
+}
+
+fn anonymous_capability(req: &Request<Body>, state: &AppState) -> Option<PublicReadCapability> {
+    let path = req.uri().path();
+    let matched_path = req.extensions().get::<MatchedPath>()?.as_str();
+    let capability = match (req.method(), matched_path) {
+        (&Method::GET, "/v1/knowledgebases") => return Some(PublicReadCapability::Discover),
+        (&Method::GET, "/v1/knowledgebases/{kb_slug}") => PublicReadCapability::Browse,
+        (&Method::GET | &Method::HEAD, "/v1/knowledgebases/{kb_slug}/{*object_path}") => {
+            PublicReadCapability::Content
+        }
+        (&Method::POST, "/v1/knowledgebases/{kb_slug}/search") => PublicReadCapability::Search,
+        _ => return None,
+    };
+    let kb_slug = path.split('/').nth(3)?;
+    state
+        .public_read_policies
+        .get(kb_slug)
+        .filter(|policy| policy.allows(capability))
+        .map(|_| capability)
+}
+
+/// Return the request authentication context, defaulting conservatively to authenticated.
+pub fn auth_context<B>(req: &Request<B>) -> AuthContext {
+    req.extensions()
+        .get::<AuthContext>()
+        .copied()
+        .unwrap_or(AuthContext::Authenticated)
+}
+
+/// Return whether an object key belongs to `NotedThat`'s private control namespace.
+#[must_use]
+pub fn is_internal_path(path: &str) -> bool {
+    path == ".notedthat" || path.starts_with(".notedthat/")
 }
 
 /// Extract the `x-request-id` value from request extensions, falling back to a

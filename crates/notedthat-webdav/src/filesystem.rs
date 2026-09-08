@@ -95,6 +95,7 @@ pub struct WebDavStorage {
     /// Shared `WebDAV` state containing storage and declared knowledge bases.
     pub(crate) state: Arc<WebDavState>,
     propfind_listing: Option<PropfindListing>,
+    anonymous: bool,
 }
 
 impl WebDavStorage {
@@ -104,16 +105,19 @@ impl WebDavStorage {
         Self {
             state,
             propfind_listing: None,
+            anonymous: false,
         }
     }
 
     pub(crate) fn with_propfind_listing(
         state: Arc<WebDavState>,
-        propfind_listing: PropfindListing,
+        propfind_listing: Option<PropfindListing>,
+        anonymous: bool,
     ) -> Self {
         Self {
             state,
-            propfind_listing: Some(propfind_listing),
+            propfind_listing,
+            anonymous,
         }
     }
 }
@@ -156,13 +160,27 @@ impl DavFileSystem for WebDavStorage {
 
         Box::pin(async move {
             match parse_dav_path(path, state.declared_kbs.as_ref())? {
-                DavTarget::Root => Ok(stream_entries(root_entries(&state))),
+                DavTarget::Root => Ok(stream_entries(root_entries(&state, self.anonymous))),
                 DavTarget::KbRoot(kb) => {
-                    list_entries(state, kb, None, self.propfind_listing.as_ref()).await
+                    list_entries(
+                        state,
+                        kb,
+                        None,
+                        self.propfind_listing.as_ref(),
+                        self.anonymous,
+                    )
+                    .await
                 }
                 DavTarget::Object(kb, path) => {
                     let prefix = format!("{}/", path.as_str());
-                    list_entries(state, kb, Some(prefix), self.propfind_listing.as_ref()).await
+                    list_entries(
+                        state,
+                        kb,
+                        Some(prefix),
+                        self.propfind_listing.as_ref(),
+                        self.anonymous,
+                    )
+                    .await
                 }
                 DavTarget::NonDeclaredKb => Err(FsError::Forbidden),
             }
@@ -221,17 +239,22 @@ async fn list_entries(
     kb: KbSlug,
     prefix: Option<String>,
     propfind_listing: Option<&PropfindListing>,
+    anonymous: bool,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
     if let Some(listing) =
         propfind_listing.filter(|listing| listing.matches(&kb, prefix.as_deref()))
     {
         return Ok(stream_entries(entries_from_objects(
-            listing.objects().iter().cloned(),
+            listing
+                .objects()
+                .iter()
+                .filter(|meta| !anonymous || !is_internal_object_key(&meta.key))
+                .cloned(),
             prefix.as_deref(),
         )));
     }
 
-    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref()).await?;
+    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref(), anonymous).await?;
     let response = ListResponse {
         objects,
         truncated: false,
@@ -248,6 +271,7 @@ pub(crate) async fn collect_propfind_objects(
     state: &WebDavState,
     kb: &KbSlug,
     prefix: Option<&str>,
+    anonymous: bool,
 ) -> FsResult<Vec<ObjectMeta>> {
     let mut all_objects = Vec::new();
     let mut cursor: Option<String> = None;
@@ -263,6 +287,9 @@ pub(crate) async fn collect_propfind_objects(
             .map_err(|err| storage_error_to_fs(&err))?;
 
         for object in response.objects {
+            if anonymous && is_internal_object_key(&object.key) {
+                continue;
+            }
             if all_objects.len() >= PROPFIND_MAX_ENTRIES as usize {
                 tracing::warn!(
                     kb = %kb,
@@ -315,12 +342,25 @@ async fn metadata_for_object_or_prefix(
     }
 }
 
-fn root_entries(state: &WebDavState) -> Vec<Box<dyn DavDirEntry>> {
+fn root_entries(state: &WebDavState, anonymous: bool) -> Vec<Box<dyn DavDirEntry>> {
     state
         .declared_kbs
         .iter()
+        .filter(|(_, kb)| {
+            !anonymous
+                || state
+                    .public_read_policies
+                    .get(kb.as_str())
+                    .is_some_and(|policy| {
+                        policy.allows(notedthat_core::PublicReadCapability::Discover)
+                    })
+        })
         .map(|(name, kb)| Box::new(KbDirEntry::new(name.clone(), kb)) as Box<dyn DavDirEntry>)
         .collect()
+}
+
+fn is_internal_object_key(key: &str) -> bool {
+    key == ".notedthat" || key.starts_with(".notedthat/")
 }
 
 fn entries_from_list(response: ListResponse, prefix: Option<&str>) -> Vec<Box<dyn DavDirEntry>> {

@@ -279,6 +279,14 @@ impl IntoResponse for ApiErrorResponse {
         }
 
         match &self.error {
+            ApiError::Unauthorized => {
+                let body = ErrorBody {
+                    error: "unauthorized",
+                    message: "provide a valid Bearer token in the Authorization header".to_string(),
+                    request_id: self.request_id,
+                };
+                return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+            }
             ApiError::IndexerBackpressureUpsert => {
                 let body = ErrorBody {
                     error: "backend_unavailable",

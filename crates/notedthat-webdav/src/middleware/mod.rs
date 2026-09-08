@@ -4,15 +4,7 @@ mod backpressure;
 mod handlers;
 mod helpers;
 mod path_validation;
-
-use axum::{
-    extract::{Request, State},
-    http::{HeaderValue, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
-use notedthat_core::{extract_basic_from_header, verify_basic_credentials};
-use tower_http::request_id::RequestId;
+mod public_read;
 
 use crate::state::WebDavState;
 use crate::{
@@ -21,56 +13,16 @@ use crate::{
         PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
     },
 };
+use axum::{
+    extract::{Request, State},
+    http::{HeaderValue, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
 use handlers::{handle_copy, handle_delete, handle_move, handle_put};
 use path_validation::{parse_uri_path, validate_read_uri_path};
-
-/// Extract the x-request-id from the request, returning "unknown" if absent.
-fn extract_request_id(req: &Request) -> String {
-    req.extensions()
-        .get::<RequestId>()
-        .and_then(|id| id.header_value().to_str().ok())
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-/// Basic-auth middleware for the `WebDAV` listener.
-///
-/// Every request must carry a valid `Authorization: Basic <credentials>` header.
-/// On failure returns 401 with `WWW-Authenticate: Basic realm="NotedThat"`.
-/// On success passes to the next handler.
-pub async fn basic_auth_middleware(
-    State(state): State<WebDavState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let request_id = extract_request_id(&req);
-
-    let auth_header = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let credentials = auth_header.and_then(extract_basic_from_header);
-
-    let authorized = credentials.as_ref().is_some_and(|(u, p)| {
-        verify_basic_credentials(u, p, state.username.as_str(), state.password.as_str())
-    });
-
-    if !authorized {
-        let mut response = (StatusCode::UNAUTHORIZED, "").into_response();
-        response.headers_mut().insert(
-            "www-authenticate",
-            HeaderValue::from_static("Basic realm=\"NotedThat\""),
-        );
-        response.headers_mut().insert(
-            "x-request-id",
-            HeaderValue::from_str(&request_id).unwrap_or(HeaderValue::from_static("unknown")),
-        );
-        return response;
-    }
-
-    next.run(req).await
-}
+pub(crate) use public_read::AnonymousAccess;
+pub use public_read::basic_auth_middleware;
 
 /// Intercept OPTIONS requests and return DAV Class 1 response before dav-server.
 ///
@@ -82,12 +34,22 @@ pub async fn intercept_options(req: Request, next: Next) -> Response {
         let headers = response.headers_mut();
         headers.insert("dav", HeaderValue::from_static("1"));
         headers.insert("ms-author-via", HeaderValue::from_static("DAV"));
-        headers.insert(
-            "allow",
-            HeaderValue::from_static(
-                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
-            ),
+        let allow = req.extensions().get::<AnonymousAccess>().map_or_else(
+            || "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY".to_string(),
+            |access| {
+                let mut methods = vec!["OPTIONS"];
+                if access.content {
+                    methods.extend(["GET", "HEAD"]);
+                }
+                if access.propfind {
+                    methods.push("PROPFIND");
+                }
+                methods.join(", ")
+            },
         );
+        if let Ok(value) = HeaderValue::from_str(&allow) {
+            headers.insert("allow", value);
+        }
         return response;
     }
     next.run(req).await
@@ -156,7 +118,8 @@ pub async fn intercept_propfind_too_large(
         return next.run(req).await;
     };
 
-    match prepare_propfind_listing(&state, &target).await {
+    let anonymous = req.extensions().get::<AnonymousAccess>().is_some();
+    match prepare_propfind_listing(&state, &target, anonymous).await {
         Err(dav_server::fs::FsError::InsufficientStorage) => (
             StatusCode::INSUFFICIENT_STORAGE,
             [(

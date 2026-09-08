@@ -27,6 +27,7 @@ pub async fn search_kb(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = crate::middleware::extract_request_id(&req);
+    let anonymous = crate::middleware::auth_context(&req).is_anonymous();
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -66,11 +67,16 @@ pub async fn search_kb(
         .validate()
         .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
 
-    let response = state
+    let mut response = state
         .searcher
         .search(&kb, validated)
         .await
         .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
+    if anonymous {
+        response
+            .hits
+            .retain(|hit| !crate::middleware::is_internal_path(hit.object_key.as_str()));
+    }
 
     Ok((StatusCode::OK, Json(response)).into_response())
 }

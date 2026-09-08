@@ -133,7 +133,7 @@ async fn llms_txt_is_plain_text_without_authentication() {
 // ─── Auth tests ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_kbs_requires_auth() {
+async fn list_kbs_without_discover_policy_returns_empty_public_list() {
     let resp = app()
         .oneshot(
             Request::builder()
@@ -143,7 +143,11 @@ async fn list_kbs_requires_auth() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(resp).await["knowledgebases"],
+        serde_json::json!([])
+    );
 }
 
 #[tokio::test]
@@ -1221,6 +1225,7 @@ async fn error_body_contains_request_id() {
         .oneshot(
             Request::builder()
                 .uri("/v1/knowledgebases")
+                .header("authorization", "Bearer wrong-token")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1241,6 +1246,7 @@ async fn custom_request_id_is_echoed_in_error_body() {
         .oneshot(
             Request::builder()
                 .uri("/v1/knowledgebases")
+                .header("authorization", "Bearer wrong-token")
                 .header("x-request-id", "req-custom")
                 .body(Body::empty())
                 .unwrap(),
