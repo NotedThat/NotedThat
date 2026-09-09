@@ -34,10 +34,11 @@ notedthat-api-http = { path = "../notedthat-api-http", features = ["test-support
 notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"] }
 assert_cmd = "2"
 serde_json = { workspace = true }
-notedthat-server = { path = "../notedthat-server" }
+# `test-support` exposes `run::run_with`, which the cross-surface fixture uses
+# to start a real server over in-memory backends.
+notedthat-server = { path = "../notedthat-server", features = ["test-support"] }
 notedthat-core = { path = "../notedthat-core" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
-testcontainers = { workspace = true }
 wiremock = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "process", "time", "sync"] }

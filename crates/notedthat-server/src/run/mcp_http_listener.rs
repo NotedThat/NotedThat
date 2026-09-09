@@ -63,22 +63,37 @@ fn test_config(mcp_http_bind: SocketAddr) -> Config {
 
 #[tokio::test]
 async fn invalid_staging_directory_fails_before_infrastructure_setup() {
+    // Given: a config that is broken in TWO ways at once — a missing staging
+    // directory and a Qdrant URL that cannot be parsed. Only the second one is
+    // reachable by `backends_from_config`, so whichever error comes back names
+    // the stage that ran first. G11 wants the staging error: it is the one an
+    // operator can act on without reading the source.
     let missing_directory = std::env::temp_dir().join(format!(
         "notedthat-staging-config-missing-{}",
         std::process::id()
     ));
     let mut config = test_config("127.0.0.1:0".parse().expect("test MCP addr is valid"));
     config.staging = notedthat_core::StagingConfig::new(missing_directory);
+    config.qdrant.url = String::new();
 
-    let backends = super::backends_from_config(&config).expect("connectionless backend build");
-    let Err(error) = super::build_infrastructure(config, backends).await else {
-        panic!("missing staging directory must fail before infrastructure setup");
+    // Guard the premise: the Qdrant URL really is bad enough to fail on its own.
+    assert!(
+        super::backends_from_config(&config).is_err(),
+        "test premise: an empty Qdrant URL must fail backend construction, \
+         otherwise this test cannot distinguish the two orderings"
+    );
+
+    // When: the server is started.
+    let Err(error) = super::run(config).await else {
+        panic!("missing staging directory must fail startup");
     };
 
+    // Then: staging was checked first.
     assert!(
         error
             .to_string()
-            .contains("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")
+            .contains("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR"),
+        "staging must be validated before backends are built, got: {error:#}"
     );
 }
 

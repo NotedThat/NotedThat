@@ -26,26 +26,40 @@ mod mcp_http;
 #[path = "run/mcp_http_listener.rs"]
 mod mcp_http_listener;
 
-/// The three external services the server runs on.
-///
-/// Kept as trait objects and constructed separately from the rest of startup so
-/// the server can be brought up against substitutes. Tests use that to run the
-/// real routers, indexer worker and shutdown sequence in-process, with no S3,
-/// Qdrant or embedding endpoint to reach.
-pub struct Backends {
-    /// Object storage backing every read and write.
-    pub storage: Arc<dyn notedthat_core::Storage>,
-    /// Vector store used for provisioning, indexing and search.
-    pub store: Arc<dyn VectorStore>,
-    /// Embedding endpoint shared by the indexer worker and the searcher.
-    pub embedder: Arc<dyn notedthat_indexer::embedder::Embedder>,
+// `Backends` lives in a private module and is re-exported only under
+// `test-support`, so a production build cannot name it. Its three fields are
+// `Arc<dyn Storage>`, `Arc<dyn VectorStore>` and `Arc<dyn Embedder>`: exposing
+// them unconditionally would pin those traits into this crate's semver surface,
+// and changing them — which is precisely what the seam exists to allow — would
+// become a breaking change to `notedthat-server`.
+mod backends {
+    use super::VectorStore;
+    use std::sync::Arc;
+
+    /// The three external services the server runs on.
+    ///
+    /// Kept as trait objects and constructed separately from the rest of startup
+    /// so the server can be brought up against substitutes. Tests use that to
+    /// run the real routers, indexer worker and shutdown sequence in-process,
+    /// with no S3, Qdrant or embedding endpoint to reach.
+    pub struct Backends {
+        /// Object storage backing every read and write.
+        pub storage: Arc<dyn notedthat_core::Storage>,
+        /// Vector store used for provisioning, indexing and search.
+        pub store: Arc<dyn VectorStore>,
+        /// Embedding endpoint shared by the indexer worker and the searcher.
+        pub embedder: Arc<dyn notedthat_indexer::embedder::Embedder>,
+    }
 }
+
+#[cfg(feature = "test-support")]
+pub use backends::Backends;
 
 /// Build the production backends described by `config`.
 ///
 /// Construction is cheap and connectionless: nothing here reaches the network,
 /// so a failure means bad configuration rather than an unreachable service.
-fn backends_from_config(config: &Config) -> anyhow::Result<Backends> {
+fn backends_from_config(config: &Config) -> anyhow::Result<backends::Backends> {
     let client = config.s3.build_client();
     let storage = Arc::new(S3Storage::new(client, config.tenant_slug.clone()));
 
@@ -74,7 +88,7 @@ fn backends_from_config(config: &Config) -> anyhow::Result<Backends> {
         OpenAiCompatibleEmbedder::new(embedder_config).context("failed to build embedder")?,
     );
 
-    Ok(Backends {
+    Ok(backends::Backends {
         storage,
         store,
         embedder,
@@ -82,22 +96,19 @@ fn backends_from_config(config: &Config) -> anyhow::Result<Backends> {
 }
 
 /// Build infrastructure components (indexer, provisioning, app state) over `backends`.
+///
+/// Assumes `config.staging` has already been validated; [`serve`] does that
+/// before anything else so the check cannot be shadowed by a backend failure.
 async fn build_infrastructure(
     config: Config,
-    backends: Backends,
+    backends: backends::Backends,
 ) -> anyhow::Result<(
     AppState,
     WebDavState,
     CancellationToken,
     tokio::task::JoinHandle<()>,
 )> {
-    config
-        .staging
-        .validate()
-        .await
-        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
-
-    let Backends {
+    let backends::Backends {
         storage,
         store,
         embedder,
@@ -180,8 +191,18 @@ async fn build_infrastructure(
 ///
 /// Returns an error if S3 provisioning fails, the listener cannot bind, or axum serving fails.
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    // Validate staging BEFORE constructing any backend. `backends_from_config`
+    // can fail on a malformed Qdrant URL or embedder config, and if it ran first
+    // it would shadow the staging error — which is the more actionable of the
+    // two, since it names a directory the operator controls.
+    config
+        .staging
+        .validate()
+        .await
+        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
+
     let backends = backends_from_config(&config)?;
-    run_with(config, backends).await
+    serve(config, backends).await
 }
 
 /// Start the HTTP server with the provided configuration and backends.
@@ -192,9 +213,24 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if provisioning fails, a listener cannot bind, or axum
-/// serving fails.
+/// Returns an error if staging validation fails, provisioning fails, a listener
+/// cannot bind, or axum serving fails.
+#[cfg(feature = "test-support")]
 pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> {
+    config
+        .staging
+        .validate()
+        .await
+        .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
+
+    serve(config, backends).await
+}
+
+/// Shared startup body behind [`run`] and `run_with`.
+///
+/// Both callers validate `config.staging` before constructing or accepting
+/// backends, so this body may assume it is already valid.
+async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
     let (state, dav_state, indexer_shutdown, worker_handle) =
         build_infrastructure(config.clone(), backends).await?;
 
