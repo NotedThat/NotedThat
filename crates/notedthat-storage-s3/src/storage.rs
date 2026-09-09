@@ -143,11 +143,20 @@ fn map_delete_error(
 
 fn map_copy_error(
     err: &SdkError<aws_sdk_s3::operation::copy_object::CopyObjectError>,
+    source_key: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err
         && inner.raw().status().as_u16() == 412
     {
         return StorageError::PreconditionFailed;
+    }
+    // A missing copy source is a 404, not a 500. Without this the surfaces above
+    // reported an internal error for a client asking to copy something that is not
+    // there, which is the one thing they could have corrected on their own.
+    if is_not_found_sdk(err) {
+        return StorageError::NotFound {
+            key: source_key.to_string(),
+        };
     }
     storage_other(format!("S3 copy_object error: {err}"))
 }
@@ -166,18 +175,25 @@ fn normalize_etag(etag: &str) -> String {
     }
 }
 
+/// Build the `Range` header for a read, honouring only the first requested range.
+///
+/// [`ByteRange::to_http_string`] already emits the `bytes=` prefix, so joining several
+/// of them produced `bytes=0-9, bytes=20-29` — not a valid `Range` value. S3 answered a
+/// malformed header by ignoring it and returning the whole object with a 200, while
+/// every other backend returned a 206 of the first range, for the same client request.
+///
+/// Only the first range is served. [`notedthat_core::ObjectRead`] carries a single
+/// `content_range`, so no surface above this one can render `multipart/byteranges`
+/// anyway; serving the first range is what the rest of the stack already assumes.
 fn range_header(ranges: &[ByteRange]) -> Option<String> {
-    if ranges.is_empty() {
-        None
-    } else {
-        Some(
-            ranges
-                .iter()
-                .map(ByteRange::to_http_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
+    let first = ranges.first()?;
+    if ranges.len() > 1 {
+        tracing::debug!(
+            requested = ranges.len(),
+            "multi-range read: serving only the first range"
+        );
     }
+    Some(first.to_http_string())
 }
 
 #[async_trait]
@@ -536,7 +552,10 @@ impl Storage for S3Storage {
                 .content_type(value)
                 .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
         }
-        let resp = req.send().await.map_err(|error| map_copy_error(&error))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|error| map_copy_error(&error, source.as_str()))?;
         Ok(PutOutcome {
             etag: resp
                 .copy_object_result()
