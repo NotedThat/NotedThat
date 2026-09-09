@@ -119,6 +119,17 @@ under `--include-ignored`:
   scenario set through both `QdrantClient` and `InMemoryVectorStore` and asserts
   they agree, so the in-memory substitute cannot drift away from the backend it
   stands in for. Run it after any change to `qdrant.rs` or `testing.rs`.
+- `crates/notedthat-storage-fs/tests/storage_conformance_s3.rs` — the same idea for
+  `Storage`: one scenario set through both `S3Storage` and `FsStorage`, so an operator
+  flipping `NOTEDTHAT_STORAGE_BACKEND` gets the same behaviour. One container for the
+  whole suite, not one per test. Run it after any change to either adapter's
+  `storage.rs`, or to `notedthat-core`'s `preconditions.rs`.
+
+Its containerless sibling, `crates/notedthat-storage-fs/tests/storage_conformance_local.rs`,
+runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinary
+`cargo test` pass. That makes `FsStorage` a pivot: agreement in both directions means the
+substitute matches real S3 semantics, and the cheap half of that check runs on every push
+without Docker.
 
 Both start their container with [testcontainers](https://docs.rs/testcontainers).
 **Wait on a readiness signal, never on a fixed duration.** `WaitFor::seconds(5)`

@@ -22,6 +22,14 @@ use crate::{
     ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
 };
 
+/// Marks a cursor as one this backend issued, so a client-invented string is refused the
+/// way an S3 continuation token would be.
+const CURSOR_PREFIX: &str = "ntmem1:";
+
+/// Key the manifest lives at — a real object, exactly as on every other backend, so a
+/// listing sees it and `get_object` can read it.
+const MANIFEST_KEY: &str = ".notedthat/manifest.json";
+
 #[derive(Clone)]
 struct StoredObject {
     bytes: Bytes,
@@ -45,7 +53,6 @@ pub struct InMemoryStorage {
 struct InMemoryInner {
     /// (`kb_slug`, `object_key`) → stored object
     objects: HashMap<(String, String), StoredObject>,
-    manifests: HashMap<String, KbManifest>,
     buckets: HashSet<String>,
 }
 
@@ -87,20 +94,43 @@ impl Storage for InMemoryStorage {
 
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let inner = self.inner.read().await;
-        inner
-            .manifests
-            .get(kb.as_str())
-            .cloned()
+        let stored = inner
+            .objects
+            .get(&(kb.as_str().to_string(), MANIFEST_KEY.to_string()))
             .ok_or_else(|| StorageError::NotFound {
-                key: ".notedthat/manifest.json".into(),
-            })
+                key: MANIFEST_KEY.into(),
+            })?;
+        // Every failure but "absent" is `BackendUnavailable` here, matching `S3Storage`.
+        let manifest: KbManifest = serde_json::from_slice(&stored.bytes).map_err(|error| {
+            StorageError::BackendUnavailable {
+                message: format!("deserializing the manifest: {error}"),
+            }
+        })?;
+        manifest
+            .validate()
+            .map_err(|error| StorageError::BackendUnavailable {
+                message: format!("manifest validation failed: {error}"),
+            })?;
+        Ok(manifest)
     }
 
     async fn write_manifest(&self, kb: &KbSlug, manifest: &KbManifest) -> Result<(), StorageError> {
+        let bytes = serde_json::to_vec_pretty(manifest).map_err(|error| {
+            StorageError::BackendUnavailable {
+                message: format!("serializing the manifest: {error}"),
+            }
+        })?;
+        let bytes = Bytes::from(bytes);
         let mut inner = self.inner.write().await;
-        inner
-            .manifests
-            .insert(kb.as_str().to_string(), manifest.clone());
+        inner.objects.insert(
+            (kb.as_str().to_string(), MANIFEST_KEY.to_string()),
+            StoredObject {
+                etag: compute_etag(&bytes),
+                bytes,
+                content_type: Some("application/json".to_string()),
+                last_modified: SystemTime::now(),
+            },
+        );
         Ok(())
     }
 
@@ -313,39 +343,43 @@ impl Storage for InMemoryStorage {
                 key: obj_key.clone(),
                 size: stored.bytes.len() as u64,
                 last_modified: Some(unix_seconds_i64(stored.last_modified)),
-                content_type: stored.content_type.clone(),
-                etag: Some(stored.etag.clone()),
+                // S3's ListObjectsV2 mapping drops both, so a caller that saw them here
+                // would break the moment it ran against a real backend.
+                content_type: None,
+                etag: None,
             })
             .collect();
         matching.sort_by(|a, b| a.key.cmp(&b.key));
 
-        // Apply cursor: cursor is the last returned key; start after it.
+        // Resume after the cursor key. Deliberately not "find that key and continue from
+        // it": an S3 continuation token survives deletion of the object it was issued
+        // against, and WebDAV pages through a whole KB in a loop, so a concurrent delete
+        // must not break an in-flight listing.
         if let Some(cursor_key) = cursor {
-            // Validate: cursor_key must exist in the KB (it was a real key we returned)
-            let key_exists = matching.iter().any(|obj| obj.key == cursor_key);
-            if !key_exists {
+            let base64 = |value: &str| value.starts_with(CURSOR_PREFIX);
+            if !base64(cursor_key) {
                 return Err(StorageError::BackendUnavailable {
                     message: "invalid or expired cursor".into(),
                 });
             }
-            // Skip everything up to and including the cursor key
-            let cursor_pos = matching
-                .iter()
-                .position(|obj| obj.key == cursor_key)
-                .unwrap();
-            matching = matching.split_off(cursor_pos + 1);
+            let after = &cursor_key[CURSOR_PREFIX.len()..];
+            matching.retain(|object| object.key.as_str() > after);
         }
 
         let limit = limit.min(1000) as usize;
         let truncated = matching.len() > limit;
         matching.truncate(limit);
 
-        // Compute next_cursor: the last key in the returned page, only when truncated
         let next_cursor = if truncated {
-            matching.last().map(|obj| obj.key.clone())
+            matching
+                .last()
+                .map(|object| format!("{CURSOR_PREFIX}{}", object.key))
         } else {
             None
         };
+        // Upholds the documented invariant even at limit = 0, where the page is empty and
+        // there is no last key to resume from.
+        let truncated = next_cursor.is_some();
 
         Ok(ListResponse {
             objects: matching,

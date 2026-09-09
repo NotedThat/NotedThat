@@ -2,7 +2,7 @@
 
 use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{
-    Error, KbManifest, KbSlug, PublicReadCapability, PublicReadPolicy, Storage, TenantSlug,
+    KbManifest, KbSlug, PublicReadCapability, PublicReadPolicy, Storage, TenantSlug,
 };
 use notedthat_indexer::{QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore};
 use notedthat_server::provision::provision_kbs;
@@ -97,7 +97,16 @@ async fn provision_kbs_rejects_unsupported_manifest_before_returning_policies() 
     .await;
 
     // Then: startup fails rather than publishing policy from an unsupported schema.
-    assert!(matches!(result, Err(Error::InvalidInput { .. })));
+    //
+    // The failure now arrives from `read_manifest` rather than from `provision_kbs`'s own
+    // `manifest.validate()`, because every backend validates the schema on read and
+    // reports an unsupported one as `BackendUnavailable` — `S3Storage` has always done
+    // so, and the substitute used to differ. `provision_kbs` keeps its own check for a
+    // backend that does not. What matters for D39 is unchanged: startup stops.
+    assert!(
+        result.is_err(),
+        "an unsupported manifest schema must abort startup"
+    );
 }
 
 #[tokio::test]

@@ -25,7 +25,9 @@ tracing.workspace = true
 notedthat-core = { path = "../notedthat-core", version = "0.2.0", features = ["test-support"] }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.2.0" }
 temp-env = "0.3"
+httpdate.workspace = true
 testcontainers.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lib]
