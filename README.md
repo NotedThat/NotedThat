@@ -341,7 +341,7 @@ Add to Zed settings (`~/.config/zed/settings.json`):
 }
 ```
 
-Full environment variable reference: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+Full configuration reference — every setting as an environment variable or as the flag that overrides it: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
 Full API documentation: [`docs/API.md`](docs/API.md)
 
