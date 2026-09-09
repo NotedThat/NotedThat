@@ -20,6 +20,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | ----- | ---- | ---- |
 | `notedthat-core` | `crates/notedthat-core` | Shared domain types, path/range/error/auth primitives, config |
 | `notedthat-storage-s3` | `crates/notedthat-storage-s3` | S3 storage adapter |
+| `notedthat-storage-fs` | `crates/notedthat-storage-fs` | Local filesystem storage adapter |
 | `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, embedder client, Qdrant integration |
 | `notedthat-write` | `crates/notedthat-write` | Shared write path (`commit()`, `commit_delete()`, MIME sniff, 5 GiB limit) — used by HTTP API + WebDAV surfaces |
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
@@ -29,7 +30,7 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 | `notedthat` | `crates/notedthat` | Distribution crate — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries. `cargo install notedthat` installs both. |
 
-All 10 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Anonymous public reads
 

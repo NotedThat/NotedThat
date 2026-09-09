@@ -44,7 +44,7 @@ changelog_update = false
 # main simply retries it.
 #
 # Know what this widens. The actual invariant is now "any push to `main` whose
-# workspace version is ahead of crates.io publishes all 10 crates", and nothing
+# workspace version is ahead of crates.io publishes all 11 crates", and nothing
 # here enforces that the version only ever moves in a release PR. A `cargo
 # set-version` that rides along in an ordinary feature branch, or a hand-edited
 # `version`, publishes on merge with no release PR and no second look — and a
@@ -78,6 +78,7 @@ changelog_path = "./CHANGELOG.md"
 changelog_include = [
   "notedthat-core",
   "notedthat-storage-s3",
+  "notedthat-storage-fs",
   "notedthat-indexer",
   "notedthat-write",
   "notedthat-api-http",

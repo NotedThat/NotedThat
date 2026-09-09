@@ -157,12 +157,22 @@ upsert can exceed under load.
 3. Add the path to `members` in the root `Cargo.toml`.
 4. Add the crate name to `changelog_include` in `release-plz.toml` (under the `notedthat-server` facade package).
 5. Add the crate name to the `options` list in `.github/workflows/publish-crate-manual.yml`.
-6. If the crate sets `readme = "README.md"`, write that file, and add a row to the
-   crate table in the root [README](README.md).
-7. Binaries belong in the `notedthat` distribution crate, not in a new one — it is the
-   only package with `[package.metadata.dist] dist = true`, and one cargo-dist app per
-   workspace keeps the release to one archive and one installer per target.
-8. Bootstrap it on crates.io **before** merging: Trusted Publishing cannot create a new
-   crate, and `cargo publish` verifies against the registry, so a crate cannot be
-   bootstrapped until its dependencies are published at the same version. See
-   [RELEASING.md](RELEASING.md#3-bootstrap-publish-first-time-only).
+6. Add `tests/it_compiles.rs` containing a single empty `fn it_compiles()`, so
+   `cargo test --workspace` proves cargo picked the crate up.
+7. Regenerate `Cargo.lock` in the same commit. Every CI job runs `--locked`, so a stale
+   lockfile is green locally and red in CI.
+8. If the crate sets `readme = "README.md"`, write that file, and add a row to the Crate
+   Map in the root [README](README.md).
+9. Bump the crate count, which is spelled out in prose in five places: `README.md`,
+   `CHANGELOG.md`, `RELEASING.md` (four times, one of which also lists every crate by
+   name), and `release-plz.toml` (twice).
+10. Binaries belong in the `notedthat` distribution crate, not in a new one — it is the
+    only package with `[package.metadata.dist] dist = true`, and one cargo-dist app per
+    workspace keeps the release to one archive and one installer per target.
+11. Bootstrap it on crates.io **before** merging: Trusted Publishing cannot create a new
+    crate, and `cargo publish` verifies against the registry, so a crate cannot be
+    bootstrapped until its dependencies are published at the same version. See
+    [RELEASING.md](RELEASING.md#3-bootstrap-publish-first-time-only).
+
+The `Wait for crates.io to index` step in `ci.yml` needs no edit — it derives the crate
+list from `cargo metadata`.

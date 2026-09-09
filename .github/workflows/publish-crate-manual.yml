@@ -10,6 +10,7 @@ on:
         options:
           - notedthat-core
           - notedthat-storage-s3
+          - notedthat-storage-fs
           - notedthat-indexer
           - notedthat-write
           - notedthat-api-http
