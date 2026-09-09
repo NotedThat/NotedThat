@@ -2,7 +2,7 @@
 
 ## Overview
 
-NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 11 crates share a single version from `[workspace.package].version`. The `notedthat-server` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`.
+NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 11 crates share a single version from `[workspace.package].version`. The `notedthat` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`. It is the distribution crate users install, and because it depends on every other crate it publishes last, so the tag appears only once the whole workspace is on crates.io.
 
 ## Versioning Policy
 

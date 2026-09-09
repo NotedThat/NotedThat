@@ -26,9 +26,9 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
-| `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process (release facade). Published to `ghcr.io/notedthat/server` per tagged release. |
+| `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
-| `notedthat` | `crates/notedthat` | Distribution crate — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries. `cargo install notedthat` installs both. |
+| `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs both. |
 
 All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 

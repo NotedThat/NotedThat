@@ -166,7 +166,7 @@ upsert can exceed under load.
    `.github/workflows/publish-crate-initial.yml` looks nowhere else.
 2. Add `Cargo.toml` inheriting workspace fields (`version.workspace = true`, etc.) and `[lints] workspace = true`.
 3. Add the path to `members` in the root `Cargo.toml`.
-4. Add the crate name to `changelog_include` in `release-plz.toml` (under the `notedthat-server` facade package).
+4. Add the crate name to `changelog_include` in `release-plz.toml` (under the `notedthat` facade package).
 5. Add the crate name to the `options` list in `.github/workflows/publish-crate-manual.yml`.
 6. Add `tests/it_compiles.rs` containing a single empty `fn it_compiles()`, so
    `cargo test --workspace` proves cargo picked the crate up.
