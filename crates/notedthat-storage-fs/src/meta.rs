@@ -182,11 +182,19 @@ impl MetaStore {
                         "metadata path for '{key}' has no parent"
                     ))
                 })?;
-                std::fs::create_dir_all(parent).map_err(|error| crate::errors::backend(&error))?;
                 let bytes = serde_json::to_vec(attrs).map_err(|error| StorageError::Other {
                     source: Box::new(error),
                 })?;
-                crate::commit::replace_file(parent, &path, &bytes, layout.file_mode())
+                // `replace_file` creates the directory itself, with the configured mode
+                // and the same prune retry the object tree gets — the metadata tree is
+                // pruned too, so it races the same way.
+                crate::commit::replace_file(
+                    parent,
+                    &path,
+                    &bytes,
+                    layout.file_mode(),
+                    layout.dir_mode(),
+                )
             }
         }
     }

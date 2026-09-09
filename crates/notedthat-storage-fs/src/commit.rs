@@ -36,6 +36,46 @@ pub(crate) fn temp_in(dir: &Path) -> std::io::Result<NamedTempFile> {
         .tempfile_in(dir)
 }
 
+/// How many times a write re-creates a directory that a concurrent delete pruned.
+///
+/// Generous, because each attempt is two cheap syscalls and the alternative is failing a
+/// write that was never in conflict. Bounded, because an unbounded loop would turn a
+/// genuine `EEXIST` — a non-directory sitting at the parent path — into a hang.
+const STAGE_RETRIES: usize = 8;
+
+/// Whether a staging failure is a concurrent directory change rather than a real fault.
+fn is_directory_race(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists
+    )
+}
+
+/// Create `dir` and open a temp file in it, retrying if a prune races the write.
+///
+/// [`prune_empty_dirs`] runs under the *deleted* key's lock stripe while a write holds
+/// the *written* key's, so two keys sharing a directory take two different locks and
+/// nothing serializes them. A delete that empties `a/b` can therefore remove the
+/// directory underneath a concurrent write to `a/b/other`, in two distinct windows:
+///
+/// - after [`create_dir_all`] returns, so [`temp_in`] fails with `NotFound`;
+/// - inside [`create_dir_all`], which reports `AlreadyExists` when `mkdir` sees the
+///   directory but the standard library's follow-up `is_dir` check no longer does.
+///
+/// Both mean another task changed this directory, both succeed on a retry, and both
+/// would otherwise surface as a 5xx for a write that was never in conflict. The object
+/// tree and the metadata tree are both pruned, so both need this.
+pub(crate) fn stage_in(dir: &Path, mode: u32) -> std::io::Result<NamedTempFile> {
+    let mut remaining = STAGE_RETRIES;
+    loop {
+        match create_dir_all(dir, mode).and_then(|()| temp_in(dir)) {
+            Ok(staged) => return Ok(staged),
+            Err(error) if is_directory_race(&error) && remaining > 0 => remaining -= 1,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Give a staged file the mode a browsable tree needs.
 ///
 /// `tempfile` creates at `0600`. Committing that would make every note unreadable to
@@ -76,18 +116,19 @@ pub(crate) fn finish(
     Ok(metadata)
 }
 
-/// Replace `path` with `bytes`, durably and atomically.
+/// Replace `path` with `bytes`, durably and atomically, creating `dir` if needed.
 pub(crate) fn replace_file(
     dir: &Path,
     path: &Path,
     bytes: &[u8],
-    mode: u32,
+    file_mode: u32,
+    dir_mode: u32,
 ) -> Result<(), StorageError> {
-    let mut staged = temp_in(dir).map_err(|error| errors::backend(&error))?;
+    let mut staged = stage_in(dir, dir_mode).map_err(|error| errors::backend(&error))?;
     staged
         .write_all(bytes)
         .map_err(|error| errors::backend(&error))?;
-    finish(staged, path, mode)
+    finish(staged, path, file_mode)
         .map(|_| ())
         .map_err(|error| errors::backend(&error))
 }
@@ -137,7 +178,7 @@ mod tests {
     fn a_replaced_file_carries_the_configured_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.md");
-        replace_file(dir.path(), &path, b"hello", 0o644).expect("replace");
+        replace_file(dir.path(), &path, b"hello", 0o644, 0o755).expect("replace");
         assert_eq!(std::fs::read(&path).expect("read"), b"hello");
 
         #[cfg(unix)]
@@ -156,8 +197,8 @@ mod tests {
     fn replacing_an_existing_file_keeps_readers_whole() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.md");
-        replace_file(dir.path(), &path, b"first", 0o644).expect("first");
-        replace_file(dir.path(), &path, b"second", 0o644).expect("second");
+        replace_file(dir.path(), &path, b"first", 0o644, 0o755).expect("first");
+        replace_file(dir.path(), &path, b"second", 0o644, 0o755).expect("second");
         assert_eq!(std::fs::read(&path).expect("read"), b"second");
     }
 

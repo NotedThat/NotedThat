@@ -166,10 +166,9 @@ impl Inner {
         let parent = path
             .parent()
             .ok_or_else(|| crate::layout::unsupported_key(format!("key '{key}' has no parent")))?;
-        commit::create_dir_all(parent, self.layout.dir_mode())
-            .map_err(|error| errors::object(key, error))?;
 
-        let mut staged = commit::temp_in(parent).map_err(|error| errors::object(key, error))?;
+        let mut staged = commit::stage_in(parent, self.layout.dir_mode())
+            .map_err(|error| errors::object(key, error))?;
         let mut hasher = EtagHasher::new();
         write(staged.as_file_mut(), &mut hasher).map_err(|error| errors::object(key, error))?;
         let etag = hasher.finish();

@@ -645,3 +645,283 @@ async fn metadata_never_appears_in_the_object_tree() {
             .is_file()
     );
 }
+
+/// `NOTEDTHAT_FS_DIR_MODE` is documented as the mode for created directories, and the
+/// metadata tree is not an exception. It used to be: the sidecar tree's intermediate
+/// directories were created with a bare `create_dir_all`, so they took `0o777 & !umask`
+/// instead. Under a service account's `0o077` umask they landed at `0o700`, and a backup
+/// running as another user could read every object but not descend into
+/// `.notedthat-meta/` — a copy with no `ETag` and no content type, taken from the backend
+/// chosen for being copyable.
+///
+/// Asserted as "both trees agree" rather than against a literal, because `mkdir` masks
+/// the mode with the process umask and the runner's is not ours to assume. `0o750` is
+/// picked so that the two paths genuinely differ under an ordinary umask.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_metadata_tree_takes_the_configured_directory_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = FsConfig::new(dir.path().to_path_buf());
+    config.dir_mode = 0o750;
+    let lock = open_root(&config).await.expect("root");
+    let storage = FsStorage::new(&config, lock.root().to_path_buf(), TenantSlug::default());
+    let kb = KbSlug::try_new("notes").expect("slug");
+    storage.ensure_bucket(&kb).await.expect("bucket");
+
+    storage
+        .put_object(
+            &kb,
+            &path("deep/nested/note.md"),
+            Bytes::from_static(b"body"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put");
+
+    let mode_of = |relative: &str| {
+        std::fs::metadata(lock.root().join(relative))
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    assert_eq!(
+        mode_of(".notedthat-meta/nt-default-notes/deep/nested"),
+        mode_of("nt-default-notes/deep/nested"),
+        "the metadata tree must be created with the same configured mode as the objects"
+    );
+}
+
+// --- Concurrency ------------------------------------------------------------------
+//
+// The property this backend is built to offer is that a conditional write is atomic
+// where Garage and pre-4.09 SeaweedFS leave it racy, and `locks.rs` is the whole
+// mechanism. Its own tests prove the mutexes behave; these prove `FsStorage` actually
+// takes them. Nothing here is a `stress_` scenario — they are cheap and must run in CI,
+// because the failure they guard against is a silent lost update, not a slow one.
+
+/// The headline guarantee: many writers, one `If-Match`, exactly one winner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_conditional_writes_have_exactly_one_winner() {
+    let env = env().await;
+    put(&env, "contended.md", "start").await;
+    let expected = env
+        .storage
+        .head_object(
+            &env.kb,
+            &path("contended.md"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("head")
+        .etag
+        .expect("an etag");
+
+    let contenders: Vec<_> = (0..16)
+        .map(|writer| {
+            let storage = env.storage.clone();
+            let kb = env.kb.clone();
+            let if_match = expected.clone();
+            tokio::spawn(async move {
+                storage
+                    .put_object(
+                        &kb,
+                        &path("contended.md"),
+                        Bytes::from(format!("written by {writer}")),
+                        Some("text/markdown"),
+                        ConditionalHeaders {
+                            if_match: Some(if_match),
+                            ..ConditionalHeaders::default()
+                        },
+                    )
+                    .await
+            })
+        })
+        .collect();
+
+    let mut winners = 0;
+    for contender in contenders {
+        match contender.await.expect("no panic") {
+            Ok(_) => winners += 1,
+            Err(StorageError::PreconditionFailed) => {}
+            Err(other) => panic!("expected a precondition failure, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        winners, 1,
+        "read-check-write must be atomic: a second winner is a lost update"
+    );
+}
+
+/// Whoever wins, the `ETag` on disk must describe the bytes on disk. This is what the
+/// stamp being taken before the rename buys: an interleaved rename cannot leave one
+/// writer's `ETag` recorded against another writer's file, matching `is_fresh_for` and
+/// reading back as fresh forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_writes_leave_an_etag_that_matches_the_bytes() {
+    let env = env().await;
+
+    let writers: Vec<_> = (0..16)
+        .map(|writer| {
+            let storage = env.storage.clone();
+            let kb = env.kb.clone();
+            tokio::spawn(async move {
+                storage
+                    .put_object(
+                        &kb,
+                        &path("racy.md"),
+                        Bytes::from(format!("body {writer}")),
+                        Some("text/markdown"),
+                        ConditionalHeaders::default(),
+                    )
+                    .await
+                    .expect("unconditional writes all succeed");
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.await.expect("no panic");
+    }
+
+    let on_disk = std::fs::read(env.root.join("nt-default-notes/racy.md")).expect("read");
+    let reported = env
+        .storage
+        .head_object(&env.kb, &path("racy.md"), ConditionalHeaders::default())
+        .await
+        .expect("head")
+        .etag
+        .expect("an etag");
+    assert_eq!(
+        reported,
+        compute_etag(&on_disk),
+        "the recorded ETag must describe the committed bytes"
+    );
+}
+
+/// `write_manifest` is a writer like any other and must take the same lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_manifest_writes_leave_a_readable_manifest() {
+    let env = env().await;
+
+    let writers: Vec<_> = (0..8)
+        .map(|version| {
+            let storage = env.storage.clone();
+            let kb = env.kb.clone();
+            tokio::spawn(async move {
+                let manifest = notedthat_core::KbManifest::new_v1(
+                    &TenantSlug::default(),
+                    &kb,
+                    "Notes",
+                    i64::from(version),
+                );
+                storage.write_manifest(&kb, &manifest).await
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.await.expect("no panic").expect("manifest write");
+    }
+
+    env.storage
+        .read_manifest(&env.kb)
+        .await
+        .expect("the manifest must still parse and validate");
+
+    let on_disk =
+        std::fs::read(env.root.join("nt-default-notes/.notedthat/manifest.json")).expect("read");
+    let reported = env
+        .storage
+        .head_object(
+            &env.kb,
+            &path(".notedthat/manifest.json"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("head")
+        .etag
+        .expect("an etag");
+    assert_eq!(reported, compute_etag(&on_disk));
+}
+
+/// A listing must not lose keys because other keys are being deleted underneath it.
+/// The deleted keys are interleaved with the surviving ones, so a walk that stopped at
+/// the first vanished file would drop survivors that sort after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_listing_keeps_every_surviving_key_while_deletes_run() {
+    let env = env().await;
+    for index in 0..60 {
+        put(&env, &format!("k{index:02}.md"), "body").await;
+    }
+
+    let deleter = {
+        let storage = env.storage.clone();
+        let kb = env.kb.clone();
+        tokio::spawn(async move {
+            for index in (0..60).step_by(2) {
+                storage
+                    .delete_object(
+                        &kb,
+                        &path(&format!("k{index:02}.md")),
+                        ConditionalHeaders::default(),
+                    )
+                    .await
+                    .expect("delete");
+            }
+        })
+    };
+
+    let listed = env
+        .storage
+        .list_objects(&env.kb, Some("k"), 1000, None)
+        .await
+        .expect("list");
+    deleter.await.expect("no panic");
+
+    let keys: Vec<&str> = listed.objects.iter().map(|o| o.key.as_str()).collect();
+    for index in (1..60).step_by(2) {
+        let survivor = format!("k{index:02}.md");
+        assert!(
+            keys.contains(&survivor.as_str()),
+            "{survivor} was never deleted but is missing from the listing"
+        );
+    }
+}
+
+/// Deleting the last object in a directory prunes it, and that prune is not serialized
+/// against a write to a sibling key — different keys, different lock stripes. A write
+/// whose parent is pruned out from under it must retry rather than fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn writes_survive_a_concurrent_prune_of_their_directory() {
+    let env = env().await;
+
+    let churn = |key: &'static str| {
+        let storage = env.storage.clone();
+        let kb = env.kb.clone();
+        tokio::spawn(async move {
+            for _ in 0..60 {
+                storage
+                    .put_object(
+                        &kb,
+                        &path(key),
+                        Bytes::from_static(b"body"),
+                        Some("text/markdown"),
+                        ConditionalHeaders::default(),
+                    )
+                    .await
+                    .expect("a pruned parent must be recreated, not reported as a failure");
+                storage
+                    .delete_object(&kb, &path(key), ConditionalHeaders::default())
+                    .await
+                    .expect("delete");
+            }
+        })
+    };
+
+    let (one, two) = (churn("shared/one.md"), churn("shared/two.md"));
+    one.await.expect("no panic");
+    two.await.expect("no panic");
+}
