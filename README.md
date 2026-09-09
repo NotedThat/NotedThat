@@ -226,7 +226,7 @@ See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protoc
 
 #### Install options
 
-Four ways to get `notedthat-server` and `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Both binaries ship from the single `notedthat` crate, so every route below installs the pair. Installer scripts become available after the first tagged release.
+Three ways to get `notedthat-server` and `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Both binaries ship from the single `notedthat` crate, so every route below installs the pair. Installer scripts become available after the first tagged release.
 
 **Build or extract locally:**
 
@@ -236,17 +236,12 @@ make mcp-stdio-from-image              # extract from notedthat-server:local
 # Override PREFIX=/some/dir or IMAGE=ghcr.io/notedthat/server:tag as needed.
 ```
 
-**Shell installer** (macOS / Linux):
+**Shell installer** (macOS / Linux). Prebuilt binaries are not published for
+Windows at the moment — on Windows use `cargo install notedthat` below:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-installer.sh | sh
-```
-
-**PowerShell installer** (Windows):
-
-```powershell
-powershell -c "irm https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-installer.ps1 | iex"
 ```
 
 **cargo install** (requires a Rust toolchain):

@@ -103,6 +103,22 @@ wiremock = "0.6"
 cargo-dist-version = "0.32.0"
 allow-dirty = ["ci"]
 ci = ["github"]
+#
+# Windows targets are temporarily removed. `aarch64-pc-windows-msvc` failed
+# every release, and because the installers, signing and upload all wait on the
+# full matrix, that one target left v0.1.6, v0.2.0 and v0.3.0 with no binaries
+# attached at all.
+#
+# The blocker is `ring`'s C build under cargo-xwin, not anything in this repo:
+# clang receives cargo-xwin's MSVC-style `/imsvc` include flags as bare
+# arguments and fails with "no such file or directory: '/imsvc'". A toolchain
+# bump does not help — v0.3.0 built with rustc 1.98.1 and still failed here.
+# Note `x86_64-pc-windows-msvc` does build; it is dropped only to keep Windows
+# support all-or-nothing rather than shipping one arch.
+#
+# To restore, add the `*-pc-windows-msvc` triples back alongside "powershell"
+# in `installers`; `windows-archive` is kept below for that. Linux and macOS
+# are unaffected, and Windows users can still `cargo install notedthat`.
 targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
@@ -110,10 +126,10 @@ targets = [
   "aarch64-unknown-linux-musl",
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
-  "x86_64-pc-windows-msvc",
-  "aarch64-pc-windows-msvc",
 ]
-installers = ["shell", "powershell"]
+installers = ["shell"]
+# Unused while the Windows targets are out; retained so restoring them is a
+# one-line change.
 windows-archive = ".zip"
 unix-archive = ".tar.xz"
 checksum = "sha256"
