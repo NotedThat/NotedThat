@@ -356,8 +356,7 @@ impl Storage for InMemoryStorage {
         // against, and WebDAV pages through a whole KB in a loop, so a concurrent delete
         // must not break an in-flight listing.
         if let Some(cursor_key) = cursor {
-            let base64 = |value: &str| value.starts_with(CURSOR_PREFIX);
-            if !base64(cursor_key) {
+            if !cursor_key.starts_with(CURSOR_PREFIX) {
                 return Err(StorageError::BackendUnavailable {
                     message: "invalid or expired cursor".into(),
                 });

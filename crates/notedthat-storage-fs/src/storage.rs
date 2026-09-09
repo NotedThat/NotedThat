@@ -555,7 +555,7 @@ impl Storage for FsStorage {
 
         let _guard = self.inner.locks.key(&bucket, &key).await;
         self.blocking(move |inner| {
-            let Some((metadata, attrs)) = inner.current(&bucket, &key)? else {
+            let Some((_, attrs)) = inner.current(&bucket, &key)? else {
                 // Idempotent, as on S3.
                 return Ok(());
             };
@@ -563,7 +563,6 @@ impl Storage for FsStorage {
             if let Some(expected) = &conditionals.if_match
                 && !matches_if_match(&attrs.etag, expected)
             {
-                let _ = metadata;
                 return Err(StorageError::PreconditionFailed);
             }
 
