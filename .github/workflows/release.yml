@@ -116,11 +116,9 @@ jobs:
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
 
-      # Runner images pin their own rustc, and the ARM Windows image trails the
-      # others. The aws-sdk-s3 tree needs 1.91.1; that image shipped 1.89.0, so
-      # aarch64-pc-windows-msvc was the one target failing every release while
-      # the other seven built fine. Pin stable explicitly rather than inherit
-      # whatever each image happens to carry.
+      # Select a toolchain rather than inheriting whatever rustc each runner or
+      # build container happens to ship — images drift, and the dependency tree
+      # has a real MSRV floor (aws-sdk-s3 currently needs 1.91.1).
       - name: Ensure a Rust toolchain new enough for the dependency tree
         shell: bash
         run: |
