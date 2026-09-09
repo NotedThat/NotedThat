@@ -18,6 +18,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+notedthat-core = { path = "../notedthat-core", version = "0.3.0" }
+
+[dev-dependencies]
+temp-env = "0.3"
 
 [lints]
 workspace = true

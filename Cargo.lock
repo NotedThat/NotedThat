@@ -2311,8 +2311,10 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
+ "notedthat-core",
  "notedthat-mcp",
  "rmcp",
+ "temp-env",
  "tokio",
  "tracing",
  "tracing-subscriber",
