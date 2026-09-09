@@ -33,6 +33,9 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The crate's own tests exercise the in-memory VectorStore.
 notedthat-indexer = { path = ".", features = ["test-support"] }
+# One Qdrant container, for vector_store_conformance.rs only: it is what keeps
+# InMemoryVectorStore honest about the backend it substitutes for.
+testcontainers = { workspace = true }
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true }
