@@ -269,10 +269,13 @@ impl Storage for FsStorage {
                 message: format!("serializing the manifest: {error}"),
             }
         })?;
+        // Unconditional last-writer-wins, as on S3, but under the manifest key's lock like
+        // every other writer. The atomic rename already stops a browser catching a
+        // half-written manifest; the lock is what stops two writers interleaving their
+        // rename and their sidecar write, which would leave one writer's `ETag` recorded
+        // against the other's file — a stamp that matches, and so reads as fresh.
+        let _guard = self.inner.locks.key(&bucket, MANIFEST_KEY).await;
         self.blocking(move |inner| {
-            // Unconditional last-writer-wins, as on S3 — but still under the key lock, so
-            // someone browsing the tree never catches a half-written manifest.
-            let _guard = ();
             inner
                 .store(
                     &bucket,
