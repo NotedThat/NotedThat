@@ -105,16 +105,16 @@ them either:
 - `QdrantClient`'s `VectorStore` impl — the filter, selector and collection
   translation in `crates/notedthat-indexer/src/qdrant.rs`. That is pinned by the
   conformance suite below, not by the E2E suites.
-- `S3Storage` against a real S3 implementation, which is what
-  `notedthat-storage-s3`'s container suite is for.
+- `S3Storage` against a real S3 implementation, which is what the S3 half of the
+  storage integration suite is for (see below).
 
 ### Container-backed tests
 
-Two suites still need real infrastructure, both `#[ignore]` so they run only
+These suites still need real infrastructure, all `#[ignore]` so they run only
 under `--include-ignored`:
 
-- `crates/notedthat-storage-s3/tests/integration.rs` — `S3Storage` against
-  SeaweedFS.
+- `crates/notedthat-storage-fs/tests/storage_integration_s3.rs` — the storage
+  integration suite against SeaweedFS. See "One suite, two real backends" below.
 - `crates/notedthat-indexer/tests/vector_store_conformance.rs` — runs one
   scenario set through both `QdrantClient` and `InMemoryVectorStore` and asserts
   they agree, so the in-memory substitute cannot drift away from the backend it
@@ -131,7 +131,40 @@ runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinar
 substitute matches real S3 semantics, and the cheap half of that check runs on every push
 without Docker.
 
-Both start their container with [testcontainers](https://docs.rs/testcontainers).
+### One suite, two real backends
+
+`crates/notedthat-storage-fs/tests/support/integration_scenarios.rs` holds the storage
+integration suite: absolute assertions about one `Storage` implementation — "a wrong
+`If-Match` is a `PreconditionFailed`", "a range read reports an inclusive
+`Content-Range`". Each scenario takes `&dyn Storage`, so it is written once and run
+against both real backends:
+
+- `storage_integration_local.rs` — `FsStorage` over a temporary directory. No Docker, so
+  it runs in the ordinary `cargo test` pass on every push.
+- `storage_integration_s3.rs` — `S3Storage` over SeaweedFS, `#[ignore]`, in CI's
+  integration job.
+
+Neither file contains a test body. Each supplies a fixture and calls
+`storage_integration_scenarios!`, the macro that expands the scenario list into one
+`#[tokio::test]` per scenario. **To add a case, write the `async fn` and add its name to
+that list** — both backends pick it up, which is what stops one backend's coverage from
+drifting ahead of the other's. The scenario name becomes the knowledge base slug, so it
+must be a valid `KbSlug`: at most 40 characters of `[a-z0-9_]`.
+
+This is a different question from `storage_conformance_*.rs`, which asserts only that two
+backends *agree* — they can agree on the wrong answer, and the integration suite is what
+says they do not.
+
+The S3 half shares one container across the tests running concurrently rather than
+booting one per test, and holds it through a `Weak` rather than a `static`:
+`testcontainers` removes a container on `Drop` and has no reaper process, so a container
+parked in a `static` is never dropped and outlives the run. It also raises
+`-volume.max`, because SeaweedFS gives every bucket a volume collection of its own and
+one bucket per scenario exhausts the default allowance — the master logs "Not enough data
+nodes found!" and PUTs fail with an opaque "service error".
+
+Every one of them starts its container with
+[testcontainers](https://docs.rs/testcontainers).
 **Wait on a readiness signal, never on a fixed duration.** `WaitFor::seconds(5)`
 was used throughout and was a reliable source of flakes: on a loaded machine the
 container is not ready when the sleep expires, the first RPC lands early, and it

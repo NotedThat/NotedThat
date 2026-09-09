@@ -692,7 +692,8 @@ mod tests {
     #[test]
     fn list_objects_signature_accepts_cursor() {
         // This test verifies that the list_objects method signature includes the cursor parameter.
-        // The actual S3 integration tests (in tests/integration.rs) verify the behavior with a real backend.
+        // The actual S3 integration tests (in notedthat-storage-fs's
+        // storage_integration_s3.rs) verify the behavior with a real backend.
         // This is a documentation test showing the expected signature.
         //
         // Expected signature:
@@ -716,7 +717,8 @@ mod tests {
     /// `is_truncated=false` but `NextContinuationToken` is present.
     ///
     /// Expected behavior: warn and ignore the token, return `next_cursor=None`.
-    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
+    /// This is verified at integration level via `SeaweedFS` in
+    /// `notedthat-storage-fs/tests/storage_integration_s3.rs`.
     #[test]
     fn list_objects_ignores_token_when_not_truncated_doc() {
         // Integration test scenario:
@@ -726,14 +728,15 @@ mod tests {
         //
         // This behavior is tested at integration level because it requires
         // a real S3 backend (or SeaweedFS) to produce this edge case.
-        // See tests/integration.rs for the full integration test.
+        // See notedthat-storage-fs/tests/storage_integration_s3.rs for the full test.
     }
 
     /// Test that the logic correctly handles the S3 quirk:
     /// `is_truncated=true` but `NextContinuationToken` is missing.
     ///
     /// Expected behavior: fail closed with `BackendUnavailable`.
-    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
+    /// This is verified at integration level via `SeaweedFS` in
+    /// `notedthat-storage-fs/tests/storage_integration_s3.rs`.
     #[test]
     fn list_objects_truncated_without_token_is_backend_unavailable_doc() {
         // Integration test scenario:
@@ -743,6 +746,6 @@ mod tests {
         //
         // This behavior is tested at integration level because it requires
         // a real S3 backend (or SeaweedFS) to produce this edge case.
-        // See tests/integration.rs for the full integration test.
+        // See notedthat-storage-fs/tests/storage_integration_s3.rs for the full test.
     }
 }
