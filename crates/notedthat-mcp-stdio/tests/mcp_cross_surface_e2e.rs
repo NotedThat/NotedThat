@@ -8,18 +8,18 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 
-/// How long to wait for the server to bind after `run()` starts.
+/// How long to wait for the server to bind after startup.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Generous on purpose. Startup still does real provisioning work — buckets,
+/// manifests and a vector-store collection with its payload indexes — only now
+/// against in-process backends rather than containers. A loaded CI runner can
+/// still be slow enough that a tight budget produces an intermittent failure
+/// instead of a real signal, which is what the old 10s budget did.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
-// SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests.
 fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut child = Command::new(MCP_STDIO_BIN)
         .env("NOTEDTHAT_URL", url)

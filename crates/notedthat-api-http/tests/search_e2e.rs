@@ -35,11 +35,12 @@ use wiremock::{
     matchers::{method, path},
 };
 
-/// How long to wait for an asynchronous index event to land in Qdrant.
+/// How long to wait for an asynchronous index event to land in the vector store.
 ///
-/// Indexing re-reads the object from S3, calls the embedder and upserts into
-/// Qdrant, all against freshly started containers. The previous 10s budget was
-/// marginal on a cold, loaded machine and timed out intermittently.
+/// Generous on purpose. Nothing here waits on a container any more, but indexing
+/// is still asynchronous — the worker re-reads the object, calls the wiremock
+/// embedder and upserts — and a loaded CI runner can be slow enough that a tight
+/// budget turns into an intermittent failure rather than a real signal.
 const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ─── Constants ──────────────────────────────────────────────────────────────

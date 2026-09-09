@@ -1,8 +1,8 @@
-//! E2E integration tests for replace against `SeaweedFS` + Qdrant testcontainers.
+//! E2E integration tests for replace against a server running on in-process backends.
 //!
-//! Requires Docker. Run with:
+//! No Docker, and not `#[ignore]`d: these run in the ordinary pass.
 //! ```sh
-//! cargo test -p notedthat-server --locked --test it_replace -- --include-ignored
+//! cargo test -p notedthat-server --locked --test it_replace
 //! ```
 #![allow(missing_docs)]
 

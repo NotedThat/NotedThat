@@ -80,15 +80,48 @@ Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install e
   release-plz — no release, no failure report. Run them locally with
   `cargo test --workspace -- --ignored stress_`.
 
+### Backends in tests
+
+Almost everything runs on in-process substitutes. `notedthat_indexer::testing`
+carries `InMemoryVectorStore` and `StubEmbedder`, `notedthat_api_http::testing`
+carries `InMemoryStorage`; each is behind that crate's `test-support` feature.
+Reach for those first — they need no Docker, and the suites that use them run in
+the normal `cargo test` pass rather than behind `#[ignore]`.
+
+To bring up a whole server over them, build a `notedthat_server::run::Backends`
+and hand it to `run_with` (enable `notedthat-server`'s `test-support` feature).
+Startup, provisioning, the indexer worker, every listener and the shutdown
+sequence are the real code path; only S3, Qdrant and the embedding endpoint are
+substituted. See `crates/notedthat-server/tests/support/patch_backends.rs`.
+
+Two things the substitutes do not cover, so do not read a green run as covering
+them either:
+
+- `QdrantClient`'s `VectorStore` impl — the filter, selector and collection
+  translation in `crates/notedthat-indexer/src/qdrant.rs`. That is pinned by the
+  conformance suite below, not by the E2E suites.
+- `S3Storage` against a real S3 implementation, which is what
+  `notedthat-storage-s3`'s container suite is for.
+
 ### Container-backed tests
 
-Tests that need Qdrant or SeaweedFS start them with
-[testcontainers](https://docs.rs/testcontainers). **Wait on a readiness signal,
-never on a fixed duration.** `WaitFor::seconds(5)` was used throughout and was a
-reliable source of flakes: on a loaded machine the container is not ready when the
-sleep expires, the first RPC lands early, and it fails against the client timeout
-with a misleading error — for Qdrant, collection calls would succeed while the
-first `upsert_points` returned `Cancelled: Timeout expired`.
+Two suites still need real infrastructure, both `#[ignore]` so they run only
+under `--include-ignored`:
+
+- `crates/notedthat-storage-s3/tests/integration.rs` — `S3Storage` against
+  SeaweedFS.
+- `crates/notedthat-indexer/tests/vector_store_conformance.rs` — runs one
+  scenario set through both `QdrantClient` and `InMemoryVectorStore` and asserts
+  they agree, so the in-memory substitute cannot drift away from the backend it
+  stands in for. Run it after any change to `qdrant.rs` or `testing.rs`.
+
+Both start their container with [testcontainers](https://docs.rs/testcontainers).
+**Wait on a readiness signal, never on a fixed duration.** `WaitFor::seconds(5)`
+was used throughout and was a reliable source of flakes: on a loaded machine the
+container is not ready when the sleep expires, the first RPC lands early, and it
+fails against the client timeout with a misleading error — for Qdrant, collection
+calls would succeed while the first `upsert_points` returned
+`Cancelled: Timeout expired`.
 
 Use the log line each service prints once its listener is bound:
 
@@ -99,17 +132,11 @@ Use the log line each service prints once its listener is bound:
 .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
 ```
 
-`notedthat-indexer` goes one step further in `tests/support/mod.rs`: after the log
-line it polls `health_check` until Qdrant answers, so a bound-but-not-yet-serving
-port cannot slip through. Prefer `support::start_qdrant()` and
-`support::raw_client()` there over hand-rolling a container or a client in a test
-file — a raw `Qdrant::from_url(..).build()` inherits the crate's 5-second
-per-RPC default, which a `wait(true)` upsert can exceed under load.
-
-Give the server itself room to start. `build_infrastructure` provisions buckets,
-manifests and a Qdrant collection; measured on a cold, loaded machine that is
-about 9s, so readiness budgets are 60s rather than the 10s that used to leave
-under a second of margin.
+A bound port is not a serving port. The conformance suite polls `health_check`
+after the log line before handing the client to a test, and builds its client
+through `QdrantClient::new` rather than `Qdrant::from_url(..).build()` — the
+latter inherits qdrant-client's 5-second per-RPC default, which a `wait(true)`
+upsert can exceed under load.
 
 ## Dependency Ownership Rules
 

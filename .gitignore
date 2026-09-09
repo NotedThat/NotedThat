@@ -17,3 +17,7 @@
 .omo/
 
 .env
+
+# Core dumps (a 5 GiB stress run that aborts leaves one here)
+core
+core.*

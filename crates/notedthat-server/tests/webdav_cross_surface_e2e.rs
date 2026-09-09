@@ -18,8 +18,6 @@ const WEBDAV_USER: &str = "e2e-webdav-user";
 const WEBDAV_PASS: &str = "e2e-webdav-pass";
 const API_TOKEN: &str = "e2e-test-token";
 
-// SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
-// S3 gateway rejects all signed requests. target path is the FIRST arg in with_copy_to.
 fn basic_auth(user: &str, pass: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
     format!("Basic {encoded}")

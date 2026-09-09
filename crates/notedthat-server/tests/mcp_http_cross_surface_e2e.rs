@@ -16,8 +16,6 @@ const EXPECTED_M7_TOOLS: &str =
     "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
-// SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests without this the
-// S3 gateway rejects all signed requests. target path is the FIRST arg in with_copy_to.
 /// Vector width the stub embedder and the provisioned collection agree on.
 const EMBEDDING_DIM: u32 = 4;
 
@@ -503,7 +501,7 @@ async fn mcp_http_initialize_tools() {
 
 #[tokio::test]
 async fn mcp_http_write_search_identity() {
-    // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
+    // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
@@ -590,7 +588,7 @@ async fn mcp_http_write_search_identity() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn mcp_http_write_stdio_search_identity() {
-    // Given: MCP HTTP, HTTP API, SeaweedFS, Qdrant, and the mock embedder are running.
+    // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;
@@ -1083,7 +1081,7 @@ async fn mcp_resources_list_and_read() {
 
 #[tokio::test]
 async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
-    // Given: MCP HTTP and HTTP API are running with SeaweedFS and Qdrant.
+    // Given: MCP HTTP and the HTTP API are running over the in-process backends.
     let http_addr = free_addr().await;
     let dav_addr = free_addr().await;
     let mcp_addr = free_addr().await;

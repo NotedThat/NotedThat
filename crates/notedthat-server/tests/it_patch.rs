@@ -1,8 +1,8 @@
-//! E2E integration tests for PATCH against `SeaweedFS` + Qdrant testcontainers.
+//! E2E integration tests for PATCH against a server running on in-process backends.
 //!
-//! Requires Docker. Run with:
+//! No Docker, and not `#[ignore]`d: these run in the ordinary pass.
 //! ```sh
-//! cargo test -p notedthat-server --locked --test it_patch -- --include-ignored
+//! cargo test -p notedthat-server --locked --test it_patch
 //! ```
 #![allow(missing_docs)]
 
@@ -130,7 +130,7 @@ async fn mcp_append_without_if_match_grows_object() {
 
     // Then: the tool succeeds and the object grows. The MCP client's single-PATCH/no-HEAD
     // wire contract is covered by notedthat-mcp append unit tests; this E2E verifies it through
-    // the real HTTP MCP surface backed by SeaweedFS and Qdrant.
+    // the real HTTP MCP surface, backed by the in-process backends.
     assert!(
         tool_response.get("result").is_some(),
         "append failed: {tool_response}"
