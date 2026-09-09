@@ -15,6 +15,8 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 ### Added
 
 - *(api)* add LLM navigation document
+- *(api)* enforce manifest-controlled public reads
+- *(core)* add manifest public-read policy
 - *(okf)* index concept metadata and expose search filters
 
 ### Fixed
@@ -33,7 +35,11 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 - *(indexer)* clear stale hits when replacement chunks exceed limits
 - *(indexer)* backfill payload indexes on an existing collection
 - *(indexer)* set an explicit Qdrant client timeout
+- *(indexer)* keep the Qdrant message on write and DDL paths
 - *(release)* define [profile.dist] required by cargo-dist
+- *(server)* restore staging-first startup and gate the test seam
+- *(ci)* restore the auto-release path
+- harden public-read authorization boundaries
 
 ### Other
 
@@ -43,6 +49,13 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 - *(server)* isolate storage for multi-chunk integration tests
 - wait on readiness signals in container-backed tests
 - split HTTP/WebDAV modules and share storage test helpers
+- document manifest-controlled public reads
+- *(webdav)* replace the SeaweedFS testcontainer with InMemoryStorage
+- *(indexer)* add a VectorStore seam and mock the Qdrant suites
+- *(server)* run the E2E suites over injected in-process backends
+- *(indexer)* pin InMemoryVectorStore against Qdrant with a conformance suite
+- pin the stress skip set and close the release-plz index race
+- correct what the converted suites actually run against
 
 ## [0.1.5](https://github.com/NotedThat/NotedThat/compare/v0.1.4...v0.1.5) - 2026-07-14
 
