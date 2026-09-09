@@ -8,9 +8,14 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
+
+use crate::preconditions::{
+    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
+    resolve_range, unix_seconds_i64,
+};
 
 use crate::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
@@ -44,59 +49,7 @@ struct InMemoryInner {
     buckets: HashSet<String>,
 }
 
-/// SHA-256 `ETag` for `bytes` in `"<hex>"` form (public for integration tests).
-pub fn compute_etag(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
-}
-
-fn parse_http_date_or_err(s: &str) -> Result<SystemTime, StorageError> {
-    httpdate::parse_http_date(s).map_err(|e| StorageError::Other {
-        source: Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid HTTP-date '{s}': {e}"),
-        )),
-    })
-}
-
-/// Strong `ETag` comparison: `If-Match` semantics.
-fn matches_if_match(current_etag: &str, if_match_value: &str) -> bool {
-    if if_match_value.trim() == "*" {
-        return true;
-    }
-
-    if_match_value
-        .split(',')
-        .map(str::trim)
-        .any(|tag| tag == current_etag)
-}
-
-/// Returns true if `If-None-Match` matches the current object.
-fn matches_if_none_match(current_etag: Option<&str>, if_none_match_value: &str) -> bool {
-    let Some(current) = current_etag else {
-        return false;
-    };
-
-    if if_none_match_value.trim() == "*" {
-        return true;
-    }
-
-    if_none_match_value.split(',').map(str::trim).any(|tag| {
-        let tag = tag.trim_start_matches("W/");
-        let current = current.trim_start_matches("W/");
-        tag == current
-    })
-}
-
-fn unix_seconds(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn unix_seconds_i64(time: SystemTime) -> i64 {
-    i64::try_from(unix_seconds(time)).unwrap_or(i64::MAX)
-}
+pub use crate::etag::compute_etag;
 
 fn to_slice_index(value: u64) -> Result<usize, StorageError> {
     usize::try_from(value).map_err(|e| StorageError::Other {
@@ -107,6 +60,13 @@ fn to_slice_index(value: u64) -> Result<usize, StorageError> {
     })
 }
 
+fn object_state(stored: &StoredObject) -> ObjectState<'_> {
+    ObjectState {
+        etag: &stored.etag,
+        last_modified: stored.last_modified,
+    }
+}
+
 fn object_meta(path: &ObjectPath, stored: &StoredObject, size: u64) -> ObjectMeta {
     ObjectMeta {
         key: path.as_str().to_string(),
@@ -115,66 +75,6 @@ fn object_meta(path: &ObjectPath, stored: &StoredObject, size: u64) -> ObjectMet
         content_type: stored.content_type.clone(),
         etag: Some(stored.etag.clone()),
     }
-}
-
-fn evaluate_write_preconditions(
-    stored: Option<&StoredObject>,
-    conditionals: &ConditionalHeaders,
-) -> Result<(), StorageError> {
-    if let Some(if_match) = &conditionals.if_match
-        && !stored.is_some_and(|object| matches_if_match(&object.etag, if_match))
-    {
-        return Err(StorageError::PreconditionFailed);
-    }
-
-    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since {
-        let threshold = parse_http_date_or_err(if_unmodified_since)?;
-        if stored.is_some_and(|object| unix_seconds(object.last_modified) > unix_seconds(threshold))
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-    }
-
-    if let Some(if_none_match) = &conditionals.if_none_match
-        && matches_if_none_match(stored.map(|object| object.etag.as_str()), if_none_match)
-    {
-        return Err(StorageError::PreconditionFailed);
-    }
-
-    Ok(())
-}
-
-fn evaluate_read_preconditions(
-    stored: &StoredObject,
-    conditionals: &ConditionalHeaders,
-) -> Result<(), StorageError> {
-    if let Some(if_match) = &conditionals.if_match
-        && !matches_if_match(&stored.etag, if_match)
-    {
-        return Err(StorageError::PreconditionFailed);
-    }
-
-    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since {
-        let threshold = parse_http_date_or_err(if_unmodified_since)?;
-        if unix_seconds(stored.last_modified) > unix_seconds(threshold) {
-            return Err(StorageError::PreconditionFailed);
-        }
-    }
-
-    if let Some(if_none_match) = &conditionals.if_none_match
-        && matches_if_none_match(Some(&stored.etag), if_none_match)
-    {
-        return Err(StorageError::NotModified);
-    }
-
-    if let Some(if_modified_since) = &conditionals.if_modified_since {
-        let threshold = parse_http_date_or_err(if_modified_since)?;
-        if unix_seconds(stored.last_modified) <= unix_seconds(threshold) {
-            return Err(StorageError::NotModified);
-        }
-    }
-
-    Ok(())
 }
 
 #[async_trait]
@@ -218,7 +118,7 @@ impl Storage for InMemoryStorage {
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
             })?;
-        evaluate_read_preconditions(stored, &conditionals)?;
+        evaluate_read_preconditions(object_state(stored), &conditionals)?;
         Ok(object_meta(path, stored, stored.bytes.len() as u64))
     }
 
@@ -237,26 +137,17 @@ impl Storage for InMemoryStorage {
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
             })?;
-        evaluate_read_preconditions(stored, &conditionals)?;
+        evaluate_read_preconditions(object_state(stored), &conditionals)?;
 
         let total_size = stored.bytes.len() as u64;
-        let first_range = range.as_ref().and_then(|ranges| ranges.first());
-        let (bytes, content_range) = if let Some(byte_range) = first_range {
-            let exclusive = byte_range.to_exclusive_range(total_size).ok_or(
-                StorageError::RangeNotSatisfiable {
-                    complete_length: total_size,
-                },
-            )?;
-            let start = exclusive.start;
-            let end = exclusive.end;
-            (
+        let (bytes, content_range) = match resolve_range(total_size, range.as_deref())? {
+            Some((exclusive, content_range)) => (
                 stored
                     .bytes
-                    .slice(to_slice_index(start)?..to_slice_index(end)?),
-                Some(format!("bytes {}-{}/{}", start, end - 1, total_size)),
-            )
-        } else {
-            (stored.bytes.clone(), None)
+                    .slice(to_slice_index(exclusive.start)?..to_slice_index(exclusive.end)?),
+                Some(content_range),
+            ),
+            None => (stored.bytes.clone(), None),
         };
 
         Ok(ObjectRead {
@@ -291,7 +182,7 @@ impl Storage for InMemoryStorage {
     ) -> Result<PutOutcome, StorageError> {
         let mut inner = self.inner.write().await;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
-        evaluate_write_preconditions(inner.objects.get(&key), &conditionals)?;
+        evaluate_write_preconditions(inner.objects.get(&key).map(object_state), &conditionals)?;
 
         let etag = compute_etag(&bytes);
         inner.objects.insert(
@@ -365,7 +256,10 @@ impl Storage for InMemoryStorage {
             if_none_match: options.destination_if_none_match,
             ..ConditionalHeaders::default()
         };
-        evaluate_write_preconditions(inner.objects.get(&destination_key), &destination_conditions)?;
+        evaluate_write_preconditions(
+            inner.objects.get(&destination_key).map(object_state),
+            &destination_conditions,
+        )?;
         let etag = source_object.etag.clone();
         inner.objects.insert(
             destination_key,
