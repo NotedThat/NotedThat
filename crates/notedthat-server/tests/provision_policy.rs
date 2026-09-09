@@ -4,18 +4,26 @@ use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{
     Error, KbManifest, KbSlug, PublicReadCapability, PublicReadPolicy, Storage, TenantSlug,
 };
-use notedthat_indexer::{QdrantClient, QdrantConfig, QdrantProvisioner};
+use notedthat_indexer::{QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore};
 use notedthat_server::provision::provision_kbs;
+use std::sync::Arc;
 
+/// A provisioner over a real `QdrantClient` that is never reached.
+///
+/// These tests only exercise the manifest half of `provision_kbs`, which
+/// returns before any collection call. The client is kept concrete rather than
+/// swapped for `InMemoryVectorStore` so the test would fail loudly if that stopped
+/// being true, instead of silently starting to assert in-memory behaviour.
 fn provisioner() -> QdrantProvisioner {
-    QdrantProvisioner::new(
+    let store: Arc<dyn VectorStore> = Arc::new(
         QdrantClient::new(&QdrantConfig {
             url: "http://127.0.0.1:6334".to_string(),
             api_key: None,
             ..Default::default()
         })
         .expect("qdrant client construction does not connect"),
-    )
+    );
+    QdrantProvisioner::new(store)
 }
 
 #[tokio::test]

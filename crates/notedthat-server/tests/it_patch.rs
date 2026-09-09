@@ -1,8 +1,8 @@
-//! E2E integration tests for PATCH against `SeaweedFS` + Qdrant testcontainers.
+//! E2E integration tests for PATCH against a server running on in-process backends.
 //!
-//! Requires Docker. Run with:
+//! No Docker, and not `#[ignore]`d: these run in the ordinary pass.
 //! ```sh
-//! cargo test -p notedthat-server --locked --test it_patch -- --include-ignored
+//! cargo test -p notedthat-server --locked --test it_patch
 //! ```
 #![allow(missing_docs)]
 
@@ -15,7 +15,6 @@ use reqwest::StatusCode;
 const NORMAL_MAX_PATCHABLE_SIZE: u64 = 10 * 1024 * 1024;
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn bytes_mode_patch_replaces_requested_byte_span() {
     // Given: a 100-byte object and its current ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -38,7 +37,6 @@ async fn bytes_mode_patch_replaces_requested_byte_span() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn lines_mode_patch_replaces_inclusive_line_span() {
     // Given: a five-line object and its current ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -60,7 +58,6 @@ async fn lines_mode_patch_replaces_inclusive_line_span() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn append_with_explicit_if_match_grows_object() {
     // Given: an object with a caller-visible ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -77,7 +74,6 @@ async fn append_with_explicit_if_match_grows_object() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn append_without_if_match_grows_object_via_http() {
     // Given: an existing object.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -97,7 +93,6 @@ async fn append_without_if_match_grows_object_via_http() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn mcp_append_without_if_match_grows_object() {
     // Given: the HTTP MCP endpoint is available for an existing object.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -135,7 +130,7 @@ async fn mcp_append_without_if_match_grows_object() {
 
     // Then: the tool succeeds and the object grows. The MCP client's single-PATCH/no-HEAD
     // wire contract is covered by notedthat-mcp append unit tests; this E2E verifies it through
-    // the real HTTP MCP surface backed by SeaweedFS and Qdrant.
+    // the real HTTP MCP surface, backed by the in-process backends.
     assert!(
         tool_response.get("result").is_some(),
         "append failed: {tool_response}"
@@ -144,7 +139,6 @@ async fn mcp_append_without_if_match_grows_object() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn sequential_patch_uses_advanced_etag_for_second_write() {
     // Given: an object and its initial ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -167,7 +161,6 @@ async fn sequential_patch_uses_advanced_etag_for_second_write() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn concurrent_patches_with_same_if_match_surface_conflicts() {
     // Given: three clients share one starting ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -218,7 +211,6 @@ async fn concurrent_patches_with_same_if_match_surface_conflicts() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn patch_rejects_object_larger_than_max_patchable_size_before_splice() {
     // Given: an object already larger than the configured patch cap.
     let server = PatchServer::start(10).await;
@@ -232,7 +224,6 @@ async fn patch_rejects_object_larger_than_max_patchable_size_before_splice() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn patch_rejects_result_larger_than_max_patchable_size_after_splice() {
     // Given: a 15-byte object under a 20-byte patch cap.
     let server = PatchServer::start(20).await;
@@ -246,7 +237,6 @@ async fn patch_rejects_result_larger_than_max_patchable_size_after_splice() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn bytes_patch_without_if_match_returns_invalid_request() {
     // Given: an existing object.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -262,7 +252,6 @@ async fn bytes_patch_without_if_match_returns_invalid_request() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn if_match_star_on_patch_returns_invalid_request() {
     // Given: an existing object.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -278,7 +267,6 @@ async fn if_match_star_on_patch_returns_invalid_request() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn line_patch_out_of_range_returns_dual_416_headers_and_empty_body() {
     // Given: a five-line object with a known ETag.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
@@ -310,7 +298,6 @@ async fn line_patch_out_of_range_returns_dual_416_headers_and_empty_body() {
 }
 
 #[tokio::test]
-#[ignore = "requires SeaweedFS + Qdrant testcontainers"]
 async fn patch_persists_body_when_indexer_accepts_event() {
     // Given: a real server whose indexer queue accepts events.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;

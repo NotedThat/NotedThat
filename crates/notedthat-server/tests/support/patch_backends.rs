@@ -1,28 +1,31 @@
+//! In-process backends for the server E2E suites.
+//!
+//! These used to start a `SeaweedFS` container, a Qdrant container and a wiremock
+//! embedder per test. The subject of those tests is the server — its routes,
+//! its MCP and `WebDAV` surfaces, its startup and shutdown — not any backend's
+//! wire protocol, so the whole runtime is now assembled from
+//! [`notedthat_server::run::Backends`] over in-memory implementations and handed
+//! to `run_with`. Everything else about startup is the real path: the same
+//! provisioning, the same indexer worker, the same listeners.
+
+use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{KbSlug, TenantSlug};
+use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use notedthat_server::run::Backends;
 use notedthat_storage_s3::S3Config;
 use std::collections::BTreeMap;
-use testcontainers::{
-    GenericImage, ImageExt,
-    core::{IntoContainerPort, Mount, WaitFor},
-    runners::AsyncRunner,
-};
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::path};
+use std::sync::Arc;
 
 use super::API_TOKEN;
 
-const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
+/// Vector width the stub embedder and the provisioned collection agree on.
+const EMBEDDING_DIM: u32 = 4;
 
 pub(super) struct RuntimeParts {
     pub(super) config: Config,
     pub(super) kb: String,
-    pub(super) guards: BackendGuards,
-}
-
-pub(super) struct BackendGuards {
-    _seaweed: Box<dyn std::any::Any + Send>,
-    _qdrant: Box<dyn std::any::Any + Send>,
-    _embedder: MockServer,
+    pub(super) backends: Backends,
 }
 
 #[derive(Clone, Copy)]
@@ -32,96 +35,39 @@ struct ListenerAddrs {
     mcp: std::net::SocketAddr,
 }
 
-#[derive(Clone, Copy)]
-struct BackendUrls<'a> {
-    s3: &'a str,
-    qdrant: &'a str,
-    embedder: &'a str,
-}
-
-pub(super) async fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
-    let (seaweed, s3_url) = start_seaweedfs().await;
-    let (qdrant, qdrant_url) = start_qdrant().await;
-    let embedder = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&embedder)
-        .await;
-
+pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
     let listeners = ListenerAddrs {
-        http: free_addr().await,
-        dav: free_addr().await,
-        mcp: free_addr().await,
+        http: notedthat_api_http::testing::reserve_addr(),
+        dav: notedthat_api_http::testing::reserve_addr(),
+        mcp: notedthat_api_http::testing::reserve_addr(),
     };
     let kb = unique_kb();
-    let embedder_url = embedder.uri();
-    let config = test_config(
-        &kb,
-        listeners,
-        BackendUrls {
-            s3: &s3_url,
-            qdrant: &qdrant_url,
-            embedder: &embedder_url,
-        },
-        max_patchable_size,
-    );
+    let config = test_config(&kb, listeners, max_patchable_size);
 
     RuntimeParts {
         config,
         kb,
-        guards: BackendGuards {
-            _seaweed: Box::new(seaweed),
-            _qdrant: Box::new(qdrant),
-            _embedder: embedder,
-        },
+        backends: in_memory_backends(),
     }
 }
 
-async fn start_seaweedfs() -> (impl std::any::Any + Send, String) {
-    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
-        .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
-        .with_mount(Mount::tmpfs_mount("/data").with_size_bytes(256 * 1024 * 1024))
-        .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
-        .with_cmd([
-            "server",
-            "-s3",
-            "-filer",
-            "-s3.config=/tmp/s3.json",
-            "-master.volumeSizeLimitMB=16",
-        ])
-        .start()
-        .await
-        .expect("failed to start SeaweedFS testcontainer");
-    let port = container
-        .get_host_port_ipv4(8333_u16)
-        .await
-        .expect("failed to get SeaweedFS port");
-    (container, format!("http://127.0.0.1:{port}"))
+/// Storage, vector store and embedder, all in-process.
+pub(super) fn in_memory_backends() -> Backends {
+    Backends {
+        storage: Arc::new(InMemoryStorage::default()),
+        store: Arc::new(InMemoryVectorStore::new()),
+        embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+    }
 }
 
-async fn start_qdrant() -> (impl std::any::Any + Send, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
-        .start()
-        .await
-        .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
-
-fn test_config(
-    kb: &str,
-    listeners: ListenerAddrs,
-    backends: BackendUrls<'_>,
-    max_patchable_size: u64,
-) -> Config {
+/// Config for a server whose backends are injected.
+///
+/// The S3 and Qdrant sections still have to be populated — `Config` is the
+/// production type — but nothing reads them, because `run_with` never builds a
+/// client from them. They are pointed at unroutable placeholders so that a
+/// regression which *does* reach for them fails loudly instead of quietly
+/// talking to something real.
+fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> Config {
     let mut kbs = BTreeMap::new();
     kbs.insert(
         kb.to_string(),
@@ -134,7 +80,7 @@ fn test_config(
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
         s3: S3Config {
-            endpoint_url: Some(backends.s3.to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
@@ -142,16 +88,16 @@ fn test_config(
         },
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
-            url: backends.qdrant.to_string(),
+            url: "http://127.0.0.1:1".to_string(),
             api_key: None,
             timeout_ms: 30_000,
             connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
-            endpoint_url: backends.embedder.to_string(),
+            endpoint_url: "http://127.0.0.1:1".to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
-            dimensions: 4,
+            dimensions: EMBEDDING_DIM,
             batch_size: 1,
             timeout_ms: 30_000,
             max_retries: 3,
@@ -171,27 +117,6 @@ fn test_config(
         max_patchable_size,
         staging: notedthat_core::StagingConfig::default(),
     }
-}
-
-fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
-    let data = (0..count)
-        .map(|i| {
-            let embedding: Vec<f32> = (0..dim)
-                .map(|j| if j == i % dim { 1.0 } else { 0.0 })
-                .collect();
-            serde_json::json!({"index": i, "embedding": embedding, "object": "embedding"})
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({"object": "list", "data": data})
-}
-
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
 }
 
 fn unique_kb() -> String {

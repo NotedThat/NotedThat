@@ -10,13 +10,11 @@ use reqwest::{Response, StatusCode};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-/// How long to wait for the server to bind after `run()` starts.
+/// How long to wait for the server to bind after startup begins.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Provisioning is in-process now, so this is generous by a wide margin; it
+/// exists to fail with a clear message rather than hang if startup breaks.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const API_TOKEN: &str = "e2e-test-token";
 
@@ -26,17 +24,17 @@ pub struct PatchServer {
     pub mcp_url: String,
     pub kb: String,
     server_handle: JoinHandle<()>,
-    _guards: patch_backends::BackendGuards,
 }
 
 impl PatchServer {
     pub async fn start(max_patchable_size: u64) -> Self {
-        let runtime = patch_backends::start_runtime(max_patchable_size).await;
+        let runtime = patch_backends::start_runtime(max_patchable_size);
         let config = runtime.config;
+        let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);
         let mcp_url = format!("http://{}/mcp", config.mcp_http_bind);
         let server_handle = tokio::spawn(async move {
-            notedthat_server::run::run(config)
+            notedthat_server::run::run_with(config, backends)
                 .await
                 .expect("server run failed");
         });
@@ -49,7 +47,6 @@ impl PatchServer {
             mcp_url,
             kb: runtime.kb,
             server_handle,
-            _guards: runtime.guards,
         }
     }
 

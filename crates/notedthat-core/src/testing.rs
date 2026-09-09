@@ -461,6 +461,56 @@ impl Storage for InMemoryStorage {
     }
 }
 
+/// Reserve a loopback address that no other caller in this process will be given.
+///
+/// The obvious version of this — bind port 0, read the port back, drop the
+/// listener — is a race. The port is free again the moment the probe listener
+/// drops, so the kernel is entitled to hand the same one to the next probe, and
+/// with a dozen tests in a binary each claiming several ports it does. Whichever
+/// server binds second then fails with `EADDRINUSE`, and the suite reports a
+/// bind error or a readiness timeout instead of the thing it was testing.
+///
+/// Remembering what has already been handed out closes the intra-process half of
+/// that race, which is the half a `cargo test` run actually hits: test binaries
+/// get separate port ranges from the kernel far more reliably than parallel
+/// threads inside one binary do.
+///
+/// Still a probe, so a process outside this one can always steal the port
+/// between the probe and the real bind. Nothing short of handing the bound
+/// listener to the server fixes that, and it is not what makes these suites
+/// flaky.
+///
+/// # Panics
+///
+/// Panics if no ephemeral port can be bound, or if the reservation set has been
+/// poisoned by another test panicking while holding it.
+#[must_use]
+pub fn reserve_addr() -> std::net::SocketAddr {
+    use std::sync::{Mutex, OnceLock};
+
+    static TAKEN: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let taken = TAKEN.get_or_init(|| Mutex::new(HashSet::new()));
+
+    // Hold every probe open until a fresh port turns up, so this loop cannot be
+    // handed the same rejected port over and over.
+    let mut probes = Vec::new();
+    loop {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral loopback port");
+        let addr = listener
+            .local_addr()
+            .expect("probe listener has a local addr");
+        let fresh = taken
+            .lock()
+            .expect("port reservations are not poisoned")
+            .insert(addr.port());
+        if fresh {
+            return addr;
+        }
+        probes.push(listener);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

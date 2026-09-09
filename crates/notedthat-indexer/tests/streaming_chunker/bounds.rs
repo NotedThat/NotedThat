@@ -67,7 +67,7 @@ fn bounds_read_requests_and_total_streaming_io() {
 
 #[test]
 #[ignore = "generated 5 GiB bounded-memory stress scenario"]
-fn streams_five_gibibytes_without_retaining_outputs() {
+fn stress_streams_five_gibibytes_without_retaining_outputs() {
     // Given
     let size = 5 * 1_024 * 1_024 * 1_024_u64;
 

@@ -1,13 +1,16 @@
 //! E2E integration tests for `IndexerWorker`.
 //!
-//! Requires: Docker with qdrant/qdrant:v1.15.4, wiremock (in-process).
+//! The subject is the worker's pipeline — chunking, batching, payload
+//! construction, tombstones, obsolete-chunk cleanup and drain-on-shutdown — so
+//! it runs against [`InMemoryVectorStore`] and an in-process wiremock embedder,
+//! with no container. The store reports what was written in the same
+//! `RetrievedPoint` shape a Qdrant `scroll` returns, so every payload and vector
+//! assertion below is unchanged.
+//!
 //! Run with:
-//!   cargo test -p notedthat-indexer --test `worker_integration` -- --ignored
+//!   cargo test -p notedthat-indexer --test `worker_integration`
 
 #![allow(missing_docs)]
-
-mod support;
-use support::start_qdrant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,13 +19,14 @@ use notedthat_core::{
     ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
 };
 use notedthat_indexer::chunker::stream_chunks;
+use notedthat_indexer::testing::InMemoryVectorStore;
+use notedthat_indexer::vector_store::VectorStore;
 use notedthat_indexer::{
     Embedder, EmbedderError, IndexEvent, IndexerWorker, OpenAiCompatibleConfig,
-    OpenAiCompatibleEmbedder, QdrantClient, QdrantConfig, QdrantProvisioner,
+    OpenAiCompatibleEmbedder, QdrantProvisioner,
 };
 use qdrant_client::qdrant::{
-    Condition, Filter, RetrievedPoint, ScrollPoints, VectorsOutput, value::Kind,
-    vectors_output::VectorsOptions,
+    RetrievedPoint, VectorsOutput, value::Kind, vectors_output::VectorsOptions,
 };
 use std::{
     collections::HashMap,
@@ -42,12 +46,6 @@ use wiremock::{
 };
 
 type StorageObject = (Bytes, Option<String>);
-
-static INTEGRATION_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-async fn integration_guard() -> tokio::sync::MutexGuard<'static, ()> {
-    INTEGRATION_TEST_MUTEX.lock().await
-}
 
 struct MockStorage {
     objects: Mutex<HashMap<(String, String), StorageObject>>,
@@ -414,17 +412,17 @@ fn make_embedder_with_limits(
 fn make_worker(
     storage: Arc<MockStorage>,
     embedder: Arc<dyn Embedder>,
-    qdrant: Arc<QdrantClient>,
+    store: Arc<dyn VectorStore>,
     rx: mpsc::Receiver<IndexEvent>,
     shutdown: CancellationToken,
 ) -> IndexerWorker {
-    make_worker_with_batch(storage, embedder, qdrant, rx, shutdown, 32)
+    make_worker_with_batch(storage, embedder, store, rx, shutdown, 32)
 }
 
 fn make_worker_with_batch(
     storage: Arc<MockStorage>,
     embedder: Arc<dyn Embedder>,
-    qdrant: Arc<QdrantClient>,
+    store: Arc<dyn VectorStore>,
     rx: mpsc::Receiver<IndexEvent>,
     shutdown: CancellationToken,
     batch_size: usize,
@@ -432,7 +430,7 @@ fn make_worker_with_batch(
     IndexerWorker::new(
         storage as Arc<dyn Storage>,
         embedder,
-        qdrant,
+        store,
         rx,
         shutdown,
         batch_size,
@@ -442,7 +440,7 @@ fn make_worker_with_batch(
 async fn index_once(
     storage: Arc<MockStorage>,
     embedder: Arc<dyn Embedder>,
-    qdrant: Arc<QdrantClient>,
+    store: Arc<dyn VectorStore>,
     kb: &KbSlug,
     key: &str,
     batch_size: usize,
@@ -460,7 +458,7 @@ async fn index_once(
     make_worker_with_batch(
         storage,
         embedder,
-        qdrant,
+        store,
         rx,
         CancellationToken::new(),
         batch_size,
@@ -477,51 +475,25 @@ fn opath(s: &str) -> ObjectPath {
     ObjectPath::try_from(s).unwrap()
 }
 
-fn coll(kb: &KbSlug) -> String {
-    format!("kb_{}_v1", kb.as_str())
+/// A store and a provisioner sharing it, mirroring how the server wires one
+/// backend into both.
+fn make_store() -> (InMemoryVectorStore, QdrantProvisioner) {
+    let store = InMemoryVectorStore::new();
+    let provisioner = QdrantProvisioner::new(Arc::new(store.clone()));
+    (store, provisioner)
 }
 
-fn make_qdrant(url: &str) -> (Arc<QdrantClient>, QdrantProvisioner) {
-    let cfg = QdrantConfig {
-        url: url.to_string(),
-        api_key: None,
-        ..Default::default()
-    };
-    let client = Arc::new(QdrantClient::new(&cfg).unwrap());
-    let provisioner = QdrantProvisioner::new(QdrantClient::new(&cfg).unwrap());
-    (client, provisioner)
-}
-
-async fn count_points(qdrant_url: &str, collection: &str, key: &str) -> usize {
-    scroll_points(qdrant_url, collection, key, false)
-        .await
-        .len()
+async fn count_points(store: &InMemoryVectorStore, kb: &KbSlug, key: &str) -> usize {
+    scroll_points(store, kb, key, false).await.len()
 }
 
 async fn scroll_points(
-    qdrant_url: &str,
-    collection: &str,
+    store: &InMemoryVectorStore,
+    kb: &KbSlug,
     key: &str,
     with_vectors: bool,
 ) -> Vec<RetrievedPoint> {
-    let qdrant = qdrant_client::Qdrant::from_url(qdrant_url)
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("qdrant build failed");
-    let filter = Filter::must([Condition::matches("object_key", key.to_string())]);
-    qdrant
-        .scroll(ScrollPoints {
-            collection_name: collection.to_string(),
-            filter: Some(filter),
-            limit: Some(1000),
-            with_payload: Some(true.into()),
-            with_vectors: Some(with_vectors.into()),
-            ..Default::default()
-        })
-        .await
-        .expect("scroll failed")
-        .result
+    store.scroll_object(kb, key, with_vectors).await
 }
 
 fn string_payload<'a>(point: &'a RetrievedPoint, key: &str) -> &'a str {
@@ -567,17 +539,14 @@ fn has_vector(vectors: &VectorsOutput, name: &str) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn happy_path_upsert_creates_qdrant_point() {
-    let _guard = integration_guard().await;
     let _ = tracing_subscriber::fmt()
         .with_env_filter("notedthat=debug")
         .with_test_writer()
         .try_init();
 
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -601,7 +570,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -621,7 +590,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let points = scroll_points(&qdrant_url, &coll(&kb), "hello.md", true).await;
+    let points = scroll_points(&store, &kb, "hello.md", true).await;
     let n = points.len();
     assert!(n >= 1, "expected ≥1 point for hello.md, got {n}");
     let point = points.first().expect("at least one point");
@@ -644,17 +613,12 @@ async fn happy_path_upsert_creates_qdrant_point() {
         has_vector(vectors, "sparse_bm25"),
         "sparse_bm25 vector missing"
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn tombstone_removes_points() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -678,7 +642,7 @@ async fn tombstone_removes_points() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -705,19 +669,14 @@ async fn tombstone_removes_points() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "doc.md").await;
+    let n = count_points(&store, &kb, "doc.md").await;
     assert_eq!(n, 0, "expected 0 points after tombstone, got {n}");
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn not_found_on_reread_implicit_tombstone() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -729,7 +688,7 @@ async fn not_found_on_reread_implicit_tombstone() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -749,7 +708,7 @@ async fn not_found_on_reread_implicit_tombstone() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "missing.md").await;
+    let n = count_points(&store, &kb, "missing.md").await;
     assert_eq!(n, 0, "implicit tombstone should produce 0 points, got {n}");
 
     let calls = mock_server.received_requests().await.unwrap_or_default();
@@ -758,17 +717,12 @@ async fn not_found_on_reread_implicit_tombstone() {
         0,
         "embedder must not be called when object is absent"
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn non_markdown_content_type_skipped() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -800,13 +754,13 @@ async fn non_markdown_content_type_skipped() {
     make_worker(
         Arc::clone(&storage),
         make_embedder(&mock_server.uri(), 4),
-        Arc::clone(&qdrant_client),
+        Arc::new(store.clone()),
         seed_rx,
         CancellationToken::new(),
     )
     .run()
     .await;
-    assert_eq!(count_points(&qdrant_url, &coll(&kb), "image.png").await, 1);
+    assert_eq!(count_points(&store, &kb, "image.png").await, 1);
 
     storage.insert("test-kb", "image.png", "not markdown", "image/png");
 
@@ -816,7 +770,7 @@ async fn non_markdown_content_type_skipped() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -835,7 +789,7 @@ async fn non_markdown_content_type_skipped() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "image.png").await;
+    let n = count_points(&store, &kb, "image.png").await;
     assert_eq!(n, 0, "non-markdown object should not be indexed");
     assert_eq!(
         storage.stream_calls(),
@@ -848,17 +802,12 @@ async fn non_markdown_content_type_skipped() {
         1,
         "embedder should be called only for the original Markdown"
     );
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn shrinking_replacement_removes_stale_okf_points() {
-    let _guard = integration_guard().await;
-    let (_container, url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
     let replacements = [
@@ -892,14 +841,14 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         make_worker_with_batch(
             Arc::clone(&storage),
             make_embedder_with_limits(&mock.uri(), 4, 32, 1),
-            Arc::clone(&qdrant),
+            Arc::new(store.clone()),
             rx,
             CancellationToken::new(),
             1,
         )
         .run()
         .await;
-        let points = scroll_points(&url, &coll(&kb), "metric.md", false).await;
+        let points = scroll_points(&store, &kb, "metric.md", false).await;
         assert_eq!(
             points.len(),
             expected_points,
@@ -940,22 +889,19 @@ async fn shrinking_replacement_removes_stale_okf_points() {
     make_worker(
         Arc::clone(&storage),
         make_embedder(&empty_mock.uri(), 4),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         rx,
         CancellationToken::new(),
     )
     .run()
     .await;
-    assert_eq!(count_points(&url, &coll(&kb), "metric.md").await, 0);
+    assert_eq!(count_points(&store, &kb, "metric.md").await, 0);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn oversized_chunk_is_split_without_dropping_content() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -980,7 +926,7 @@ async fn oversized_chunk_is_split_without_dropping_content() {
         make_worker(
             Arc::clone(&storage),
             make_embedder_with_limits(&mock_server.uri(), 4, 20, 3),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -999,7 +945,7 @@ async fn oversized_chunk_is_split_without_dropping_content() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let points = scroll_points(&qdrant_url, &coll(&kb), "large.md", false).await;
+    let points = scroll_points(&store, &kb, "large.md", false).await;
     assert_eq!(points.len(), expected_chunks);
     let mut ranges = points
         .iter()
@@ -1022,14 +968,10 @@ async fn oversized_chunk_is_split_without_dropping_content() {
     }
     let calls = mock_server.received_requests().await.unwrap_or_default();
     assert_eq!(calls.len(), 1, "one bounded batch should be embedded");
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn queue_full_logs_index_queue_full() {
-    let _guard = integration_guard().await;
     let (tx, _rx) = mpsc::channel::<IndexEvent>(4);
     let kb = kb();
 
@@ -1056,12 +998,9 @@ async fn queue_full_logs_index_queue_full() {
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn graceful_shutdown_drains_queue() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -1087,7 +1026,7 @@ async fn graceful_shutdown_drains_queue() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -1113,29 +1052,23 @@ async fn graceful_shutdown_drains_queue() {
         .expect("worker did not exit within 30 s after drain")
         .unwrap();
 
-    let collection = coll(&kb);
     for i in 0..5_u32 {
         let key = format!("drain{i}.md");
-        let n = count_points(&qdrant_url, &collection, &key).await;
+        let n = count_points(&store, &kb, &key).await;
         assert!(n >= 1, "expected ≥1 point for {key} after drain, got {n}");
     }
-
-    drop(container);
 }
 
+/// A write that the backend rejects must be logged and swallowed, not panic the
+/// worker or stall the queue.
+///
+/// This used to point a real client at a dead port. The equivalent here is a
+/// store with no collection provisioned, so every write fails — same contract,
+/// no socket.
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
-async fn qdrant_down_logs_indexing_failed() {
-    let _guard = integration_guard().await;
+async fn vector_store_failure_logs_indexing_failed() {
     let kb = kb();
-    let qdrant_client = Arc::new(
-        QdrantClient::new(&QdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
 
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1153,7 +1086,7 @@ async fn qdrant_down_logs_indexing_failed() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            qdrant_client,
+            store,
             rx,
             shutdown.clone(),
         )
@@ -1174,12 +1107,9 @@ async fn qdrant_down_logs_indexing_failed() {
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retry_on_429_succeeds() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -1209,7 +1139,7 @@ async fn embedder_retry_on_429_succeeds() {
         make_worker(
             Arc::clone(&storage),
             make_embedder(&mock_server.uri(), 4),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -1228,21 +1158,16 @@ async fn embedder_retry_on_429_succeeds() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "retry.md").await;
+    let n = count_points(&store, &kb, "retry.md").await;
     assert!(n >= 1, "expected point after retry success, got {n}");
     let calls = mock_server.received_requests().await.unwrap_or_default();
     assert_eq!(calls.len(), 3, "expected two retries plus success");
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn embedder_retries_exhausted_logs_indexing_failed() {
-    let _guard = integration_guard().await;
-    let (container, qdrant_url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant_client, provisioner) = make_qdrant(&qdrant_url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
@@ -1261,7 +1186,7 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
         make_worker(
             Arc::clone(&storage),
             make_embedder_with_limits(&mock_server.uri(), 4, 8192, 2),
-            Arc::clone(&qdrant_client),
+            Arc::new(store.clone()),
             rx,
             shutdown.clone(),
         )
@@ -1280,21 +1205,16 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
     shutdown.cancel();
     handle.await.unwrap();
 
-    let n = count_points(&qdrant_url, &coll(&kb), "fail.md").await;
+    let n = count_points(&store, &kb, "fail.md").await;
     assert_eq!(n, 0, "failed embed should not write points");
     let calls = mock_server.received_requests().await.unwrap_or_default();
     assert_eq!(calls.len(), 2, "expected max_retries attempts");
-
-    drop(container);
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
-    let _guard = integration_guard().await;
-    let (_container, url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
     let old = (0..8).fold(String::new(), |mut output, index| {
@@ -1305,13 +1225,13 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     index_once(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "repair.md",
         2,
     )
     .await;
-    let old_count = count_points(&url, &coll(&kb), "repair.md").await;
+    let old_count = count_points(&store, &kb, "repair.md").await;
     assert!(old_count > 2, "fixture must span more than one batch");
 
     let replacement = (0..6).fold(String::new(), |mut output, index| {
@@ -1323,14 +1243,14 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     index_once(
         Arc::clone(&storage),
         Arc::clone(&embed_failure) as Arc<dyn Embedder>,
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "repair.md",
         2,
     )
     .await;
     assert_eq!(
-        count_points(&url, &coll(&kb), "repair.md").await,
+        count_points(&store, &kb, "repair.md").await,
         old_count,
         "embed failure must not run final stale cleanup"
     );
@@ -1339,13 +1259,13 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     index_once(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "repair.md",
         2,
     )
     .await;
-    let repaired = scroll_points(&url, &coll(&kb), "repair.md", false).await;
+    let repaired = scroll_points(&store, &kb, "repair.md", false).await;
     assert!(
         repaired
             .iter()
@@ -1358,7 +1278,7 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     index_once(
         Arc::clone(&storage),
         Arc::clone(&upsert_failure) as Arc<dyn Embedder>,
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "repair.md",
         2,
@@ -1366,7 +1286,7 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     .await;
     assert_eq!(upsert_failure.batch_sizes(), [2, 2]);
     assert_eq!(
-        count_points(&url, &coll(&kb), "repair.md").await,
+        count_points(&store, &kb, "repair.md").await,
         repaired.len(),
         "upsert failure must not run final stale cleanup"
     );
@@ -1374,13 +1294,13 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     index_once(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "repair.md",
         2,
     )
     .await;
-    let repaired = scroll_points(&url, &coll(&kb), "repair.md", false).await;
+    let repaired = scroll_points(&store, &kb, "repair.md", false).await;
     assert!(
         repaired
             .iter()
@@ -1390,19 +1310,16 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
 }
 
 #[tokio::test]
-#[ignore = "requires qdrant/qdrant:v1.15.4 testcontainer"]
 async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair() {
-    let _guard = integration_guard().await;
-    let (_container, url) = start_qdrant().await;
     let kb = kb();
-    let (qdrant, provisioner) = make_qdrant(&url);
+    let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
     storage.insert("test-kb", "stable.md", "old stable", "text/markdown");
     index_once(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "stable.md",
         2,
@@ -1415,7 +1332,7 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     index_once(
         Arc::clone(&storage),
         Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "stable.md",
         2,
@@ -1425,7 +1342,7 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     index_once(
         Arc::clone(&storage),
         Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "stable.md",
         2,
@@ -1440,14 +1357,14 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     index_once(
         Arc::clone(&storage),
         Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "stable.md",
         2,
     )
     .await;
     assert!(unused_embedder.batch_sizes().is_empty());
-    let preserved = scroll_points(&url, &coll(&kb), "stable.md", false).await;
+    let preserved = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(preserved.len(), 1);
     assert_eq!(string_payload(&preserved[0], "text"), "old stable");
 
@@ -1455,13 +1372,13 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     index_once(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::clone(&qdrant),
+        Arc::new(store.clone()),
         &kb,
         "stable.md",
         2,
     )
     .await;
-    let repaired = scroll_points(&url, &coll(&kb), "stable.md", false).await;
+    let repaired = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(string_payload(&repaired[0], "text"), "new stable");
 }

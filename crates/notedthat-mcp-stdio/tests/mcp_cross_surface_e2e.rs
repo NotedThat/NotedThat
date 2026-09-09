@@ -6,27 +6,19 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use testcontainers::{
-    GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
-};
 use tokio::sync::Mutex;
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method, matchers::path};
 
-/// How long to wait for the server to bind after `run()` starts.
+/// How long to wait for the server to bind after startup.
 ///
-/// Startup provisions two containers' worth of backends — buckets, manifests and
-/// a Qdrant collection with its payload indexes. Measured on a cold, loaded
-/// machine that takes about 9s, against the 10s this used to allow: under a
-/// second of margin, which is why these tests failed intermittently.
+/// Generous on purpose. Startup still does real provisioning work — buckets,
+/// manifests and a vector-store collection with its payload indexes — only now
+/// against in-process backends rather than containers. A loaded CI runner can
+/// still be slow enough that a tight budget produces an intermittent failure
+/// instead of a real signal, which is what the old 10s budget did.
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
-
-// SeaweedFS 4.18 requires an IAM config file to accept signed S3 requests.
-const SEAWEEDFS_S3_CONFIG: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
 
 fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut child = Command::new(MCP_STDIO_BIN)
@@ -149,64 +141,26 @@ fn unique_phrase(prefix: &str) -> String {
     format!("{prefix}_{nanos}")
 }
 
-async fn start_seaweedfs() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("chrislusf/seaweedfs", "4.18")
-        .with_exposed_port(8333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
-        .with_copy_to("/tmp/s3.json", SEAWEEDFS_S3_CONFIG.to_vec())
-        .with_cmd(["server", "-s3", "-filer", "-s3.config=/tmp/s3.json"])
-        .start()
-        .await
-        .expect("failed to start SeaweedFS testcontainer");
-    let port = container
-        .get_host_port_ipv4(8333_u16)
-        .await
-        .expect("failed to get SeaweedFS port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
+/// Vector width the stub embedder and the provisioned collection agree on.
+const EMBEDDING_DIM: u32 = 4;
 
-async fn start_qdrant() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_exposed_port(6333_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
-        .start()
-        .await
-        .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let grpc_port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    let http_port = container
-        .get_host_port_ipv4(6333_u16)
-        .await
-        .expect("failed to get Qdrant HTTP port");
-    wait_for_http(
-        &format!("http://127.0.0.1:{http_port}/healthz"),
-        Duration::from_mins(1),
-    )
-    .await;
-    (container, format!("http://127.0.0.1:{grpc_port}"))
-}
-
-fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
-    let data: Vec<serde_json::Value> = (0..count)
-        .map(|i| {
-            let v: Vec<f32> = (0..dim)
-                .map(|j| if j == i % dim { 1.0_f32 } else { 0.0_f32 })
-                .collect();
-            serde_json::json!({"index": i, "embedding": v, "object": "embedding"})
-        })
-        .collect();
-    serde_json::json!({"object": "list", "data": data})
+/// Storage, vector store and embedder, all in-process.
+///
+/// These tests drive the real `notedthat-mcp-stdio` binary against a real
+/// server; only the three external services behind that server are substituted.
+fn in_memory_backends() -> notedthat_server::run::Backends {
+    notedthat_server::run::Backends {
+        storage: std::sync::Arc::new(notedthat_api_http::testing::InMemoryStorage::default()),
+        store: std::sync::Arc::new(notedthat_indexer::testing::InMemoryVectorStore::new()),
+        embedder: std::sync::Arc::new(notedthat_indexer::testing::StubEmbedder::new(
+            EMBEDDING_DIM as usize,
+        )),
+    }
 }
 
 fn test_config(
     http_addr: std::net::SocketAddr,
     dav_addr: std::net::SocketAddr,
-    s3_url: &str,
-    qdrant_url: &str,
-    embedder_url: &str,
 ) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, StagingConfig, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -225,7 +179,7 @@ fn test_config(
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
         s3: S3Config {
-            endpoint_url: Some(s3_url.to_string()),
+            endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
@@ -234,16 +188,16 @@ fn test_config(
         staging: StagingConfig::default(),
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
-            url: qdrant_url.to_string(),
+            url: "http://127.0.0.1:1".to_string(),
             api_key: None,
             timeout_ms: 30_000,
             connect_timeout_ms: 10_000,
         },
         embedder: EmbedderConfig {
-            endpoint_url: embedder_url.to_string(),
+            endpoint_url: "http://127.0.0.1:1".to_string(),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
-            dimensions: 4,
+            dimensions: EMBEDDING_DIM,
             batch_size: 32,
             timeout_ms: 30_000,
             max_retries: 3,
@@ -262,20 +216,6 @@ fn test_config(
         ],
         max_patchable_size: 10 * 1024 * 1024,
     }
-}
-
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
-}
-
-fn free_dav_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
-    listener.local_addr().expect("local_addr")
 }
 
 async fn wait_for_http(url: &str, timeout: Duration) {
@@ -302,9 +242,6 @@ struct NotedThatServerFixture {
     http_url: String,
     token: &'static str,
     server_handle: tokio::task::JoinHandle<()>,
-    _seaweed: Box<dyn std::any::Any>,
-    _qdrant: Box<dyn std::any::Any>,
-    _mock_embedder: wiremock::MockServer,
 }
 
 impl Drop for NotedThatServerFixture {
@@ -315,28 +252,13 @@ impl Drop for NotedThatServerFixture {
 
 async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
     let _guard = test_mutex().lock().await;
-    let (seaweed, s3_url) = start_seaweedfs().await;
-    let (qdrant, qdrant_url) = start_qdrant().await;
-    let mock_embedder = MockServer::start().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let config = test_config(http_addr, dav_addr);
 
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
-        .mount(&mock_embedder)
-        .await;
-
-    let http_addr = free_addr().await;
-    let dav_addr = free_dav_addr();
-    let config = test_config(
-        http_addr,
-        dav_addr,
-        &s3_url,
-        &qdrant_url,
-        &mock_embedder.uri(),
-    );
-
+    let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
-        notedthat_server::run::run(config)
+        notedthat_server::run::run_with(config, backends)
             .await
             .expect("server run failed");
     });
@@ -348,9 +270,6 @@ async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
         http_url,
         token: API_TOKEN,
         server_handle,
-        _seaweed: Box::new(seaweed),
-        _qdrant: Box::new(qdrant),
-        _mock_embedder: mock_embedder,
     }
 }
 
@@ -471,7 +390,6 @@ fn shutdown_child(mut child: Child, stdin: ChildStdin) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires SeaweedFS+Qdrant testcontainers"]
 async fn mcp_write_becomes_searchable_via_mcp_search() {
     // Given: a fresh NotedThat server and MCP client with a unique markdown document.
     let fixture = start_notedthat_server_fixture().await;
@@ -517,7 +435,6 @@ async fn mcp_write_becomes_searchable_via_mcp_search() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires SeaweedFS+Qdrant testcontainers"]
 async fn mcp_delete_removes_from_search() {
     // Given: a fresh NotedThat server and a unique markdown document written via MCP.
     let fixture = start_notedthat_server_fixture().await;

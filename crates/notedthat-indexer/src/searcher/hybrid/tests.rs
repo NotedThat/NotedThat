@@ -17,10 +17,12 @@ fn collection_for_format() {
 }
 
 #[test]
-fn search_error_from_qdrant_classifies_not_found_as_unknown_kb() {
-    let err = search_error_from_qdrant(
+fn search_error_from_store_maps_collection_not_found_to_unknown_kb() {
+    let err = search_error_from_store(
         "kb_my-notes_v1",
-        qdrant_client::QdrantError::ConversionError("collection not found".into()),
+        VectorStoreError::CollectionNotFound {
+            kb: "my-notes".into(),
+        },
     );
 
     assert!(matches!(
@@ -30,10 +32,30 @@ fn search_error_from_qdrant_classifies_not_found_as_unknown_kb() {
 }
 
 #[test]
-fn search_error_from_qdrant_classifies_other_errors_as_backend_unavailable() {
-    let err = search_error_from_qdrant(
+fn search_error_from_store_classifies_not_found_backend_text_as_unknown_kb() {
+    // A backend that reports a missing collection as a plain transport error
+    // must still surface as UnknownKb rather than an outage; the collection
+    // name is what the slug is recovered from.
+    let err = search_error_from_store(
+        "kb_my-notes_v1",
+        VectorStoreError::Backend {
+            message: "collection not found".into(),
+        },
+    );
+
+    assert!(matches!(
+        err,
+        SearchError::UnknownKb { slug } if slug == "my-notes"
+    ));
+}
+
+#[test]
+fn search_error_from_store_classifies_other_errors_as_backend_unavailable() {
+    let err = search_error_from_store(
         "kb_notes_v1",
-        qdrant_client::QdrantError::ConversionError("transport closed".into()),
+        VectorStoreError::Backend {
+            message: "transport closed".into(),
+        },
     );
 
     assert!(matches!(err, SearchError::BackendUnavailable { .. }));

@@ -1,11 +1,13 @@
 //! End-to-end integration tests for the search API.
 //!
-//! Uses a Qdrant testcontainer, an in-process wiremock embedder, and the shared
-//! [`InMemoryStorage`] so the HTTP router and the [`IndexerWorker`] operate on
-//! the same backing store without requiring a real S3 / `SeaweedFS` instance.
+//! Uses the in-process [`InMemoryVectorStore`], a wiremock embedder, and the
+//! shared [`InMemoryStorage`], so the HTTP router and the [`IndexerWorker`]
+//! operate on the same backing stores with no container in sight. The subject
+//! is the route-to-index-to-search round trip, not either backend's wire
+//! protocol.
 //!
 //! Run with:
-//!   cargo test -p notedthat-api-http --test `search_e2e` -- --ignored --nocapture
+//!   cargo test -p notedthat-api-http --test `search_e2e`
 #![allow(missing_docs)]
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -21,15 +23,10 @@ use notedthat_api_http::{
     testing::{InMemoryStorage, NoopSearcher},
 };
 use notedthat_core::{KbSlug, Storage};
+use notedthat_indexer::testing::InMemoryVectorStore;
 use notedthat_indexer::{
-    Embedder, IndexerWorker, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantClient,
-    QdrantConfig, QdrantProvisioner, Searcher,
-};
-use qdrant_client::qdrant::{Condition, Filter, ScrollPoints};
-use testcontainers::{
-    GenericImage,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
+    Embedder, IndexerWorker, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner,
+    Searcher,
 };
 use tokio_util::sync::CancellationToken;
 use tower::util::ServiceExt;
@@ -38,11 +35,12 @@ use wiremock::{
     matchers::{method, path},
 };
 
-/// How long to wait for an asynchronous index event to land in Qdrant.
+/// How long to wait for an asynchronous index event to land in the vector store.
 ///
-/// Indexing re-reads the object from S3, calls the embedder and upserts into
-/// Qdrant, all against freshly started containers. The previous 10s budget was
-/// marginal on a cold, loaded machine and timed out intermittently.
+/// Generous on purpose. Nothing here waits on a container any more, but indexing
+/// is still asynchronous — the worker re-reads the object, calls the wiremock
+/// embedder and upserts — and a loaded CI runner can be slow enough that a tight
+/// budget turns into an intermittent failure rather than a real signal.
 const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -51,35 +49,6 @@ const TOKEN: &str = "e2e-test-token";
 /// KB declared in the simple (no-Qdrant) router used for HTTP-level error tests.
 const KB: &str = "notes";
 
-// ─── Test serialization ──────────────────────────────────────────────────────
-
-/// Serialize all Qdrant-backed tests to avoid testcontainer resource exhaustion
-/// (same pattern as `notedthat-indexer` `worker_integration` tests).
-static E2E_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-async fn e2e_guard() -> tokio::sync::MutexGuard<'static, ()> {
-    E2E_MUTEX.lock().await
-}
-
-// ─── Qdrant container helper ─────────────────────────────────────────────────
-
-async fn start_qdrant() -> (impl std::any::Any, String) {
-    let container = GenericImage::new("qdrant/qdrant", "v1.15.4")
-        .with_exposed_port(6334_u16.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("Qdrant gRPC listening on 6334"))
-        .start()
-        .await
-        .expect("failed to start qdrant/qdrant:v1.15.4 — is Docker running?");
-    let port = container
-        .get_host_port_ipv4(6334_u16)
-        .await
-        .expect("failed to get Qdrant gRPC port");
-    (container, format!("http://127.0.0.1:{port}"))
-}
-
-// ─── Wiremock embedder helper ────────────────────────────────────────────────
-
-/// Build an OpenAI-compatible embeddings response with `count` identical 4-dim unit vectors.
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
         .map(|i| {
@@ -92,88 +61,64 @@ fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     serde_json::json!({"object": "list", "data": data})
 }
 
-// ─── Qdrant polling helpers ──────────────────────────────────────────────────
+// ─── Index polling helpers ───────────────────────────────────────────────────
 
-/// Poll Qdrant until at least `expected_count` points exist in `collection`.
+/// Poll until at least `expected_count` points exist for `kb`.
 ///
-/// Returns `Err` when `timeout` elapses without the expected number of points.
-/// Uses a 500 ms polling interval; never sleeps without bound.
+/// Indexing is asynchronous — the route returns before the worker has written
+/// the point — so these tests still have to wait, container or not. The waits
+/// are just far shorter now.
 async fn wait_for_index(
-    qdrant: &qdrant_client::Qdrant,
-    collection: &str,
+    store: &InMemoryVectorStore,
+    kb: &KbSlug,
     expected_count: usize,
     timeout: Duration,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
+        if store.point_count(kb).await.unwrap_or_default() >= expected_count {
+            return Ok(());
+        }
         if start.elapsed() > timeout {
             return Err(format!(
-                "timed out after {timeout:?} waiting for {expected_count} points in {collection}"
+                "timed out after {timeout:?} waiting for {expected_count} points in {}",
+                kb.as_str()
             ));
         }
-        match qdrant
-            .scroll(ScrollPoints {
-                collection_name: collection.to_string(),
-                limit: Some(1000),
-                with_payload: Some(false.into()),
-                with_vectors: Some(false.into()),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok(r) if r.result.len() >= expected_count => return Ok(()),
-            _ => {}
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-/// Poll Qdrant until all points for `object_key` have been removed from `collection`.
-///
-/// Returns `Err` when `timeout` elapses without the key disappearing.
+/// Poll until every point for `object_key` has been removed from `kb`.
 async fn wait_for_tombstone(
-    qdrant: &qdrant_client::Qdrant,
-    collection: &str,
+    store: &InMemoryVectorStore,
+    kb: &KbSlug,
     object_key: &str,
     timeout: Duration,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
-    let filter = Filter::must([Condition::matches("object_key", object_key.to_string())]);
     loop {
+        if store.scroll_object(kb, object_key, false).await.is_empty() {
+            return Ok(());
+        }
         if start.elapsed() > timeout {
             return Err(format!(
-                "timed out after {timeout:?} waiting for tombstone of '{object_key}' in {collection}"
+                "timed out after {timeout:?} waiting for tombstone of '{object_key}' in {}",
+                kb.as_str()
             ));
         }
-        match qdrant
-            .scroll(ScrollPoints {
-                collection_name: collection.to_string(),
-                filter: Some(filter.clone()),
-                limit: Some(1000),
-                with_payload: Some(false.into()),
-                with_vectors: Some(false.into()),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok(r) if r.result.is_empty() => return Ok(()),
-            _ => {}
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
 // ─── Full E2E environment ────────────────────────────────────────────────────
 
-/// All state needed for a full E2E test with real Qdrant + wiremock embedder.
-///
-/// The Qdrant container is returned separately (see `setup_full_e2e`) so that
-/// it is the *last* thing dropped, ensuring the worker has fully stopped before
-/// the container is torn down.
+/// All state needed for a full E2E test: router, indexer worker, and the
+/// in-memory backends they share.
 struct FullE2eEnv {
     router: axum::Router,
-    qdrant_raw: qdrant_client::Qdrant,
-    collection: String,
+    store: InMemoryVectorStore,
+    kb: KbSlug,
     shutdown: CancellationToken,
     worker_handle: tokio::task::JoinHandle<()>,
     /// Kept alive so the wiremock server answers embedding requests.
@@ -183,35 +128,35 @@ struct FullE2eEnv {
 impl FullE2eEnv {
     /// Cancel the indexer worker, drain pending events, then drop all shared state.
     ///
-    /// Call this at the end of every full-E2E test so the worker exits cleanly
-    /// before the Qdrant container (returned from `setup_full_e2e`) is dropped.
+    /// Call this at the end of every full-E2E test so the worker exits cleanly.
+    ///
+    /// The router is dropped *first*, on purpose. It owns the `AppState` that
+    /// holds the only remaining `indexer_tx`, and while a sender is alive the
+    /// worker's receive loop has no reason to return — so cancelling without
+    /// dropping it left every test waiting out the full timeout below.
     async fn join(self) {
-        self.shutdown.cancel();
+        let Self {
+            router,
+            shutdown,
+            worker_handle,
+            _mock_server: mock_server,
+            ..
+        } = self;
+        drop(router);
+        shutdown.cancel();
         // Give the drain loop up to 10 s to flush remaining events.
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.worker_handle).await;
-        // `self._mock_server` drops here, then the environment is fully torn down.
+        let _ = tokio::time::timeout(Duration::from_secs(10), worker_handle).await;
+        // The wiremock server must outlive the drain, so it is dropped last.
+        drop(mock_server);
     }
 }
 
 /// Construct a full E2E environment for `kb`.
-///
-/// Returns `(container, env)`.  The **caller must keep `container` alive**
-/// until after `env.join().await` has returned; only then should `container`
-/// be dropped (which stops the Qdrant testcontainer).
-async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
-    let (container, qdrant_url) = start_qdrant().await;
-
+async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
     let kb_slug = KbSlug::try_new(kb).expect("valid kb slug for e2e test");
-    let collection = format!("kb_{kb}_v1");
 
-    let qdrant_cfg = QdrantConfig {
-        url: qdrant_url.clone(),
-        api_key: None,
-        ..Default::default()
-    };
-    let qdrant_client = Arc::new(QdrantClient::new(&qdrant_cfg).expect("qdrant client creation"));
-    let provisioner =
-        QdrantProvisioner::new(QdrantClient::new(&qdrant_cfg).expect("provisioner qdrant client"));
+    let store = InMemoryVectorStore::new();
+    let provisioner = QdrantProvisioner::new(Arc::new(store.clone()));
     provisioner
         .ensure_collection(&kb_slug, 4)
         .await
@@ -247,22 +192,22 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     let worker = IndexerWorker::new(
         Arc::clone(&storage) as Arc<dyn Storage>,
         Arc::clone(&embedder),
-        Arc::clone(&qdrant_client),
+        Arc::new(store.clone()),
         indexer_rx,
         shutdown.clone(),
         32,
     );
     let worker_handle = tokio::spawn(worker.run());
 
-    // HybridSearcher shares the same Qdrant client + embedder as the worker
+    // HybridSearcher shares the same vector store + embedder as the worker
     // to avoid model/endpoint drift (§6.4, D18).
     let searcher: Arc<dyn Searcher> = Arc::new(notedthat_indexer::searcher::HybridSearcher::new(
-        Arc::clone(&qdrant_client),
+        Arc::new(store.clone()),
         Arc::clone(&embedder),
     ));
 
     let mut kbs = BTreeMap::new();
-    kbs.insert(kb.to_string(), kb_slug);
+    kbs.insert(kb.to_string(), kb_slug.clone());
 
     let state = AppState {
         storage: Arc::clone(&storage) as Arc<dyn Storage>,
@@ -276,25 +221,15 @@ async fn setup_full_e2e(kb: &str) -> (impl std::any::Any, FullE2eEnv) {
     };
 
     let router = build_router(state);
-    // A raw client inherits qdrant-client's 5s default for every RPC, which a
-    // `wait(true)` upsert can exceed on a loaded machine.
-    let qdrant_raw = qdrant_client::Qdrant::from_url(&qdrant_url)
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("raw qdrant client for polling");
 
-    (
-        container,
-        FullE2eEnv {
-            router,
-            qdrant_raw,
-            collection,
-            shutdown,
-            worker_handle,
-            _mock_server: mock_server,
-        },
-    )
+    FullE2eEnv {
+        router,
+        store,
+        kb: kb_slug,
+        shutdown,
+        worker_handle,
+        _mock_server: mock_server,
+    }
 }
 
 // ─── Simple (no-Qdrant) router ───────────────────────────────────────────────
@@ -333,10 +268,8 @@ async fn response_json(resp: Response) -> serde_json::Value {
 /// PUT a document via the HTTP API, wait for the indexer to write it to Qdrant,
 /// then POST /search and assert at least one hit is returned.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_put_then_search_finds_hit() {
-    let _guard = e2e_guard().await;
-    let (_container, env) = setup_full_e2e("notes-put-search").await;
+    let env = setup_full_e2e("notes-put-search").await;
     let kb = "notes-put-search";
 
     // PUT a single-heading document (1 chunk) so the mock returns the right
@@ -359,7 +292,7 @@ async fn e2e_put_then_search_finds_hit() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED, "PUT must return 201");
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
+    wait_for_index(&env.store, &env.kb, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("document was not indexed within 10 s");
 
@@ -391,10 +324,8 @@ async fn e2e_put_then_search_finds_hit() {
 /// A `limit` value of 999 (above the internal 50-cap) must be silently clamped
 /// and return 200 with ≤50 hits rather than an error.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_search_limit_clamped() {
-    let _guard = e2e_guard().await;
-    let (_container, env) = setup_full_e2e("notes-limit").await;
+    let env = setup_full_e2e("notes-limit").await;
     let kb = "notes-limit";
 
     let put = env
@@ -415,7 +346,7 @@ async fn e2e_search_limit_clamped() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
+    wait_for_index(&env.store, &env.kb, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -452,10 +383,8 @@ async fn e2e_search_limit_clamped() {
 /// POST /search with `heading_path_prefix` must return only hits whose heading
 /// path starts with the requested segments.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_filter_by_heading_path_prefix() {
-    let _guard = e2e_guard().await;
-    let (_container, env) = setup_full_e2e("notes-heading").await;
+    let env = setup_full_e2e("notes-heading").await;
     let kb = "notes-heading";
 
     // Single H1 → one chunk with heading_path = ["Installation"]
@@ -477,7 +406,7 @@ async fn e2e_filter_by_heading_path_prefix() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
+    wait_for_index(&env.store, &env.kb, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -521,10 +450,8 @@ async fn e2e_filter_by_heading_path_prefix() {
 /// DELETE a document, wait for its Qdrant tombstone to propagate, then verify
 /// the document no longer appears in search results.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_delete_removes_from_search() {
-    let _guard = e2e_guard().await;
-    let (_container, env) = setup_full_e2e("notes-delete").await;
+    let env = setup_full_e2e("notes-delete").await;
     let kb = "notes-delete";
     let unique_term = "xqz9uniqueterm2025nt";
 
@@ -546,7 +473,7 @@ async fn e2e_delete_removes_from_search() {
         .unwrap();
     assert_eq!(put.status(), StatusCode::CREATED);
 
-    wait_for_index(&env.qdrant_raw, &env.collection, 1, INDEX_READY_TIMEOUT)
+    wait_for_index(&env.store, &env.kb, 1, INDEX_READY_TIMEOUT)
         .await
         .expect("indexing timed out");
 
@@ -569,14 +496,9 @@ async fn e2e_delete_removes_from_search() {
         "DELETE must return 204"
     );
 
-    wait_for_tombstone(
-        &env.qdrant_raw,
-        &env.collection,
-        "to-delete.md",
-        INDEX_READY_TIMEOUT,
-    )
-    .await
-    .expect("tombstone was not applied within 10 s");
+    wait_for_tombstone(&env.store, &env.kb, "to-delete.md", INDEX_READY_TIMEOUT)
+        .await
+        .expect("tombstone was not applied within 10 s");
 
     let search = env
         .router
@@ -606,7 +528,6 @@ async fn e2e_delete_removes_from_search() {
 
 /// A POST /search request without an `Authorization` header must return 401.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_401_on_missing_bearer() {
     let router = simple_router_for(KB);
     let resp = router
@@ -626,7 +547,6 @@ async fn e2e_401_on_missing_bearer() {
 /// A POST /search request against an undeclared knowledge base must return 404
 /// with `error="not_found"`.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_404_on_unknown_kb() {
     let router = simple_router_for(KB);
     let resp = router
@@ -653,7 +573,6 @@ async fn e2e_404_on_unknown_kb() {
 /// A POST /search request whose body exceeds 64 KiB must return 413 with
 /// `error="payload_too_large"`.
 #[tokio::test]
-#[ignore = "requires docker + seaweedfs + qdrant"]
 async fn e2e_413_on_body_too_large() {
     let router = simple_router_for(KB);
     // 70,000 bytes > SEARCH_BODY_MAX_BYTES (64 KiB = 65,536)

@@ -1,8 +1,9 @@
 use super::chunks::{ChunkCursor, open_chunk_cursor, take_chunk_batch, validate_chunk_byte_bound};
 use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
-use super::{IndexerWorker, collection_name, is_indexable};
+use super::{IndexerWorker, is_indexable};
 use crate::chunker;
+use crate::vector_store::PointSelector;
 use futures::StreamExt;
 use notedthat_core::{
     ConditionalHeaders, KbSlug, ObjectMeta, ObjectPath, StagedBody, StorageError,
@@ -199,14 +200,10 @@ impl IndexerWorker {
                 &snapshot.facts.content_hash,
                 snapshot.metadata.as_ref(),
             )?;
-            self.qdrant
-                .inner()
-                .upsert_points(
-                    qdrant_client::qdrant::UpsertPointsBuilder::new(collection_name(kb), points)
-                        .wait(true),
-                )
+            self.store
+                .upsert_points(kb, points)
                 .await
-                .map_err(|err| format!("qdrant upsert failed: {err}"))?;
+                .map_err(|err| format!("vector store upsert failed: {err}"))?;
         }
         Ok(cursor.next_index)
     }
@@ -217,29 +214,17 @@ impl IndexerWorker {
         object_key: &ObjectPath,
         new_count: usize,
     ) -> Result<(), String> {
-        use qdrant_client::qdrant::{Condition, DeletePointsBuilder, Filter, Range};
-
         let threshold = u32::try_from(new_count)
-            .map_err(|_| "chunk count exceeds supported Qdrant numeric range".to_owned())?;
-        let filter = Filter::must([
-            Condition::matches("object_key", object_key.as_str().to_owned()),
-            Condition::range(
-                "chunk_index",
-                Range {
-                    gte: Some(f64::from(threshold)),
-                    ..Range::default()
-                },
-            ),
-        ]);
-        self.qdrant
-            .inner()
+            .map_err(|_| "chunk count exceeds supported numeric range".to_owned())?;
+        self.store
             .delete_points(
-                DeletePointsBuilder::new(collection_name(kb))
-                    .points(filter)
-                    .wait(true),
+                kb,
+                PointSelector::ObjectChunksFrom {
+                    object_key: object_key.as_str().to_owned(),
+                    from_chunk_index: threshold,
+                },
             )
             .await
-            .map(|_| ())
-            .map_err(|err| format!("qdrant obsolete chunk cleanup failed: {err}"))
+            .map_err(|err| format!("obsolete chunk cleanup failed: {err}"))
     }
 }

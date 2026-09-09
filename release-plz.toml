@@ -31,8 +31,30 @@ git_release_enable = false
 # bug (release-plz#2428).
 changelog_update = false
 
-# Only publish after a release PR has been merged.
-release_always = false
+# Release whenever the workspace version is ahead of what is on crates.io,
+# instead of only on the commit that merges a release PR.
+#
+# Why: with the release-PR-only rule, a release is a ONE-SHOT event. On
+# 2026-07-14 the `chore: release v0.1.6` merge landed but its CI run did not
+# reach `release-plz-release`, and the opportunity was gone for good — main sat
+# at 0.1.6 while crates.io stayed at 0.1.5, `release` reported "current commit
+# is not from a release PR" and `release-pr` reported "the repository is already
+# up-to-date", so neither job could ever open the deadlock. Comparing against
+# the registry instead makes a missed release self-healing: the next push to
+# main simply retries it.
+#
+# Know what this widens. The actual invariant is now "any push to `main` whose
+# workspace version is ahead of crates.io publishes all 9 crates", and nothing
+# here enforces that the version only ever moves in a release PR. A `cargo
+# set-version` that rides along in an ordinary feature branch, or a hand-edited
+# `version`, publishes on merge with no release PR and no second look — and a
+# crates.io publish cannot be undone, since a yank neither removes the version
+# nor frees the number.
+#
+# That is the deliberate trade for making a missed release self-healing rather
+# than terminal. Keep version bumps confined to release PRs; `ci.yml` has no
+# check for this, so it is a convention, not a guarantee.
+release_always = true
 
 # Run cargo-semver-checks before opening the release PR
 semver_check = false

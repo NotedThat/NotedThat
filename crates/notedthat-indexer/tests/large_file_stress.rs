@@ -219,7 +219,7 @@ fn stages_exact_limit_and_rejects_limit_plus_one_without_content_length() {
 
 #[test]
 #[ignore = "generated 5 GiB staging and bounded replay stress scenario"]
-fn stages_and_replays_five_gib_without_retaining_outputs() {
+fn stress_stages_and_replays_five_gib_without_retaining_outputs() {
     // Given: a deterministic 64 KiB stream with unknown Content-Length and the inclusive 5 GiB limit.
     let started = Instant::now();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
