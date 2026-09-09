@@ -132,7 +132,17 @@ fn selector_filter(selector: &PointSelector) -> Filter {
 /// Classify a Qdrant transport error, separating "no such collection" from the rest.
 ///
 /// Qdrant reports a missing collection as an ordinary status error, so the only
-/// signal is the message text.
+/// signal is the message text. That heuristic over-matches — a proxy 404, a DNS
+/// failure, or a point-level "not found" all contain the same substring — so it
+/// is applied ONLY on the two paths whose callers act on the distinction:
+/// `collection_exists` and `hybrid_search`, where an unknown KB is a 404 to the
+/// client rather than an outage.
+///
+/// Every other operation uses [`backend_error`] instead. Misclassifying an
+/// upsert would be worse than useless: the caller only formats the error into a
+/// log line, and `CollectionNotFound` discards the Qdrant message that says what
+/// actually went wrong, leaving a silently unindexed document behind a
+/// misleading cause.
 fn classify(kb: &KbSlug, err: &qdrant_client::QdrantError) -> VectorStoreError {
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
@@ -146,6 +156,22 @@ fn classify(kb: &KbSlug, err: &qdrant_client::QdrantError) -> VectorStoreError {
     } else {
         VectorStoreError::Backend { message }
     }
+}
+
+/// Preserve a Qdrant error verbatim, with the operation and collection that
+/// produced it.
+///
+/// Used by every write and DDL path, where the full message is the whole
+/// diagnostic value.
+fn backend_error(
+    kb: &KbSlug,
+    operation: &str,
+    err: &qdrant_client::QdrantError,
+) -> VectorStoreError {
+    VectorStoreError::backend(format!(
+        "{operation} on collection '{}' failed: {err}",
+        collection_name(kb)
+    ))
 }
 
 #[async_trait]
@@ -178,7 +204,7 @@ impl VectorStore for QdrantClient {
             )
             .await
             .map(|_| ())
-            .map_err(|err| classify(kb, &err))
+            .map_err(|err| backend_error(kb, "create_collection", &err))
     }
 
     async fn create_payload_index(
@@ -199,7 +225,7 @@ impl VectorStore for QdrantClient {
             ))
             .await
             .map(|_| ())
-            .map_err(|err| classify(kb, &err))
+            .map_err(|err| backend_error(kb, "create_payload_index", &err))
     }
 
     async fn upsert_points(
@@ -211,7 +237,7 @@ impl VectorStore for QdrantClient {
             .upsert_points(UpsertPointsBuilder::new(collection_name(kb), points).wait(true))
             .await
             .map(|_| ())
-            .map_err(|err| classify(kb, &err))
+            .map_err(|err| backend_error(kb, "upsert_points", &err))
     }
 
     async fn delete_points(
@@ -227,7 +253,7 @@ impl VectorStore for QdrantClient {
             )
             .await
             .map(|_| ())
-            .map_err(|err| classify(kb, &err))
+            .map_err(|err| backend_error(kb, "delete_points", &err))
     }
 
     async fn hybrid_search(
