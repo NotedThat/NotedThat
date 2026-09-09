@@ -36,14 +36,21 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
     let first_json = json(first).await;
     assert_eq!(first_json["objects"][0]["key"], "public.md");
     assert_eq!(first_json["truncated"], true);
-    assert_eq!(first_json["next_cursor"], "public.md");
+    // The cursor is opaque — the trait tells clients not to parse it — so this asserts
+    // only that one was issued, and feeds it back verbatim below.
+    let cursor = first_json["next_cursor"]
+        .as_str()
+        .expect("a truncated page issues a cursor")
+        .to_string();
 
     // When
     let second = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/knowledgebases/notes?limit=1&cursor=public.md")
+                .uri(format!(
+                    "/api/v1/knowledgebases/notes?limit=1&cursor={cursor}"
+                ))
                 .body(Body::empty())
                 .expect("request"),
         )

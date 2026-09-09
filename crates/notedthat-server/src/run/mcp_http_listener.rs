@@ -25,13 +25,13 @@ fn test_config() -> Config {
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: "127.0.0.1:0".parse().expect("test HTTP addr is valid"),
-        s3: S3Config {
+        storage: crate::config::StorageConfig::S3(S3Config {
             endpoint_url: Some("http://127.0.0.1:8333".to_string()),
             region: "us-east-1".to_string(),
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
             force_path_style: true,
-        },
+        }),
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:6334".to_string(),
@@ -79,7 +79,7 @@ async fn invalid_staging_directory_fails_before_infrastructure_setup() {
 
     // Guard the premise: the Qdrant URL really is bad enough to fail on its own.
     assert!(
-        super::backends_from_config(&config).is_err(),
+        super::backends_from_config(&config, None).is_err(),
         "test premise: an empty Qdrant URL must fail backend construction, \
          otherwise this test cannot distinguish the two orderings"
     );

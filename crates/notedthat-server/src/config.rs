@@ -8,6 +8,172 @@ use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
+/// Which storage backend the server runs on.
+///
+/// Parsed separately from its configuration so the selection can be named in an error
+/// message before any backend configuration is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageBackendKind {
+    /// An S3-compatible object store.
+    S3,
+    /// A local filesystem tree.
+    Fs,
+}
+
+impl StorageBackendKind {
+    /// The `NOTEDTHAT_STORAGE_BACKEND` value that selects this backend.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::S3 => "s3",
+            Self::Fs => "fs",
+        }
+    }
+}
+
+impl std::fmt::Display for StorageBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The selected storage backend together with the configuration it needs.
+///
+/// An enum rather than one `Option` per backend, so "exactly one backend is configured"
+/// is a property of the type and [`crate::run`] has no unreachable error arm.
+#[derive(Debug, Clone)]
+pub enum StorageConfig {
+    /// S3-compatible object store (the default).
+    S3(notedthat_storage_s3::S3Config),
+    /// Local filesystem tree.
+    Fs(notedthat_storage_fs::FsConfig),
+}
+
+impl StorageConfig {
+    /// Which backend this is.
+    #[must_use]
+    pub fn kind(&self) -> StorageBackendKind {
+        match self {
+            Self::S3(_) => StorageBackendKind::S3,
+            Self::Fs(_) => StorageBackendKind::Fs,
+        }
+    }
+}
+
+/// Environment variables owned by one storage backend.
+///
+/// A variable whose owner is not the selected backend is a startup error rather than an
+/// ignored setting — silently ignoring `NOTEDTHAT_FS_ROOT` under the default `s3` backend
+/// is how an operator ends up believing their bytes are on a disk they are not on. Same
+/// reasoning as [`REMOVED_LISTENER_ENV_VARS`] (D39), applied to backend selection.
+///
+/// Deliberately confined to variables this server reads. `AWS_*` is not listed:
+/// `S3Config::build_client` uses a static credential provider and never consults the
+/// ambient credential chain, so rejecting an `AWS_ACCESS_KEY_ID` on a shared runner would
+/// be a pure false positive.
+fn backend_owned_env_vars() -> Vec<(&'static str, StorageBackendKind)> {
+    notedthat_storage_s3::S3_ENV_VARS
+        .iter()
+        .map(|name| (*name, StorageBackendKind::S3))
+        .chain(
+            notedthat_storage_fs::FS_ENV_VARS
+                .iter()
+                .map(|name| (*name, StorageBackendKind::Fs)),
+        )
+        .collect()
+}
+
+/// Parse `NOTEDTHAT_STORAGE_BACKEND`, returning `None` when it is unset.
+///
+/// Strict, unlike `NOTEDTHAT_LOG_FORMAT` and `NOTEDTHAT_S3_FORCE_PATH_STYLE`, which
+/// silently fall back on an unrecognised value. Those two can afford leniency because a
+/// mis-parse announces itself immediately — the wrong log format is visible in the first
+/// line of output, and a wrong path-style setting fails on the first request. A backend
+/// selector cannot: `NOTEDTHAT_STORAGE_BACKEND=fs3` would fall back to `s3`, start
+/// cleanly, provision buckets and serve a knowledge base that looks empty because the
+/// operator's data is on disk. Nothing later in the run would say so.
+fn parse_storage_backend() -> Result<Option<StorageBackendKind>, Error> {
+    let Some(value) = std::env::var_os("NOTEDTHAT_STORAGE_BACKEND") else {
+        return Ok(None);
+    };
+    let value = value.to_str().ok_or_else(|| Error::Config {
+        message: "NOTEDTHAT_STORAGE_BACKEND must be valid UTF-8".into(),
+    })?;
+    if value.is_empty() {
+        return Err(Error::Config {
+            message: "NOTEDTHAT_STORAGE_BACKEND must not be empty".into(),
+        });
+    }
+    match value {
+        "s3" => Ok(Some(StorageBackendKind::S3)),
+        "fs" => Ok(Some(StorageBackendKind::Fs)),
+        other => Err(Error::Config {
+            message: format!(
+                "NOTEDTHAT_STORAGE_BACKEND is invalid: expected \"s3\" or \"fs\", got \"{other}\""
+            ),
+        }),
+    }
+}
+
+/// Refuse to start when variables belonging to the unselected backend are set.
+///
+/// Reports every offender at once: the realistic case is a whole `NOTEDTHAT_S3_*` family
+/// left behind by an operator switching to `fs`, and naming one per restart would take
+/// five restarts. Presence is tested with `var_os`, so an empty value still counts —
+/// matching [`REMOVED_LISTENER_ENV_VARS`].
+///
+/// The check runs when the selector is unset too, and says so. That is the highest-value
+/// case: an operator who sets `NOTEDTHAT_FS_ROOT` and forgets the selector would
+/// otherwise get a perfectly healthy S3 deployment with an unread root.
+fn reject_other_backends_variables(selected: Option<StorageBackendKind>) -> Result<(), Error> {
+    let effective = selected.unwrap_or(StorageBackendKind::S3);
+    let offenders: Vec<&str> = backend_owned_env_vars()
+        .into_iter()
+        .filter(|(name, owner)| *owner != effective && std::env::var_os(name).is_some())
+        .map(|(name, _)| name)
+        .collect();
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    let owner = if effective == StorageBackendKind::S3 {
+        StorageBackendKind::Fs
+    } else {
+        StorageBackendKind::S3
+    };
+    let selection = match selected {
+        Some(kind) => format!("NOTEDTHAT_STORAGE_BACKEND is {kind}"),
+        None => {
+            "NOTEDTHAT_STORAGE_BACKEND is unset, so the default s3 backend is selected".to_string()
+        }
+    };
+    Err(Error::Config {
+        message: format!(
+            "{selection}, but these variables belong to the {owner} backend and would be ignored: {}. \
+             Unset them or set NOTEDTHAT_STORAGE_BACKEND={owner} to start the server.",
+            offenders.join(", ")
+        ),
+    })
+}
+
+/// An S3 storage config pointed at an unroutable address.
+///
+/// For tests that inject their own [`crate::run::Backends`] and never build a client
+/// from it. A regression that *does* reach for it fails loudly rather than quietly
+/// talking to something real.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn unroutable_storage_placeholder() -> StorageConfig {
+    StorageConfig::S3(notedthat_storage_s3::S3Config {
+        endpoint_url: Some("http://127.0.0.1:1".to_string()),
+        region: "us-east-1".to_string(),
+        access_key_id: "any".to_string(),
+        secret_access_key: "any".to_string(),
+        force_path_style: true,
+    })
+}
+
 /// Server-wide configuration, parsed from environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -19,8 +185,9 @@ pub struct Config {
     pub tenant_slug: TenantSlug,
     /// Socket address the HTTP server binds to (`NOTEDTHAT_LISTEN_ADDR`; default `0.0.0.0:8080`).
     pub listen_addr: SocketAddr,
-    /// S3 client configuration.
-    pub s3: notedthat_storage_s3::S3Config,
+    /// The selected storage backend and its configuration
+    /// (`NOTEDTHAT_STORAGE_BACKEND`; default `s3`).
+    pub storage: StorageConfig,
     /// Log output format (`NOTEDTHAT_LOG_FORMAT`; `pretty` or `json`).
     pub log_format: LogFormat,
     /// Qdrant client configuration.
@@ -137,7 +304,16 @@ impl Config {
             message: format!("NOTEDTHAT_LISTEN_ADDR is invalid: {e}"),
         })?;
 
-        let s3 = notedthat_storage_s3::S3Config::from_env()?;
+        let selected = parse_storage_backend()?;
+        reject_other_backends_variables(selected)?;
+        let storage = match selected.unwrap_or(StorageBackendKind::S3) {
+            StorageBackendKind::S3 => {
+                StorageConfig::S3(notedthat_storage_s3::S3Config::from_env()?)
+            }
+            StorageBackendKind::Fs => {
+                StorageConfig::Fs(notedthat_storage_fs::FsConfig::from_env()?)
+            }
+        };
 
         let log_format = match std::env::var("NOTEDTHAT_LOG_FORMAT").as_deref() {
             Ok("json") => LogFormat::Json,
@@ -224,7 +400,7 @@ impl Config {
             kbs,
             tenant_slug,
             listen_addr,
-            s3,
+            storage,
             log_format,
             qdrant,
             embedder,
@@ -379,9 +555,15 @@ impl EmbedderConfig {
 mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 28] = [
+    const ALL_ENV_KEYS: [&str; 34] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
+        "NOTEDTHAT_STORAGE_BACKEND",
+        "NOTEDTHAT_FS_ROOT",
+        "NOTEDTHAT_FS_METADATA",
+        "NOTEDTHAT_FS_FILE_MODE",
+        "NOTEDTHAT_FS_DIR_MODE",
+        "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
         "NOTEDTHAT_S3_REGION",
         "NOTEDTHAT_S3_ACCESS_KEY_ID",
         "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
@@ -414,6 +596,12 @@ mod tests {
         let mut vars: Vec<(&str, Option<&str>)> = vec![
             ("NOTEDTHAT_API_TOKEN", Some("test-token")),
             ("NOTEDTHAT_KBS", Some("notes,docs")),
+            ("NOTEDTHAT_STORAGE_BACKEND", None),
+            ("NOTEDTHAT_FS_ROOT", None),
+            ("NOTEDTHAT_FS_METADATA", None),
+            ("NOTEDTHAT_FS_FILE_MODE", None),
+            ("NOTEDTHAT_FS_DIR_MODE", None),
+            ("NOTEDTHAT_FS_ALLOW_LOSSY_NAMES", None),
             ("NOTEDTHAT_S3_REGION", Some("us-east-1")),
             ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("key")),
             ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("secret")),
@@ -636,7 +824,7 @@ mod tests {
 
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 28);
+        assert_eq!(ALL_ENV_KEYS.len(), 34);
     }
 
     #[test]
@@ -995,6 +1183,148 @@ mod tests {
                 msg.contains("NOTEDTHAT_API_TOKEN"),
                 "error should mention NOTEDTHAT_API_TOKEN: {msg}"
             );
+        }
+    }
+
+    mod storage_backend {
+        use super::*;
+
+        #[test]
+        fn the_default_is_s3_so_existing_deployments_are_unaffected() {
+            run_with_env(&[], || {
+                let config = Config::from_env().expect("valid");
+                assert_eq!(config.storage.kind(), StorageBackendKind::S3);
+            });
+        }
+
+        #[test]
+        fn selecting_fs_reads_the_fs_variables_and_stops_requiring_s3() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
+                    ("NOTEDTHAT_S3_REGION", None),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
+                ],
+                || {
+                    let config = Config::from_env().expect("valid");
+                    assert_eq!(config.storage.kind(), StorageBackendKind::Fs);
+                },
+            );
+        }
+
+        /// Unlike `NOTEDTHAT_LOG_FORMAT`, a typo here must not fall back — it would
+        /// silently point the server at a different store.
+        #[test]
+        fn an_unknown_backend_is_refused_rather_than_defaulted() {
+            run_with_env(&[("NOTEDTHAT_STORAGE_BACKEND", Some("filesystem"))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(error.contains("expected \"s3\" or \"fs\""), "{error}");
+                assert!(error.contains("filesystem"), "{error}");
+            });
+        }
+
+        #[test]
+        fn an_empty_backend_selector_is_refused() {
+            run_with_env(&[("NOTEDTHAT_STORAGE_BACKEND", Some(""))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(error.contains("must not be empty"), "{error}");
+            });
+        }
+
+        #[test]
+        fn selecting_fs_without_a_root_names_the_variable() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_S3_REGION", None),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("NOTEDTHAT_FS_ROOT is required"), "{error}");
+                },
+            );
+        }
+
+        #[test]
+        fn leftover_s3_variables_under_fs_are_reported_together() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("belong to the s3 backend"), "{error}");
+                    // All of them at once, not one per restart.
+                    assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_S3_ACCESS_KEY_ID"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_S3_SECRET_ACCESS_KEY"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=s3"), "{error}");
+                },
+            );
+        }
+
+        /// The case this check exists for: the operator sets a root and forgets the
+        /// selector, and would otherwise get a healthy S3 deployment with an unread root.
+        #[test]
+        fn an_fs_root_without_the_selector_is_refused_and_says_why() {
+            run_with_env(&[("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat"))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(
+                    error.contains("NOTEDTHAT_STORAGE_BACKEND is unset"),
+                    "{error}"
+                );
+                assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
+                assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=fs"), "{error}");
+            });
+        }
+
+        /// An empty value is still a value — matching how removed variables are checked.
+        #[test]
+        fn an_empty_cross_backend_variable_still_counts() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
+                    ("NOTEDTHAT_S3_REGION", Some("")),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
+                },
+            );
+        }
+
+        /// The rejection table is built from each adapter's own inventory, so it cannot
+        /// drift from what those adapters actually read.
+        #[test]
+        fn the_rejection_table_matches_each_adapter_inventory() {
+            let table = backend_owned_env_vars();
+            let s3: Vec<&str> = table
+                .iter()
+                .filter(|(_, kind)| *kind == StorageBackendKind::S3)
+                .map(|(name, _)| *name)
+                .collect();
+            let fs: Vec<&str> = table
+                .iter()
+                .filter(|(_, kind)| *kind == StorageBackendKind::Fs)
+                .map(|(name, _)| *name)
+                .collect();
+            assert_eq!(s3, notedthat_storage_s3::S3_ENV_VARS.to_vec());
+            assert_eq!(fs, notedthat_storage_fs::FS_ENV_VARS.to_vec());
+
+            for (name, _) in &table {
+                assert!(
+                    ALL_ENV_KEYS.contains(name),
+                    "{name} is read but missing from ALL_ENV_KEYS"
+                );
+            }
         }
     }
 }

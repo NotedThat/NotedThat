@@ -1,6 +1,6 @@
 //! Server startup and lifecycle management.
 
-use crate::config::Config;
+use crate::config::{Config, StorageConfig};
 use crate::provision::provision_kbs;
 use anyhow::Context;
 use notedthat_api_http::{
@@ -11,6 +11,7 @@ use notedthat_indexer::{
     IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
 };
+use notedthat_storage_fs::{FsStorage, RootLock};
 use notedthat_storage_s3::S3Storage;
 use notedthat_webdav::{router::build_router as build_dav_router, state::WebDavState};
 use std::{sync::Arc, time::Duration};
@@ -58,10 +59,43 @@ pub use backends::Backends;
 /// Build the production backends described by `config`.
 ///
 /// Construction is cheap and connectionless: nothing here reaches the network,
-/// so a failure means bad configuration rather than an unreachable service.
-fn backends_from_config(config: &Config) -> anyhow::Result<backends::Backends> {
-    let client = config.s3.build_client();
-    let storage = Arc::new(S3Storage::new(client, config.tenant_slug.clone()));
+/// so a failure means bad configuration rather than an unreachable service. The
+/// filesystem backend's root is proven usable and claimed earlier, by
+/// [`open_storage_root`], so that stays true here.
+fn backends_from_config(
+    config: &Config,
+    root: Option<&RootLock>,
+) -> anyhow::Result<backends::Backends> {
+    let storage: Arc<dyn notedthat_core::Storage> = match &config.storage {
+        StorageConfig::S3(s3) => {
+            info!(
+                backend = "s3",
+                endpoint = ?s3.endpoint_url,
+                path_style = s3.force_path_style,
+                "storage backend selected"
+            );
+            Arc::new(S3Storage::new(
+                s3.build_client(),
+                config.tenant_slug.clone(),
+            ))
+        }
+        StorageConfig::Fs(fs) => {
+            let root = root.context(
+                "the filesystem backend needs a claimed storage root; call open_storage_root first",
+            )?;
+            info!(
+                backend = "fs",
+                root = %root.root().display(),
+                metadata = %fs.metadata,
+                "storage backend selected"
+            );
+            Arc::new(FsStorage::new(
+                fs,
+                root.root().to_path_buf(),
+                config.tenant_slug.clone(),
+            ))
+        }
+    };
 
     let qdrant_config = QdrantConfig {
         url: config.qdrant.url.clone(),
@@ -180,16 +214,18 @@ async fn build_infrastructure(
 ///
 /// # Startup sequence (fail-fast per D39)
 ///
-/// 1. Build S3 client from config.
-/// 2. Provision all declared KBs (validate bucket names, ensure buckets, write manifests).
-/// 3. Bind the TCP listener.
-/// 4. Serve requests until SIGTERM / SIGINT.
+/// 1. Validate the staging directory, and for the filesystem backend the storage root.
+/// 2. Build the storage, vector-store and embedder clients from config.
+/// 3. Provision all declared KBs (validate bucket names, ensure buckets, write manifests).
+/// 4. Bind the TCP listener.
+/// 5. Serve requests until SIGTERM / SIGINT.
 ///
-/// Any failure in steps 1-3 returns `Err` immediately (non-zero exit via `main`).
+/// Any failure in steps 1-4 returns `Err` immediately (non-zero exit via `main`).
 ///
 /// # Errors
 ///
-/// Returns an error if S3 provisioning fails, the listener cannot bind, or axum serving fails.
+/// Returns an error if the staging directory or storage root is unusable, provisioning
+/// fails, the listener cannot bind, or axum serving fails.
 pub async fn run(config: Config) -> anyhow::Result<()> {
     // Validate staging BEFORE constructing any backend. `backends_from_config`
     // can fail on a malformed Qdrant URL or embedder config, and if it ran first
@@ -201,11 +237,35 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .await
         .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
 
-    let backends = backends_from_config(&config)?;
+    // Same reasoning one step further: a wrong or already-claimed storage root is more
+    // actionable than a backend construction failure, and must not be shadowed by one.
+    // Bound to a named local — dropping the guard would release the claim and silently
+    // turn the single-process guarantee off.
+    let storage_root = open_storage_root(&config).await?;
+
+    let backends = backends_from_config(&config, storage_root.as_ref())?;
     serve(config, backends).await
 }
 
+/// Prove the filesystem storage root is usable and claim it for this process.
+///
+/// Returns `Ok(None)` for the S3 backend, which has no root to claim.
+async fn open_storage_root(config: &Config) -> anyhow::Result<Option<RootLock>> {
+    match &config.storage {
+        StorageConfig::S3(_) => Ok(None),
+        StorageConfig::Fs(fs) => Ok(Some(
+            notedthat_storage_fs::open_root(fs)
+                .await
+                .context("failed to claim NOTEDTHAT_FS_ROOT")?,
+        )),
+    }
+}
+
 /// Start the HTTP server with the provided configuration and backends.
+///
+/// Skips both `backends_from_config` and the storage-root claim: `config.storage` is not
+/// read at all, so claiming a root derived from it would lock a directory this server
+/// never touches.
 ///
 /// Same startup sequence as [`run`], but over backends the caller supplies.
 /// Tests use this to exercise the real routers, indexer worker and shutdown

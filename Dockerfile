@@ -81,6 +81,11 @@ RUN groupadd --system --gid 10001 notedthat \
  && useradd  --system --uid 10001 --gid notedthat \
         --home-dir /nonexistent --shell /usr/sbin/nologin notedthat
 
+# Default storage root for NOTEDTHAT_STORAGE_BACKEND=fs, owned by the runtime user so a
+# named volume mounted here is writable without any host-side chown. A bind mount still
+# has to be writable by uid 10001.
+RUN install -d -o 10001 -g 10001 -m 0755 /var/lib/notedthat
+
 COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedthat-server
 COPY --from=builder /app/target/release/notedthat-mcp-stdio /usr/local/bin/notedthat-mcp-stdio
 

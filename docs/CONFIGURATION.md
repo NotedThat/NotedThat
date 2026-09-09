@@ -7,6 +7,9 @@ process environment before startup.
 This keeps the configuration surface explicit and container-friendly: pass vars via `docker run -e`,
 a Kubernetes `Secret`, or your shell's `export` statements.
 
+Which storage variables are required depends on the selected backend — see
+[Storage backend](#storage-backend).
+
 ## Required environment variables
 
 These must be set. The server exits with a non-zero status and a descriptive error message if any
@@ -18,9 +21,6 @@ are missing or invalid.
 | `NOTEDTHAT_WEBDAV_USERNAME` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
 | `NOTEDTHAT_WEBDAV_PASSWORD` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
 | `NOTEDTHAT_KBS` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
-| `NOTEDTHAT_S3_REGION` | AWS region string | AWS region for the S3 bucket. Required even when using a custom endpoint. | `us-east-1` |
-| `NOTEDTHAT_S3_ACCESS_KEY_ID` | string | AWS access key ID. No credential chain is consulted; this value is used directly. | `AKIAIOSFODNN7EXAMPLE` |
-| `NOTEDTHAT_S3_SECRET_ACCESS_KEY` | string | AWS secret access key corresponding to the access key ID above. | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
 
 ## Optional environment variables
 
@@ -29,12 +29,97 @@ These have defaults and can be omitted.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `NOTEDTHAT_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
-| `NOTEDTHAT_S3_ENDPOINT_URL` | URL | (unset, uses AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage, and other S3-compatible stores. |
-| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `true` or `false` | `false` | Use path-style S3 addressing (`endpoint/bucket/key`) instead of virtual-hosted style (`bucket.endpoint/key`). Set to `true` for SeaweedFS, MinIO, and most self-hosted S3-compatible stores. |
 | `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
 | `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | NOTEDTHAT_MAX_PATCHABLE_SIZE | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
 | `NOTEDTHAT_UPLOAD_TMP_DIR` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+
+## Storage backend
+
+NotedThat keeps objects either in an S3-compatible object store or in a local directory tree.
+One backend is active per process, chosen at startup.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NOTEDTHAT_STORAGE_BACKEND` | No | `s3` | `s3` or `fs`. Any other value is a startup error — it is not silently defaulted, because pointing the server at the wrong store produces a deployment that looks healthy while serving nothing. |
+| `NOTEDTHAT_S3_REGION` | Yes, when `s3` | — | AWS region. Required even with a custom endpoint. |
+| `NOTEDTHAT_S3_ACCESS_KEY_ID` | Yes, when `s3` | — | Access key ID. No credential chain is consulted; this value is used directly. |
+| `NOTEDTHAT_S3_SECRET_ACCESS_KEY` | Yes, when `s3` | — | Secret access key for the key ID above. |
+| `NOTEDTHAT_S3_ENDPOINT_URL` | No | (AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage and R2. |
+| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. |
+| `NOTEDTHAT_FS_ROOT` | Yes, when `fs` | — | Absolute path of the storage root. |
+| `NOTEDTHAT_FS_METADATA` | No | `sidecar` | Where per-object metadata is kept. `sidecar` is the only accepted value today. |
+| `NOTEDTHAT_FS_FILE_MODE` | No | `0644` | Octal mode for created object files. |
+| `NOTEDTHAT_FS_DIR_MODE` | No | `0755` | Octal mode for created directories. |
+| `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES` | No | `false` | Start even on a filesystem that folds case or normalizes Unicode. See the warning below. |
+
+### Variables belonging to the unselected backend are rejected
+
+Setting `NOTEDTHAT_FS_ROOT` while the `s3` backend is selected — including by leaving the
+selector unset — refuses startup rather than ignoring the variable, and the error names every
+conflicting variable at once:
+
+```
+Error: configuration error: NOTEDTHAT_STORAGE_BACKEND is fs, but these variables belong to the
+s3 backend and would be ignored: NOTEDTHAT_S3_REGION, NOTEDTHAT_S3_ACCESS_KEY_ID. Unset them or
+set NOTEDTHAT_STORAGE_BACKEND=s3 to start the server.
+```
+
+The alternative is an operator who believes their notes are on a disk that nothing is reading.
+**An empty value is still a value** — `NOTEDTHAT_S3_REGION=` counts as set, matching how removed
+variables are checked. Note this if you pass variables through Compose with the `${VAR-}` form.
+
+`AWS_*` variables are never considered: the S3 client uses the credentials given above and never
+consults the ambient credential chain, so ambient AWS variables have no effect either way.
+
+## Filesystem storage backend
+
+With `NOTEDTHAT_STORAGE_BACKEND=fs`, an object's key is its path under the root:
+
+```
+$NOTEDTHAT_FS_ROOT/
+  .notedthat.lock                 process lock
+  .notedthat-meta/                per-object metadata, outside every knowledge base
+  nt-default-notes/               one directory per knowledge base
+    notes/hello.md                the object `notes/hello.md`
+    .notedthat/manifest.json      the knowledge base manifest
+```
+
+The tree is meant to be read. Open it in an editor, `grep` it, `rsync` it, put it under version
+control. Nothing but objects appears inside a knowledge base directory — metadata and the lock
+live above them.
+
+**Editing files in place works.** An object changed outside the server is detected on the next
+request and its `ETag` recomputed from content, so clients are never served stale validators.
+The *search index* is a different matter: it is only updated by writes that go through NotedThat,
+so an out-of-band edit leaves the object stale in search until it is written through the API,
+WebDAV or MCP again.
+
+**One process per root.** Conditional writes (`If-Match`, `If-None-Match`) are made atomic by an
+in-process lock, so a second server on the same root would reintroduce the lost writes that
+[§8.1 of the specification](../SPECIFICATIONS.md) records against backends without a consensus
+mechanism. The server takes an exclusive lock on `$NOTEDTHAT_FS_ROOT/.notedthat.lock` at startup
+and refuses to start if another process holds it. For the same reason, **network filesystems
+(NFS, SMB) are not supported** — their advisory locking is unreliable.
+
+**The filesystem must preserve names byte-for-byte.** On a case-folding filesystem (macOS APFS
+and Windows NTFS by default) the keys `Foo.md` and `foo.md` become one file, and writing either
+destroys the other; a Unicode-normalizing filesystem does the same to composed and decomposed
+spellings. Startup probes for both and refuses rather than lose a note silently. Use a
+case-sensitive filesystem, or set `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES=true` to accept the risk.
+
+**Durability and backups are yours.** The root is the only copy; NotedThat does not replicate it.
+Size it for the knowledge bases plus growth, and back it up like any other data directory —
+an ordinary file-level backup is sufficient and restores to a working store.
+
+**Permissions.** Objects are created `0644` and directories `0755`, so the tree is readable by a
+backup job or a person. Adjust with `NOTEDTHAT_FS_FILE_MODE` and `NOTEDTHAT_FS_DIR_MODE`. In the
+container image the server runs as uid **10001**, so a bind-mounted root must be writable by that
+uid; a named volume avoids the question.
+
+**Two keys a filesystem cannot hold at once.** S3 allows an object `a/b` alongside `a/b/c`; a
+filesystem cannot make `a/b` both a file and a directory, so the second write is refused with an
+error naming the conflict. This is the one place the two backends genuinely differ.
 
 ## Manifest-controlled anonymous reads
 
@@ -190,19 +275,46 @@ NOTEDTHAT_S3_SECRET_ACCESS_KEY=<your-secret-access-key>
 
 No endpoint URL or path-style override needed for real AWS S3.
 
+## Example: single node, no object store
+
+```sh
+export NOTEDTHAT_STORAGE_BACKEND=fs
+export NOTEDTHAT_FS_ROOT=/srv/notedthat
+export NOTEDTHAT_API_TOKEN=change-me
+export NOTEDTHAT_KBS=notes
+export NOTEDTHAT_WEBDAV_USERNAME=webdav-user
+export NOTEDTHAT_WEBDAV_PASSWORD=change-me
+export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
+# plus the four EMBEDDING_* variables
+```
+
+Do not also set `NOTEDTHAT_S3_*`; see
+[Variables belonging to the unselected backend are rejected](#variables-belonging-to-the-unselected-backend-are-rejected).
+
 ## Startup validation
 
-The server validates all configuration before binding to any port or connecting to S3. If a
+The server validates all configuration before binding to any port or reaching any backend. If a
 required variable is missing, empty, or invalid, the process exits immediately with a non-zero
 status code and prints a descriptive error to stderr. For example:
 
 ```
 Error: NOTEDTHAT_API_TOKEN is required
 Error: NOTEDTHAT_KBS must declare at least one knowledge base
-Error: NOTEDTHAT_S3_REGION is required
+Error: configuration error: NOTEDTHAT_S3_REGION is required
 Error: NOTEDTHAT_LISTEN_ADDR is invalid: invalid socket address syntax
 Error: invalid KB slug "My Notes": slugs must match [a-z0-9-]{1,40}
 Error: duplicate KB slug in NOTEDTHAT_KBS: "notes"
+Error: configuration error: NOTEDTHAT_STORAGE_BACKEND is invalid: expected "s3" or "fs", got "filesystem"
+Error: configuration error: NOTEDTHAT_FS_ROOT is required when NOTEDTHAT_STORAGE_BACKEND=fs
+Error: configuration error: NOTEDTHAT_FS_ROOT must be an absolute path, got 'data'
+```
+
+With the filesystem backend, the storage root is checked and claimed straight after the staging
+directory, before any backend client is built:
+
+```
+Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: NOTEDTHAT_FS_ROOT does not exist: /srv/notedthat
+Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: the storage root /srv/notedthat is already in use by another notedthat-server process (PID 4213)
 ```
 
 This fail-fast behavior means misconfigured deployments fail loudly at startup rather than
@@ -243,6 +355,9 @@ exposure change is not. See the upgrade notes in [API.md](API.md).
 - **TLS:** The server speaks plain HTTP. Terminate TLS at a reverse proxy (Traefik, nginx, Caddy).
 - **Multiple tokens:** Only one API token is supported. Per-KB tokens and scopes are planned for
   a later release.
+- **Multiple processes over one filesystem root:** The `fs` backend supports exactly one server
+  process per `NOTEDTHAT_FS_ROOT`, enforced by a lock at startup. See
+  [Filesystem storage backend](#filesystem-storage-backend).
 
 ---
 

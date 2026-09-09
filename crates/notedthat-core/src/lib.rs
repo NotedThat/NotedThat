@@ -6,8 +6,10 @@ pub mod auth;
 pub mod bucket_name;
 pub mod conditional;
 pub mod error;
+pub mod etag;
 pub mod kb;
 pub mod object_path;
+pub mod preconditions;
 mod public_read;
 pub mod range;
 pub mod search;
@@ -27,8 +29,13 @@ pub use bucket_name::{
 };
 pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
+pub use etag::{EtagHasher, compute_etag};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use object_path::{ObjectPath, is_internal_path};
+pub use preconditions::{
+    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
+    matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds, unix_seconds_i64,
+};
 pub use public_read::{PublicReadCapability, PublicReadPolicy};
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,

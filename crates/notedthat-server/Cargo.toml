@@ -19,6 +19,10 @@ test-support = []
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.2.0" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.2.0" }
+# Both adapters, unconditionally rather than behind a cargo feature: the backend is
+# chosen at runtime by NOTEDTHAT_STORAGE_BACKEND, so a feature would mean the published
+# binary and the container image could only ever do one of them.
+notedthat-storage-fs = { path = "../notedthat-storage-fs", version = "0.2.0" }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.2.0" }
 notedthat-webdav = { path = "../notedthat-webdav", version = "0.2.0" }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.2.0" }
@@ -46,6 +50,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde_json.workspace = true
 temp-env = "0.3"
+tempfile.workspace = true
 # One persistent SeaweedFS/Qdrant pair for tests/phase3_public_read_e2e.rs, the
 # only suite in this crate that still needs real infrastructure. Everything else
 # here runs on the in-process backends.

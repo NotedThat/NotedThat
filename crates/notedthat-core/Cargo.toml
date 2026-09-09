@@ -11,7 +11,10 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [features]
-test-support = ["dep:sha2", "dep:hex", "dep:httpdate"]
+# `InMemoryStorage` and the port reservation helper. The precondition and ETag
+# logic it used to own now lives in `preconditions`/`etag`, unconditionally, because
+# the filesystem adapter needs it in a production build.
+test-support = []
 
 [dependencies]
 async-trait.workspace = true
@@ -25,9 +28,9 @@ thiserror.workspace = true
 subtle.workspace = true
 tracing.workspace = true
 
-hex = { workspace = true, optional = true }
-httpdate = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
+hex.workspace = true
+httpdate.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
 tokio-util = { workspace = true, features = ["io"] }
 tempfile.workspace = true

@@ -65,8 +65,13 @@ pub struct ListResponse {
     ///
     /// Pass this value unchanged as `cursor` on the next `list_objects` call to retrieve the
     /// next page. Clients MUST NOT parse, validate, or store this value beyond the immediate
-    /// next request. Invalid or expired tokens cause the backend to return
-    /// `StorageError::BackendUnavailable`.
+    /// next request.
+    ///
+    /// What an *invalid* token does is backend-defined and must not be relied on. A backend
+    /// that detects one returns `StorageError::BackendUnavailable`; some S3 implementations
+    /// accept an unrecognised token and answer with a page instead. Since the token is
+    /// opaque and backend-issued, a client has no legitimate reason to send one that did
+    /// not come from this API.
     pub next_cursor: Option<String>,
 }
 
@@ -183,8 +188,8 @@ pub trait Storage: Send + Sync {
     /// Results are capped at `limit` (default 100, max 1000).
     ///
     /// Pass `cursor = None` on the first call. On subsequent calls, pass the opaque
-    /// `next_cursor` value from the previous [`ListResponse`] unchanged. An invalid or
-    /// expired cursor causes the backend to return `StorageError::BackendUnavailable`.
+    /// `next_cursor` value from the previous [`ListResponse`] unchanged. What an invalid
+    /// cursor does is backend-defined — see [`ListResponse::next_cursor`].
     ///
     /// # Invariant
     ///
