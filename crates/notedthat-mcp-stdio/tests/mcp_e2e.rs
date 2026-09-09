@@ -173,20 +173,6 @@ fn test_config(
     }
 }
 
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
-}
-
-fn free_dav_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
-    listener.local_addr().expect("local_addr")
-}
-
 async fn wait_for_http(url: &str, timeout: Duration) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -221,8 +207,8 @@ impl Drop for NotedThatServerFixture {
 
 async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
     let _guard = test_mutex().lock().await;
-    let http_addr = free_addr().await;
-    let dav_addr = free_dav_addr();
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config(http_addr, dav_addr);
 
     let backends = in_memory_backends();

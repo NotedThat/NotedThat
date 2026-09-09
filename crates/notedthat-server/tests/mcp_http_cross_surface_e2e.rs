@@ -155,15 +155,6 @@ fn test_config_with_kbs_and_mcp_http(
     }
 }
 
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
-}
-
 async fn wait_for_http(url: &str, timeout: Duration) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -422,9 +413,9 @@ async fn poll_mcp_search_hit(
 #[tokio::test]
 async fn mcp_http_initialize_tools() {
     // Given: all three server listeners are configured on random loopback ports.
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();
@@ -502,9 +493,9 @@ async fn mcp_http_initialize_tools() {
 #[tokio::test]
 async fn mcp_http_write_search_identity() {
     // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();
@@ -589,9 +580,9 @@ async fn mcp_http_write_search_identity() {
 #[allow(clippy::too_many_lines)]
 async fn mcp_http_write_stdio_search_identity() {
     // Given: MCP HTTP, the HTTP API, and the in-process backends are running.
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();
@@ -710,9 +701,9 @@ async fn mcp_http_auth_and_sse_refusal() {
     const EXACT_SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
 
     // Given: all three server listeners configured on random loopback ports.
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();
@@ -846,9 +837,9 @@ async fn mcp_resources_list_and_read() {
     const BINARY_KB: &str = "alpha";
     const BINARY_KEY: &str = "binary-data.bin";
 
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_kbs_and_mcp_http(KBS, http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();
@@ -1082,9 +1073,9 @@ async fn mcp_resources_list_and_read() {
 #[tokio::test]
 async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     // Given: MCP HTTP and the HTTP API are running over the in-process backends.
-    let http_addr = free_addr().await;
-    let dav_addr = free_addr().await;
-    let mcp_addr = free_addr().await;
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
+    let mcp_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_mcp_http(http_addr, dav_addr, mcp_addr);
 
     let backends = in_memory_backends();

@@ -28,7 +28,7 @@ pub struct PatchServer {
 
 impl PatchServer {
     pub async fn start(max_patchable_size: u64) -> Self {
-        let runtime = patch_backends::start_runtime(max_patchable_size).await;
+        let runtime = patch_backends::start_runtime(max_patchable_size);
         let config = runtime.config;
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);

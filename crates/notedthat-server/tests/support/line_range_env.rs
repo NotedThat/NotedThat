@@ -42,9 +42,9 @@ struct ListenerAddrs {
 impl RunningServer {
     async fn start(kb: String) -> Self {
         let listeners = ListenerAddrs {
-            http: free_addr().await,
-            dav: free_addr().await,
-            mcp: free_addr().await,
+            http: notedthat_api_http::testing::reserve_addr(),
+            dav: notedthat_api_http::testing::reserve_addr(),
+            mcp: notedthat_api_http::testing::reserve_addr(),
         };
         let config = test_config(&kb, listeners);
         let backends = Backends {
@@ -179,15 +179,6 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
     }
-}
-
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
 }
 
 async fn wait_for_http(url: &str, timeout: Duration) {

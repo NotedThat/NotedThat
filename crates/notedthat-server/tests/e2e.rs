@@ -68,10 +68,10 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: free_dav_addr(),
+        webdav_listen_addr: notedthat_api_http::testing::reserve_addr(),
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_bind: free_dav_addr(),
+        mcp_http_bind: notedthat_api_http::testing::reserve_addr(),
         mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
@@ -82,11 +82,6 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
     }
-}
-
-fn free_dav_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
-    listener.local_addr().expect("local_addr")
 }
 
 /// Poll `/healthz` until the server answers, or fail with a clear message.
@@ -111,18 +106,9 @@ async fn wait_for_health(addr: std::net::SocketAddr) {
     }
 }
 
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
-}
-
 #[tokio::test]
 async fn e2e_healthz_and_put_get() {
-    let bound_addr = free_addr().await;
+    let bound_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config(bound_addr);
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -178,7 +164,7 @@ async fn e2e_healthz_and_put_get() {
 
 #[tokio::test]
 async fn e2e_list_and_delete() {
-    let bound_addr = free_addr().await;
+    let bound_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config(bound_addr);
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {

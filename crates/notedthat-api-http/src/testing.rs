@@ -16,7 +16,7 @@ use std::sync::Arc;
 // Re-export the fake `Storage` implementation and the ETag helper from
 // `notedthat-core` so existing imports (`notedthat_api_http::testing::InMemoryStorage`,
 // `notedthat_api_http::testing::compute_etag`) continue to compile unchanged.
-pub use notedthat_core::testing::{InMemoryStorage, compute_etag};
+pub use notedthat_core::testing::{InMemoryStorage, compute_etag, reserve_addr};
 
 /// A `Searcher` that always returns an empty `SearchResponse`.
 /// Used as the default searcher in test `AppState` instances so existing tests

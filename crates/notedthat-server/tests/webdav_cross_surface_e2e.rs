@@ -87,7 +87,7 @@ fn test_config_with_webdav(
         webdav_listen_addr: dav_addr,
         webdav_username: WEBDAV_USER.to_string(),
         webdav_password: WEBDAV_PASS.to_string(),
-        mcp_http_bind: free_dav_addr(),
+        mcp_http_bind: notedthat_api_http::testing::reserve_addr(),
         mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
@@ -98,20 +98,6 @@ fn test_config_with_webdav(
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
     }
-}
-
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
-}
-
-fn free_dav_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
-    listener.local_addr().expect("local_addr")
 }
 
 async fn wait_for_http(url: &str, timeout: Duration) {
@@ -215,8 +201,8 @@ async fn poll_search_gone(
 
 #[tokio::test]
 async fn webdav_put_becomes_searchable_via_http() {
-    let http_addr = free_addr().await;
-    let dav_addr = free_dav_addr();
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let dav_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_webdav(http_addr, dav_addr);
 
     let backends = in_memory_backends();

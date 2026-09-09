@@ -35,11 +35,11 @@ struct ListenerAddrs {
     mcp: std::net::SocketAddr,
 }
 
-pub(super) async fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
+pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
     let listeners = ListenerAddrs {
-        http: free_addr().await,
-        dav: free_addr().await,
-        mcp: free_addr().await,
+        http: notedthat_api_http::testing::reserve_addr(),
+        dav: notedthat_api_http::testing::reserve_addr(),
+        mcp: notedthat_api_http::testing::reserve_addr(),
     };
     let kb = unique_kb();
     let config = test_config(&kb, listeners, max_patchable_size);
@@ -117,15 +117,6 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         max_patchable_size,
         staging: notedthat_core::StagingConfig::default(),
     }
-}
-
-async fn free_addr() -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind to port 0");
-    let addr = listener.local_addr().expect("local_addr");
-    drop(listener);
-    addr
 }
 
 fn unique_kb() -> String {
