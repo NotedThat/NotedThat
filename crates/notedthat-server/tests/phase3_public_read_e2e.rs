@@ -91,7 +91,10 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
             .expect("discovery"),
     )
     .await;
-    assert_eq!(discovery.json()["knowledgebases"], serde_json::json!([]));
+    // D48: discovery needs at least one declared KB granting `discover`. The
+    // startup snapshot has none — PUBLIC_KB grants content only — so this is
+    // refused outright rather than answered with an empty list.
+    assert_http_401(&discovery);
     let content = wire(
         "HTTP anonymous content before restart",
         client
@@ -152,7 +155,10 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
             .expect("stale discovery"),
     )
     .await;
-    assert_eq!(stale.json()["knowledgebases"], serde_json::json!([]));
+    // Still refused: the stored manifest now grants `discover`, but this server
+    // loaded its policy at startup and never re-reads it. A 200 listing
+    // PUBLIC_KB here would mean the live edit had leaked into a running server.
+    assert_http_401(&stale);
     assert_http_401(&search(&client, &first, "public.md", None).await);
     first.stop();
 
