@@ -2378,6 +2378,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "base64",
+ "bytes",
  "clap",
  "notedthat-api-http",
  "notedthat-core",

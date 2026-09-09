@@ -50,9 +50,10 @@ notedthat-indexer = { path = "../notedthat-indexer", version = "0.4.0", features
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde_json.workspace = true
+bytes.workspace = true
 temp-env = "0.3"
 tempfile.workspace = true
-# One persistent SeaweedFS/Qdrant pair for tests/phase3_public_read_e2e.rs, the
+# One persistent SeaweedFS/Qdrant pair for tests/phase3_access_e2e.rs, the
 # only suite in this crate that still needs real infrastructure. Everything else
 # here runs on the in-process backends.
 testcontainers = { workspace = true }
