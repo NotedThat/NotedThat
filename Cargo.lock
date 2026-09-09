@@ -2226,6 +2226,7 @@ dependencies = [
  "notedthat-indexer",
  "notedthat-mcp",
  "notedthat-server",
+ "notedthat-storage-fs",
  "notedthat-storage-s3",
  "notedthat-webdav",
  "notedthat-write",
@@ -2244,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-storage-fs"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",

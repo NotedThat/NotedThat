@@ -4,6 +4,18 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use notedthat_core::Error;
 
+/// Every environment variable this backend reads.
+///
+/// `notedthat-server` uses this to reject variables belonging to the backend that is not
+/// selected, so the list must stay in step with [`S3Config::from_env`].
+pub const S3_ENV_VARS: [&str; 5] = [
+    "NOTEDTHAT_S3_REGION",
+    "NOTEDTHAT_S3_ACCESS_KEY_ID",
+    "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
+    "NOTEDTHAT_S3_ENDPOINT_URL",
+    "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+];
+
 /// S3 client config parsed from `NOTEDTHAT_S3_*` env vars.
 ///
 /// All fields are read directly from the process environment; no credential

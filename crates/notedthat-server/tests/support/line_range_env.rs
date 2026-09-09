@@ -3,7 +3,6 @@ use notedthat_core::{KbSlug, TenantSlug};
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use notedthat_server::run::Backends;
-use notedthat_storage_s3::S3Config;
 use reqwest::StatusCode;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -137,13 +136,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
-        s3: S3Config {
-            endpoint_url: Some("http://127.0.0.1:1".to_string()),
-            region: "us-east-1".to_string(),
-            access_key_id: "any".to_string(),
-            secret_access_key: "any".to_string(),
-            force_path_style: true,
-        },
+        storage: notedthat_server::config::unroutable_storage_placeholder(),
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),

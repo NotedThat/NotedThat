@@ -161,7 +161,6 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
 fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, StagingConfig, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
-    use notedthat_storage_s3::S3Config;
     use std::collections::BTreeMap;
 
     let mut kbs = BTreeMap::new();
@@ -175,13 +174,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
-        s3: S3Config {
-            endpoint_url: Some("http://127.0.0.1:1".to_string()),
-            region: "us-east-1".to_string(),
-            access_key_id: "any".to_string(),
-            secret_access_key: "any".to_string(),
-            force_path_style: true,
-        },
+        storage: notedthat_server::config::unroutable_storage_placeholder(),
         staging: StagingConfig::default(),
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {

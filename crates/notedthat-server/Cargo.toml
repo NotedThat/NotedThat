@@ -19,6 +19,10 @@ test-support = []
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.2.0" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.2.0" }
+# Both adapters, unconditionally rather than behind a cargo feature: the backend is
+# chosen at runtime by NOTEDTHAT_STORAGE_BACKEND, so a feature would mean the published
+# binary and the container image could only ever do one of them.
+notedthat-storage-fs = { path = "../notedthat-storage-fs", version = "0.2.0" }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.2.0" }
 notedthat-webdav = { path = "../notedthat-webdav", version = "0.2.0" }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.2.0" }
