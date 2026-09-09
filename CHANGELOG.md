@@ -10,6 +10,19 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/NotedThat/NotedThat/compare/v0.3.0...v0.3.1) - 2026-09-09
+
+### Added
+
+- *(server)* accept a command-line flag for every setting
+- *(mcp-stdio)* accept --url and --token
+
+### Other
+
+- *(config)* document the command line and its precedence
+- *(cli)* cover flag-over-environment precedence end to end
+- *(config)* separate environment reading from validation
+
 ## [0.3.0](https://github.com/NotedThat/NotedThat/compare/v0.2.0...v0.3.0) - 2026-09-09
 
 ### Added
