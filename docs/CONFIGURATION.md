@@ -212,6 +212,27 @@ WebDAV credentials (`NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`)
 must not be empty strings. Setting either to an empty string is treated the same as leaving it unset
 and causes a non-zero exit before any listener binds.
 
+### Removed variables
+
+Three variables from the era of separate listeners no longer exist. The server refuses to start
+while any of them is set, naming the replacement, rather than ignoring them:
+
+| Removed variable | Replacement |
+|---|---|
+| `NOTEDTHAT_WEBDAV_LISTEN_ADDR` | WebDAV is always served at `/webdav` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_BIND` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_ENABLED` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+
+```
+Error: NOTEDTHAT_MCP_HTTP_ENABLED was removed: MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR. Unset NOTEDTHAT_MCP_HTTP_ENABLED to start the server.
+```
+
+Each of these encoded a decision about which network surface was reachable. Silently ignoring one
+would widen exposure on upgrade — a WebDAV listener bound to `127.0.0.1` becoming reachable at
+`/webdav` on a public address, or a disabled MCP transport becoming mounted at `/mcp`. Unset the
+variable to acknowledge the new layout; a startup failure is a five-second fix, an unnoticed
+exposure change is not. See the upgrade notes in [API.md](API.md).
+
 ## What's not configurable in M2
 
 - **Tenant slug:** Hardcoded to `"default"`. There is no `NOTEDTHAT_TENANT_SLUG` variable.

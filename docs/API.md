@@ -10,7 +10,9 @@ responses and plain bytes for object bodies.
 All API data-plane routes are prefixed with `/api/v1/`. WebDAV is mounted at `/webdav`, and
 streamable MCP is mounted at `/mcp`. Health probes (`/healthz`, `/readyz`) and the LLM
 navigation document (`/llms.txt`) sit at the root with no version prefix.
-`/browse/...` is reserved for a future browse surface and is currently unimplemented.
+`/browse/...` is reserved for a future browse surface. It is routed but unimplemented: any
+method returns `501 Not Implemented` with an `error` of `not_implemented`, so the reservation
+is distinguishable from a mistyped path.
 
 ```
 http://HOST:PORT/api/v1/knowledgebases/...
@@ -1091,6 +1093,7 @@ curl -sSf -X POST \
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
+| ANY | `/browse`, `/browse/{path}` | No | Reserved for the future browse surface; returns `501 Not Implemented` |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
 | HEAD | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Object metadata, no body |
@@ -1280,6 +1283,39 @@ The following clients require `LOCK` support to save files, which NotedThat does
 Operators upgrading from M5 must set `NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`
 before restarting. The server exits with a non-zero status and a descriptive error message if either
 is missing or empty. See [CONFIGURATION.md](CONFIGURATION.md) for details.
+
+### Upgrade notes (separate listeners → unified listener)
+
+The API, WebDAV, and streamable MCP surfaces now share the one listener bound to
+`NOTEDTHAT_LISTEN_ADDR`. This is a breaking change for both clients and operators.
+
+**API routes moved.** Every `/v1/...` route is now `/api/v1/...`. There are no aliases and no
+redirects: a client still calling `/v1/knowledgebases` receives `404`. Update clients, scripts, and
+reverse-proxy rules before restarting. Health probes (`/healthz`, `/readyz`) and `/llms.txt` are
+unchanged at the root.
+
+**Three environment variables were removed, and the server refuses to start while any of them is
+still set** (D39 fail-fast; the error names the replacement):
+
+| Removed variable | Replacement |
+|---|---|
+| `NOTEDTHAT_WEBDAV_LISTEN_ADDR` | WebDAV is always served at `/webdav` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_BIND` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_ENABLED` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+
+Startup fails rather than ignoring these because ignoring them silently widens network exposure.
+An operator who bound WebDAV to `127.0.0.1` while the API listened on `0.0.0.0` would find WebDAV
+publicly reachable at `/webdav`, and an operator who set `NOTEDTHAT_MCP_HTTP_ENABLED=false` would
+find `/mcp` mounted. Authentication still applies to both surfaces — Basic for WebDAV, Bearer plus
+Host/Origin validation for MCP — but the reachable network surface changes, so the decision is
+returned to the operator instead of being made silently.
+
+**Reverse proxies and containers.** Forward every route to the single application port; the
+container now exposes only `8080`. Terminate TLS once, in front of that port. Per-surface proxy
+rules that pointed at the old WebDAV or MCP ports must be removed.
+
+**`/browse` is reserved.** Any method under `/browse` returns `501 Not Implemented`. It is not a
+usable surface yet; do not route traffic to it.
 
 ---
 

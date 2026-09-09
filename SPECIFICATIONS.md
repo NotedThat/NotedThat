@@ -535,7 +535,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
 | `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
 | `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
-| `ANY` | `/browse/{*path}` | Reserved for the browse surface; currently unimplemented |
+| `ANY` | `/browse`, `/browse/{*path}` | Reserved for the browse surface; routed and unimplemented — returns `501 Not Implemented` so the reservation is observable |
 | `GET` | `/api/v1/knowledgebases` | List declared KBs — matches MCP `list_knowledgebases()` (§6.10) and WebDAV root PROPFIND (D23) |
 | `GET` | `/api/v1/knowledgebases/{kb_slug}` | List objects in a KB. Query params: `prefix`, `limit` (default 100, max 1000), `cursor` (opaque continuation token per §6.12) |
 | `HEAD` | `/api/v1/knowledgebases/{kb_slug}/{path}` | Object metadata (ETag, `Content-Length`, `Last-Modified`) |
