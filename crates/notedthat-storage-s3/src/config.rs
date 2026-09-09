@@ -36,6 +36,41 @@ pub struct S3Config {
     pub force_path_style: bool,
 }
 
+/// The raw, unvalidated value of every setting this backend reads.
+///
+/// One field per entry in [`S3_ENV_VARS`], in the same order. Holding the values
+/// before they are checked is what lets one validator serve both configuration
+/// sources: [`S3Settings::from_env`] fills this from the environment, and a
+/// caller with command-line arguments fills it from those instead. `None` means
+/// the setting was not supplied at all — an empty string is a supplied value.
+#[derive(Debug, Clone, Default)]
+pub struct S3Settings {
+    /// `NOTEDTHAT_S3_REGION`.
+    pub region: Option<String>,
+    /// `NOTEDTHAT_S3_ACCESS_KEY_ID`.
+    pub access_key_id: Option<String>,
+    /// `NOTEDTHAT_S3_SECRET_ACCESS_KEY`.
+    pub secret_access_key: Option<String>,
+    /// `NOTEDTHAT_S3_ENDPOINT_URL`.
+    pub endpoint_url: Option<String>,
+    /// `NOTEDTHAT_S3_FORCE_PATH_STYLE`.
+    pub force_path_style: Option<String>,
+}
+
+impl S3Settings {
+    /// Collect every setting from the process environment.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            region: std::env::var("NOTEDTHAT_S3_REGION").ok(),
+            access_key_id: std::env::var("NOTEDTHAT_S3_ACCESS_KEY_ID").ok(),
+            secret_access_key: std::env::var("NOTEDTHAT_S3_SECRET_ACCESS_KEY").ok(),
+            endpoint_url: std::env::var("NOTEDTHAT_S3_ENDPOINT_URL").ok(),
+            force_path_style: std::env::var("NOTEDTHAT_S3_FORCE_PATH_STYLE").ok(),
+        }
+    }
+}
+
 impl S3Config {
     /// Parse S3 configuration from environment variables.
     ///
@@ -48,25 +83,31 @@ impl S3Config {
     /// - `NOTEDTHAT_S3_ENDPOINT_URL` — defaults to AWS endpoint
     /// - `NOTEDTHAT_S3_FORCE_PATH_STYLE` — `true` or `false`, defaults to `false`
     pub fn from_env() -> Result<Self, Error> {
-        let region = std::env::var("NOTEDTHAT_S3_REGION").map_err(|_| Error::Config {
+        Self::from_settings(S3Settings::from_env())
+    }
+
+    /// Validate already-collected settings, whatever supplied them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Error::Config { .. })` when a required setting is absent.
+    pub fn from_settings(settings: S3Settings) -> Result<Self, Error> {
+        let region = settings.region.ok_or_else(|| Error::Config {
             message: "NOTEDTHAT_S3_REGION is required".into(),
         })?;
-        let access_key_id =
-            std::env::var("NOTEDTHAT_S3_ACCESS_KEY_ID").map_err(|_| Error::Config {
-                message: "NOTEDTHAT_S3_ACCESS_KEY_ID is required".into(),
-            })?;
-        let secret_access_key =
-            std::env::var("NOTEDTHAT_S3_SECRET_ACCESS_KEY").map_err(|_| Error::Config {
-                message: "NOTEDTHAT_S3_SECRET_ACCESS_KEY is required".into(),
-            })?;
-        let endpoint_url = std::env::var("NOTEDTHAT_S3_ENDPOINT_URL").ok();
-        let force_path_style = std::env::var("NOTEDTHAT_S3_FORCE_PATH_STYLE")
-            .ok()
+        let access_key_id = settings.access_key_id.ok_or_else(|| Error::Config {
+            message: "NOTEDTHAT_S3_ACCESS_KEY_ID is required".into(),
+        })?;
+        let secret_access_key = settings.secret_access_key.ok_or_else(|| Error::Config {
+            message: "NOTEDTHAT_S3_SECRET_ACCESS_KEY is required".into(),
+        })?;
+        let force_path_style = settings
+            .force_path_style
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
 
         Ok(Self {
-            endpoint_url,
+            endpoint_url: settings.endpoint_url,
             region,
             access_key_id,
             secret_access_key,

@@ -1,5 +1,6 @@
 //! Staging configuration and typed failures.
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +27,16 @@ impl StagingConfig {
 
     /// Read the optional staging directory override from the environment.
     pub fn from_env() -> Result<Self, StageError> {
-        match std::env::var_os(UPLOAD_TMP_DIR_ENV) {
+        Self::from_setting(std::env::var_os(UPLOAD_TMP_DIR_ENV))
+    }
+
+    /// Build from an already-resolved staging directory override.
+    ///
+    /// The value arrives here from whichever source supplied it — a command-line
+    /// argument or [`UPLOAD_TMP_DIR_ENV`] — so the "set but empty" rule is
+    /// enforced in one place for both.
+    pub fn from_setting(directory: Option<OsString>) -> Result<Self, StageError> {
+        match directory {
             Some(value) if value.is_empty() => Err(StageError::Config {
                 message: format!("{UPLOAD_TMP_DIR_ENV} must not be empty"),
             }),

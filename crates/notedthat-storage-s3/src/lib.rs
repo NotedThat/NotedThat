@@ -6,5 +6,5 @@
 pub mod config;
 pub mod storage;
 
-pub use config::{S3_ENV_VARS, S3Config};
+pub use config::{S3_ENV_VARS, S3Config, S3Settings};
 pub use storage::S3Storage;

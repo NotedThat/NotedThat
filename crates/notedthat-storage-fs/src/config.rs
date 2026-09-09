@@ -1,5 +1,6 @@
 //! Configuration for the filesystem backend, parsed from `NOTEDTHAT_FS_*`.
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use notedthat_core::Error;
@@ -79,8 +80,56 @@ pub struct FsConfig {
     pub allow_lossy_names: bool,
 }
 
+/// The raw, unvalidated value of every setting this backend reads.
+///
+/// One field per entry in [`FS_ENV_VARS`], in the same order. Holding the values
+/// before they are checked is what lets one validator serve both configuration
+/// sources: [`FsSettings::from_env`] fills this from the environment, and a
+/// caller with command-line arguments fills it from those instead. `None` means
+/// the setting was not supplied at all — an empty value is a supplied value.
+///
+/// `OsString` rather than `String` throughout, because the root is read with
+/// `var_os` today and a path is not obliged to be UTF-8; the enumerated settings
+/// keep their own "must be valid UTF-8" error rather than losing the value here.
+#[derive(Debug, Clone, Default)]
+pub struct FsSettings {
+    /// [`FS_ROOT_ENV`].
+    pub root: Option<OsString>,
+    /// [`FS_METADATA_ENV`].
+    pub metadata: Option<OsString>,
+    /// [`FS_FILE_MODE_ENV`].
+    pub file_mode: Option<OsString>,
+    /// [`FS_DIR_MODE_ENV`].
+    pub dir_mode: Option<OsString>,
+    /// [`FS_ALLOW_LOSSY_NAMES_ENV`].
+    pub allow_lossy_names: Option<OsString>,
+}
+
+impl FsSettings {
+    /// Collect every setting from the process environment.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            root: std::env::var_os(FS_ROOT_ENV),
+            metadata: std::env::var_os(FS_METADATA_ENV),
+            file_mode: std::env::var_os(FS_FILE_MODE_ENV),
+            dir_mode: std::env::var_os(FS_DIR_MODE_ENV),
+            allow_lossy_names: std::env::var_os(FS_ALLOW_LOSSY_NAMES_ENV),
+        }
+    }
+}
+
 impl FsConfig {
     /// Parse the configuration from the environment.
+    ///
+    /// # Errors
+    ///
+    /// See [`FsConfig::from_settings`].
+    pub fn from_env() -> Result<Self, Error> {
+        Self::from_settings(FsSettings::from_env())
+    }
+
+    /// Validate already-collected settings, whatever supplied them.
     ///
     /// # Errors
     ///
@@ -88,8 +137,8 @@ impl FsConfig {
     /// enumerated value is not one this build accepts. Parsing is strict: unlike
     /// `NOTEDTHAT_LOG_FORMAT`, a typo here would silently change where an operator's
     /// bytes live, and nothing later in the run would say so.
-    pub fn from_env() -> Result<Self, Error> {
-        let root = match std::env::var_os(FS_ROOT_ENV) {
+    pub fn from_settings(settings: FsSettings) -> Result<Self, Error> {
+        let root = match settings.root {
             None => {
                 return Err(config_error(format!(
                     "{FS_ROOT_ENV} is required when NOTEDTHAT_STORAGE_BACKEND=fs"
@@ -113,13 +162,18 @@ impl FsConfig {
 
         let metadata = parse_enum(
             FS_METADATA_ENV,
+            settings.metadata.as_deref(),
             MetadataMode::parse,
             MetadataMode::default(),
             "\"sidecar\"",
         )?;
-        let file_mode = parse_mode(FS_FILE_MODE_ENV, 0o644)?;
-        let dir_mode = parse_mode(FS_DIR_MODE_ENV, 0o755)?;
-        let allow_lossy_names = parse_bool(FS_ALLOW_LOSSY_NAMES_ENV, false)?;
+        let file_mode = parse_mode(FS_FILE_MODE_ENV, settings.file_mode.as_deref(), 0o644)?;
+        let dir_mode = parse_mode(FS_DIR_MODE_ENV, settings.dir_mode.as_deref(), 0o755)?;
+        let allow_lossy_names = parse_bool(
+            FS_ALLOW_LOSSY_NAMES_ENV,
+            settings.allow_lossy_names.as_deref(),
+            false,
+        )?;
 
         Ok(Self {
             root,
@@ -145,11 +199,12 @@ impl FsConfig {
 
 fn parse_enum<T>(
     var: &str,
+    supplied: Option<&OsStr>,
     parse: impl Fn(&str) -> Option<T>,
     default: T,
     accepted: &str,
 ) -> Result<T, Error> {
-    match std::env::var_os(var) {
+    match supplied {
         None => Ok(default),
         Some(value) if value.is_empty() => Err(config_error(format!("{var} must not be empty"))),
         Some(value) => {
@@ -165,8 +220,8 @@ fn parse_enum<T>(
     }
 }
 
-fn parse_mode(var: &str, default: u32) -> Result<u32, Error> {
-    let Some(value) = std::env::var_os(var) else {
+fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, Error> {
+    let Some(value) = supplied else {
         return Ok(default);
     };
     let value = value
@@ -186,9 +241,10 @@ fn parse_mode(var: &str, default: u32) -> Result<u32, Error> {
         })
 }
 
-fn parse_bool(var: &str, default: bool) -> Result<bool, Error> {
+fn parse_bool(var: &str, supplied: Option<&OsStr>, default: bool) -> Result<bool, Error> {
     parse_enum(
         var,
+        supplied,
         |value| match value {
             "true" => Some(true),
             "false" => Some(false),
