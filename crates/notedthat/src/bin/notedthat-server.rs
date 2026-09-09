@@ -2,16 +2,18 @@
 //!
 //! Boots the HTTP API + `WebDAV` + remote MCP server as a single process.
 
-use notedthat_server::{config::Config, run::run, tracing_init::init_tracing};
+use clap::Parser as _;
+use notedthat_server::{cli::ServerCli, config::Config, run::run, tracing_init::init_tracing};
 
 /// `NotedThat` server entry point.
 ///
-/// Parses configuration from environment variables, initializes tracing,
-/// and delegates to [`run`] for all application logic. Returns non-zero on
-/// any startup failure (config missing/invalid, S3 provisioning error, etc.).
+/// Resolves configuration from the command line and the environment — a flag
+/// wins over the variable it mirrors — initializes tracing, and delegates to
+/// [`run`] for all application logic. Returns non-zero on any startup failure
+/// (configuration missing or invalid, S3 provisioning error, etc.).
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::from_env().map_err(|e| {
+    let config = Config::from_cli(ServerCli::parse()).map_err(|e| {
         eprintln!("startup: {e}");
         e
     })?;

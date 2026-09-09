@@ -2,7 +2,7 @@
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use notedthat_core::Error;
+use notedthat_core::{Error, setting};
 
 /// Every environment variable this backend reads.
 ///
@@ -93,13 +93,13 @@ impl S3Config {
     /// Returns `Err(Error::Config { .. })` when a required setting is absent.
     pub fn from_settings(settings: S3Settings) -> Result<Self, Error> {
         let region = settings.region.ok_or_else(|| Error::Config {
-            message: "NOTEDTHAT_S3_REGION is required".into(),
+            message: format!("{} is required", setting("NOTEDTHAT_S3_REGION")),
         })?;
         let access_key_id = settings.access_key_id.ok_or_else(|| Error::Config {
-            message: "NOTEDTHAT_S3_ACCESS_KEY_ID is required".into(),
+            message: format!("{} is required", setting("NOTEDTHAT_S3_ACCESS_KEY_ID")),
         })?;
         let secret_access_key = settings.secret_access_key.ok_or_else(|| Error::Config {
-            message: "NOTEDTHAT_S3_SECRET_ACCESS_KEY is required".into(),
+            message: format!("{} is required", setting("NOTEDTHAT_S3_SECRET_ACCESS_KEY")),
         })?;
         let force_path_style = settings
             .force_path_style

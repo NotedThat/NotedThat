@@ -3,7 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use notedthat_core::Error;
+use notedthat_core::{Error, setting};
 
 /// Root directory holding every knowledge base's objects.
 pub const FS_ROOT_ENV: &str = "NOTEDTHAT_FS_ROOT";
@@ -141,11 +141,15 @@ impl FsConfig {
         let root = match settings.root {
             None => {
                 return Err(config_error(format!(
-                    "{FS_ROOT_ENV} is required when NOTEDTHAT_STORAGE_BACKEND=fs"
+                    "{} is required when NOTEDTHAT_STORAGE_BACKEND=fs",
+                    setting(FS_ROOT_ENV)
                 )));
             }
             Some(value) if value.is_empty() => {
-                return Err(config_error(format!("{FS_ROOT_ENV} must not be empty")));
+                return Err(config_error(format!(
+                    "{} must not be empty",
+                    setting(FS_ROOT_ENV)
+                )));
             }
             Some(value) => PathBuf::from(value),
         };
@@ -155,7 +159,8 @@ impl FsConfig {
             // differs between systemd, `docker run` and a shell — so one config would
             // mean three directories.
             return Err(config_error(format!(
-                "{FS_ROOT_ENV} must be an absolute path, got '{}'",
+                "{} must be an absolute path, got '{}'",
+                setting(FS_ROOT_ENV),
                 root.display()
             )));
         }
@@ -206,14 +211,17 @@ fn parse_enum<T>(
 ) -> Result<T, Error> {
     match supplied {
         None => Ok(default),
-        Some(value) if value.is_empty() => Err(config_error(format!("{var} must not be empty"))),
+        Some(value) if value.is_empty() => {
+            Err(config_error(format!("{} must not be empty", setting(var))))
+        }
         Some(value) => {
             let value = value
                 .to_str()
-                .ok_or_else(|| config_error(format!("{var} must be valid UTF-8")))?;
+                .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
             parse(value).ok_or_else(|| {
                 config_error(format!(
-                    "{var} is invalid: expected {accepted}, got \"{value}\""
+                    "{} is invalid: expected {accepted}, got \"{value}\"",
+                    setting(var)
                 ))
             })
         }
@@ -226,9 +234,9 @@ fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, 
     };
     let value = value
         .to_str()
-        .ok_or_else(|| config_error(format!("{var} must be valid UTF-8")))?;
+        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
     if value.is_empty() {
-        return Err(config_error(format!("{var} must not be empty")));
+        return Err(config_error(format!("{} must not be empty", setting(var))));
     }
     let digits = value.strip_prefix("0o").unwrap_or(value);
     u32::from_str_radix(digits, 8)
@@ -236,7 +244,8 @@ fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, 
         .filter(|mode| *mode <= 0o7777)
         .ok_or_else(|| {
             config_error(format!(
-                "{var} is invalid: expected octal mode bits such as 0644, got \"{value}\""
+                "{} is invalid: expected octal mode bits such as 0644, got \"{value}\"",
+                setting(var)
             ))
         })
 }
@@ -282,11 +291,15 @@ mod tests {
         temp_env::with_vars(merged, f)
     }
 
+    /// The diagnostic names both ways the root can be supplied, because which
+    /// one the operator reached for is not knowable from here.
     #[test]
-    fn root_is_required() {
+    fn root_is_required_and_the_error_names_both_forms() {
         with(&[], || {
             let error = FsConfig::from_env().unwrap_err().to_string();
-            assert!(error.contains("NOTEDTHAT_FS_ROOT is required"), "{error}");
+            assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
+            assert!(error.contains("--fs-root"), "{error}");
+            assert!(error.contains("is required"), "{error}");
         });
     }
 

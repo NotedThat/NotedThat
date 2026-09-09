@@ -30,6 +30,7 @@ notedthat-mcp = { path = "../notedthat-mcp", version = "0.3.0" }  # M8 deliberat
 notedthat-write = { path = "../notedthat-write", version = "0.3.0" }
 anyhow.workspace = true
 async-trait.workspace = true
+clap.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }

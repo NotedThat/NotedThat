@@ -38,7 +38,7 @@ impl StagingConfig {
     pub fn from_setting(directory: Option<OsString>) -> Result<Self, StageError> {
         match directory {
             Some(value) if value.is_empty() => Err(StageError::Config {
-                message: format!("{UPLOAD_TMP_DIR_ENV} must not be empty"),
+                message: format!("{} must not be empty", crate::setting(UPLOAD_TMP_DIR_ENV)),
             }),
             Some(value) => Ok(Self::new(PathBuf::from(value))),
             None => Ok(Self::default()),
