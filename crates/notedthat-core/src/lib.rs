@@ -22,7 +22,7 @@ pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use access::KeyPattern;
+pub use access::{AccessPolicy, AccessRule, KeyFilter, KeyPattern, Principal, Verb};
 pub use auth::{
     extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
     verify_bearer_token,
