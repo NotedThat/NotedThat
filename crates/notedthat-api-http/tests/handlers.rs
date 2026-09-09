@@ -186,18 +186,57 @@ async fn legacy_v1_routes_are_not_authenticated_before_404() {
 }
 
 #[tokio::test]
-async fn reserved_browse_paths_are_not_authenticated_before_404() {
-    let response = app()
-        .oneshot(
-            Request::builder()
-                .uri("/browse/notes")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+async fn reserved_browse_paths_answer_501_without_authentication() {
+    for uri in ["/browse", "/browse/", "/browse/notes", "/browse/index.html"] {
+        let response = app()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_IMPLEMENTED,
+            "{uri} must announce the reservation rather than 404"
+        );
+        assert!(
+            response.headers().contains_key("x-request-id"),
+            "{uri} must carry a correlation id"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reserved_browse_paths_refuse_every_method() {
+    for method in ["GET", "POST", "PUT", "DELETE", "PROPFIND"] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/browse/notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{method}");
+    }
+}
+
+#[tokio::test]
+async fn unauthenticated_root_routes_carry_a_request_id() {
+    for uri in ["/healthz", "/readyz", "/llms.txt"] {
+        let response = app()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        assert!(
+            response.headers().contains_key("x-request-id"),
+            "{uri} must emit x-request-id so probe failures are greppable"
+        );
+    }
 }
 
 #[tokio::test]

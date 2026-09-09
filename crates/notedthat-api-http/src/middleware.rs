@@ -11,9 +11,6 @@ use axum::response::Response;
 use notedthat_core::{PublicReadCapability, extract_bearer_from_header, verify_bearer_token};
 use tower_http::request_id::RequestId;
 
-/// Root-level paths that bypass Bearer authentication.
-const AUTH_EXEMPT_PATHS: &[&str] = &["/healthz", "/readyz", "/llms.txt"];
-
 /// Authentication state established at the HTTP boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthContext {
@@ -33,9 +30,11 @@ impl AuthContext {
 
 /// Axum middleware that validates the `Authorization: Bearer <token>` header.
 ///
-/// A supplied credential must always be a single valid Bearer token. When no
-/// credential is supplied, only root public paths and explicitly granted read
-/// capabilities pass through as anonymous requests.
+/// This layer is mounted on the `/api/v1` routes only; the unauthenticated root
+/// routes (`/healthz`, `/readyz`, `/llms.txt`, `/browse`) never reach it. A
+/// supplied credential must always be a single valid Bearer token. When no
+/// credential is supplied, only explicitly granted read capabilities pass
+/// through as anonymous requests.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request<Body>,
@@ -58,9 +57,7 @@ pub async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    if anonymous_capability(&mut req, &state).await.is_some()
-        || AUTH_EXEMPT_PATHS.contains(&req.uri().path())
-    {
+    if anonymous_capability(&mut req, &state).await.is_some() {
         req.extensions_mut().insert(AuthContext::Anonymous);
         return Ok(next.run(req).await);
     }
@@ -161,24 +158,28 @@ mod tests {
     fn app(token: &str) -> Router {
         let state = test_state(token);
         Router::new()
-            .route("/healthz", get(|| async { "ok" }))
             .route("/protected", get(|| async { "secret".into_response() }))
             .layer(from_fn_with_state(state.clone(), auth_middleware))
             .with_state(state)
     }
 
+    /// The public routes are exempt because they are mounted outside this
+    /// layer, not because the layer knows their paths. Anything that does
+    /// reach the layer without a credential is rejected — including a path
+    /// that merely looks like a probe.
     #[tokio::test]
-    async fn test_healthz_bypasses_auth() {
-        let resp = app("my-token")
-            .oneshot(
-                Request::builder()
-                    .uri("/healthz")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+    async fn no_path_is_exempt_once_the_request_reaches_this_layer() {
+        for uri in ["/healthz", "/readyz", "/llms.txt", "/protected"] {
+            let resp = app("my-token")
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri} must not be exempted by the auth layer itself"
+            );
+        }
     }
 
     #[tokio::test]

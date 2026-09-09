@@ -8,12 +8,13 @@ mod objects;
 
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::handler::Handler;
-use axum::http::HeaderName;
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::from_fn_with_state;
-use axum::routing::get;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
+use axum::{Json, Router};
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -70,21 +71,52 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(helpers::body_limit_usize(
                     MAX_BODY_BYTES,
                 )))
+                .layer(from_fn_with_state(state.clone(), auth_middleware)),
+        )
+        .with_state(state);
+
+    // Request-id generation and tracing wrap every surface this router serves,
+    // including the unauthenticated root routes. Only `auth_middleware` and the
+    // API body limit stay nested on `/api/v1`.
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/llms.txt", get(llms_txt))
+        .route("/browse", any(browse_not_implemented))
+        .route("/browse/", any(browse_not_implemented))
+        .route("/browse/{*path}", any(browse_not_implemented))
+        .nest("/api/v1", api_routes)
+        .layer(
+            ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
                     request_id_header.clone(),
                     MakeRequestUuidV7,
                 ))
                 .layer(PropagateRequestIdLayer::new(request_id_header))
-                .layer(TraceLayer::new_for_http())
-                .layer(from_fn_with_state(state.clone(), auth_middleware)),
+                .layer(TraceLayer::new_for_http()),
         )
-        .with_state(state);
+}
 
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/llms.txt", get(llms_txt))
-        .nest("/api/v1", api_routes)
+/// `/browse` is reserved for the future browse surface (D44, #100). Answering
+/// `501 Not Implemented` makes the reservation observable; a bare 404 is
+/// indistinguishable from a mistyped path.
+async fn browse_not_implemented(request: Request) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .and_then(|id| id.header_value().to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "not_implemented",
+            "message": "The browse surface is reserved and not implemented",
+            "request_id": request_id,
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
