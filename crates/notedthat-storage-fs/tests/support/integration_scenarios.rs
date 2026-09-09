@@ -1,4 +1,4 @@
-//! The storage integration suite, written once and run against every real backend.
+//! The storage integration suite, written once and run against every `Storage` backend.
 //!
 //! Each scenario here is an *absolute* assertion about one `Storage` implementation:
 //! "a wrong `If-Match` is a `PreconditionFailed`", "a range read reports an inclusive
@@ -7,14 +7,15 @@
 //! agree on the wrong answer, and this is what says they do not.
 //!
 //! Every scenario takes `&dyn Storage` and a knowledge base of its own, so the same body
-//! runs unchanged over a real filesystem and over a real S3 server. The two expansions
-//! live in `storage_integration_local.rs` and `storage_integration_s3.rs`; neither
-//! contains a test body, only a fixture and one macro call.
+//! runs unchanged over a real filesystem, over a real S3 server, and over the in-memory
+//! substitute. The three expansions live in `storage_integration_local.rs`,
+//! `storage_integration_s3.rs` and `storage_integration_memory.rs`; none of them contains
+//! a test body, only a fixture and one macro call.
 //!
 //! # Adding a scenario
 //!
 //! Write the `async fn` here, then add its name to [`storage_integration_scenarios!`].
-//! Both backends pick it up; nothing else needs editing. The name becomes the knowledge
+//! Every backend picks it up; nothing else needs editing. The name becomes the knowledge
 //! base slug, so keep it to 40 characters and `[a-z0-9_]` — [`KbSlug`] enforces that, and
 //! [`kb_for`] converts the underscores.
 //!
@@ -38,8 +39,8 @@ use notedthat_core::{
 /// Every scenario in this file, expanded by whatever `$emit` the caller supplies.
 ///
 /// The list is the single place a backend's test binary learns what to run, which is what
-/// keeps the two expansions from drifting apart: a scenario cannot be added to one
-/// backend and forgotten on the other.
+/// keeps the expansions from drifting apart: a scenario cannot be added to one backend
+/// and forgotten on the others.
 macro_rules! storage_integration_scenarios {
     ($emit:ident) => {
         $emit!(round_trip_put_get_head_delete_list);

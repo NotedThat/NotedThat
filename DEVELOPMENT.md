@@ -131,29 +131,34 @@ runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinar
 substitute matches real S3 semantics, and the cheap half of that check runs on every push
 without Docker.
 
-### One suite, two real backends
+### One suite, every backend
 
 `crates/notedthat-storage-fs/tests/support/integration_scenarios.rs` holds the storage
 integration suite: absolute assertions about one `Storage` implementation — "a wrong
 `If-Match` is a `PreconditionFailed`", "a range read reports an inclusive
 `Content-Range`". Each scenario takes `&dyn Storage`, so it is written once and run
-against both real backends:
+against every implementation there is:
 
 - `storage_integration_local.rs` — `FsStorage` over a temporary directory. No Docker, so
   it runs in the ordinary `cargo test` pass on every push.
 - `storage_integration_s3.rs` — `S3Storage` over SeaweedFS, `#[ignore]`, in CI's
   integration job.
+- `storage_integration_memory.rs` — `InMemoryStorage`. Not a real backend, but it is what
+  almost every E2E suite in the workspace runs on, and a green E2E run is only worth
+  something if the substitute under it behaves correctly rather than merely consistently.
 
-Neither file contains a test body. Each supplies a fixture and calls
+None of these files contains a test body. Each supplies a fixture and calls
 `storage_integration_scenarios!`, the macro that expands the scenario list into one
 `#[tokio::test]` per scenario. **To add a case, write the `async fn` and add its name to
-that list** — both backends pick it up, which is what stops one backend's coverage from
-drifting ahead of the other's. The scenario name becomes the knowledge base slug, so it
+that list** — every backend picks it up, which is what stops one backend's coverage
+from drifting ahead of the others'. The scenario name becomes the knowledge base slug, so it
 must be a valid `KbSlug`: at most 40 characters of `[a-z0-9_]`.
 
 This is a different question from `storage_conformance_*.rs`, which asserts only that two
 backends *agree* — they can agree on the wrong answer, and the integration suite is what
-says they do not.
+says they do not. The two are complementary: conformance compares behaviours no single
+backend can be right or wrong about on its own (`ETag` values, `last_modified`, cursors),
+and the integration suite pins the ones it can.
 
 The S3 half shares one container across the tests running concurrently rather than
 booting one per test, and holds it through a `Weak` rather than a `static`:

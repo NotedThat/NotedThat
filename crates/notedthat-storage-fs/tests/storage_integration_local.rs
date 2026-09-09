@@ -3,8 +3,9 @@
 //! The storage integration suite, run against a real directory tree.
 //!
 //! Every test body lives in `support/integration_scenarios.rs` and is shared with
-//! `storage_integration_s3.rs`, which runs the same bodies against a real S3 server. This
-//! file contributes only the fixture: a temporary root, an `FsStorage` over it, and one
+//! `storage_integration_s3.rs` and `storage_integration_memory.rs`, which run the same
+//! bodies against a real S3 server and against the in-memory substitute. This file
+//! contributes only the fixture: a temporary root, an `FsStorage` over it, and one
 //! knowledge base per scenario.
 //!
 //! Nothing here needs Docker, so it runs in the ordinary `cargo test` pass — the same

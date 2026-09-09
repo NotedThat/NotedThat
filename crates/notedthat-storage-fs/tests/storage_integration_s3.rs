@@ -3,9 +3,10 @@
 //! The storage integration suite, run against a real S3 server.
 //!
 //! Every test body lives in `support/integration_scenarios.rs` and is shared with
-//! `storage_integration_local.rs`, which runs the same bodies against a real directory
-//! tree. This file contributes only the fixture: a `SeaweedFS` container, an `S3Storage`
-//! pointed at it, and one knowledge base — one bucket — per scenario.
+//! `storage_integration_local.rs` and `storage_integration_memory.rs`, which run the same
+//! bodies against a real directory tree and against the in-memory substitute. This file
+//! contributes only the fixture: a `SeaweedFS` container, an `S3Storage` pointed at it,
+//! and one knowledge base — one bucket — per scenario.
 //!
 //! This is the half that needs Docker, so it is `#[ignore]` and runs in CI's integration
 //! job. Run with:
