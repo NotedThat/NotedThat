@@ -87,6 +87,23 @@ impl KbAccess {
         Err(self.denial())
     }
 
+    /// Whether any declared rule grants this principal the verb, on any path.
+    ///
+    /// The browse surface asks this directly rather than through
+    /// [`Self::require_any`] because it answers a denial with `404`, not with a
+    /// status this helper could produce.
+    pub(crate) fn policy_grants_any(&self, verb: Verb) -> bool {
+        self.policy.grants_any(self.principal, verb)
+    }
+
+    /// Whether this principal may apply `verb` to `key`.
+    ///
+    /// The predicate behind [`Self::require`], for callers that want the answer
+    /// rather than an error — a row that renders unlinked instead of failing.
+    pub(crate) fn allows(&self, verb: Verb, key: &str) -> bool {
+        self.policy.allows(self.principal, verb, key)
+    }
+
     /// A predicate over keys for this principal and verb, compiled once.
     pub(crate) fn filter(&self, verb: Verb) -> KeyFilter<'_> {
         self.policy.key_filter(self.principal, verb)

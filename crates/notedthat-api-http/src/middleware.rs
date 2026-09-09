@@ -53,25 +53,13 @@ pub async fn auth_middleware(
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
 
-    let mut authorization_values = req.headers().get_all(AUTHORIZATION).iter();
-    if let Some(header) = authorization_values.next() {
-        if authorization_values.next().is_some() {
-            return Err(ApiErrorResponse::unauthorized(request_id));
-        }
-        header
-            .to_str()
-            .ok()
-            .and_then(extract_bearer_from_header)
-            .filter(|token| verify_bearer_token(token, &state.bearer_token))
-            .ok_or_else(|| ApiErrorResponse::unauthorized(request_id.clone()))?;
-        req.extensions_mut().insert(Principal::SignedIn);
-        return Ok(next.run(req).await);
-    }
+    let principal = resolve_principal(req.headers(), &state.bearer_token)
+        .map_err(|CredentialRefused| ApiErrorResponse::unauthorized(request_id.clone()))?;
 
-    if !anonymous_may_reach(&req) {
+    if principal == Principal::Anyone && !anonymous_may_reach(&req) {
         return Err(ApiErrorResponse::unauthorized(request_id));
     }
-    req.extensions_mut().insert(Principal::Anyone);
+    req.extensions_mut().insert(principal);
     Ok(next.run(req).await)
 }
 
@@ -86,6 +74,46 @@ fn anonymous_may_reach<B>(req: &Request<B>) -> bool {
         .iter()
         .any(|(method, route)| *method == req.method() && *route == matched)
 }
+
+/// Resolve a principal from a request's `Authorization` headers.
+///
+/// The single definition of the credential rules, so `/browse` — which is
+/// mounted outside this layer and has to resolve its own principal — cannot
+/// drift from `/api/v1`. [`CredentialRefused`] means a credential was supplied
+/// and did not verify, which is always a refusal and never a downgrade to
+/// anonymous.
+///
+/// # Errors
+///
+/// [`CredentialRefused`] when an `Authorization` header is present and does not
+/// carry exactly one valid Bearer token.
+pub fn resolve_principal(
+    headers: &axum::http::HeaderMap,
+    expected_token: &str,
+) -> Result<Principal, CredentialRefused> {
+    let mut values = headers.get_all(AUTHORIZATION).iter();
+    let Some(header) = values.next() else {
+        return Ok(Principal::Anyone);
+    };
+    if values.next().is_some() {
+        return Err(CredentialRefused);
+    }
+    header
+        .to_str()
+        .ok()
+        .and_then(extract_bearer_from_header)
+        .filter(|token| verify_bearer_token(token, expected_token))
+        .map(|_| Principal::SignedIn)
+        .ok_or(CredentialRefused)
+}
+
+/// A credential was supplied and did not verify.
+///
+/// Distinct from "no credential", which is [`Principal::Anyone`] and may still
+/// be granted access — the whole point of the distinction is that a supplied
+/// credential never silently downgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialRefused;
 
 /// The principal established at the HTTP boundary.
 ///

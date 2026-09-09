@@ -36,14 +36,14 @@ pub(super) fn body_limit_usize(max_body_size: u64) -> usize {
 ///
 /// One definition so the write, patch and replace paths cannot drift from each
 /// other or from the route they name.
-pub(super) fn object_location(kb_slug: &str, object_path: &str) -> String {
+pub(in crate::router) fn object_location(kb_slug: &str, object_path: &str) -> String {
     format!(
         "{API_V1_PREFIX}/knowledgebases/{kb_slug}/{}",
         percent_encode_path(object_path)
     )
 }
 
-pub(super) fn percent_encode_path(path: &str) -> String {
+pub(in crate::router) fn percent_encode_path(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for &byte in path.as_bytes() {
         match byte {
