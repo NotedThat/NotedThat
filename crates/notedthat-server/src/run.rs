@@ -156,7 +156,7 @@ async fn build_infrastructure(
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
     let provisioner = QdrantProvisioner::new(store.clone());
-    let public_read_policies = Arc::new(
+    let access_policies = Arc::new(
         provision_kbs(
             storage.as_ref(),
             &config.tenant_slug,
@@ -174,7 +174,7 @@ async fn build_infrastructure(
         password: Arc::new(config.webdav_password.clone()),
         storage: storage.clone(),
         declared_kbs: declared_kbs.clone(),
-        public_read_policies: public_read_policies.clone(),
+        access_policies: access_policies.clone(),
         indexer_tx: indexer_tx.clone(),
         staging_config: config.staging.clone(),
     };
@@ -188,7 +188,7 @@ async fn build_infrastructure(
     let state = AppState {
         storage: storage.clone(),
         declared_kbs,
-        public_read_policies,
+        access_policies,
         bearer_token: Arc::new(config.api_token.clone()),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,

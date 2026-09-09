@@ -10,8 +10,8 @@ use dav_server::{
 };
 use futures::StreamExt as _;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbSlug, ListResponse, ObjectMeta, ObjectPath, StorageError,
-    is_internal_path, roll_up,
+    ByteRange, ConditionalHeaders, KbSlug, ListResponse, ObjectMeta, ObjectPath, Principal,
+    StorageError, Verb, roll_up,
 };
 use std::{
     collections::BTreeMap,
@@ -22,6 +22,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::access::policy_for;
 use crate::propfind::PropfindListing;
 use crate::{metadata::WebDavMetaData, state::WebDavState};
 
@@ -33,6 +34,15 @@ use crate::{metadata::WebDavMetaData, state::WebDavState};
 /// for post-v1 server-side streaming. The cap does not guarantee correctness for KBs
 /// larger than 10,000 objects — such KBs must use the HTTP cursor API directly.
 pub(crate) const PROPFIND_MAX_ENTRIES: u32 = 10_000;
+
+/// Backend rows a single `PROPFIND` examines before refusing.
+///
+/// [`PROPFIND_MAX_ENTRIES`] bounds what a response *returns*; this bounds what
+/// it *reads*. Once access rules can scope a grant to part of a knowledge base,
+/// the two stop being the same number — a narrow grant over a large base would
+/// otherwise scan everything to return very little. Ten times the return cap, so
+/// it fires only on a genuinely pathological grant-and-base combination.
+pub(crate) const PROPFIND_MAX_SCANNED: usize = 100_000;
 
 /// Exact DAV XML body returned when a `WebDAV` PROPFIND exceeds the v1 object cap.
 pub(crate) const PROPFIND_TOO_LARGE_DAV_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -96,7 +106,7 @@ pub struct WebDavStorage {
     /// Shared `WebDAV` state containing storage and declared knowledge bases.
     pub(crate) state: Arc<WebDavState>,
     propfind_listing: Option<PropfindListing>,
-    anonymous: bool,
+    principal: Principal,
 }
 
 impl WebDavStorage {
@@ -106,19 +116,19 @@ impl WebDavStorage {
         Self {
             state,
             propfind_listing: None,
-            anonymous: false,
+            principal: Principal::SignedIn,
         }
     }
 
     pub(crate) fn with_propfind_listing(
         state: Arc<WebDavState>,
         propfind_listing: Option<PropfindListing>,
-        anonymous: bool,
+        principal: Principal,
     ) -> Self {
         Self {
             state,
             propfind_listing,
-            anonymous,
+            principal,
         }
     }
 }
@@ -139,9 +149,17 @@ impl DavFileSystem for WebDavStorage {
         }
 
         let state = Arc::clone(&self.state);
+        let principal = self.principal;
         let result = match parse_dav_path(path, state.declared_kbs.as_ref()) {
             Ok(DavTarget::Object(kb, path)) => {
-                Ok(Box::new(StorageReadFile::new(state, kb, path)) as Box<dyn DavFile>)
+                // The auth middleware already authorized this target, but this
+                // adapter is reachable from every dav-server code path and an
+                // authorization boundary should not depend on which one ran.
+                if policy_for(&state, &kb).allows(principal, Verb::Read, path.as_str()) {
+                    Ok(Box::new(StorageReadFile::new(state, kb, path)) as Box<dyn DavFile>)
+                } else {
+                    Err(FsError::Forbidden)
+                }
             }
             Ok(DavTarget::Root | DavTarget::KbRoot(_) | DavTarget::NonDeclaredKb) => {
                 Err(FsError::Forbidden)
@@ -161,14 +179,14 @@ impl DavFileSystem for WebDavStorage {
 
         Box::pin(async move {
             match parse_dav_path(path, state.declared_kbs.as_ref())? {
-                DavTarget::Root => Ok(stream_entries(root_entries(&state, self.anonymous))),
+                DavTarget::Root => Ok(stream_entries(root_entries(&state, self.principal))),
                 DavTarget::KbRoot(kb) => {
                     list_entries(
                         state,
                         kb,
                         None,
                         self.propfind_listing.as_ref(),
-                        self.anonymous,
+                        self.principal,
                     )
                     .await
                 }
@@ -179,7 +197,7 @@ impl DavFileSystem for WebDavStorage {
                         kb,
                         Some(prefix),
                         self.propfind_listing.as_ref(),
-                        self.anonymous,
+                        self.principal,
                     )
                     .await
                 }
@@ -197,7 +215,23 @@ impl DavFileSystem for WebDavStorage {
                 DavTarget::KbRoot(kb) => {
                     Ok(WebDavMetaData::kb(kb.as_str().to_string(), virtual_mtime()))
                 }
-                DavTarget::Object(kb, path) => metadata_for_object_or_prefix(state, kb, path).await,
+                DavTarget::Object(kb, path) => {
+                    // dav-server calls this to serve a PROPFIND *and* to serve a
+                    // GET, so it takes the union of the two verbs rather than
+                    // either one: gating it on `list` alone would make a
+                    // read-without-list grant unusable, and on `read` alone would
+                    // do the same to list-without-read. The method-level check in
+                    // the auth middleware is what distinguishes them.
+                    let policy = policy_for(&state, &kb);
+                    let visible = [Verb::List, Verb::Read]
+                        .iter()
+                        .any(|verb| policy.allows(self.principal, *verb, path.as_str()));
+                    if visible {
+                        metadata_for_object_or_prefix(state, kb, path).await
+                    } else {
+                        Err(FsError::Forbidden)
+                    }
+                }
                 DavTarget::NonDeclaredKb => Err(FsError::Forbidden),
             }
         })
@@ -240,8 +274,11 @@ async fn list_entries(
     kb: KbSlug,
     prefix: Option<String>,
     propfind_listing: Option<&PropfindListing>,
-    anonymous: bool,
+    principal: Principal,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
+    let policy = policy_for(&state, &kb);
+    let filter = policy.key_filter(principal, Verb::List);
+
     if let Some(listing) =
         propfind_listing.filter(|listing| listing.matches(&kb, prefix.as_deref()))
     {
@@ -249,13 +286,13 @@ async fn list_entries(
             listing
                 .objects()
                 .iter()
-                .filter(|meta| !anonymous || !is_internal_path(&meta.key))
+                .filter(|meta| filter.allows(&meta.key))
                 .cloned(),
             prefix.as_deref(),
         )));
     }
 
-    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref(), anonymous).await?;
+    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref(), principal).await?;
     let response = ListResponse {
         objects,
         truncated: false,
@@ -272,10 +309,13 @@ pub(crate) async fn collect_propfind_objects(
     state: &WebDavState,
     kb: &KbSlug,
     prefix: Option<&str>,
-    anonymous: bool,
+    principal: Principal,
 ) -> FsResult<Vec<ObjectMeta>> {
+    let policy = policy_for(state, kb);
+    let filter = policy.key_filter(principal, Verb::List);
     let mut all_objects = Vec::new();
     let mut cursor: Option<String> = None;
+    let mut scanned = 0_usize;
 
     loop {
         let object_count = u32::try_from(all_objects.len()).unwrap_or(u32::MAX);
@@ -288,7 +328,20 @@ pub(crate) async fn collect_propfind_objects(
             .map_err(|err| storage_error_to_fs(&err))?;
 
         for object in response.objects {
-            if anonymous && is_internal_path(&object.key) {
+            scanned += 1;
+            // `PROPFIND_MAX_ENTRIES` caps what a response returns; this caps what
+            // it looks at. Without it a grant scoped to a small corner of a large
+            // knowledge base turns one PROPFIND into a full-bucket scan.
+            if scanned > PROPFIND_MAX_SCANNED {
+                tracing::warn!(
+                    kb = %kb,
+                    prefix = prefix.unwrap_or(""),
+                    scanned,
+                    "PROPFIND_SCAN_EXHAUSTED"
+                );
+                return Err(FsError::InsufficientStorage);
+            }
+            if !filter.allows(&object.key) {
                 continue;
             }
             if all_objects.len() >= PROPFIND_MAX_ENTRIES as usize {
@@ -343,19 +396,11 @@ async fn metadata_for_object_or_prefix(
     }
 }
 
-fn root_entries(state: &WebDavState, anonymous: bool) -> Vec<Box<dyn DavDirEntry>> {
+fn root_entries(state: &WebDavState, principal: Principal) -> Vec<Box<dyn DavDirEntry>> {
     state
         .declared_kbs
         .iter()
-        .filter(|(_, kb)| {
-            !anonymous
-                || state
-                    .public_read_policies
-                    .get(kb.as_str())
-                    .is_some_and(|policy| {
-                        policy.allows(notedthat_core::PublicReadCapability::Discover)
-                    })
-        })
+        .filter(|(_, kb)| policy_for(state, kb).visible_in_listing(principal))
         .map(|(name, kb)| Box::new(KbDirEntry::new(name.clone(), kb)) as Box<dyn DavDirEntry>)
         .collect()
 }
@@ -944,8 +989,8 @@ mod tests {
             password: Arc::new("pass".to_string()),
             storage,
             staging_config: notedthat_core::StagingConfig::default(),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
             declared_kbs: Arc::new(declared_kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             indexer_tx,
         })
     }

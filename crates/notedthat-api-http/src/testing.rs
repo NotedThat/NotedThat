@@ -42,6 +42,7 @@ pub struct MockSearcher {
             Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
         >,
     >,
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(feature = "test-support")]
@@ -50,7 +51,17 @@ impl MockSearcher {
     pub fn new() -> Self {
         Self {
             responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// How many times [`notedthat_indexer::Searcher::search`] has been called.
+    ///
+    /// Lets a test assert that a refused request never reached the backend —
+    /// which is the difference between "returns no hits" and "costs no
+    /// embedding round-trip".
+    pub fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Push a response to the queue. Responses are returned in FIFO order.
@@ -78,6 +89,7 @@ impl notedthat_indexer::Searcher for MockSearcher {
         _kb: &KbSlug,
         _request: notedthat_core::search::ValidatedRequest,
     ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.responses
             .lock()
             .unwrap()
@@ -104,7 +116,7 @@ pub fn test_app_state_with_default_channel(
     crate::state::AppState {
         storage,
         declared_kbs,
-        public_read_policies: Arc::new(BTreeMap::new()),
+        access_policies: Arc::new(BTreeMap::new()),
         bearer_token,
         max_body_size,
         max_patchable_size: max_body_size,
@@ -128,7 +140,7 @@ pub fn test_app_state_with_channel(
         crate::state::AppState {
             storage,
             declared_kbs,
-            public_read_policies: Arc::new(BTreeMap::new()),
+            access_policies: Arc::new(BTreeMap::new()),
             bearer_token,
             max_body_size,
             max_patchable_size: max_body_size,

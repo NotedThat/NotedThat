@@ -3,28 +3,37 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
-use notedthat_core::{KbSlug, PublicReadCapability, PublicReadPolicy};
+use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Principal, Verb};
 use notedthat_webdav::state::WebDavState;
 use tokio::sync::mpsc;
 
 use super::storage::MemoryStorage;
 
-pub(super) fn policy(capabilities: &[&str]) -> PublicReadPolicy {
-    capabilities
-        .iter()
-        .map(|capability| match *capability {
-            "discover" => PublicReadCapability::Discover,
-            "browse" => PublicReadCapability::Browse,
-            "content" => PublicReadCapability::Content,
-            "search" => PublicReadCapability::Search,
-            unexpected => panic!("unexpected test capability: {unexpected}"),
-        })
+/// Build a policy granting `verbs` to `who` across the whole knowledge base.
+///
+/// The old fixture took capability names; verbs replaced them, and the mapping
+/// is not one-to-one — `discover` is gone entirely, and `browse` split into
+/// `list` for enumeration and `read` for bytes.
+pub(super) fn policy(who: Principal, verbs: &[Verb]) -> AccessPolicy {
+    [AccessRule::new(who, verbs.iter().copied())]
+        .into_iter()
         .collect()
+}
+
+/// A policy granting `verbs` to `who`, scoped to `patterns`.
+pub(super) fn scoped_policy(who: Principal, verbs: &[Verb], patterns: &[&str]) -> AccessPolicy {
+    [AccessRule::new(who, verbs.iter().copied()).under(
+        patterns
+            .iter()
+            .map(|source| KeyPattern::parse(source).expect("valid pattern")),
+    )]
+    .into_iter()
+    .collect()
 }
 
 pub(super) fn state_with_policies(
     storage: Arc<MemoryStorage>,
-    policies: BTreeMap<String, PublicReadPolicy>,
+    policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
     let (indexer_tx, _indexer_rx) = mpsc::channel(8);
     WebDavState {
@@ -41,7 +50,12 @@ pub(super) fn state_with_policies(
                 KbSlug::try_new("private").expect("valid KB slug"),
             ),
         ])),
-        public_read_policies: Arc::new(policies),
+        access_policies: Arc::new(
+            policies
+                .into_iter()
+                .map(|(slug, policy)| (slug, Arc::new(policy)))
+                .collect(),
+        ),
         indexer_tx,
         staging_config: notedthat_core::StagingConfig::default(),
     }

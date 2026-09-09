@@ -27,7 +27,7 @@ fn make_app() -> axum::Router {
     let state = AppState {
         storage: Arc::new(InMemoryStorage::default()),
         declared_kbs: Arc::new(declared_kbs()),
-        public_read_policies: Arc::new(BTreeMap::new()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -42,7 +42,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
     let state = AppState {
         storage: Arc::new(InMemoryStorage::default()),
         declared_kbs: Arc::new(declared_kbs()),
-        public_read_policies: Arc::new(BTreeMap::new()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

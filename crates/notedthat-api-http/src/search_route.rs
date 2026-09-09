@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use notedthat_core::{Error as CoreError, KbSlug, search::SearchRequest};
+use notedthat_core::{Error as CoreError, KbSlug, Verb, search::SearchRequest};
 
 use crate::{
     error::{ApiError, ApiErrorResponse},
@@ -27,7 +27,7 @@ pub async fn search_kb(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = crate::middleware::extract_request_id(&req);
-    let anonymous = crate::middleware::auth_context(&req).is_anonymous();
+
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -36,7 +36,11 @@ pub async fn search_kb(
     // Validate slug format before declaration lookup so malformed slugs return
     // 400 `invalid_request` instead of leaking as a 404.
     let kb_slug = KbSlug::try_new(kb_slug_raw).map_err(|e| err(ApiError::Core(e)))?;
-    let kb = crate::router::lookup_kb(&state, kb_slug.as_str()).map_err(err)?;
+    let access = crate::authz::KbAccess::resolve(&state, kb_slug.as_str(), &req).map_err(err)?;
+    // Refuse before the request body, the embedding call and the vector query:
+    // an unauthorized search must not cost a round-trip to the embedder.
+    access.require_any(Verb::Search).map_err(err)?;
+    let kb = access.kb().clone();
 
     let (parts, body) = req.into_parts();
     let body_bytes: Bytes = axum::body::to_bytes(body, SEARCH_BODY_MAX_BYTES)
@@ -72,11 +76,14 @@ pub async fn search_kb(
         .search(&kb, validated)
         .await
         .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
-    if anonymous {
-        response
-            .hits
-            .retain(|hit| !crate::middleware::is_internal_path(hit.object_key.as_str()));
-    }
+    // Hits are filtered by the `search` grant's own patterns, never by `read`.
+    // That is what keeps the two independently grantable — and it means broad
+    // `search` with narrow `read` publishes previews of keys the caller cannot
+    // fetch, which the documentation has to say in those words.
+    let filter = access.filter(Verb::Search);
+    response
+        .hits
+        .retain(|hit| filter.allows(hit.object_key.as_str()));
 
     Ok((StatusCode::OK, Json(response)).into_response())
 }
@@ -96,8 +103,23 @@ mod tests {
         let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
         let state = AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            // This router mounts the handler without `auth_middleware`, so the
+            // request carries no principal and resolves as anonymous. These
+            // tests are about request validation, not authorization, so grant
+            // anonymous search rather than smuggling a credential past a layer
+            // that is not here.
+            access_policies: Arc::new(BTreeMap::from([(
+                KB.to_string(),
+                Arc::new(
+                    [notedthat_core::AccessRule::new(
+                        notedthat_core::Principal::Anyone,
+                        [Verb::Search],
+                    )]
+                    .into_iter()
+                    .collect::<notedthat_core::AccessPolicy>(),
+                ),
+            )])),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new("token".to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size: 16 * 1024 * 1024,

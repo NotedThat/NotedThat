@@ -12,7 +12,6 @@ pub mod kb;
 pub mod listing;
 pub mod object_path;
 pub mod preconditions;
-mod public_read;
 pub mod range;
 pub mod search;
 pub mod setting;
@@ -23,7 +22,9 @@ pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use access::{AccessPolicy, AccessRule, KeyFilter, KeyPattern, Principal, Verb};
+pub use access::{
+    AccessPolicy, AccessRule, KeyFilter, KeyPattern, Principal, Verb, signed_in_policies,
+};
 pub use auth::{
     extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
     verify_bearer_token,
@@ -41,7 +42,6 @@ pub use preconditions::{
     ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
     matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds, unix_seconds_i64,
 };
-pub use public_read::{PublicReadCapability, PublicReadPolicy};
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,
     parse_range_header,

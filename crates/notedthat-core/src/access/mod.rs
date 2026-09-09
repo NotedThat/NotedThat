@@ -30,7 +30,7 @@ mod pattern;
 use crate::error::Error;
 use crate::object_path::is_internal_path;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use pattern::KeyPattern;
 
@@ -347,6 +347,26 @@ impl KeyFilter<'_> {
         }
         shared
     }
+}
+
+/// The policy set a deployment gets when no manifest declares access rules.
+///
+/// [`crate::kb::KbManifest`] defaults `access` to [`AccessPolicy::signed_in_full`],
+/// so this is what startup provisioning produces for a set of knowledge bases
+/// whose manifests predate the model — and the sensible starting point anywhere
+/// a policy map has to be built without one.
+pub fn signed_in_policies(
+    declared: &BTreeMap<String, crate::slug::KbSlug>,
+) -> BTreeMap<String, std::sync::Arc<AccessPolicy>> {
+    declared
+        .keys()
+        .map(|slug| {
+            (
+                slug.clone(),
+                std::sync::Arc::new(AccessPolicy::signed_in_full()),
+            )
+        })
+        .collect()
 }
 
 fn config(message: impl Into<String>) -> Error {

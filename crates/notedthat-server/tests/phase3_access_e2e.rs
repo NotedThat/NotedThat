@@ -11,7 +11,7 @@ mod public_read_webdav;
 #[path = "support/public_read_wire.rs"]
 mod public_read_wire;
 
-use notedthat_core::{KbManifest, PublicReadCapability, Storage, TenantSlug};
+use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Principal, Storage, TenantSlug, Verb};
 use public_read_env::{
     API_TOKEN, Backends, INTERNAL_BODY, PRIVATE_BODY, PRIVATE_KB, PUBLIC_BODY, PUBLIC_KB, kb,
     stored_manifest,
@@ -21,11 +21,18 @@ use public_read_wire::{assert_http_401, search, wait_indexed, wire};
 use reqwest::StatusCode;
 use std::time::Duration;
 
+/// A policy granting `anonymous_verbs` to anyone, alongside the credential
+/// holder's usual full reach.
+fn access_policy(anonymous_verbs: Vec<Verb>) -> AccessPolicy {
+    let mut rules = vec![AccessRule::new(Principal::SignedIn, Verb::ALL)];
+    if !anonymous_verbs.is_empty() {
+        rules.push(AccessRule::new(Principal::Anyone, anonymous_verbs));
+    }
+    rules.into_iter().collect()
+}
+
 async fn store_initial_manifests(backends: &Backends) {
-    for (slug, capabilities) in [
-        (PUBLIC_KB, vec![PublicReadCapability::Content]),
-        (PRIVATE_KB, Vec::new()),
-    ] {
+    for (slug, anonymous_verbs) in [(PUBLIC_KB, vec![Verb::Read]), (PRIVATE_KB, Vec::new())] {
         let kb = kb(slug);
         backends
             .storage
@@ -33,7 +40,7 @@ async fn store_initial_manifests(backends: &Backends) {
             .await
             .expect("KB bucket");
         let mut manifest = KbManifest::new_v1(&TenantSlug::default(), &kb, slug, 1_700_000_000);
-        manifest.public_read = capabilities.into_iter().collect();
+        manifest.access = access_policy(anonymous_verbs);
         backends
             .storage
             .write_manifest(&kb, &manifest)
@@ -130,14 +137,7 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     }
 
     let mut public_manifest = stored_manifest(&backends.storage, PUBLIC_KB).await;
-    public_manifest.public_read = [
-        PublicReadCapability::Discover,
-        PublicReadCapability::Browse,
-        PublicReadCapability::Content,
-        PublicReadCapability::Search,
-    ]
-    .into_iter()
-    .collect();
+    public_manifest.access = access_policy(vec![Verb::List, Verb::Read, Verb::Search]);
     backends
         .storage
         .write_manifest(&kb(PUBLIC_KB), &public_manifest)

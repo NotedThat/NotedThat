@@ -1,5 +1,9 @@
 //! Axum router builder and HTTP handlers for the `NotedThat` API.
 
+// `lookup_kb` is the single definition of "is this knowledge base declared";
+// `crate::authz::KbAccess::resolve` is its only caller.
+pub(crate) use helpers::lookup_kb;
+
 mod health;
 mod helpers;
 mod kbs;
@@ -21,9 +25,6 @@ use tower_http::request_id::{
 };
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
-
-// Re-export helpers used by sibling modules in this crate.
-pub(crate) use helpers::lookup_kb;
 
 use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
@@ -224,8 +225,8 @@ mod patch_route {
         kbs.insert(KB.to_string(), kb);
         let router = build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -265,8 +266,8 @@ mod patch_route {
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -786,8 +787,8 @@ mod line_range_get {
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -945,8 +946,8 @@ mod tests {
 
         build_router(AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1158,8 +1159,8 @@ mod tests {
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
             storage: storage.clone(),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1248,8 +1249,8 @@ mod tests {
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
             storage: storage.clone(),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,

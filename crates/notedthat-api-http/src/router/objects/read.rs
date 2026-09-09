@@ -1,4 +1,5 @@
-use super::super::helpers::{lookup_kb, parse_path};
+use super::super::helpers::parse_path;
+use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
@@ -7,7 +8,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
-    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError,
+    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError, Verb,
     parse_line_range_header, parse_range_header,
 };
 use std::time::{Duration, UNIX_EPOCH};
@@ -23,13 +24,12 @@ pub(in crate::router) async fn head_object(
         request_id: request_id.clone(),
     };
 
-    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
-    if crate::middleware::auth_context(&req).is_anonymous()
-        && crate::middleware::is_internal_path(path.as_str())
-    {
-        return Err(ApiErrorResponse::unauthorized(request_id));
-    }
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    // Authorize before any storage call, so a denial costs nothing and reads
+    // identically whether or not the object exists.
+    access.require(Verb::Read, path.as_str()).map_err(&err)?;
+    let kb = access.kb().clone();
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
     // Scope-OUT: Conditional writes (`If-Match`, `If-None-Match`) that succeed at
@@ -81,13 +81,12 @@ pub(in crate::router) async fn get_object(
         request_id: request_id.clone(),
     };
 
-    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
-    if crate::middleware::auth_context(&req).is_anonymous()
-        && crate::middleware::is_internal_path(path.as_str())
-    {
-        return Err(ApiErrorResponse::unauthorized(request_id));
-    }
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    // Authorize before any storage call, so a denial costs nothing and reads
+    // identically whether or not the object exists.
+    access.require(Verb::Read, path.as_str()).map_err(&err)?;
+    let kb = access.kb().clone();
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     let range = match req.headers().get(axum::http::header::RANGE) {

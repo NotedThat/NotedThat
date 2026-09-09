@@ -34,33 +34,19 @@ pub fn build_router(state: WebDavState) -> Router {
         let storage_state = Arc::clone(&storage_state);
         async move {
             let listing = req.extensions().get::<PropfindListing>().cloned();
-            let anonymous = req
-                .extensions()
-                .get::<crate::middleware::AnonymousAccess>()
-                .is_some();
-            match (listing, anonymous) {
-                (Some(listing), anonymous) => {
-                    let request_config = DavHandler::builder()
-                        .filesystem(Box::new(WebDavStorage::with_propfind_listing(
-                            storage_state,
-                            Some(listing),
-                            anonymous,
-                        )))
-                        .strip_prefix(WEBDAV_PREFIX);
-                    handler.handle_with(request_config, req).await
-                }
-                (None, true) => {
-                    let request_config = DavHandler::builder()
-                        .filesystem(Box::new(WebDavStorage::with_propfind_listing(
-                            storage_state,
-                            None,
-                            true,
-                        )))
-                        .strip_prefix(WEBDAV_PREFIX);
-                    handler.handle_with(request_config, req).await
-                }
-                (None, false) => handler.handle(req).await,
-            }
+            // Always rebuild with the request's principal. The old third arm
+            // reused a handler constructed without one, which was safe only
+            // while the middleware authorized every request by itself — now
+            // that rules are per key, the adapter has to know who is asking.
+            let principal = crate::middleware::principal_of(&req);
+            let request_config = DavHandler::builder()
+                .filesystem(Box::new(WebDavStorage::with_propfind_listing(
+                    storage_state,
+                    listing,
+                    principal,
+                )))
+                .strip_prefix(WEBDAV_PREFIX);
+            handler.handle_with(request_config, req).await
         }
     };
 

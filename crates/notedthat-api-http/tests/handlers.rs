@@ -27,8 +27,8 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
         max_patchable_size: max_body_size,
@@ -776,8 +776,8 @@ async fn delete_enqueues_tombstone_on_success() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -831,8 +831,8 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

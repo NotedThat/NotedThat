@@ -5,6 +5,7 @@
 //! are handled by axum middleware before reaching the `DavHandler`, ensuring that
 //! HTTP headers (Content-Type, If-Match) are accessible for the shared write path.
 
+pub(crate) mod access;
 pub mod error;
 pub mod file;
 pub mod filesystem;

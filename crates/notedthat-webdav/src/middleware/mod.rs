@@ -1,10 +1,10 @@
 //! `WebDAV` middleware: basic-auth and method-interception layers.
 
+mod access;
 mod backpressure;
 mod handlers;
 mod helpers;
 mod path_validation;
-mod public_read;
 
 use crate::state::WebDavState;
 use crate::{
@@ -13,6 +13,8 @@ use crate::{
         PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
     },
 };
+pub(crate) use access::DavAllow;
+pub use access::basic_auth_middleware;
 use axum::{
     extract::{Request, State},
     http::{HeaderValue, StatusCode},
@@ -22,8 +24,6 @@ use axum::{
 use handlers::{handle_copy, handle_delete, handle_move, handle_put};
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
-pub(crate) use public_read::AnonymousAccess;
-pub use public_read::basic_auth_middleware;
 
 /// Intercept OPTIONS requests and return DAV Class 1 response before dav-server.
 ///
@@ -35,7 +35,11 @@ pub async fn intercept_options(req: Request, next: Next) -> Response {
         let headers = response.headers_mut();
         headers.insert("dav", HeaderValue::from_static("1"));
         headers.insert("ms-author-via", HeaderValue::from_static("DAV"));
-        let allow = req.extensions().get::<AnonymousAccess>().map_or_else(
+        // `DavAllow` is set by the auth middleware for every request now, not
+        // only anonymous ones: access rules bind the credential holder too, so
+        // `Allow` has to describe what *this* caller may do rather than what the
+        // protocol supports.
+        let allow = req.extensions().get::<DavAllow>().map_or_else(
             || "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY".to_string(),
             |access| {
                 let mut methods = vec!["OPTIONS"];
@@ -119,8 +123,8 @@ pub async fn intercept_propfind_too_large(
         return next.run(req).await;
     };
 
-    let anonymous = req.extensions().get::<AnonymousAccess>().is_some();
-    match prepare_propfind_listing(&state, &target, anonymous).await {
+    let principal = principal_of(&req);
+    match prepare_propfind_listing(&state, &target, principal).await {
         Err(dav_server::fs::FsError::InsufficientStorage) => (
             StatusCode::INSUFFICIENT_STORAGE,
             [(
@@ -314,7 +318,7 @@ mod basic_auth {
                 storage: Arc::new(MockStorage),
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(BTreeMap::new()),
-                public_read_policies: Arc::new(BTreeMap::new()),
+                access_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
             }
         }
@@ -1033,7 +1037,7 @@ mod intercept_write_methods {
                 storage,
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
-                public_read_policies: Arc::new(BTreeMap::new()),
+                access_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
             }
         }
@@ -1962,4 +1966,15 @@ mod intercept_write_methods {
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
     }
+}
+
+/// The principal the auth middleware established for this request.
+///
+/// Defaults to [`Principal::Anyone`] so a request that somehow bypassed the auth
+/// layer is treated as having no credential rather than as having every one.
+pub(crate) fn principal_of<B>(req: &axum::http::Request<B>) -> notedthat_core::Principal {
+    req.extensions()
+        .get::<notedthat_core::Principal>()
+        .copied()
+        .unwrap_or(notedthat_core::Principal::Anyone)
 }

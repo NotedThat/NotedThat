@@ -1,3 +1,4 @@
+use notedthat_core::{Principal, Verb};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -15,7 +16,10 @@ async fn supplied_invalid_basic_never_falls_back_to_content_access() {
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("private".to_string(), policy(&["content"]))]),
+        BTreeMap::from([(
+            "private".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        )]),
     ));
 
     for authorization in ["Basic !!!", "Basic dXNlcjpiYWQ=", "Bearer token"] {
@@ -47,7 +51,10 @@ async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets(
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("private".to_string(), policy(&["content"]))]),
+        BTreeMap::from([(
+            "private".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        )]),
     ));
 
     // When
@@ -73,10 +80,7 @@ async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets(
         body.contains("valid credentials are required"),
         "body: {body}"
     );
-    assert!(
-        body.contains("configured public-read capabilities"),
-        "body: {body}"
-    );
+    assert!(body.contains("access rules grant it"), "body: {body}");
     assert!(
         body.contains("invalid credentials are not treated as anonymous"),
         "body: {body}"
@@ -95,7 +99,10 @@ async fn duplicate_authorization_headers_are_rejected_even_when_first_is_valid()
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("private".to_string(), policy(&["content"]))]),
+        BTreeMap::from([(
+            "private".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        )]),
     ));
 
     // When
@@ -122,7 +129,10 @@ async fn malformed_path_is_rejected_but_malformed_basic_takes_precedence() {
     let storage = Arc::new(MemoryStorage::default());
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("discoverable".to_string(), policy(&["content"]))]),
+        BTreeMap::from([(
+            "discoverable".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        )]),
     ));
 
     // When

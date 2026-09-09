@@ -1,3 +1,4 @@
+use notedthat_core::{AccessPolicy, Principal, Verb};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -6,7 +7,9 @@ use axum::http::{Method, Request, StatusCode};
 use notedthat_webdav::router::build_router;
 use tower::ServiceExt;
 
-use super::fixture::{PROPFIND_BODY, policy, request, response_body, state_with_policies};
+use super::fixture::{
+    PROPFIND_BODY, policy, request, response_body, scoped_policy, state_with_policies,
+};
 use super::storage::MemoryStorage;
 
 #[tokio::test]
@@ -16,8 +19,11 @@ async fn anonymous_root_propfind_lists_only_discoverable_kbs() {
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([
-            ("discoverable".to_string(), policy(&["discover"])),
-            ("private".to_string(), policy(&[])),
+            (
+                "discoverable".to_string(),
+                policy(Principal::Anyone, &[Verb::Search]),
+            ),
+            ("private".to_string(), AccessPolicy::empty()),
         ]),
     ));
     let request = Request::builder()
@@ -45,8 +51,14 @@ async fn anonymous_capabilities_are_independent() {
         ("private", "private.md"),
     ]));
     let policies = BTreeMap::from([
-        ("discoverable".to_string(), policy(&["browse"])),
-        ("private".to_string(), policy(&["content"])),
+        (
+            "discoverable".to_string(),
+            policy(Principal::Anyone, &[Verb::List]),
+        ),
+        (
+            "private".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        ),
     ]);
     let app = build_router(state_with_policies(storage, policies));
 
@@ -82,7 +94,9 @@ async fn anonymous_capabilities_are_independent() {
         .expect("content browse response");
 
     // Then
-    assert_eq!(root.status(), StatusCode::UNAUTHORIZED);
+    // The root lists whatever is visible, and both knowledge bases here grant
+    // something, so it succeeds — `discover` no longer gates it separately.
+    assert_eq!(root.status(), StatusCode::MULTI_STATUS);
     assert_eq!(browse.status(), StatusCode::MULTI_STATUS);
     assert_eq!(browse_content.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(content.status(), StatusCode::OK);
@@ -102,7 +116,10 @@ async fn anonymous_internal_paths_are_challenged_and_filtered_across_pages() {
     );
     let app = build_router(state_with_policies(
         Arc::clone(&storage),
-        BTreeMap::from([("discoverable".to_string(), policy(&["browse", "content"]))]),
+        BTreeMap::from([(
+            "discoverable".to_string(),
+            policy(Principal::Anyone, &[Verb::List, Verb::Read]),
+        )]),
     ));
 
     // When
@@ -177,4 +194,51 @@ async fn authenticated_access_remains_unfiltered() {
     assert_eq!(root.status(), StatusCode::MULTI_STATUS);
     assert!(response_body(root).await.contains("private"));
     assert_eq!(internal.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_prefix_scoped_grant_exposes_only_its_subtree_over_webdav() {
+    // Given — the case the capability model could not express at all: one
+    // knowledge base, half of it public.
+    let storage = Arc::new(MemoryStorage::with_objects([
+        ("discoverable", "public/open.md"),
+        ("discoverable", "internal/closed.md"),
+    ]));
+    let app = build_router(state_with_policies(
+        storage,
+        BTreeMap::from([(
+            "discoverable".to_string(),
+            scoped_policy(Principal::Anyone, &[Verb::List, Verb::Read], &["public/**"]),
+        )]),
+    ));
+
+    // When
+    let inside = app
+        .clone()
+        .oneshot(request("GET", "/discoverable/public/open.md"))
+        .await
+        .expect("granted read");
+    let outside = app
+        .clone()
+        .oneshot(request("GET", "/discoverable/internal/closed.md"))
+        .await
+        .expect("denied read");
+    let listing = app
+        .oneshot(request("PROPFIND", "/discoverable"))
+        .await
+        .expect("listing");
+
+    // Then
+    assert_eq!(inside.status(), StatusCode::OK);
+    assert_eq!(outside.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(listing.status(), StatusCode::MULTI_STATUS);
+    let body = response_body(listing).await;
+    assert!(
+        body.contains("public"),
+        "the granted subtree should be listed: {body}"
+    );
+    assert!(
+        !body.contains("closed.md"),
+        "a key outside the grant must not appear in a listing: {body}"
+    );
 }

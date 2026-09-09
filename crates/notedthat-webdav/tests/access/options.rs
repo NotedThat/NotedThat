@@ -1,3 +1,4 @@
+use notedthat_core::{Principal, Verb};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -16,8 +17,14 @@ async fn anonymous_options_advertises_only_capability_methods() {
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([
-            ("discoverable".to_string(), policy(&["browse"])),
-            ("private".to_string(), policy(&["content"])),
+            (
+                "discoverable".to_string(),
+                policy(Principal::Anyone, &[Verb::List]),
+            ),
+            (
+                "private".to_string(),
+                policy(Principal::Anyone, &[Verb::Read]),
+            ),
         ]),
     ));
 
@@ -39,7 +46,13 @@ async fn anonymous_options_advertises_only_capability_methods() {
 
     // Then
     assert_eq!(root.status(), StatusCode::NO_CONTENT);
-    assert_eq!(root.headers().get("allow").expect("Allow"), "OPTIONS");
+    // `discoverable` grants `list`, which makes it visible, which makes the
+    // root collection listable. Under the capability model this needed a
+    // separate `discover` grant; visibility is now derived from holding one.
+    assert_eq!(
+        root.headers().get("allow").expect("Allow"),
+        "OPTIONS, PROPFIND"
+    );
     assert_eq!(
         browse.headers().get("allow").expect("Allow"),
         "OPTIONS, PROPFIND"
@@ -57,7 +70,10 @@ async fn anonymous_options_rejects_private_targets_and_private_root() {
     let private_app = build_router(state_with_policies(Arc::clone(&storage), BTreeMap::new()));
     let mixed_app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("discoverable".to_string(), policy(&["discover"]))]),
+        BTreeMap::from([(
+            "discoverable".to_string(),
+            policy(Principal::Anyone, &[Verb::Search]),
+        )]),
     ));
 
     // When
@@ -81,7 +97,10 @@ async fn anonymous_content_preserves_range_and_conditional_responses() {
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([("private".to_string(), policy(&["content"]))]),
+        BTreeMap::from([(
+            "private".to_string(),
+            policy(Principal::Anyone, &[Verb::Read]),
+        )]),
     ));
 
     // When

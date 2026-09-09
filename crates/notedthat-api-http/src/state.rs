@@ -1,6 +1,6 @@
 //! Shared application state for the axum router.
 
-use notedthat_core::{KbSlug, PublicReadPolicy, Storage};
+use notedthat_core::{AccessPolicy, KbSlug, Storage};
 use notedthat_indexer::Searcher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,8 +14,11 @@ pub struct AppState {
     pub storage: Arc<dyn Storage>,
     /// Canonical map of slug string → [`KbSlug`] for declared knowledge bases.
     pub declared_kbs: Arc<BTreeMap<String, KbSlug>>,
-    /// Startup snapshot of manifest-controlled public-read policies, keyed by KB slug.
-    pub public_read_policies: Arc<BTreeMap<String, PublicReadPolicy>>,
+    /// Startup snapshot of manifest access policies, keyed by KB slug.
+    ///
+    /// One `Arc` per policy so a request-scoped authorization handle can hold
+    /// its knowledge base's policy cheaply instead of borrowing the whole map.
+    pub access_policies: Arc<BTreeMap<String, Arc<AccessPolicy>>>,
     /// Static Bearer token for authenticating API requests.
     pub bearer_token: Arc<String>,
     /// Maximum accepted PUT body size in bytes (16 MiB in M2).
@@ -39,7 +42,7 @@ mod tests {
         AppState {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),
-            public_read_policies: Arc::new(BTreeMap::new()),
+            access_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new("token".to_string()),
             max_body_size: 1024,
             max_patchable_size: 1024,
