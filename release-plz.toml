@@ -43,9 +43,17 @@ changelog_update = false
 # the registry instead makes a missed release self-healing: the next push to
 # main simply retries it.
 #
-# The review gate is unchanged — versions only move when a release PR written by
-# `release-plz-pr` is merged. This flag only governs whether `release` insists on
-# being run on that exact merge commit.
+# Know what this widens. The actual invariant is now "any push to `main` whose
+# workspace version is ahead of crates.io publishes all 9 crates", and nothing
+# here enforces that the version only ever moves in a release PR. A `cargo
+# set-version` that rides along in an ordinary feature branch, or a hand-edited
+# `version`, publishes on merge with no release PR and no second look — and a
+# crates.io publish cannot be undone, since a yank neither removes the version
+# nor frees the number.
+#
+# That is the deliberate trade for making a missed release self-healing rather
+# than terminal. Keep version bumps confined to release PRs; `ci.yml` has no
+# check for this, so it is a convention, not a guarantee.
 release_always = true
 
 # Run cargo-semver-checks before opening the release PR

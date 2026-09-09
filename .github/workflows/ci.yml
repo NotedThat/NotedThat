@@ -73,11 +73,12 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
     runs-on: ubuntu-latest
-    # Keep this budget tight on purpose: it is the tripwire for the container
-    # suite getting slower, and the suite is already slow (~10 min of the ~12
-    # this job takes is testcontainer startup — every test starts its own
-    # SeaweedFS/Qdrant pair). Raising the number would hide that rather than
-    # fix it.
+    # Keep this budget tight on purpose. Almost everything here now runs on
+    # in-memory backends (notedthat_indexer::testing, notedthat_api_http::testing),
+    # so the only work that can grow without bound is what still needs real
+    # infrastructure: the storage-s3 container suite and the mcp-stdio
+    # subprocess tests that `--include-ignored` unlocks. This budget is the
+    # tripwire for those. Raising the number would hide growth rather than fix it.
     #
     # Note what a breach costs, though: exceeding this does not FAIL the job,
     # it CANCELS it, and a cancelled dependency silently SKIPS release-plz
@@ -92,11 +93,30 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      # `--include-ignored` is how the container-backed tests get run, but it
-      # also sweeps in the `stress_*` scenarios, which generate and hash five
-      # gibibytes each and are meant to be run by hand (see DEVELOPMENT.md).
-      # They are excluded by the `stress_` name prefix, not by listing
-      # individual test names, so a newly added scenario stays out too.
+      # `--include-ignored` is how the container-backed and subprocess tests get
+      # run, but it also sweeps in the `stress_*` scenarios, which generate and
+      # hash five gibibytes each and are meant to be run by hand (see
+      # DEVELOPMENT.md). They are excluded by matching `stress_` rather than by
+      # listing individual test names, so a newly added scenario stays out too.
+      #
+      # `--skip` is a SUBSTRING match over the full test path, not a name
+      # prefix: anything with `stress_` anywhere in its module path or name is
+      # dropped. That is the failure mode this whole job exists to prevent — a
+      # test silently not running — so pin the count first. A new match, or a
+      # renamed scenario that stops matching, fails here instead of quietly
+      # changing what CI covers.
+      - name: Check the stress filter still matches exactly the intended tests
+        run: |
+          set -euo pipefail
+          expected=4
+          listed=$(cargo test --workspace --locked -- --include-ignored --list)
+          actual=$(printf '%s\n' "$listed" | grep -c 'stress_' || true)
+          if [ "$actual" -ne "$expected" ]; then
+            echo "::error::'--skip stress_' matches $actual tests, expected $expected."
+            printf '%s\n' "$listed" | grep 'stress_' || true
+            exit 1
+          fi
+          echo "stress filter matches $actual tests, as expected"
       - run: cargo test --workspace --locked -- --include-ignored --skip stress_
 
   # Two constraints on how the release-plz jobs are wired:
@@ -107,6 +127,12 @@ jobs:
   #      the SAME stale baseline, and the PR job re-proposes the very version the
   #      release job is publishing right then, producing duplicate CHANGELOG
   #      entries. This is also the order RELEASING.md documents.
+  #
+  #      Ordering alone is not sufficient: job completion says the publish
+  #      returned, not that the sparse index serves it yet, and release-plz-pr
+  #      re-queries that index. release-plz-release therefore blocks on the
+  #      index actually showing the new version before it exits — see the
+  #      "Wait for crates.io" step.
   #
   #      The cost of the dependency — a failed release skips that run's PR update
   #      and leaves the release PR stale — is bounded now that
@@ -175,6 +201,41 @@ jobs:
           else
             echo "No workspace tag (v*) in release-plz output; nothing to dispatch"
           fi
+
+      # release-plz-pr `needs:` this job and re-queries crates.io to derive the
+      # next version. A publish that has returned but is not yet in the sparse
+      # index looks identical to "nothing was released", so the PR job would
+      # re-propose the version just published and write a duplicate CHANGELOG
+      # entry. Hold this job open until the index agrees.
+      #
+      # The crate list and version come from the checked-in workspace manifests
+      # via `cargo metadata`, not from release-plz's output, so this does not
+      # depend on that tool's JSON shape. Index paths are the standard sparse
+      # layout: <first-2>/<next-2>/<name> for names of four characters or more.
+      - name: Wait for crates.io to index the published version
+        if: steps.release-plz.outputs.releases != ''
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          meta=$(cargo metadata --no-deps --format-version 1)
+          version=$(printf '%s' "$meta" \
+            | jq -er '[.packages[] | select(.publish != []) | .version] | unique | .[0]')
+          crates=$(printf '%s' "$meta" \
+            | jq -er '.packages[] | select(.publish != []) | .name')
+          echo "Waiting for $version to appear in the crates.io index"
+          # Read line by line rather than iterating an unquoted variable: crate
+          # names are newline-separated, and relying on IFS word-splitting here
+          # silently degrades to one garbage URL if the shell does not split.
+          while read -r crate; do
+            [ -n "$crate" ] || continue
+            url="https://index.crates.io/${crate:0:2}/${crate:2:2}/${crate}"
+            until curl -sfL "$url" \
+              | jq -es --arg v "$version" 'any(.[]; .vers == $v)' >/dev/null; do
+              echo "  $crate $version not indexed yet; retrying in 5s"
+              sleep 5
+            done
+            echo "  $crate $version indexed"
+          done <<< "$crates"
 
   release-plz-pr:
     name: Open / update release PR
