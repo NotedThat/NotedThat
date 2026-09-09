@@ -6,6 +6,7 @@ resolver = "2"
 members = [
   "crates/notedthat-core",
   "crates/notedthat-storage-s3",
+  "crates/notedthat-storage-fs",
   "crates/notedthat-indexer",
   "crates/notedthat-write",
   "crates/notedthat-api-http",

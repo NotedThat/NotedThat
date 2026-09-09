@@ -2243,6 +2243,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "notedthat-storage-fs"
+version = "0.1.6"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "futures",
+ "notedthat-core",
+ "notedthat-storage-s3",
+ "serde",
+ "serde_json",
+ "temp-env",
+ "tempfile",
+ "testcontainers",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "notedthat-storage-s3"
 version = "0.2.0"
 dependencies = [

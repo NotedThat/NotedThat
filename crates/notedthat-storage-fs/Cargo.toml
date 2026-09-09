@@ -1,0 +1,35 @@
+[package]
+name = "notedthat-storage-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local filesystem storage adapter for NotedThat"
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "macros"] }
+tokio-util = { workspace = true, features = ["io"] }
+tracing.workspace = true
+
+[dev-dependencies]
+notedthat-core = { path = "../notedthat-core", version = "0.1.6", features = ["test-support"] }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.6" }
+temp-env = "0.3"
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
