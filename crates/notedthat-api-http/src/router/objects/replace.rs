@@ -1,5 +1,5 @@
 use super::super::helpers::{
-    body_limit_usize, lookup_kb, parse_path, percent_encode_path, replace_conditionals,
+    body_limit_usize, lookup_kb, object_location, parse_path, replace_conditionals,
 };
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -140,10 +140,7 @@ async fn replace_object(
         match_count: outcome.match_count,
         total_bytes: meta.size,
     };
-    let content_location = format!(
-        "/api/v1/knowledgebases/{kb_slug}/{}",
-        percent_encode_path(path.as_str())
-    );
+    let content_location = object_location(&kb_slug, path.as_str());
 
     Ok((
         StatusCode::OK,

@@ -30,6 +30,12 @@ use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
 
+/// Mount point of the versioned machine API on the unified listener (D44).
+pub const API_V1_PREFIX: &str = "/api/v1";
+
+/// Mount point reserved for the future browse surface (D44, #100).
+pub const BROWSE_PREFIX: &str = "/browse";
+
 /// Maximum body size for PUT requests: 16 MiB (D35).
 pub const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -82,10 +88,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/llms.txt", get(llms_txt))
-        .route("/browse", any(browse_not_implemented))
-        .route("/browse/", any(browse_not_implemented))
-        .route("/browse/{*path}", any(browse_not_implemented))
-        .nest("/api/v1", api_routes)
+        .route(BROWSE_PREFIX, any(browse_not_implemented))
+        .route(&format!("{BROWSE_PREFIX}/"), any(browse_not_implemented))
+        .route(
+            &format!("{BROWSE_PREFIX}/{{*path}}"),
+            any(browse_not_implemented),
+        )
+        .nest(API_V1_PREFIX, api_routes)
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
