@@ -12,6 +12,14 @@ pub enum McpToolError {
     /// 401 — missing or invalid bearer token.
     #[error("unauthorized")]
     Unauthorized,
+    /// 403 — the credential is valid but the knowledge base's access rules do
+    /// not grant this operation on this key.
+    ///
+    /// Reachable since access rules began binding the credential holder (D50):
+    /// a manifest can narrow what the configured token may do, and MCP holds
+    /// that token, so a read-only MCP deployment is now expressible.
+    #[error("forbidden")]
+    Forbidden,
     /// 404 — knowledge base or object not found.
     #[error("not_found: {0}")]
     NotFound(String),
@@ -56,6 +64,7 @@ impl From<McpToolError> for ErrorData {
             McpToolError::Unauthorized => {
                 ErrorData::new(ErrorCode::INVALID_PARAMS, "unauthorized", None)
             }
+            McpToolError::Forbidden => ErrorData::new(ErrorCode::INVALID_PARAMS, "forbidden", None),
             McpToolError::NotFound(msg) => ErrorData::new(
                 ErrorCode::RESOURCE_NOT_FOUND,
                 format!("not_found: {msg}"),
@@ -139,6 +148,7 @@ pub(crate) async fn map_response(
     Err(match status.as_u16() {
         400 => McpToolError::InvalidRequest(message),
         401 => McpToolError::Unauthorized,
+        403 => McpToolError::Forbidden,
         404 => McpToolError::NotFound(message),
         412 => McpToolError::PreconditionFailed,
         413 => McpToolError::PayloadTooLarge,
@@ -174,6 +184,7 @@ mod tests {
             McpToolError::AmbiguousMatch { count: 3 },
             McpToolError::BackendUnavailable,
             McpToolError::InternalError("boom".into()),
+            McpToolError::Forbidden,
         ];
         for e in cases {
             let _ed: ErrorData = e.into();
@@ -260,6 +271,7 @@ mod tests {
         let test_cases: &[(u16, StatusCheck)] = &[
             (400, |e| matches!(e, McpToolError::InvalidRequest(_))),
             (401, |e| matches!(e, McpToolError::Unauthorized)),
+            (403, |e| matches!(e, McpToolError::Forbidden)),
             (404, |e| matches!(e, McpToolError::NotFound(_))),
             (412, |e| matches!(e, McpToolError::PreconditionFailed)),
             (413, |e| matches!(e, McpToolError::PayloadTooLarge)),
