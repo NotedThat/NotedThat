@@ -1,31 +1,13 @@
-//! Refuse legacy SSE and unsupported HTTP methods with 405 status and exact JSON body.
+//! The exact 405 body served when a legacy SSE or unsupported method reaches
+//! the MCP surface.
 //!
-//! Routes:
-//! - GET /mcp → 405 with refusal JSON
-//! - DELETE /mcp → 405 with refusal JSON
-//! - POST /sse → 405 with refusal JSON
-//! - GET /sse and /sse/* → 405 with refusal JSON
-//!
-//! The exact JSON body is: `{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}`
+//! Which requests are refused is decided by the routes registered in
+//! `notedthat-server`'s `run::mcp_http` (GET/DELETE `/mcp`, GET/POST `/sse`,
+//! any method under `/sse/`), so that one router is the single source of truth.
+//! This module only owns the response body.
 
 /// The exact JSON body for SSE refusal responses.
 const SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
-
-/// Check if a request should be refused (legacy SSE or unsupported method on /mcp).
-///
-/// Returns true if the request matches one of the refusal patterns:
-/// - GET /mcp
-/// - DELETE /mcp
-/// - POST /sse
-/// - GET /sse
-/// - Any path starting with /sse/
-pub fn should_refuse_request(method: &str, path: &str) -> bool {
-    match (method, path) {
-        ("GET" | "DELETE", "/mcp") | ("POST" | "GET", "/sse") => true,
-        (_, p) if p.starts_with("/sse/") => true,
-        _ => false,
-    }
-}
 
 /// Get the refusal response body as bytes.
 pub fn refusal_body() -> &'static [u8] {
@@ -35,48 +17,6 @@ pub fn refusal_body() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn get_mcp_should_be_refused() {
-        assert!(should_refuse_request("GET", "/mcp"));
-    }
-
-    #[test]
-    fn delete_mcp_should_be_refused() {
-        assert!(should_refuse_request("DELETE", "/mcp"));
-    }
-
-    #[test]
-    fn post_sse_should_be_refused() {
-        assert!(should_refuse_request("POST", "/sse"));
-    }
-
-    #[test]
-    fn get_sse_should_be_refused() {
-        assert!(should_refuse_request("GET", "/sse"));
-    }
-
-    #[test]
-    fn sse_nested_path_should_be_refused() {
-        assert!(should_refuse_request("GET", "/sse/events"));
-    }
-
-    #[test]
-    fn sse_deeply_nested_path_should_be_refused() {
-        assert!(should_refuse_request("GET", "/sse/v1/events/stream"));
-    }
-
-    #[test]
-    fn post_mcp_should_not_be_refused() {
-        assert!(!should_refuse_request("POST", "/mcp"));
-    }
-
-    #[test]
-    fn other_paths_should_not_be_refused() {
-        assert!(!should_refuse_request("GET", "/other"));
-        assert!(!should_refuse_request("POST", "/other"));
-        assert!(!should_refuse_request("DELETE", "/other"));
-    }
 
     #[test]
     fn refusal_body_is_exact_json() {
