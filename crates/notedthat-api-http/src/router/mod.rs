@@ -30,11 +30,39 @@ use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
 
+/// The API route table, declared once in two forms.
+///
+/// `ROUTE_*` is the path relative to [`API_V1_PREFIX`], which is what
+/// `build_router` registers under `nest`. `MATCHED_*` is the absolute path,
+/// which is what axum reports as `MatchedPath` and what the public-read match in
+/// [`crate::middleware`] compares against. Both come from one suffix literal, so
+/// the mount point and each route are each written exactly once.
+///
+/// The routes stay nested rather than registered absolutely and merged: a
+/// `.layer()` on an absolutely-routed sub-router also wraps its fallback, and
+/// merging that fallback answers every unrouted path — `/v1/...` included — with
+/// the API's 401 instead of a 404.
+macro_rules! api_routes {
+    ($($route:ident / $matched:ident => $suffix:literal,)+) => {
+        $(
+            pub(crate) const $route: &str = $suffix;
+            pub(crate) const $matched: &str = concat!("/api/v1", $suffix);
+        )+
+    };
+}
+
 /// Mount point of the versioned machine API on the unified listener (D44).
 pub const API_V1_PREFIX: &str = "/api/v1";
 
 /// Mount point reserved for the future browse surface (D44, #100).
 pub const BROWSE_PREFIX: &str = "/browse";
+
+api_routes! {
+    ROUTE_KBS / MATCHED_KBS => "/knowledgebases",
+    ROUTE_KB / MATCHED_KB => "/knowledgebases/{kb_slug}",
+    ROUTE_KB_SEARCH / MATCHED_KB_SEARCH => "/knowledgebases/{kb_slug}/search",
+    ROUTE_KB_OBJECT / MATCHED_KB_OBJECT => "/knowledgebases/{kb_slug}/{*object_path}",
+}
 
 /// Maximum body size for PUT requests: 16 MiB (D35).
 pub const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
@@ -55,16 +83,16 @@ impl MakeRequestId for MakeRequestUuidV7 {
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     let api_routes = Router::new()
-        .route("/knowledgebases", get(list_kbs))
-        .route("/knowledgebases/{kb_slug}", get(list_objects))
+        .route(ROUTE_KBS, get(list_kbs))
+        .route(ROUTE_KB, get(list_objects))
         .route(
-            "/knowledgebases/{kb_slug}/search",
+            ROUTE_KB_SEARCH,
             axum::routing::post(crate::search_route::search_kb).layer(
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
         .route(
-            "/knowledgebases/{kb_slug}/{*object_path}",
+            ROUTE_KB_OBJECT,
             get(get_object)
                 .head(head_object)
                 .put(put_object)
@@ -126,6 +154,30 @@ async fn browse_not_implemented(request: Request) -> Response {
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod route_constants {
+    use super::{
+        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS, ROUTE_KB,
+        ROUTE_KB_OBJECT, ROUTE_KB_SEARCH, ROUTE_KBS,
+    };
+
+    /// The router registers the relative form and the middleware matches the
+    /// absolute one. If the two stop agreeing, public-read authorization
+    /// silently stops matching the routes it is meant to guard.
+    #[test]
+    fn matched_paths_are_the_nested_routes_under_the_mount_point() {
+        assert_eq!(API_V1_PREFIX, "/api/v1");
+        for (route, matched) in [
+            (ROUTE_KBS, MATCHED_KBS),
+            (ROUTE_KB, MATCHED_KB),
+            (ROUTE_KB_SEARCH, MATCHED_KB_SEARCH),
+            (ROUTE_KB_OBJECT, MATCHED_KB_OBJECT),
+        ] {
+            assert_eq!(matched, format!("{API_V1_PREFIX}{route}"));
+        }
+    }
 }
 
 #[cfg(test)]

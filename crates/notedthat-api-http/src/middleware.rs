@@ -1,6 +1,7 @@
 //! Static-Bearer authentication middleware for the `NotedThat` API.
 
 use crate::error::ApiErrorResponse;
+use crate::router::{MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS};
 use crate::state::AppState;
 use axum::RequestExt;
 use axum::body::Body;
@@ -71,7 +72,7 @@ async fn anonymous_capability(
 ) -> Option<PublicReadCapability> {
     let matched_path = req.extensions().get::<MatchedPath>()?.as_str();
     let capability = match (req.method(), matched_path) {
-        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases") => {
+        (&Method::GET | &Method::HEAD, MATCHED_KBS) => {
             return state
                 .declared_kbs
                 .keys()
@@ -83,13 +84,9 @@ async fn anonymous_capability(
                 })
                 .then_some(PublicReadCapability::Discover);
         }
-        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases/{kb_slug}") => {
-            PublicReadCapability::Browse
-        }
-        (&Method::GET | &Method::HEAD, "/api/v1/knowledgebases/{kb_slug}/{*object_path}") => {
-            PublicReadCapability::Content
-        }
-        (&Method::POST, "/api/v1/knowledgebases/{kb_slug}/search") => PublicReadCapability::Search,
+        (&Method::GET | &Method::HEAD, MATCHED_KB) => PublicReadCapability::Browse,
+        (&Method::GET | &Method::HEAD, MATCHED_KB_OBJECT) => PublicReadCapability::Content,
+        (&Method::POST, MATCHED_KB_SEARCH) => PublicReadCapability::Search,
         _ => return None,
     };
     let Path(params) = req
