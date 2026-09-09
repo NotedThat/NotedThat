@@ -10,6 +10,25 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/NotedThat/NotedThat/compare/v0.1.6...v0.2.0) - 2026-09-09
+
+### Added
+
+- *(notedthat)* [**breaking**] ship both binaries from a new distribution crate
+- *(server)* [**breaking**] reject removed listener environment variables
+- *(server)* [**breaking**] unify HTTP surfaces on one listener
+
+### Fixed
+
+- *(api-http)* restore observability on the unauthenticated root routes
+
+### Other
+
+- *(api-http)* declare each API route once
+- *(api-http)* name the route prefixes once
+- *(webdav)* cover COPY/MOVE destination confinement to /webdav
+- *(mcp)* remove the unreachable SSE refusal predicate
+
 ### Added
 
 - *(notedthat)* new distribution crate owning both published binaries;
