@@ -174,13 +174,13 @@ impl Inner {
         write(staged.as_file_mut(), &mut hasher).map_err(|error| errors::object(key, error))?;
         let etag = hasher.finish();
 
-        commit::finish(staged, &path, self.layout.file_mode())
+        // The stamp comes from the file we just wrote, taken before the rename, so it can
+        // only ever describe these bytes. Stat-ing `path` afterwards would instead
+        // describe whatever sits there at that instant — an editor saving over the object
+        // in that window would leave our `ETag` recorded against their content, matching
+        // `is_fresh_for` and reading as fresh forever after.
+        let metadata = commit::finish(staged, &path, self.layout.file_mode())
             .map_err(|error| errors::object(key, error))?;
-
-        // Stamp against the committed file. `rename` preserves mtime, so reading it here
-        // gives a stamp that still matches after the move.
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|error| errors::object(key, error))?;
         let attrs = ObjectAttrs::new(etag.clone(), content_type.map(str::to_string), &metadata);
         self.meta.write(&self.layout, bucket, key, &attrs)?;
 

@@ -55,17 +55,25 @@ pub(crate) fn apply_mode(file: &File, mode: u32) -> std::io::Result<()> {
 }
 
 /// Flush and fsync a staged file, then rename it over `destination` and fsync the parent.
+///
+/// Returns the staged file's metadata, read immediately before the rename. Callers stamp
+/// their `ETag` record against it rather than against a stat of `destination` afterwards:
+/// `rename` preserves size, mtime and inode, so the two describe the same bytes — but a
+/// stat of the destination can pick up content another writer put there in between, which
+/// would record our `ETag` against their file and then read back as fresh.
 pub(crate) fn finish(
     mut staged: NamedTempFile,
     destination: &Path,
     mode: u32,
-) -> std::io::Result<()> {
+) -> std::io::Result<std::fs::Metadata> {
     staged.flush()?;
     apply_mode(staged.as_file(), mode)?;
     staged.as_file().sync_all()?;
+    // After the last write and after `apply_mode`, which touches ctime only.
+    let metadata = staged.as_file().metadata()?;
     staged.persist(destination).map_err(|error| error.error)?;
     sync_dir(destination.parent());
-    Ok(())
+    Ok(metadata)
 }
 
 /// Replace `path` with `bytes`, durably and atomically.
@@ -79,7 +87,9 @@ pub(crate) fn replace_file(
     staged
         .write_all(bytes)
         .map_err(|error| errors::backend(&error))?;
-    finish(staged, path, mode).map_err(|error| errors::backend(&error))
+    finish(staged, path, mode)
+        .map(|_| ())
+        .map_err(|error| errors::backend(&error))
 }
 
 /// fsync a directory so a rename inside it survives a crash.

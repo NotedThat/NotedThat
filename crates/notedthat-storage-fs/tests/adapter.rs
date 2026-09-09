@@ -53,6 +53,40 @@ async fn put(env: &Env, key: &str, body: &str) {
         .expect("put");
 }
 
+/// The stamp is read from the staged file *before* the rename, so that it can only ever
+/// describe the bytes this write produced. That is sound only because `rename` preserves
+/// size, mtime and inode — if it did not, every subsequent read would find the record
+/// stale and rehash the object, and the freshness check would be permanently useless
+/// rather than merely slow.
+#[tokio::test]
+async fn the_recorded_stamp_matches_the_committed_file() {
+    let env = env().await;
+    put(&env, "a.md", "hello").await;
+
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            env.root
+                .join(".notedthat-meta/nt-default-notes/a.md.ntmeta"),
+        )
+        .expect("read sidecar"),
+    )
+    .expect("sidecar is json");
+    let committed =
+        std::fs::symlink_metadata(env.root.join("nt-default-notes/a.md")).expect("stat");
+
+    assert_eq!(record["size"].as_u64(), Some(committed.len()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(record["ino"].as_u64(), Some(committed.ino()));
+        assert_eq!(record["mtime_secs"].as_i64(), Some(committed.mtime()));
+        assert_eq!(
+            record["mtime_nanos"].as_u64(),
+            u32::try_from(committed.mtime_nsec()).ok().map(u64::from)
+        );
+    }
+}
+
 /// The whole premise of this backend: an object's key is its path on disk.
 #[tokio::test]
 async fn an_object_is_a_file_at_its_key_path() {
