@@ -2,8 +2,8 @@ use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use std::time::Duration;
 
 use super::{
-    public_read_env::{API_TOKEN, PUBLIC_KB},
-    public_read_server::ServerInstance,
+    access_env::{API_TOKEN, PUBLIC_KB},
+    access_server::ServerInstance,
 };
 
 pub struct WireResponse {

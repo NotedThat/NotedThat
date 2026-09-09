@@ -47,7 +47,7 @@ Three logical layers:
 | D23 | WebDAV URL scheme | **Unified path-based root.** WebDAV is mounted at `https://host/webdav/` on the same listener as the API and MCP. In v1, root `PROPFIND` returns every KB declared in `NOTEDTHAT_KBS`, listed by KB `slug` (no per-token filtering until JWT v2). Nested paths route to `/webdav/<kb_slug>/<object_path>`. No subdomain sharding, no per-KB URLs. |
 | D24 | KB identity | Every KB has a stable `slug` (`[a-z0-9-]{1,40}`, immutable in v1) **and** a mutable `display_name` (Unicode-friendly, shown as WebDAV `DAV:displayname`). The `slug` is the internal identifier — used directly for the S3 bucket name (D20) and Qdrant collection name. No separate UUID identifier in v1; single-tenant, and slugs are unique per tenant (§6.8). |
 | D25 | MCP tool surface | Each MCP tool takes a `kb` (slug) argument. In v1, one static token can address every KB declared in `NOTEDTHAT_KBS`. A **`list_knowledgebases()`** discovery tool returns that declared KB list (matching WebDAV root PROPFIND). JWT-filtered visibility is v2. Full list in §6.10. |
-| D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 optionally adds a per-bucket `public_read` policy. Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
+| D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 carries the knowledge base's `access` rules (D50). Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
 | D27 | JWT model (v2, deferred) | **`[POST-v1]`** When we outgrow D21/D22's static tokens: HS256 self-signed, self-contained claims, no denylist DB. See §6.9 for the design. v1 ships with the static-token flow instead. |
 | D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
 | D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
@@ -69,7 +69,9 @@ Three logical layers:
 | D45 | Line-range reads | **First-class line-range read capability.** HTTP GET accepts `Range: lines=<first>-<last>` (1-based inclusive) and returns 206 + `Content-Range: lines <first>-<last>/<total>` + `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end). MCP `read` gains `line_start`/`line_end` args (mutually exclusive with `byte_start`/`byte_end`). Line index recomputed per request (no sidecar in v1; see §7.2). Backend byte-range semantics unchanged. |
 | D46 | Partial writes (PATCH) | **First-class partial-write capability via HTTP PATCH.** New route `PATCH /api/v1/knowledgebases/{kb_slug}/{path}`. Modes: `Content-Range: bytes <first>-<last>/*` OR `Content-Range: lines <first>-<last>/*` (Insert form `lines <N>-<N-1>/*`) OR `NT-Patch-Mode: append` (mutually exclusive with `Content-Range`). `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for append (server uses head_etag internally — single round-trip). `If-Match: *` and multi-value `If-Match` REJECTED with 400 (v1 clarity). Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` — NOT caller's If-Match). Bounded 2× retry on GET or PUT PreconditionFailed. Post-splice size cap `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). `IndexEvent::Upsert` unchanged. MCP gains `edit` + `append` tools. WebDAV surface unchanged. PATCH correctness note: requires backend to enforce `If-Match` atomically on PUT — see §8.1. |
 | D47 | String-based edits | **Content-based edit endpoint.** MCP `replace(old_string, new_string, if_match, replace_all?)` + `POST /api/v1/knowledgebases/{kb_slug}/replace/{*path}`. Server-side exact-byte UTF-8 substring search; splices under `If-Match` with the same two-ETag CAS pattern as PATCH (D46). Zero matches → 422 `no_match`; multiple matches with `replace_all=false` → 422 `ambiguous_match { match_count }`; both leave storage byte-identical. `replace_all=true` replaces every non-overlapping occurrence left-to-right in one splice. Post-splice size cap reuses `NOTEDTHAT_MAX_PATCHABLE_SIZE`. WebDAV unchanged. Complements offset-based PATCH (D46); does not replace it. |
-| D48 | Manifest-controlled public reads | **Private by default, independent per-KB capabilities.** Optional manifest v1 `public_read` grants `discover`, `browse`, `content`, and `search` on HTTP API and WebDAV where supported (§6.7). KB-wide grants avoid path-prefix ACL complexity; independence lets operators expose content without enumeration. Discovery requires at least one declared KB granting `discover`. GET and HEAD share authorization. Policies are validated at startup and require restart to change, keeping authorization independent of storage availability on the request path. Valid credentials retain full access; invalid credentials never downgrade to anonymous. Writes and MCP remain authenticated; `.notedthat` stays private. Anonymous search rate limits belong at the reverse proxy. |
+| D48 | Manifest-controlled public reads | **Superseded by D50.** Optional manifest `public_read` granted `discover`, `browse`, `content` and `search` knowledge-base-wide to anonymous callers only. D50 replaces it with path-scoped rules that bind the credential holder too; the field is removed and an old manifest carrying it silently loses its public grants. |
+| D50 | Manifest access rules | **Two principals, five verbs, allow-only, path-scoped.** Manifest `access` is an array of rules, each naming `who` (`anyone` — no credential — or `signed-in` — the Bearer/Basic holder), the verbs it `may` use (`list`, `read`, `write`, `delete`, `search`), and the glob patterns it applies `under` (§6.7). Private by default; the answer for a `(principal, verb, key)` triple is the union of matching rules, so **order never changes a decision**. There is no `discover` verb: a knowledge base is visible in a listing when the principal holds any grant in it. Rules bind **both** principals, so a manifest can restrict the credential holder — reversing D48's "valid credentials retain full access" — which makes `403` reachable per D43. Two invariants live in the evaluator rather than only in validation: anonymous callers never reach `.notedthat`, and the credential holder always does, so a manifest that revokes everything is repairable through the API rather than only through the bucket. Anonymous `write`/`delete` grants refuse startup and are inert if they reach the evaluator anyway. Absent `access` means the credential holder may do everything and anonymous callers nothing, so upgrading leaves credentialed reach untouched. Policies load once at startup and need a restart to change. Because filtering is per key, a listing page may be shorter than `limit` while still reporting `truncated`: clients page off `next_cursor`, never off page length. MCP inherits the credential holder's rules by way of the API. |
+| D51 | Browse surface | **Server-rendered read-only HTML at `/browse`, over the same rules as every other surface.** `GET /browse/` lists knowledge bases the caller can see; `/browse/{kb}/{prefix}/` renders one directory level, synthesised from keys (D40). `list` gates a page and `read` gates each row's link, decided per key because a glob-scoped grant can make a directory listable but only partly readable. Object links point at the existing `/api/v1` representation — no second download path, no Markdown rendering. Anonymous denials answer `404` so the status cannot be used to enumerate private prefixes; a credentialed denial answers `403`. `.notedthat` is rendered for nobody. At a 10 000-key cap the page renders what it read with a visible notice rather than failing, unlike WebDAV's `507`, whose consumer would mistake a partial listing for a complete one. No JavaScript, no accounts, no editing, no search. |
 | D49 | Storage backend selection | **Two first-class backends, chosen by `NOTEDTHAT_STORAGE_BACKEND` (`s3` default, `fs`).** The `fs` backend stores each object as a real file at its key path under `NOTEDTHAT_FS_ROOT`, so the store is browsable, greppable and backed up with ordinary file tools — a single-node deployment needs no object store. It implements RFC 7232 itself and makes conditional writes atomic with an in-process lock, which is why it supports **exactly one process per root** (enforced by a lock file at startup) and excludes network filesystems. The selector and both backends' variables are validated strictly: an unrecognised value, or a variable belonging to the unselected backend, refuses startup rather than being ignored (§6.5, §8.1). Derived per-KB directory names reuse `derive_bucket_name` and keep the 63-byte limit (D20), so one `NOTEDTHAT_KBS` stays valid on either backend. Bucket-per-KB (D2) and everything above the `Storage` trait are unchanged. |
 | D50 | Filesystem change detection `fs` | **The `fs` backend keeps the search index in step with its own tree.** With `NOTEDTHAT_FS_WATCH` on (the default), each declared KB's directory is watched via `notify` (inotify on Linux, FSEvents on macOS, kqueue on the BSDs) and every knowledge base is compared against the index once at startup. **The watcher never enqueues a tombstone**: a deletion is an `IndexEvent::Refresh` whose re-read reports the object missing, which the worker already converts — so a debounced report can never outrace a re-create and delete points that are live again, the one failure here nothing would repair. `Refresh` is **skipped when the indexed chunks already carry the object's current `ETag`**, and that skip is what makes the startup pass, a rescan and a self-write echo all cheap; `IndexEvent::Upsert` is never skipped, because re-writing an object is v1's only reindex mechanism (D42). Directory operations are resolved by comparing a **prefix** rather than replaying events, since the kernel reports a directory and not its contents — that is what makes a folder rename correct on both sides, and what lets a deletion during downtime be found at all, as an indexed key with no file under it. Watcher work **coalesces by containment and blocks rather than dropping**, deliberately unlike D38's `try_send`: D38 is sound only because a 503 makes the client the retry mechanism, and a filesystem change has no client. Read events are discarded (`notify`'s inotify mask always includes `IN_OPEN`, so serving a `GET` would otherwise re-index the corpus), as are `.git`/`.svn`/`.hg` paths, our own temp prefix, symlinks and anything `.notedthat` (D48). A watch that cannot be established **refuses startup** per D39, naming `fs.inotify.max_user_watches` and the off switch; a watch lost at runtime logs `FS_WATCH_LOST` and asks for a rescan rather than failing `/readyz`. Depends on D49's one-process-per-root guarantee. The `s3` backend is unchanged — issue #96 covers its equivalent. |
 
@@ -314,15 +316,44 @@ nt-{tenant_slug}-{kb_slug}
     "dimensions": 1536
   },
   "qdrant_collection": "kb_my-notes_v1",
-  "public_read": ["discover", "browse", "content", "search"]
+  "access": [
+    { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
+    { "who": "anyone",    "may": ["search"] },
+    { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+  ]
 }
 ```
 
 The `(tenant_slug, kb_slug)` pair *is* the identifier — no separate UUID field. Manifest is a sanity-check record, not the source of truth for identity (D20, D24).
 
-`public_read` is additive in manifest version `1`; missing or `[]` means private. It must be an
-array whose only string values are `discover`, `browse`, `content`, and `search`. Unknown names or
-wrong JSON types fail startup validation. Duplicates collapse to a canonical serialized order.
+`access` carries the knowledge base's access rules (D50). Each rule names:
+
+| Field | Meaning |
+|---|---|
+| `who` | `anyone` (a caller supplying no credential) or `signed-in` (the Bearer/Basic holder) |
+| `may` | any of `list`, `read`, `write`, `delete`, `search` |
+| `under` | glob patterns over object keys; omit for the whole knowledge base |
+
+Rules are **allow-only** and the answer is the union of every matching rule, so their order in the
+array never changes a decision. Unknown verbs, unknown principals and malformed patterns fail
+startup validation, so a typo cannot quietly become a weaker policy.
+
+Pattern syntax: `*` matches within one segment and never `/`; `**` matches whole segments and must
+be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. `public/**` matches the
+key `public` and everything beneath it. There is no escape character, so a key containing a literal
+`*`, `?` or `{` cannot be matched.
+
+An **absent** `access` field means the credential holder may do everything and anonymous callers
+nothing — what every manifest written before D50 already meant. An **empty** array grants nobody
+anything; the knowledge base is inert but still repairable, and startup logs `ACCESS_RULES_EMPTY`.
+
+`.notedthat` is not addressable by a rule in either direction: anonymous callers can never reach it,
+and the credential holder always can. That asymmetry is what keeps a manifest that revokes the
+operator's own access repairable through the API — the repair takes effect on the next restart,
+since policies are a startup snapshot.
+
+The removed `public_read` field is ignored if still present. A knowledge base whose manifest was
+never updated therefore comes up private to anonymous callers, with credentialed access unchanged.
 
 Each KB has one bucket, and one bucket is one policy boundary: there are no namespace or
 path-prefix public grants. Capabilities are independent: `discover` lists the KB, `browse` lists
@@ -469,7 +500,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 1. Parse `NOTEDTHAT_KBS` as comma-separated `slug:Display Name` pairs.
 2. Validate every slug (`[a-z0-9-]{1,40}`, no leading/trailing hyphen; reject empty display names). Reject any `(tenant_slug, kb_slug)` whose derived bucket name (§6.6) exceeds 63 chars.
 3. Ensure each bucket exists; `BucketAlreadyOwnedByYou` is success. Under the `fs` backend (D49) this creates the per-KB directory, which is idempotent in the same way.
-4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions; validate and load its `public_read` policy into the startup snapshot.
+4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions; validate and load its `access` rules into the startup snapshot.
 5. Ensure each Qdrant collection exists with the expected dense dimension and sparse BM25 vector.
 6. If any step fails: log the exact KB + backend error and exit non-zero. No partial startup.
 
@@ -563,7 +594,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
 | `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
 | `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
-| `ANY` | `/browse`, `/browse/{*path}` | Reserved for the browse surface; routed and unimplemented — returns `501 Not Implemented` so the reservation is observable |
+| `GET`, `HEAD` | `/browse/`, `/browse/{*path}` | Server-rendered HTML directory listings (D51). Anonymous or Bearer; other methods return `405` |
 | `GET` | `/api/v1/knowledgebases` | List declared KBs — matches MCP `list_knowledgebases()` (§6.10) and WebDAV root PROPFIND (D23) |
 | `GET` | `/api/v1/knowledgebases/{kb_slug}` | List objects in a KB. Query params: `prefix`, `limit` (default 100, max 1000), `cursor` (opaque continuation token per §6.12) |
 | `HEAD` | `/api/v1/knowledgebases/{kb_slug}/{path}` | Object metadata (ETag, `Content-Length`, `Last-Modified`) |
@@ -583,13 +614,62 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 
 #### Auth
 
-`/healthz`, `/readyz`, and `/llms.txt` are globally unauthenticated. Other HTTP routes use the
-static Bearer token in v1 (D21), except for an omitted `Authorization` header on a manifest-granted
-anonymous read capability: `discover` for the KB list, `browse` for object listing, `content` for
-GET/HEAD object reads, or `search` for search. These grants are independent and never authorize
-writes. A supplied invalid credential always returns `401`; it never falls back to anonymous
-access. MCP authentication is unchanged, and anonymous search rate/burst control belongs at a
-reverse proxy rather than in application configuration.
+`/healthz`, `/readyz` and `/llms.txt` are globally unauthenticated. Every other route
+authenticates at the boundary and authorizes per key.
+
+**Authentication** establishes a principal: a valid Bearer token is `signed-in`, an omitted
+`Authorization` header is `anyone`, and a supplied credential that does not verify is always `401` —
+never quietly downgraded to anonymous. More than one `Authorization` header is also `401`.
+
+**Authorization** is the manifest's access rules (D50), evaluated against the concrete object key.
+A route pattern cannot answer this — `read` on `{*object_path}` has no answer until the key is
+known — so the check lives beside the key rather than in the middleware. The middleware keeps one
+coarse backstop: an anonymous request whose `(method, route)` pair is not on the reachable list is
+refused before a handler sees it, so a route added later is closed by default.
+
+Verb per operation:
+
+| Operation | Verb |
+|---|---|
+| `GET /api/v1/knowledgebases` | none; the response lists what the principal can see |
+| `GET /api/v1/knowledgebases/{kb}` | `list` |
+| `GET`, `HEAD` on an object | `read` |
+| `PUT`, `PATCH`, `POST .../replace/...` | `write` |
+| `DELETE` | `delete` |
+| `POST .../search` | `search`, and hits are filtered by the `search` rules' own patterns |
+| `/browse` pages | `list`; each row's link needs `read` on that key |
+
+Search filters by `search` and never by `read`, which is what keeps the two independently
+grantable — and means a broad `search` grant with a narrow `read` grant publishes previews of keys
+the caller cannot fetch. Previews are content; an operator choosing that combination is publishing
+excerpts.
+
+**Status codes.** No credential and not allowed is `401`, because credentials might help. A valid
+credential that is not allowed is `403` (D43). An undeclared knowledge base is `404` for everyone —
+not an authorization answer. `/browse` differs on one point: an anonymous denial there is `404`, so
+the status cannot be used to enumerate private prefixes, and a browser prompt would be useless
+against a Bearer token anyway.
+
+MCP authentication is unchanged and always requires its Bearer token; it therefore resolves as
+`signed-in` and inherits that principal's rules, including any restriction placed on them.
+Anonymous search rate and burst control belongs at a reverse proxy rather than in application
+configuration.
+
+#### Browse surface `[DECIDED — D51]`
+
+| Request | Response |
+|---|---|
+| `GET /browse` | `308` → `/browse/` |
+| `GET /browse/` | Index of knowledge bases the principal can see |
+| `GET /browse/{kb}` | `307` → `/browse/{kb}/` |
+| `GET /browse/{kb}/`, `/browse/{kb}/{prefix}/` | One directory level |
+| `GET /browse/{kb}/{key}` | `303` → the object's `/api/v1` URL; or `307` to the slashed form if it is a folder; else `404` |
+
+Directories are synthesised from keys (D40) after per-key filtering, so a folder appears exactly
+when at least one visible key sits beneath it. Pages carry `Cache-Control: no-store` and
+`Vary: Authorization`, because anonymous and credentialed callers share a URL and see different
+content. Object names are HTML-escaped, and control and bidirectional characters are replaced in the
+displayed name so it cannot misrepresent the key it links to.
 
 Rationale: single-segment paths avoid multi-segment wildcard routing and eliminate KB-vs-object boundary ambiguity. WebDAV keeps its native multi-segment path semantics per D23 — the two surfaces are logically equivalent but wire-format-distinct.
 

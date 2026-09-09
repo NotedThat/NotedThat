@@ -1,23 +1,23 @@
 #![allow(missing_docs)]
 
-#[path = "support/public_read_env.rs"]
-mod public_read_env;
-#[path = "support/public_read_http.rs"]
-mod public_read_http;
-#[path = "support/public_read_server.rs"]
-mod public_read_server;
-#[path = "support/public_read_webdav.rs"]
-mod public_read_webdav;
-#[path = "support/public_read_wire.rs"]
-mod public_read_wire;
+#[path = "support/access_env.rs"]
+mod access_env;
+#[path = "support/access_http.rs"]
+mod access_http;
+#[path = "support/access_server.rs"]
+mod access_server;
+#[path = "support/access_webdav.rs"]
+mod access_webdav;
+#[path = "support/access_wire.rs"]
+mod access_wire;
 
-use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Principal, Storage, TenantSlug, Verb};
-use public_read_env::{
+use access_env::{
     API_TOKEN, Backends, INTERNAL_BODY, PRIVATE_BODY, PRIVATE_KB, PUBLIC_BODY, PUBLIC_KB, kb,
     stored_manifest,
 };
-use public_read_server::{ServerInstance, wait_ready};
-use public_read_wire::{assert_http_401, search, wait_indexed, wire};
+use access_server::{ServerInstance, wait_ready};
+use access_wire::{assert_http_401, search, wait_indexed, wire};
+use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Principal, Storage, TenantSlug, Verb};
 use reqwest::StatusCode;
 use std::time::Duration;
 
@@ -76,22 +76,8 @@ async fn seed_objects(client: &reqwest::Client, server: &ServerInstance) {
     }
 }
 
-#[tokio::test]
-#[ignore = "requires Docker (persistent SeaweedFS + Qdrant testcontainers)"]
-async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
-    // Given: persistent backends hold one private and one content-only manifest.
-    let backends = Backends::start().await;
-    store_initial_manifests(&backends).await;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("wire client");
-    let first = ServerInstance::start(backends.config());
-    wait_ready(&client, &first).await;
-
-    seed_objects(&client, &first).await;
-
-    // When: requests hit the first startup snapshot, then its stored manifest changes.
+/// What the first startup snapshot grants: `read` on `PUBLIC_KB` and nothing else.
+async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance) {
     let discovery = wire(
         "HTTP anonymous discovery before restart",
         client
@@ -101,10 +87,20 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
             .expect("discovery"),
     )
     .await;
-    // D48: discovery needs at least one declared KB granting `discover`. The
-    // startup snapshot has none — PUBLIC_KB grants content only — so this is
-    // refused outright rather than answered with an empty list.
-    assert_http_401(&discovery);
+    // D50: visibility is derived from holding a grant, so PUBLIC_KB's `read`
+    // rule is enough to name it — there is no separate `discover` to withhold.
+    // PRIVATE_KB grants anonymous callers nothing and stays absent.
+    assert_eq!(discovery.status, StatusCode::OK);
+    assert!(
+        discovery.text().contains(PUBLIC_KB),
+        "a knowledge base granting `read` is visible: {}",
+        discovery.text()
+    );
+    assert!(
+        !discovery.text().contains(PRIVATE_KB),
+        "a knowledge base granting nothing is not: {}",
+        discovery.text()
+    );
     let content = wire(
         "HTTP anonymous content before restart",
         client
@@ -119,7 +115,7 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     .await;
     assert_eq!(content.status, StatusCode::OK);
     assert_eq!(content.text(), PUBLIC_BODY);
-    assert_http_401(&search(&client, &first, "public.md", None).await);
+    assert_http_401(&search(client, first, "public.md", None).await);
     for path in [
         format!("{}/api/v1/knowledgebases/{PUBLIC_KB}", first.http_url),
         format!(
@@ -135,6 +131,25 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
             .await,
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (persistent SeaweedFS + Qdrant testcontainers)"]
+async fn stored_access_rules_are_loaded_only_at_server_startup() {
+    // Given: persistent backends hold one private and one content-only manifest.
+    let backends = Backends::start().await;
+    store_initial_manifests(&backends).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("wire client");
+    let first = ServerInstance::start(backends.config());
+    wait_ready(&client, &first).await;
+
+    seed_objects(&client, &first).await;
+
+    // When: requests hit the first startup snapshot, then its stored manifest changes.
+    verify_first_snapshot(&client, &first).await;
 
     let mut public_manifest = stored_manifest(&backends.storage, PUBLIC_KB).await;
     public_manifest.access = access_policy(vec![Verb::List, Verb::Read, Verb::Search]);
@@ -158,10 +173,26 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
             .expect("stale discovery"),
     )
     .await;
-    // Still refused: the stored manifest now grants `discover`, but this server
-    // loaded its policy at startup and never re-reads it. A 200 listing
-    // PUBLIC_KB here would mean the live edit had leaked into a running server.
-    assert_http_401(&stale);
+    // The stored manifest now grants `list` and `search` too, but this server
+    // loaded its policy at startup and never re-reads it — so the *new* grants
+    // must not be in force. Discovery still answers from the old snapshot, where
+    // `read` alone already made the knowledge base visible; what proves the edit
+    // has not leaked is that listing and search are still refused below.
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_http_401(
+        &wire(
+            "HTTP stale listing after live manifest edit",
+            client
+                .get(format!(
+                    "{}/api/v1/knowledgebases/{PUBLIC_KB}",
+                    first.http_url
+                ))
+                .send()
+                .await
+                .expect("stale listing"),
+        )
+        .await,
+    );
     assert_http_401(&search(&client, &first, "public.md", None).await);
     first.stop();
 
@@ -169,8 +200,8 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     wait_ready(&client, &second).await;
 
     // Then: the restarted real server exposes only granted reads and no writes.
-    public_read_http::verify(&client, &second).await;
-    public_read_webdav::verify(&client, &second).await;
+    access_http::verify(&client, &second).await;
+    access_webdav::verify(&client, &second).await;
     second.stop();
     backends.remove().await;
 }

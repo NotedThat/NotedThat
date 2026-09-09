@@ -2,7 +2,7 @@ use notedthat_server::config::Config;
 use std::{thread, time::Duration};
 use tokio::sync::oneshot;
 
-use super::public_read_env::{DAV_PASS, DAV_USER};
+use super::access_env::{DAV_PASS, DAV_USER};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 
