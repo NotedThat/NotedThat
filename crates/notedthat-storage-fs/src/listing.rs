@@ -121,7 +121,15 @@ impl OrderedWalk {
                 continue;
             }
 
-            let metadata = std::fs::symlink_metadata(&entry.path).ok()?;
+            // Skip this entry, never end the walk. Returning `None` here would tell
+            // `list_objects` the walk was exhausted, and it would report the short page
+            // as a complete listing with no cursor to resume from — silently dropping
+            // every key after this one. A file deleted between `read_level`'s snapshot
+            // of its directory and the moment the walk reaches it is exactly that case,
+            // and `WebDAV` pages a whole knowledge base while other writers are live.
+            let Ok(metadata) = std::fs::symlink_metadata(&entry.path) else {
+                continue;
+            };
             return Some(Found {
                 key: entry.key,
                 size: metadata.len(),
@@ -164,8 +172,19 @@ fn subtree_may_match(dir_key: &str, after: Option<&str>, prefix: Option<&str>) -
 
 /// Read one directory into reverse key order, so popping yields ascending order.
 fn read_level(bucket_dir: &Path, dir: &Path) -> Vec<Entry> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // An unreadable directory drops its whole subtree from the listing, and the
+            // page still reports itself complete. Nothing here can repair that, so at
+            // least leave a trace rather than letting the keys vanish without one.
+            tracing::warn!(
+                dir = %dir.display(),
+                %error,
+                "skipping an unreadable directory; its objects are missing from this listing"
+            );
+            return Vec::new();
+        }
     };
 
     let mut level: Vec<(String, Entry)> = Vec::new();
@@ -294,6 +313,29 @@ mod tests {
             keys.push(found.key);
         }
         assert_eq!(keys, vec!["d/2.md", "d/3.md"]);
+    }
+
+    /// A file deleted after its directory was read must cost only itself. Ending the
+    /// walk there would make `list_objects` report a short page as a complete listing,
+    /// which is silent key loss rather than a resumable page.
+    #[test]
+    fn a_file_that_vanishes_mid_walk_does_not_end_the_walk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for key in ["a.md", "b.md", "c.md"] {
+            std::fs::write(dir.path().join(key), b"x").expect("write");
+        }
+
+        let mut walk = OrderedWalk::new(dir.path().to_path_buf());
+        assert_eq!(walk.next_match(None, None).expect("first key").key, "a.md");
+
+        // The walk has already snapshotted this level, so `b.md` is still queued.
+        std::fs::remove_file(dir.path().join("b.md")).expect("remove");
+
+        let mut rest = Vec::new();
+        while let Some(found) = walk.next_match(None, None) {
+            rest.push(found.key);
+        }
+        assert_eq!(rest, vec!["c.md"], "only the vanished key may be missing");
     }
 
     #[test]
