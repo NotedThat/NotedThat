@@ -65,13 +65,18 @@ jobs:
     with:
       push: false
 
+  # Runs on pull requests as well as pushes to main. The `--include-ignored`
+  # suite is what proves the cross-surface authorization boundary of the unified
+  # listener (Bearer never reaching /webdav, Basic never reaching /api/v1 or
+  # /mcp). Gating a merge on evidence that only arrives after the merge is the
+  # wrong order for that check. No secrets are used, so it is safe on fork PRs.
   integration-test:
     name: Integration tests (SeaweedFS testcontainer)
     needs: [test, clippy, fmt]
     if: >-
-      github.event_name == 'push'
-      && github.ref == 'refs/heads/main'
-      && github.repository == 'NotedThat/NotedThat'
+      github.repository == 'NotedThat/NotedThat'
+      && (github.event_name == 'pull_request'
+        || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     # Keep this budget tight on purpose. Almost everything here now runs on
     # in-memory backends (notedthat_indexer::testing, notedthat_api_http::testing),
