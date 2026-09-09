@@ -41,6 +41,28 @@ pub struct Config {
     pub staging: StagingConfig,
 }
 
+/// Environment variables removed when the API, `WebDAV`, and MCP surfaces moved
+/// onto one listener, each paired with the setup that replaces it.
+///
+/// Leaving one of these set is a silent exposure change on upgrade — a
+/// `WebDAV` listener that was bound to loopback becomes reachable at `/webdav` on the
+/// public listener, and `NOTEDTHAT_MCP_HTTP_ENABLED=false` no longer disables
+/// `/mcp`. Per D39 the server refuses to start instead, naming the replacement.
+const REMOVED_LISTENER_ENV_VARS: [(&str, &str); 3] = [
+    (
+        "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
+        "WebDAV is always served at /webdav on NOTEDTHAT_LISTEN_ADDR",
+    ),
+    (
+        "NOTEDTHAT_MCP_HTTP_BIND",
+        "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
+    ),
+    (
+        "NOTEDTHAT_MCP_HTTP_ENABLED",
+        "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
+    ),
+];
+
 /// Tracing output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -55,10 +77,21 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required variable is missing
-    /// or if any value is invalid (empty token, bad slug, duplicate slug, etc.).
+    /// Returns `Err(Error::Config { .. })` if any required variable is missing,
+    /// if any value is invalid (empty token, bad slug, duplicate slug, etc.), or
+    /// if any [`REMOVED_LISTENER_ENV_VARS`] entry is still set.
     #[allow(clippy::too_many_lines)]
     pub fn from_env() -> Result<Self, Error> {
+        for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
+            if std::env::var_os(key).is_some() {
+                return Err(Error::Config {
+                    message: format!(
+                        "{key} was removed: {replacement}. Unset {key} to start the server."
+                    ),
+                });
+            }
+        }
+
         let api_token = std::env::var("NOTEDTHAT_API_TOKEN").map_err(|_| Error::Config {
             message: "NOTEDTHAT_API_TOKEN is required".into(),
         })?;
@@ -550,16 +583,39 @@ mod tests {
     }
 
     #[test]
-    fn stale_listener_variables_are_ignored() {
-        let config = run_with_env(
-            &[
-                ("NOTEDTHAT_WEBDAV_LISTEN_ADDR", Some("not-an-addr")),
-                ("NOTEDTHAT_MCP_HTTP_BIND", Some("not-an-addr")),
-                ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false")),
-            ],
+    fn removed_listener_variables_are_rejected_with_their_replacement() {
+        for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
+            let result = run_with_env(&[(key, Some("some-stale-value"))], Config::from_env);
+            let message = result.map_or_else(
+                |e| e.to_string(),
+                |_| panic!("{key} must be rejected at startup"),
+            );
+
+            assert!(message.contains(key), "{key} error must name the variable");
+            assert!(
+                message.contains(replacement),
+                "{key} error must name its replacement"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_listener_variables_are_rejected_even_when_empty() {
+        let result = run_with_env(
+            &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some(""))],
             Config::from_env,
-        )
-        .expect("stale listener variables must not affect configuration");
+        );
+
+        assert!(
+            result.is_err(),
+            "an empty removed variable is still an explicit operator setting"
+        );
+    }
+
+    #[test]
+    fn unset_removed_listener_variables_leave_the_default_listener() {
+        let config = run_with_env(&[], Config::from_env)
+            .expect("configuration must parse when no removed variable is set");
 
         assert_eq!(config.listen_addr.to_string(), "0.0.0.0:8080");
     }
