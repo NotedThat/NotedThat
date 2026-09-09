@@ -21,6 +21,11 @@ The implementations live in [`notedthat-server`](../notedthat-server) and
 [`notedthat-mcp-stdio`](../notedthat-mcp-stdio), which are library-only. Hosting
 both binaries here means exactly one published crate installs each name.
 
+This is also the workspace's release facade: it owns the `vX.Y.Z` git tag, the
+GitHub Release, and the root [CHANGELOG.md](../../CHANGELOG.md). Because it
+depends on every other crate it publishes last, so the tag appears only once the
+whole workspace is on crates.io.
+
 ## Other ways to install
 
 ```sh

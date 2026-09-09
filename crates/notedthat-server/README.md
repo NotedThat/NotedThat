@@ -4,7 +4,7 @@ The NotedThat server library. Boots the HTTP API, WebDAV, and remote MCP surface
 
 The `notedthat-server` executable that drives it ships from the [`notedthat`](../notedthat) crate, so that one published crate owns every installed binary name.
 
-This is the release facade crate for the workspace: it owns the workspace git tag (`vX.Y.Z`), the root [CHANGELOG.md](../../CHANGELOG.md), and the container image at [`ghcr.io/notedthat/server`](https://github.com/NotedThat/NotedThat/pkgs/container/server).
+This crate backs the container image at [`ghcr.io/notedthat/server`](https://github.com/NotedThat/NotedThat/pkgs/container/server). The workspace git tag (`vX.Y.Z`) and the root [CHANGELOG.md](../../CHANGELOG.md) are owned by the [`notedthat`](../notedthat) facade crate.
 
 ## Install
 
