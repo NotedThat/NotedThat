@@ -10,6 +10,25 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/NotedThat/NotedThat/compare/v0.2.0...v0.3.0) - 2026-09-09
+
+### Added
+
+- *(server)* [**breaking**] select the storage backend from the environment
+
+### Fixed
+
+- *(storage-s3)* serve the first byte range and map a missing copy source
+
+### Other
+
+- *(release)* make notedthat the release facade
+- drop two leftovers the filesystem review turned up
+- *(storage-fs)* pin the SeaweedFS quirks the conformance suite found
+- *(storage-fs)* assert the storage backends agree, and fix the substitute
+- *(core)* share precondition and ETag logic across backends
+- *(server)* run the API over the filesystem backend end to end
+
 ## [0.2.0](https://github.com/NotedThat/NotedThat/compare/v0.1.6...v0.2.0) - 2026-09-09
 
 ### Added

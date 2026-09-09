@@ -13,7 +13,7 @@ readme = "README.md"
 test-support = []
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.2.0" }
+notedthat-core = { path = "../notedthat-core", version = "0.3.0" }
 qdrant-client = { workspace = true }
 pulldown-cmark = { workspace = true }
 text-splitter = { workspace = true }
