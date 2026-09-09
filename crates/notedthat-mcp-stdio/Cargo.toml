@@ -11,7 +11,7 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [dependencies]
-notedthat-mcp = { path = "../notedthat-mcp", version = "0.2.0" }
+notedthat-mcp = { path = "../notedthat-mcp", version = "0.3.0" }
 rmcp = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
