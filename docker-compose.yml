@@ -12,32 +12,6 @@ name: notedthat
 
 services:
 
-  seaweedfs:
-    image: chrislusf/seaweedfs:4.18
-    container_name: notedthat-seaweedfs
-    # 4.x rejects requests without an S3 identity — even "any/any" — so we
-    # feed a static config granting Admin to the dev credentials in .env.
-    # See docker/seaweedfs-s3-config.json.
-    command: server -s3 -s3.config=/etc/seaweedfs/s3-config.json -filer -dir=/data
-    ports:
-      - "127.0.0.1:8333:8333"   # S3 API
-      - "127.0.0.1:8888:8888"   # Filer HTTP
-      - "127.0.0.1:9333:9333"   # Master status/UI
-    volumes:
-      - seaweedfs-data:/data
-      - ./docker/seaweedfs-s3-config.json:/etc/seaweedfs/s3-config.json:ro
-    healthcheck:
-      # The S3 endpoint returns 405 on empty GET, so probe the master instead —
-      # /cluster/status returns 200 only once the whole server stack is up.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-    restart: unless-stopped
-
-  # v1.15.2+ required for server-side `qdrant/bm25` sparse inference
-  # (see docs/CONFIGURATION.md §Qdrant).
   qdrant:
     image: qdrant/qdrant:v1.15.4
     container_name: notedthat-qdrant
@@ -62,12 +36,11 @@ services:
     environment:
       NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
       NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
-      NOTEDTHAT_S3_REGION: ${NOTEDTHAT_S3_REGION:-us-east-1}
-      NOTEDTHAT_S3_ACCESS_KEY_ID: ${NOTEDTHAT_S3_ACCESS_KEY_ID:-any}
-      NOTEDTHAT_S3_SECRET_ACCESS_KEY: ${NOTEDTHAT_S3_SECRET_ACCESS_KEY:-any}
       NOTEDTHAT_LISTEN_ADDR: 0.0.0.0:8080
-      NOTEDTHAT_S3_ENDPOINT_URL: http://seaweedfs:8333
-      NOTEDTHAT_S3_FORCE_PATH_STYLE: "true"
+      # Objects on disk, in the notedthat-data volume. Add docker-compose.s3.yml to
+      # run against SeaweedFS instead; the two backends' variables cannot both be set.
+      NOTEDTHAT_STORAGE_BACKEND: fs
+      NOTEDTHAT_FS_ROOT: /var/lib/notedthat
       NOTEDTHAT_LOG_FORMAT: ${NOTEDTHAT_LOG_FORMAT:-pretty}
       RUST_LOG: ${RUST_LOG:-info,notedthat=debug}
       NOTEDTHAT_WEBDAV_USERNAME: ${NOTEDTHAT_WEBDAV_USERNAME:-webdav-user-please-change}
@@ -86,14 +59,14 @@ services:
       EMBEDDING_TIMEOUT_MS: ${EMBEDDING_TIMEOUT_MS:-30000}
       EMBEDDING_MAX_RETRIES: ${EMBEDDING_MAX_RETRIES:-3}
       EMBEDDING_MAX_INPUT_TOKENS: ${EMBEDDING_MAX_INPUT_TOKENS:-8192}
+    volumes:
+      - notedthat-data:/var/lib/notedthat
     depends_on:
-      seaweedfs:
-        condition: service_healthy
       qdrant:
         condition: service_started
     stop_grace_period: 45s
     restart: unless-stopped
 
 volumes:
-  seaweedfs-data:
+  notedthat-data:
   qdrant-data:

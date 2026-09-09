@@ -1,0 +1,60 @@
+# S3-compatible storage overlay for the Compose stack.
+#
+# The default stack in docker-compose.yml keeps objects on disk and runs no object
+# store. This overlay adds SeaweedFS and points the server at it, which is the shape of
+# the reference deployment (D30) and what CI's integration suite exercises:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.s3.yml up --build -d
+#
+# Pass both files to every command in that stack, `down` included.
+#
+# An overlay rather than a Compose profile: the two backends need different environment
+# variables on the same service, and setting both at once is a startup error by design.
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.18
+    container_name: notedthat-seaweedfs
+    # 4.x rejects requests without an S3 identity — even "any/any" — so we
+    # feed a static config granting Admin to the dev credentials in .env.
+    # See docker/seaweedfs-s3-config.json.
+    command: server -s3 -s3.config=/etc/seaweedfs/s3-config.json -filer -dir=/data
+    ports:
+      - "127.0.0.1:8333:8333"   # S3 API
+      - "127.0.0.1:8888:8888"   # Filer HTTP
+      - "127.0.0.1:9333:9333"   # Master status/UI
+    volumes:
+      - seaweedfs-data:/data
+      - ./docker/seaweedfs-s3-config.json:/etc/seaweedfs/s3-config.json:ro
+    healthcheck:
+      # The S3 endpoint returns 405 on empty GET, so probe the master instead —
+      # /cluster/status returns 200 only once the whole server stack is up.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # v1.15.2+ required for server-side `qdrant/bm25` sparse inference
+  # (see docs/CONFIGURATION.md §Qdrant).
+  notedthat-server:
+    environment:
+      # `!reset` genuinely removes the key rather than blanking it. Assigning "" would
+      # not do: an empty value still counts as set, so the server would refuse to start
+      # with both backends' variables present — which is the point of that check.
+      NOTEDTHAT_STORAGE_BACKEND: s3
+      NOTEDTHAT_FS_ROOT: !reset null
+      NOTEDTHAT_S3_REGION: ${NOTEDTHAT_S3_REGION:-us-east-1}
+      NOTEDTHAT_S3_ACCESS_KEY_ID: ${NOTEDTHAT_S3_ACCESS_KEY_ID:-any}
+      NOTEDTHAT_S3_SECRET_ACCESS_KEY: ${NOTEDTHAT_S3_SECRET_ACCESS_KEY:-any}
+      NOTEDTHAT_S3_ENDPOINT_URL: http://seaweedfs:8333
+      NOTEDTHAT_S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  seaweedfs-data:

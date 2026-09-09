@@ -48,18 +48,24 @@ for the manifest and operational procedure.
 
 ## Running locally
 
-NotedThat needs an S3-compatible object store, Qdrant, and an OpenAI-compatible
-embedding provider. It does not bundle an embedding model or provider credentials.
-Use one of the supported flows below and keep provider credentials in ignored local
-environment files; never commit them.
+NotedThat needs somewhere to keep objects — a local directory or any S3-compatible
+object store — plus Qdrant and an OpenAI-compatible embedding provider. It does not
+bundle an embedding model or provider credentials. Use one of the supported flows below
+and keep provider credentials in ignored local environment files; never commit them.
 
-### Compose: local storage and search with your embedding provider
+The default Compose stack stores objects on disk, so it runs no object store at all.
+Add the S3 overlay when you want the production-shaped setup — that is what CI's
+integration suite exercises, and what the reference deployment runs.
+
+### Compose: objects on disk, search alongside
 
 ```sh
 # Create an ignored local configuration, then replace all four embedding values.
 cp .env.example .env
 $EDITOR .env
 docker compose up --build -d
+
+# Objects live in the `notedthat-data` volume; nothing else is needed to store them.
 
 # Verify HTTP, upload, read, and semantic search.
 TOKEN=dev-token-please-change
@@ -76,13 +82,48 @@ curl --fail -X POST -H "Authorization: Bearer $TOKEN" \
 
 The search result is asynchronous: retry the final request until the uploaded document
 appears. Stop the local stack with `docker compose down`; add `-v` only when you
-intentionally want to delete its SeaweedFS and Qdrant data.
+intentionally want to delete its object and Qdrant data.
 
-`docker-compose.yml` fixes its internal listener, SeaweedFS, and Qdrant addresses.
-It forwards documented size, Qdrant-timeout, and embedding-tuning settings from
-`.env`. The bundled Qdrant service is deliberately unauthenticated, so it does not
-accept a Qdrant API key. A custom `NOTEDTHAT_UPLOAD_TMP_DIR` also needs an explicit
-writable mount at that exact path in a custom Compose deployment.
+`docker-compose.yml` fixes its internal listener and Qdrant address, stores objects
+under `/var/lib/notedthat` in the `notedthat-data` volume, and forwards documented
+size, Qdrant-timeout, and embedding-tuning settings from `.env`. The bundled Qdrant
+service is deliberately unauthenticated, so it does not accept a Qdrant API key. A
+custom `NOTEDTHAT_UPLOAD_TMP_DIR` also needs an explicit writable mount at that exact
+path in a custom Compose deployment.
+
+### Compose with an S3-compatible store
+
+Adds SeaweedFS and points the server at it, which is the shape of the reference
+deployment and what CI's integration suite exercises:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.s3.yml up --build -d
+```
+
+Pass both files to every subsequent `docker compose` command in that stack, including
+`down`. An overlay rather than a Compose profile because the two backends need different
+environment variables on the same service, and setting both at once is a startup error —
+see [Configuration](docs/CONFIGURATION.md#storage-backend).
+
+### Native server: objects on disk, no object store
+
+The smallest way to run NotedThat from a checkout. It needs Qdrant and an embedding
+provider, and nothing else:
+
+```sh
+docker compose up -d qdrant
+set -a; . ./.env; set +a
+export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
+export NOTEDTHAT_STORAGE_BACKEND=fs
+export NOTEDTHAT_FS_ROOT="$PWD/.notedthat-data"
+mkdir -p "$NOTEDTHAT_FS_ROOT"
+export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
+cargo run -p notedthat-server
+```
+
+Objects are files under `$NOTEDTHAT_FS_ROOT`, at their key paths — `ls -R` it, open it in
+an editor, back it up with any file-level tool. `.env` sets `NOTEDTHAT_S3_*`, which the
+`fs` backend refuses to start alongside, so unset those three or comment them out first.
 
 ### Native server: Compose-managed dependencies
 
@@ -90,7 +131,7 @@ Start SeaweedFS and Qdrant, then export host-facing settings before running the
 server natively. Reuse your local embedding values from `.env` without committing it.
 
 ```sh
-docker compose up -d seaweedfs qdrant
+docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d seaweedfs qdrant
 set -a; . ./.env; set +a
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333

@@ -40,7 +40,7 @@ Three logical layers:
 | D16 | WebDAV crate | **`dav-server` v0.11** (github.com/messense/dav-server-rs). Custom `DavFileSystem` backed by our HTTP API (per D29 all surfaces wrap the API). Reference impl: RustFS `WebDavDriver`. Streaming PUT accumulates into a write buffer (S3 has no streaming PUT). |
 | D17 | WebDAV LOCK | **Not implemented, ever.** S3 Object Lock is a retention primitive, not a coordination primitive — semantically incompatible with WebDAV LOCK. Optimistic concurrency (D9) is the only concurrency contract we offer. v1 rejects `LOCK`/`UNLOCK`; FakeLs is deferred (D34). |
 | D18 | Embeddings | **External endpoints only.** No local embedding models. Pluggable adapter over an OpenAI-compatible HTTP interface (works with OpenAI, Voyage, Cohere, self-hosted vLLM/Ollama/TEI). Config via env vars per D10. Same endpoint used at index time and query time. |
-| D19 | S3 backend config | **Standard S3 client config only — no capability flags, no profiles.** Env vars are just what the AWS S3 SDK needs: endpoint URL, region, access key, secret, path-style flag. Everything else the backend does or doesn't support surfaces via the backend's HTTP responses. §8.1 exists only as **guidance for operators choosing a backend**. |
+| D19 | S3 backend config | **Standard S3 client config only — no capability flags, no profiles.** Applies to the `s3` backend; D49 adds the `fs` backend and its own variables. Env vars are just what the AWS S3 SDK needs: endpoint URL, region, access key, secret, path-style flag. Everything else the backend does or doesn't support surfaces via the backend's HTTP responses. §8.1 exists only as **guidance for operators choosing a backend**. |
 | D20 | Bucket naming | **Slug-based, no UUID.** Deterministic: `nt-{tenant_slug}-{kb_slug}`. Idempotent from `(tenant_slug, kb_slug)` alone — no persisted id, no state lookup. DNS-safe, ≤ 63 chars (validated at KB creation per D39). See §6.6. |
 | D21 | API auth (v1) | **`[TEMPORARY]` Static Bearer token** from `NOTEDTHAT_API_TOKEN` env var. Single value, single tenant. No claims, no expiry, no rotation surface. Comparison-only auth check on every request. Replaced by JWT (D27) in v2. |
 | D22 | WebDAV auth (v1) | **`[TEMPORARY]` Static HTTP Basic credentials** from `NOTEDTHAT_WEBDAV_USERNAME` + `NOTEDTHAT_WEBDAV_PASSWORD`. Same user/pass for every WebDAV connection. Replaced by JWT-over-Basic (D27) in v2. |
@@ -51,7 +51,7 @@ Three logical layers:
 | D27 | JWT model (v2, deferred) | **`[POST-v1]`** When we outgrow D21/D22's static tokens: HS256 self-signed, self-contained claims, no denylist DB. See §6.9 for the design. v1 ships with the static-token flow instead. |
 | D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
 | D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
-| D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other backends (§8.1) are supported at deployer-choice; NotedThat itself makes no runtime distinction. |
+| D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other S3-compatible backends (§8.1) are supported at deployer-choice; NotedThat makes no runtime distinction between them. The one runtime distinction it does make is D49's choice between the S3 and filesystem adapters. |
 | D31 | MCP transport (v1) | **stdio only in v1; streamable HTTP added in M8.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport is always mounted at `POST /mcp` on the `NOTEDTHAT_LISTEN_ADDR` listener, serving stateless JSON-response MCP with Bearer auth. Legacy SSE paths return 405. |
 | D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared in env vars** — no admin API, no CLI in v1. A `NOTEDTHAT_KBS` env var lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
 | D33 | Frontmatter handling | **OKF-aware indexing, raw storage.** Non-reserved `.md` files with YAML frontmatter and a non-empty string `type` expose concept metadata and tags in search; only their bodies are chunked, with original source offsets. Other documents retain raw Markdown indexing. Unknown fields remain in the original bytes. See [OKF support](docs/OKF.md). |
@@ -70,6 +70,7 @@ Three logical layers:
 | D46 | Partial writes (PATCH) | **First-class partial-write capability via HTTP PATCH.** New route `PATCH /api/v1/knowledgebases/{kb_slug}/{path}`. Modes: `Content-Range: bytes <first>-<last>/*` OR `Content-Range: lines <first>-<last>/*` (Insert form `lines <N>-<N-1>/*`) OR `NT-Patch-Mode: append` (mutually exclusive with `Content-Range`). `If-Match` REQUIRED for bytes/lines modes; OPTIONAL for append (server uses head_etag internally — single round-trip). `If-Match: *` and multi-value `If-Match` REJECTED with 400 (v1 clarity). Server-side splice: HEAD → caller-precondition-check → GET (with `If-Match: head_etag`) → splice → PUT (with `If-Match: head_etag` — NOT caller's If-Match). Bounded 2× retry on GET or PUT PreconditionFailed. Post-splice size cap `NOTEDTHAT_MAX_PATCHABLE_SIZE` (default 100 MiB). `IndexEvent::Upsert` unchanged. MCP gains `edit` + `append` tools. WebDAV surface unchanged. PATCH correctness note: requires backend to enforce `If-Match` atomically on PUT — see §8.1. |
 | D47 | String-based edits | **Content-based edit endpoint.** MCP `replace(old_string, new_string, if_match, replace_all?)` + `POST /api/v1/knowledgebases/{kb_slug}/replace/{*path}`. Server-side exact-byte UTF-8 substring search; splices under `If-Match` with the same two-ETag CAS pattern as PATCH (D46). Zero matches → 422 `no_match`; multiple matches with `replace_all=false` → 422 `ambiguous_match { match_count }`; both leave storage byte-identical. `replace_all=true` replaces every non-overlapping occurrence left-to-right in one splice. Post-splice size cap reuses `NOTEDTHAT_MAX_PATCHABLE_SIZE`. WebDAV unchanged. Complements offset-based PATCH (D46); does not replace it. |
 | D48 | Manifest-controlled public reads | **Private by default, independent per-KB capabilities.** Optional manifest v1 `public_read` grants `discover`, `browse`, `content`, and `search` on HTTP API and WebDAV where supported (§6.7). KB-wide grants avoid path-prefix ACL complexity; independence lets operators expose content without enumeration. Discovery requires at least one declared KB granting `discover`. GET and HEAD share authorization. Policies are validated at startup and require restart to change, keeping authorization independent of storage availability on the request path. Valid credentials retain full access; invalid credentials never downgrade to anonymous. Writes and MCP remain authenticated; `.notedthat` stays private. Anonymous search rate limits belong at the reverse proxy. |
+| D49 | Storage backend selection | **Two first-class backends, chosen by `NOTEDTHAT_STORAGE_BACKEND` (`s3` default, `fs`).** The `fs` backend stores each object as a real file at its key path under `NOTEDTHAT_FS_ROOT`, so the store is browsable, greppable and backed up with ordinary file tools — a single-node deployment needs no object store. It implements RFC 7232 itself and makes conditional writes atomic with an in-process lock, which is why it supports **exactly one process per root** (enforced by a lock file at startup) and excludes network filesystems. The selector and both backends' variables are validated strictly: an unrecognised value, or a variable belonging to the unselected backend, refuses startup rather than being ignored (§6.5, §8.1). Derived per-KB directory names reuse `derive_bucket_name` and keep the 63-byte limit (D20), so one `NOTEDTHAT_KBS` stays valid on either backend. Bucket-per-KB (D2) and everything above the `Storage` trait are unchanged. |
 
 ---
 
@@ -245,11 +246,28 @@ pub trait Embedder: Send + Sync {
 }
 ```
 
-### 6.5 S3 connection config `[DECIDED — D19]`
+### 6.5 Storage backend config `[DECIDED — D19, D49]`
+
+`NOTEDTHAT_STORAGE_BACKEND` selects the backend: `s3` (default) or `fs`. Parsed strictly — an
+unrecognised value refuses startup rather than falling back, because a mis-selected backend
+produces a deployment that looks healthy while reading an empty store. Variables belonging to the
+unselected backend also refuse startup, naming every conflict, rather than being silently ignored.
+
+Filesystem env vars (`NOTEDTHAT_STORAGE_BACKEND=fs`):
+- `NOTEDTHAT_FS_ROOT` — absolute path of the storage root. Required; no default, since a default
+  would silently place data somewhere the operator did not choose.
+- `NOTEDTHAT_FS_METADATA` — `sidecar` (default and, today, the only accepted value)
+- `NOTEDTHAT_FS_FILE_MODE` / `NOTEDTHAT_FS_DIR_MODE` — octal modes for created files and
+  directories; default `0644` / `0755`, so the tree stays readable to people and backup jobs
+- `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES` — start despite a case-folding or Unicode-normalizing
+  filesystem (default `false`; see §8.1)
+
+The root is validated and exclusively locked at startup, immediately after the staging directory
+and before any backend client is built.
 
 Standard AWS S3 SDK config. No NotedThat-specific capability flags.
 
-S3 env vars:
+S3 env vars (`NOTEDTHAT_STORAGE_BACKEND=s3`):
 - `NOTEDTHAT_S3_ENDPOINT_URL` (optional for AWS; required for MinIO/Ceph/SeaweedFS/Garage/RustFS/R2)
 - `NOTEDTHAT_S3_REGION`
 - `NOTEDTHAT_S3_ACCESS_KEY_ID`
@@ -414,6 +432,7 @@ notedthat/
 └── crates/
     ├── notedthat-core/           # domain types, traits, static auth checks; JWT verify post-v1
     ├── notedthat-storage-s3/     # S3 adapter (aws-sdk-s3); implements Storage trait
+    ├── notedthat-storage-fs/     # Local filesystem adapter (D49); implements Storage trait
     ├── notedthat-indexer/        # chunker + embedder client + Qdrant integration
     ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
     ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
@@ -426,7 +445,7 @@ notedthat/
 
 Dep graph:
 - `notedthat-core` — no deps on other workspace crates
-- `notedthat-storage-s3`, `notedthat-indexer` — depend on core
+- `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer` — depend on core
 - `notedthat-api-http` — depends on core + storage + indexer
 - `notedthat-webdav` — depends on core + an HTTP client to the local API
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
@@ -443,7 +462,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 #### Startup provisioning
 1. Parse `NOTEDTHAT_KBS` as comma-separated `slug:Display Name` pairs.
 2. Validate every slug (`[a-z0-9-]{1,40}`, no leading/trailing hyphen; reject empty display names). Reject any `(tenant_slug, kb_slug)` whose derived bucket name (§6.6) exceeds 63 chars.
-3. Ensure each bucket exists; `BucketAlreadyOwnedByYou` is success.
+3. Ensure each bucket exists; `BucketAlreadyOwnedByYou` is success. Under the `fs` backend (D49) this creates the per-KB directory, which is idempotent in the same way.
 4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions; validate and load its `public_read` policy into the startup snapshot.
 5. Ensure each Qdrant collection exists with the expected dense dimension and sparse BM25 vector.
 6. If any step fails: log the exact KB + backend error and exit non-zero. No partial startup.
@@ -628,12 +647,18 @@ Accepting the header is easy; **atomicity under concurrent writers** requires co
 | **SeaweedFS** ≥ 4.09 (Feb 2026, PR #7154), **recommended ≥ 4.18** (Apr 2026, PR #8802 — atomic mutations) | ✅ | ✅ | ✅ | ✅ | Filer-level distributed lock | ❌ | Full support on non-versioned buckets (NotedThat's default). **NotedThat's own reference backend.** |
 | **SeaweedFS** < 4.09 | ✅ | ✅ | ⚠️ header parsed, not enforced | ⚠️ | (n/a) | ❌ | Upgrade required |
 | **RustFS** 1.0.0-beta.8 (Q2 2026) | ✅ | ✅ | ✅ | ✅ | Per-PUT distributed lock — **lock RPC timeouts under commit-storm concurrency** (issue #3097) + **disk-full metadata-corruption** report (#2737) | ⚠️ | Apache 2.0 (attractive vs MinIO's AGPL) but beta — pilot only |
+| **Local filesystem** (D49) | ✅ | ✅ content-derived SHA-256 | ✅ | ✅ | In-process per-key lock + write-temp-then-rename | ❌ | **Not S3.** Exactly one server process per root, enforced by a startup lock; NFS/SMB unsupported. Requires a filesystem that preserves names byte-for-byte — case-folding or Unicode-normalizing filesystems are refused at startup unless explicitly overridden. Cannot hold an object `a/b` alongside `a/b/c`; the second write is refused. |
 | **Garage** | ✅ | ✅ | ⚠️ parses but no atomicity | ⚠️ parses but no atomicity | **none — structurally impossible per Garage docs** ("cannot be safely implemented due to the lack of a consensus algorithm") | ❌ | Works fine for single-writer / best-effort deployments. Silent lost writes under contention. Not a bug — a design choice. |
 
 **PATCH correctness note**: PATCH's step-10 conditional PUT uses the same `If-Match` semantics documented above for regular PUT. Backends classified as silent-200 backends in the table above (those that return 200 without actually enforcing `If-Match` on write) may silently overwrite concurrent PATCH results without surfacing a 412. Operators running PATCH workloads on those backends must be aware of this risk. SeaweedFS ≥ 4.09 and AWS S3 correctly enforce `If-Match` atomically and are safe for PATCH concurrency.
 
 ### 8.2 Rough recommendations to operators
 
+- **One node, one operator, and you would rather not run an object store at all**: the
+  **local filesystem** backend (D49). Full conditional-write correctness, and the store is a
+  directory you can read, edit and back up with ordinary tools. One process per root, so it does
+  not scale out — and out-of-band edits leave the search index stale until the object is written
+  through NotedThat again.
 - **You want it easy, want CAS, and are okay self-hosting**: **SeaweedFS ≥ 4.18** — small footprint, single binary, non-versioned buckets by default (matches NotedThat), full RFC 7232 conditional-write correctness, active project. **This is what NotedThat itself uses.**
 - **You want CAS + zero egress + no self-hosting the object store**: **Cloudflare R2**.
 - **You already run Kubernetes and want Ceph-grade correctness**: **Ceph RGW on Rook** (≥ v20.2.1).
@@ -644,9 +669,17 @@ Accepting the header is easy; **atomicity under concurrent writers** requires co
 - **You're on AWS anyway**: **AWS S3**. Cost-check bucket-per-KB at scale (§8.4).
 
 ### 8.3 What NotedThat does NOT do
+
+These are about the S3-compatible backends this section is guidance for. The filesystem backend
+(D49) has no server behind it, so it necessarily implements the conditional-request semantics
+itself — that is the adapter *being* the backend, not a compensating layer sitting over one that
+falls short.
+
 - No compensating layer for missing backend features (no SQLite ETag mirror, no app-layer CAS arbiter).
-- No capability probes at startup.
-- No feature flags to disable header forwarding — headers are always forwarded verbatim.
+- No capability probes at startup for an S3 backend. The filesystem backend does probe its root,
+  for properties that would silently lose data rather than merely limit features (§8.1).
+- No feature flags to disable header forwarding — headers are always forwarded verbatim to an S3
+  backend.
 - No object-lock / retention / legal-hold surface; WebDAV LOCK is refused (D17).
 - No test-your-backend probe at startup. If you want to verify your backend really does honor `If-Match` under concurrency, use `ceph/s3-tests` — that's a deployer-side gate, not ours.
 
