@@ -417,9 +417,11 @@ notedthat/
     ├── notedthat-indexer/        # chunker + embedder client + Qdrant integration
     ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
     ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
+    ├── notedthat-write/          # shared write path (commit, patch, replace) for HTTP API + WebDAV
     ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
-    ├── notedthat-server/         # main binary — wires all listeners in one process
-    └── notedthat-mcp-stdio/      # small binary — MCP over stdio → HTTP API of a running server
+    ├── notedthat-server/         # server library — wires all listeners in one process
+    ├── notedthat-mcp-stdio/      # library — MCP over stdio → HTTP API of a running server
+    └── notedthat/                # distribution crate — owns both published binaries
 ```
 
 Dep graph:
@@ -430,8 +432,9 @@ Dep graph:
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
 - `notedthat-server` — depends on api-http + webdav + **notedthat-mcp** (deliberate M8 extension, plan §W1.3); runs one listener for HTTP API, WebDAV, and MCP HTTP
 - `notedthat-mcp-stdio` — depends on notedthat-mcp only
+- `notedthat` — no logic; owns the `notedthat-server` and `notedthat-mcp-stdio` binary targets and depends on those two library crates. Nothing depends on it.
 
-Per D10, `notedthat-server` is the main artifact. `notedthat-mcp-stdio` ships in the same Docker image and separately as an installable (`cargo install notedthat-mcp-stdio`).
+Per D10, `notedthat-server` is the main artifact. Both binaries are built from the `notedthat` crate: they ship together in the same Docker image, in one cargo-dist archive per target, and as a single installable (`cargo install notedthat`). `notedthat-server` and `notedthat-mcp-stdio` are library-only, so exactly one published crate owns each installed binary name.
 
 ### 6.12 v1 operational contracts `[DECIDED — D38–D43]`
 

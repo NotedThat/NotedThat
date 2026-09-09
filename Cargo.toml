@@ -13,6 +13,7 @@ members = [
   "crates/notedthat-mcp",
   "crates/notedthat-server",
   "crates/notedthat-mcp-stdio",
+  "crates/notedthat",
 ]
 
 [workspace.package]
@@ -95,8 +96,8 @@ wiremock = "0.6"
 
 # cargo-dist configuration — drives .github/workflows/release.yml.
 # Only crates that opt in via [package.metadata.dist] dist = true are packaged
-# (currently: notedthat-server, notedthat-mcp-stdio). Everything else is a
-# library crate and stays library-only.
+# (currently: notedthat, which owns both published binaries). Everything else
+# is a library crate and stays library-only.
 [workspace.metadata.dist]
 cargo-dist-version = "0.32.0"
 allow-dirty = ["ci"]

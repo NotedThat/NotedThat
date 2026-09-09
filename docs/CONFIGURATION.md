@@ -454,6 +454,8 @@ NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=mcp.example.com
 
 The `notedthat-mcp-stdio` binary is configured exclusively via environment variables. It refuses to start if either variable is missing, empty (after trimming whitespace), or if `NOTEDTHAT_URL` is not a valid http/https URL.
 
+Install it with `cargo install notedthat`, which ships both this binary and `notedthat-server`.
+
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `NOTEDTHAT_URL` | Yes | HTTP base URL of the running `notedthat-server` (e.g., `http://localhost:8080`). Trailing slash is stripped automatically. |

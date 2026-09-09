@@ -10,38 +10,12 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "notedthat-mcp-stdio"
-path = "src/main.rs"
-
-# Opt into cargo-dist packaging. Ships `notedthat-mcp-stdio` binary for every
-# target listed in [workspace.metadata.dist]. See .github/workflows/release.yml.
-[package.metadata.dist]
-dist = true
-
 [dependencies]
 notedthat-mcp = { path = "../notedthat-mcp", version = "0.1.6" }
 rmcp = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = { workspace = true }
-
-[dev-dependencies]
-# In-memory backends for the E2E fixtures: these drive the real stdio binary
-# against a real server, with only its three external services substituted.
-notedthat-api-http = { path = "../notedthat-api-http", features = ["test-support"] }
-notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"] }
-assert_cmd = "2"
-serde_json = { workspace = true }
-# `test-support` exposes `run::run_with`, which the cross-surface fixture uses
-# to start a real server over in-memory backends.
-notedthat-server = { path = "../notedthat-server", features = ["test-support"] }
-notedthat-core = { path = "../notedthat-core" }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
-wiremock = { workspace = true }
-reqwest = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "process", "time", "sync"] }
 anyhow = { workspace = true }
 
 [lints]

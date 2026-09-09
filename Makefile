@@ -19,7 +19,7 @@ help:
 	@echo "Override PREFIX=/some/dir or IMAGE=some:tag to change locations."
 
 mcp-stdio:
-	cargo install --path crates/notedthat-mcp-stdio --root $(PREFIX) --force --locked
+	cargo install --path crates/notedthat --bin notedthat-mcp-stdio --root $(PREFIX) --force --locked
 	@echo "installed: $(BIN)"
 
 mcp-stdio-from-image:

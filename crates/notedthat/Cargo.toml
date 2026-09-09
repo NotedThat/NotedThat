@@ -1,0 +1,52 @@
+[package]
+name = "notedthat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NotedThat — installs the notedthat-server and notedthat-mcp-stdio binaries"
+readme = "README.md"
+homepage.workspace = true
+authors.workspace = true
+
+# The facade crate owns every published binary. `notedthat-server` and
+# `notedthat-mcp-stdio` are libraries; hosting both bins here means exactly one
+# published crate installs each name, so `cargo install notedthat` is the whole
+# install story and two crates can never race for the same file in ~/.cargo/bin.
+[[bin]]
+name = "notedthat-server"
+path = "src/bin/notedthat-server.rs"
+
+[[bin]]
+name = "notedthat-mcp-stdio"
+path = "src/bin/notedthat-mcp-stdio.rs"
+
+# Sole cargo-dist opt-in: one archive carrying both binaries, one installer.
+# See [workspace.metadata.dist] in the root Cargo.toml for the target list.
+[package.metadata.dist]
+dist = true
+
+[dependencies]
+notedthat-server = { path = "../notedthat-server", version = "0.1.6" }
+notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.1.6" }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# The suites that drive the real binaries live here, because Cargo sets
+# CARGO_BIN_EXE_* only for bins of the same package.
+[dev-dependencies]
+notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.6", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6", features = ["test-support"] }
+# `test-support` exposes `run::run_with`, which the cross-surface fixtures use
+# to start a real server over in-memory backends.
+notedthat-server = { path = "../notedthat-server", version = "0.1.6", features = ["test-support"] }
+notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.1.6" }
+serde_json = { workspace = true }
+wiremock = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "process", "time", "sync"] }
+
+[lints]
+workspace = true

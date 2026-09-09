@@ -1,6 +1,70 @@
-//! Stub library target for `notedthat-mcp-stdio`.
+//! `notedthat-mcp-stdio`: MCP-over-stdio transport for `NotedThat`.
 //!
-//! This allows the binary to be used as a Cargo dev-dependency.
+//! Reads `NOTEDTHAT_URL` and `NOTEDTHAT_TOKEN` from the environment,
+//! validates them, and serves MCP tools over stdio JSON-RPC.
+//!
+//! **Stdout is reserved for JSON-RPC.** All log output goes to stderr.
+//!
+//! The binary that drives [`run`] ships from the `notedthat` facade crate, so
+//! that one published crate owns every installed binary name.
+#![deny(missing_docs)]
 
-// Re-export main logic for binary and tests
-// This allows the binary to be used as a dev-dependency
+use anyhow::{Context as _, Result, bail};
+use notedthat_mcp::{NotedThatMcp, client::NotedThatClient};
+use rmcp::{ServiceExt, transport::stdio};
+use tracing_subscriber::EnvFilter;
+
+/// Serve MCP tools over stdio until the client disconnects.
+///
+/// Initializes stderr logging, reads and validates `NOTEDTHAT_URL` and
+/// `NOTEDTHAT_TOKEN`, then runs the stdio JSON-RPC service loop.
+///
+/// # Errors
+///
+/// Returns an error if either environment variable is unset or empty after
+/// trimming, if they do not form a valid client configuration, or if the stdio
+/// transport or service loop fails.
+pub async fn run() -> Result<()> {
+    init_logging();
+
+    let url = require_env("NOTEDTHAT_URL")?;
+    let token = require_env("NOTEDTHAT_TOKEN")?;
+
+    let client =
+        NotedThatClient::new(&url, &token).context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?;
+
+    tracing::info!(
+        target: "notedthat_mcp_stdio",
+        "notedthat-mcp-stdio starting; url = {}",
+        client.base_url_display()
+    );
+
+    let service = NotedThatMcp::new(client)
+        .serve(stdio())
+        .await
+        .context("stdio transport failed")?;
+
+    service.waiting().await.context("service loop failed")?;
+
+    Ok(())
+}
+
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr) // CRITICAL: stdout reserved for JSON-RPC
+        .with_ansi(false)
+        .init();
+}
+
+/// Read an environment variable, trim whitespace, reject empty-after-trim.
+fn require_env(name: &str) -> Result<String> {
+    let v = std::env::var(name).map_err(|_| anyhow::anyhow!("{name} is required but not set"))?;
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        bail!("{name} is required but is empty");
+    }
+    Ok(trimmed.to_string())
+}

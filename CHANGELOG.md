@@ -4,11 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-NotedThat uses ecosystem-level Semantic Versioning: all 9 crates share a single
+NotedThat uses ecosystem-level Semantic Versioning: all 10 crates share a single
 version; any breaking change in any crate increments the ecosystem major version.
 See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
+
+### Added
+
+- *(notedthat)* new distribution crate owning both published binaries;
+  `cargo install notedthat` installs `notedthat-server` and `notedthat-mcp-stdio`.
+- *(mcp-stdio)* `run()`, the MCP-over-stdio entry point, promoted from the binary
+  into the library.
+
+### Changed
+
+- *(release)* `notedthat` is now the workspace's only cargo-dist app. Each target
+  ships one `notedthat-<target>` archive carrying both binaries, behind a single
+  `notedthat-installer.sh` / `.ps1`, replacing the per-binary archives and installers.
+
+### Removed
+
+- *(server)* **Breaking:** `notedthat-server` no longer has a binary target.
+  Install the binary with `cargo install notedthat`.
+- *(mcp-stdio)* **Breaking:** `notedthat-mcp-stdio` no longer has a binary target.
+  `cargo install notedthat-mcp-stdio` no longer installs anything; use
+  `cargo install notedthat`. The binary name is unchanged, so MCP client
+  configuration needs no edits.
+- *(server)* `build.rs`, which synthesized `CARGO_BIN_EXE_notedthat-mcp-stdio` for a
+  cross-package dev-dependency. The suites that drive the binaries now live in the
+  package that declares them, which also removes the server ↔ mcp-stdio
+  dev-dependency cycle.
 
 ## [0.1.6](https://github.com/NotedThat/NotedThat/compare/v0.1.5...v0.1.6) - 2026-07-14
 

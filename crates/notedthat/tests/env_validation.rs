@@ -1,9 +1,13 @@
 //! Subprocess tests verifying fail-fast env var validation.
 
-use assert_cmd::Command;
+use std::process::Command;
+
+/// Resolved by Cargo at compile time: this suite lives in the package that
+/// declares the binary, so the path needs no runtime guessing.
+const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 fn binary() -> Command {
-    Command::cargo_bin("notedthat-mcp-stdio").unwrap()
+    Command::new(MCP_STDIO_BIN)
 }
 
 #[test]
