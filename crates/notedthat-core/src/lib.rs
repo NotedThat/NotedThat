@@ -9,6 +9,7 @@ pub mod conditional;
 pub mod error;
 pub mod etag;
 pub mod kb;
+pub mod listing;
 pub mod object_path;
 pub mod preconditions;
 mod public_read;
@@ -34,6 +35,7 @@ pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
 pub use etag::{EtagHasher, compute_etag};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
+pub use listing::{Rollup, roll_up};
 pub use object_path::{ObjectPath, is_internal_path};
 pub use preconditions::{
     ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,

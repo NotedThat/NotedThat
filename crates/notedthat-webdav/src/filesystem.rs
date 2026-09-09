@@ -11,10 +11,10 @@ use dav_server::{
 use futures::StreamExt as _;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, KbSlug, ListResponse, ObjectMeta, ObjectPath, StorageError,
-    is_internal_path,
+    is_internal_path, roll_up,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     future::{self, Future},
     io::SeekFrom,
     pin::Pin,
@@ -368,32 +368,22 @@ fn entries_from_objects(
     objects: impl IntoIterator<Item = ObjectMeta>,
     prefix: Option<&str>,
 ) -> Vec<Box<dyn DavDirEntry>> {
-    let mut virtual_dirs = BTreeSet::new();
-    let mut files = BTreeMap::new();
-    let prefix = prefix.unwrap_or("");
+    let mut rollup = roll_up(objects, prefix.unwrap_or(""));
 
-    for meta in objects {
-        let Some(relative) = meta.key.strip_prefix(prefix) else {
-            continue;
-        };
-        if relative.is_empty() {
-            continue;
-        }
-
-        if let Some((dir_name, _)) = relative.split_once('/') {
-            virtual_dirs.insert(dir_name.to_string());
-        } else {
-            files.insert(relative.to_string(), meta);
-        }
-    }
-
-    let mut entries = Vec::new();
-    for name in virtual_dirs {
-        entries.push(Box::new(VirtualDirEntry::new(name.clone())) as Box<dyn DavDirEntry>);
-        files.remove(&name);
+    // A collection and an object of the same name cannot both exist here: a
+    // filesystem name is either a file or a directory, and there is no way to
+    // report both to a `WebDAV` client. The collection wins, because it is the
+    // one a client can descend into. Surfaces without that constraint — the
+    // browse pages — show both, which is why the shadowing lives here rather
+    // than in `roll_up`.
+    let mut entries = Vec::with_capacity(rollup.folders.len() + rollup.files.len());
+    for name in rollup.folders {
+        rollup.files.remove(&name);
+        entries.push(Box::new(VirtualDirEntry::new(name)) as Box<dyn DavDirEntry>);
     }
     entries.extend(
-        files
+        rollup
+            .files
             .into_iter()
             .map(|(name, meta)| Box::new(ObjectDirEntry::new(name, meta)) as Box<dyn DavDirEntry>),
     );
