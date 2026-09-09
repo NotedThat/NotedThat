@@ -24,8 +24,10 @@ mod conformance;
 
 use std::sync::Arc;
 
-use conformance::{Backend, assert_agree, assert_premises, observe_all};
-use notedthat_core::{Storage, TenantSlug};
+use conformance::{
+    Backend, assert_agree, assert_pinned, assert_premises, observe_all, observe_pinned_divergences,
+};
+use notedthat_core::{KbSlug, Storage, TenantSlug};
 use notedthat_storage_fs::{FsConfig, FsStorage};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use testcontainers::{
@@ -114,4 +116,15 @@ async fn s3_storage_and_fs_storage_agree() {
     assert_premises(Backend::S3, &from_s3);
     assert_premises(Backend::Fs, &from_fs);
     assert_agree(Backend::S3, &from_s3, Backend::Fs, &from_fs);
+
+    // Behaviours the backends are allowed to differ on are checked against what is
+    // recorded, rather than against each other.
+    let kb = KbSlug::try_new(format!("conf-div-{suffix}")).expect("slug");
+    s3.ensure_bucket(&kb).await.expect("bucket");
+    fs.ensure_bucket(&kb).await.expect("bucket");
+    assert_pinned(
+        Backend::S3,
+        &observe_pinned_divergences(s3.as_ref(), &kb).await,
+    );
+    assert_pinned(Backend::Fs, &observe_pinned_divergences(&fs, &kb).await);
 }

@@ -14,8 +14,10 @@
 #[path = "support/conformance.rs"]
 mod conformance;
 
-use conformance::{Backend, assert_agree, assert_premises, observe_all};
-use notedthat_core::{Storage, TenantSlug, testing::InMemoryStorage};
+use conformance::{
+    Backend, assert_agree, assert_pinned, assert_premises, observe_all, observe_pinned_divergences,
+};
+use notedthat_core::{KbSlug, Storage, TenantSlug, testing::InMemoryStorage};
 use notedthat_storage_fs::{FsConfig, FsStorage};
 
 #[tokio::test]
@@ -55,4 +57,15 @@ async fn fs_storage_and_the_in_memory_substitute_agree() {
     assert_premises(Backend::Fs, &from_fs);
     assert_premises(Backend::Memory, &from_memory);
     assert_agree(Backend::Fs, &from_fs, Backend::Memory, &from_memory);
+
+    // Behaviours the backends are allowed to differ on are checked against what is
+    // recorded, rather than against each other.
+    let kb = KbSlug::try_new(format!("conf-div-{suffix}")).expect("slug");
+    fs.ensure_bucket(&kb).await.expect("bucket");
+    memory.ensure_bucket(&kb).await.expect("bucket");
+    assert_pinned(Backend::Fs, &observe_pinned_divergences(&fs, &kb).await);
+    assert_pinned(
+        Backend::Memory,
+        &observe_pinned_divergences(&memory, &kb).await,
+    );
 }

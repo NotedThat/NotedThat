@@ -692,12 +692,129 @@ pub async fn observe_listing(store: &dyn Storage, kb: &KbSlug) -> Observations {
         (zero.truncated == zero.next_cursor.is_some()).to_string(),
     ));
 
-    out.push((
-        "garbage_cursor",
-        outcome(&store.list_objects(kb, None, 10, Some("not-a-cursor")).await),
-    ));
-
     out
+}
+
+/// Behaviours the backends are known to differ on, with what each one does and why the
+/// difference is allowed to stand. Excluded from [`assert_agree`] and asserted
+/// per-backend instead, so a pinned divergence cannot quietly become a different one.
+pub struct Divergence {
+    pub name: &'static str,
+    pub s3: &'static str,
+    pub fs: &'static str,
+    pub memory: &'static str,
+    pub why: &'static str,
+}
+
+pub const PINNED_DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        name: "garbage_cursor",
+        s3: "ok",
+        fs: "BackendUnavailable",
+        memory: "BackendUnavailable",
+        why: "A continuation token is opaque and issued by the backend, so what an invalid one \
+          does is the backend's to decide and `S3Storage` forwards it verbatim per D19. \
+          SeaweedFS accepts an unrecognised token and answers with a page; AWS S3 rejects \
+          it; a backend that issues its own token recognises that it did not. Making the \
+          filesystem backend tolerant to match `SeaweedFS` would diverge from AWS instead, \
+              and would hide a client bug rather than report it.",
+    },
+    Divergence {
+        name: "copy_replaced_content_type",
+        s3: "text/markdown",
+        fs: "text/plain",
+        memory: "text/plain",
+        why: "Another `SeaweedFS` 4.18 quirk. The adapter sends \
+              `x-amz-metadata-directive: REPLACE` with the new content type — pinned on the \
+              wire by `native_copy_sends_source_and_destination_preconditions` in the S3 \
+              crate's `retryable_staged_put.rs` — and AWS honours it. `SeaweedFS` ignores the \
+              directive and keeps the source's content type. Nothing the adapter can do \
+              about it, and nothing it should paper over: the request is correct.",
+    },
+    Divergence {
+        name: "copy_missing_source",
+        s3: "Other",
+        fs: "NotFound",
+        memory: "NotFound",
+        why: "A `SeaweedFS` 4.18 quirk, not an S3 contract. It answers a COPY naming a \
+              missing source with 400 InvalidArgument (\"Copy Source must mention the \
+              source bucket and key\") rather than 404 NoSuchKey, so the adapter has no \
+              not-found to recognise. AWS S3 does return NoSuchKey, which `map_copy_error` \
+              maps to NotFound — on a compliant backend these two agree. Matching the quirk \
+              by treating every 400 on COPY as not-found would swallow genuinely malformed \
+              requests. Same family as `SeaweedFS` omitting the ETag on some PUTs, which the \
+              S3 container suite already works around in five places.",
+    },
+];
+
+/// Observe the pinned divergences, so each backend's actual behaviour stays recorded.
+pub async fn observe_pinned_divergences(store: &dyn Storage, kb: &KbSlug) -> Observations {
+    put(store, kb, "a.md", "x").await;
+    vec![
+        (
+            "garbage_cursor",
+            outcome(&store.list_objects(kb, None, 10, Some("not-a-cursor")).await),
+        ),
+        ("copy_replaced_content_type", {
+            let _ = store
+                .copy_object(
+                    kb,
+                    &path("a.md"),
+                    &path("typed.md"),
+                    CopyObjectOptions {
+                        content_type: Some("text/plain".into()),
+                        ..CopyObjectOptions::default()
+                    },
+                )
+                .await;
+            store
+                .head_object(kb, &path("typed.md"), ConditionalHeaders::default())
+                .await
+                .ok()
+                .and_then(|meta| meta.content_type)
+                .unwrap_or_else(|| "absent".into())
+        }),
+        (
+            "copy_missing_source",
+            outcome(
+                &store
+                    .copy_object(
+                        kb,
+                        &path("absent.md"),
+                        &path("nowhere.md"),
+                        CopyObjectOptions::default(),
+                    )
+                    .await,
+            ),
+        ),
+    ]
+}
+
+/// Assert a backend still behaves the way `PINNED_DIVERGENCES` records.
+pub fn assert_pinned(backend: Backend, observed: &Observations) {
+    for (name, actual) in observed {
+        let row = PINNED_DIVERGENCES
+            .iter()
+            .find(|row| row.name == *name)
+            .unwrap_or_else(|| panic!("no pinned divergence named {name}"));
+        let recorded = match backend {
+            Backend::S3 => row.s3,
+            Backend::Fs => row.fs,
+            Backend::Memory => row.memory,
+        };
+        assert_eq!(
+            recorded,
+            actual.as_str(),
+            "'{name}': {} no longer behaves the way PINNED_DIVERGENCES records.\n  \
+             recorded: {recorded}\n  observed: {actual}\n\
+             Reason on file: {}\n\
+             If a backend was fixed, delete the row so the agreement suite covers it \
+             instead. Do not edit the row to match new behaviour without deciding which \
+             side is right — that is how a pinned decision turns back into a silent bug.",
+            backend.label(),
+            row.why
+        );
+    }
 }
 
 pub async fn observe_pagination(store: &dyn Storage, kb: &KbSlug) -> Observations {
@@ -859,46 +976,6 @@ pub async fn observe_copy(store: &dyn Storage, kb: &KbSlug) -> Observations {
                 .head_object(kb, &path("elsewhere.md"), ConditionalHeaders::default())
                 .await,
         ),
-    ));
-
-    out.push((
-        "copy_missing_source",
-        outcome(
-            &store
-                .copy_object(
-                    kb,
-                    &path("absent.md"),
-                    &path("nowhere.md"),
-                    CopyObjectOptions::default(),
-                )
-                .await,
-        ),
-    ));
-
-    out.push((
-        "copy_replacing_content_type",
-        outcome(
-            &store
-                .copy_object(
-                    kb,
-                    &path("source file.md"),
-                    &path("typed.md"),
-                    CopyObjectOptions {
-                        content_type: Some("text/plain".into()),
-                        ..CopyObjectOptions::default()
-                    },
-                )
-                .await,
-        ),
-    ));
-    out.push((
-        "copy_replaced_content_type",
-        store
-            .head_object(kb, &path("typed.md"), ConditionalHeaders::default())
-            .await
-            .ok()
-            .and_then(|meta| meta.content_type)
-            .unwrap_or_else(|| "absent".into()),
     ));
 
     out
@@ -1239,7 +1316,11 @@ pub fn assert_premises(backend: Backend, observed: &Observations) {
     );
 }
 
-/// Compare two backends' observations, naming both source files on a mismatch.
+/// Compare two backends' observations, reporting **every** disagreement at once.
+///
+/// Deliberately not fail-fast: each mismatch usually needs its own decision about which
+/// side is right, and a container run that surfaces one per attempt turns that into a
+/// sequence of twenty-minute round trips.
 pub fn assert_agree(
     reference: Backend,
     from_reference: &Observations,
@@ -1256,6 +1337,7 @@ pub fn assert_agree(
         from_candidate.len()
     );
 
+    let mut mismatches = Vec::new();
     for ((name, expected), (candidate_name, actual)) in from_reference.iter().zip(from_candidate) {
         assert_eq!(
             name,
@@ -1264,22 +1346,28 @@ pub fn assert_agree(
             reference.label(),
             candidate.label()
         );
-        assert_eq!(
-            expected,
-            actual,
-            "'{name}': {} and {} disagree.\n  {}: [{expected}]\n  {}: [{actual}]\n\
-             One of {} or {} is wrong. Every surface holds storage behind Arc<dyn Storage>, \
-             so this is a behaviour change an operator gets for free by flipping \
-             NOTEDTHAT_STORAGE_BACKEND, and the E2E suites run one backend at a time and \
-             cannot see it. If the difference is intentional, do not weaken this \
-             assertion — decide which side is right and record the other as a documented \
-             divergence.",
-            reference.label(),
-            candidate.label(),
-            reference.label(),
-            candidate.label(),
-            reference.source_file(),
-            candidate.source_file(),
-        );
+        if expected != actual {
+            mismatches.push(format!(
+                "  {name}\n    {}: [{expected}]\n    {}: [{actual}]",
+                reference.label(),
+                candidate.label()
+            ));
+        }
     }
+
+    assert!(
+        mismatches.is_empty(),
+        "{} and {} disagree on {} observation(s):\n{}\n\n\
+         One of {} or {} is wrong. Every surface holds storage behind Arc<dyn Storage>, so \
+         this is a behaviour change an operator gets for free by flipping \
+         NOTEDTHAT_STORAGE_BACKEND, and the E2E suites run one backend at a time and \
+         cannot see it. If a difference is intentional, do not weaken this assertion — \
+         decide which side is right and add a row to PINNED_DIVERGENCES saying why.",
+        reference.label(),
+        candidate.label(),
+        mismatches.len(),
+        mismatches.join("\n"),
+        reference.source_file(),
+        candidate.source_file(),
+    );
 }
