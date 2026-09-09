@@ -25,10 +25,11 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
-| `notedthat-server` | `crates/notedthat-server` | Main server binary — HTTP API + WebDAV + remote MCP in one process (release facade). Published to `ghcr.io/notedthat/server` per tagged release. |
+| `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process (release facade). Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
+| `notedthat` | `crates/notedthat` | Distribution crate — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries. `cargo install notedthat` installs both. |
 
-All 9 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 10 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Anonymous public reads
 
@@ -94,7 +95,7 @@ export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
 export NOTEDTHAT_S3_FORCE_PATH_STYLE=true
 export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
-cargo run -p notedthat-server
+cargo run --bin notedthat-server
 ```
 
 Use the upload, read, and search commands from the Compose flow against this server.
@@ -183,7 +184,7 @@ See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protoc
 
 #### Install options
 
-Four ways to get `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Installer scripts become available after the first tagged release.
+Four ways to get `notedthat-server` and `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Both binaries ship from the single `notedthat` crate, so every route below installs the pair. Installer scripts become available after the first tagged release.
 
 **Build or extract locally:**
 
@@ -197,19 +198,19 @@ make mcp-stdio-from-image              # extract from notedthat-server:local
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-mcp-stdio-installer.sh | sh
+  https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-installer.sh | sh
 ```
 
 **PowerShell installer** (Windows):
 
 ```powershell
-powershell -c "irm https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-mcp-stdio-installer.ps1 | iex"
+powershell -c "irm https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-installer.ps1 | iex"
 ```
 
 **cargo install** (requires a Rust toolchain):
 
 ```sh
-cargo install notedthat-mcp-stdio
+cargo install notedthat
 ```
 
 Once installed, wire it into your MCP client:
@@ -232,10 +233,10 @@ Every prebuilt binary is cosign-signed with a SLSA L2 build provenance attestati
 
 ```sh
 cosign verify-blob \
-  --bundle notedthat-mcp-stdio.bundle \
+  --bundle notedthat-x86_64-unknown-linux-gnu.tar.xz.bundle \
   --certificate-identity-regexp 'https://github.com/NotedThat/NotedThat/.+' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  notedthat-mcp-stdio
+  notedthat-x86_64-unknown-linux-gnu.tar.xz
 ```
 
 #### Claude Desktop

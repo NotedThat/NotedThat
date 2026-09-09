@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "NotedThat server binary — HTTP API, WebDAV, and remote MCP in one process"
+description = "NotedThat server library — HTTP API, WebDAV, and remote MCP in one process"
 homepage.workspace = true
 authors.workspace = true
 
@@ -34,30 +34,14 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }
 thiserror.workspace = true
 
-[[bin]]
-name = "notedthat-server"
-path = "src/main.rs"
-
 [lib]
 path = "src/lib.rs"
-
-# Opt into cargo-dist packaging. Ships `notedthat-server` binary for every
-# target listed in [workspace.metadata.dist]. See .github/workflows/release.yml.
-[package.metadata.dist]
-dist = true
 
 [dev-dependencies]
 # This crate's own E2E suites start the server through `run::run_with`.
 notedthat-server = { path = ".", features = ["test-support"] }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.1.6", features = ["test-support"] }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6", features = ["test-support"] }
-# Path-only (no version): mcp-stdio has notedthat-server as a dev-dep for its
-# in-process fixtures, which would create a publish-time cycle. Dropping the
-# version keeps this dev-dep for local `cargo test` (binary is spawned via
-# CARGO_BIN_EXE_notedthat-mcp-stdio) while cargo strips it from the published
-# manifest, so notedthat-server no longer requires mcp-stdio to be on
-# crates.io at any specific version.
-notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde_json.workspace = true

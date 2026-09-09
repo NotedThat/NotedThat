@@ -6,15 +6,14 @@ use std::time::Duration;
 
 const INITIALIZE_REQUEST: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
 
-fn mcp_bin() -> std::path::PathBuf {
-    // Use the binary built by Cargo for this test crate
-    assert_cmd::cargo::cargo_bin("notedthat-mcp-stdio")
-}
+/// Resolved by Cargo at compile time: this suite lives in the package that
+/// declares the binary, so the path needs no runtime guessing.
+const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 #[test]
 fn stdout_is_pure_json_rpc() {
     // Use a URL that won't be connected to (binary doesn't need server for initialize)
-    let mut child = Command::new(mcp_bin())
+    let mut child = Command::new(MCP_STDIO_BIN)
         .env("NOTEDTHAT_URL", "http://127.0.0.1:65534")
         .env("NOTEDTHAT_TOKEN", "test-token")
         .stdin(Stdio::piped())
@@ -61,7 +60,7 @@ fn stdout_is_pure_json_rpc() {
 fn binary_exits_on_stdin_eof() {
     use std::time::Instant;
 
-    let mut child = Command::new(mcp_bin())
+    let mut child = Command::new(MCP_STDIO_BIN)
         .env("NOTEDTHAT_URL", "http://127.0.0.1:65534")
         .env("NOTEDTHAT_TOKEN", "test-token")
         .stdin(Stdio::piped())

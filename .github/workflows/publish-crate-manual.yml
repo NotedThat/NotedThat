@@ -17,6 +17,7 @@ on:
           - notedthat-mcp
           - notedthat-server
           - notedthat-mcp-stdio
+          - notedthat
 
 env:
   CARGO_TERM_COLOR: always

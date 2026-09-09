@@ -32,7 +32,7 @@ The supported development paths are documented in the root [README](README.md):
 - **Compose** builds the server and runs SeaweedFS and Qdrant, while you supply an
   OpenAI-compatible embedding provider in an ignored local `.env` file.
 - **Native server** uses Compose-managed SeaweedFS and Qdrant with host-facing
-  endpoints, then runs `cargo run -p notedthat-server`.
+  endpoints, then runs `cargo run --bin notedthat-server`.
 
 Do not commit provider credentials. Copy `.env.example` to `.env`, replace its
 embedding endpoint, model, key, and dimensions, then follow the chosen README flow.
@@ -40,8 +40,12 @@ embedding endpoint, model, key, and dimensions, then follow the chosen README fl
 ## Running a Specific Crate
 
 ```sh
-cargo run -p notedthat-mcp-stdio
+cargo run --bin notedthat-mcp-stdio
 ```
+
+Both binaries are owned by the `notedthat` crate, so select them with `--bin`;
+`-p notedthat-server` and `-p notedthat-mcp-stdio` name library crates and have
+nothing to run.
 
 ## Installing the MCP stdio wrapper
 
@@ -49,6 +53,7 @@ cargo run -p notedthat-mcp-stdio
 
 ```sh
 make mcp-stdio             # cargo install from source — reflects your working tree
+                           # (cargo install --path crates/notedthat installs both binaries)
 make mcp-stdio-from-image  # docker cp from notedthat-server:local — fast, requires a built image
 ```
 
@@ -146,8 +151,18 @@ upsert can exceed under load.
 
 ## Adding a New Crate
 
-1. Create the directory: `crates/<name>/` (or `bin/<name>/` for installable binaries).
+1. Create the directory: `crates/<name>/`. It must live under `crates/` —
+   `.github/workflows/publish-crate-initial.yml` looks nowhere else.
 2. Add `Cargo.toml` inheriting workspace fields (`version.workspace = true`, etc.) and `[lints] workspace = true`.
 3. Add the path to `members` in the root `Cargo.toml`.
 4. Add the crate name to `changelog_include` in `release-plz.toml` (under the `notedthat-server` facade package).
 5. Add the crate name to the `options` list in `.github/workflows/publish-crate-manual.yml`.
+6. If the crate sets `readme = "README.md"`, write that file, and add a row to the
+   crate table in the root [README](README.md).
+7. Binaries belong in the `notedthat` distribution crate, not in a new one — it is the
+   only package with `[package.metadata.dist] dist = true`, and one cargo-dist app per
+   workspace keeps the release to one archive and one installer per target.
+8. Bootstrap it on crates.io **before** merging: Trusted Publishing cannot create a new
+   crate, and `cargo publish` verifies against the registry, so a crate cannot be
+   bootstrapped until its dependencies are published at the same version. See
+   [RELEASING.md](RELEASING.md#3-bootstrap-publish-first-time-only).
