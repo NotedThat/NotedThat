@@ -2,6 +2,7 @@
 //! See SPECIFICATIONS.md §6.6–6.12 for the source of truth.
 #![deny(missing_docs)]
 
+pub mod access;
 pub mod auth;
 pub mod bucket_name;
 pub mod conditional;
@@ -21,6 +22,7 @@ pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+pub use access::KeyPattern;
 pub use auth::{
     extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
     verify_bearer_token,
