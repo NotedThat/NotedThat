@@ -51,7 +51,10 @@ async fn seed_objects(client: &reqwest::Client, server: &ServerInstance) {
         let response = wire(
             "authenticated HTTP PUT seed",
             client
-                .put(format!("{}/v1/knowledgebases/{kb}/{path}", server.http_url))
+                .put(format!(
+                    "{}/api/v1/knowledgebases/{kb}/{path}",
+                    server.http_url
+                ))
                 .bearer_auth(API_TOKEN)
                 .body(body)
                 .send()
@@ -85,7 +88,7 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     let discovery = wire(
         "HTTP anonymous discovery before restart",
         client
-            .get(format!("{}/v1/knowledgebases", first.http_url))
+            .get(format!("{}/api/v1/knowledgebases", first.http_url))
             .send()
             .await
             .expect("discovery"),
@@ -99,7 +102,7 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
         "HTTP anonymous content before restart",
         client
             .get(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                 first.http_url
             ))
             .send()
@@ -111,9 +114,9 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     assert_eq!(content.text(), PUBLIC_BODY);
     assert_http_401(&search(&client, &first, "public.md", None).await);
     for path in [
-        format!("{}/v1/knowledgebases/{PUBLIC_KB}", first.http_url),
+        format!("{}/api/v1/knowledgebases/{PUBLIC_KB}", first.http_url),
         format!(
-            "{}/v1/knowledgebases/{PRIVATE_KB}/private.md",
+            "{}/api/v1/knowledgebases/{PRIVATE_KB}/private.md",
             first.http_url
         ),
     ] {
@@ -149,7 +152,7 @@ async fn stored_public_read_policy_is_loaded_only_at_server_startup() {
     let stale = wire(
         "HTTP stale discovery after live manifest edit",
         client
-            .get(format!("{}/v1/knowledgebases", first.http_url))
+            .get(format!("{}/api/v1/knowledgebases", first.http_url))
             .send()
             .await
             .expect("stale discovery"),

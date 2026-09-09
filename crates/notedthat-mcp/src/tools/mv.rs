@@ -40,7 +40,7 @@ pub(super) async fn run(
 
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let get_url = client.v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
+    let get_url = client.api_v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
     let mut get_req = client.authorized(client.http.get(get_url));
     if let Some(ref if_match) = args.if_match {
         get_req = get_req.header("If-Match", if_match.as_str());
@@ -64,7 +64,7 @@ pub(super) async fn run(
         .map_err(McpToolError::Transport)
         .map_err(McpError::from)?;
 
-    let put_url = client.v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
+    let put_url = client.api_v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
     let mut put_req = client.authorized(client.http.put(put_url)).body(body_bytes);
     if let Some(ct) = content_type {
         put_req = put_req.header("Content-Type", ct);
@@ -72,7 +72,7 @@ pub(super) async fn run(
     let put_resp = put_req.send().await.map_err(McpToolError::Transport)?;
     map_response(put_resp).await.map_err(McpError::from)?;
 
-    let del_url = client.v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
+    let del_url = client.api_v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
     let mut del_req = client.authorized(client.http.delete(del_url));
     if let Some(etag) = source_etag {
         del_req = del_req.header("If-Match", etag);
@@ -109,7 +109,7 @@ mod tests {
     async fn happy_move_three_calls() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("Content-Type", "text/markdown")
@@ -120,13 +120,13 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/b.md"))
+            .and(path("/api/v1/knowledgebases/notes/b.md"))
             .respond_with(ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
             .mount(&server)
@@ -177,7 +177,7 @@ mod tests {
     async fn source_not_found_no_put_or_delete() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/missing.md"))
+            .and(path("/api/v1/knowledgebases/notes/missing.md"))
             .respond_with(
                 ResponseTemplate::new(404)
                     .set_body_json(serde_json::json!({"error":"not_found","message":"missing"})),
@@ -210,17 +210,17 @@ mod tests {
     async fn partial_failure_message_contains_paths_not_request_id() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()))
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/b.md"))
+            .and(path("/api/v1/knowledgebases/notes/b.md"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error":"internal_error","message":"disk error","request_id":"SECRET_REQ"
             })))
@@ -245,7 +245,7 @@ mod tests {
     async fn changed_source_after_copy_returns_partial_move_error_without_deletion() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"source-etag\"")
@@ -255,13 +255,13 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/b.md"))
+            .and(path("/api/v1/knowledgebases/notes/b.md"))
             .respond_with(ResponseTemplate::new(201))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .and(header("If-Match", "\"source-etag\""))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error": "precondition_failed",
@@ -292,7 +292,7 @@ mod tests {
         let server = MockServer::start().await;
         // GET source: from = "docs/rfc/7231.md" → encoded once as docs%2Frfc%2F7231.md
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("Content-Type", "text/markdown")
@@ -304,14 +304,14 @@ mod tests {
             .await;
         // PUT destination: to = "archive/rfc/7231.md" → encoded once as archive%2Frfc%2F7231.md
         Mock::given(method("PUT"))
-            .and(path("/v1/knowledgebases/notes/archive%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/archive%2Frfc%2F7231.md"))
             .respond_with(ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""))
             .expect(1)
             .mount(&server)
             .await;
         // DELETE source: from = "docs/rfc/7231.md" → encoded once as docs%2Frfc%2F7231.md
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
             .mount(&server)

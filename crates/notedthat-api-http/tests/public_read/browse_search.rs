@@ -24,7 +24,7 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes?limit=1")
+                .uri("/api/v1/knowledgebases/notes?limit=1")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -43,7 +43,7 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes?limit=1&cursor=public.md")
+                .uri("/api/v1/knowledgebases/notes?limit=1&cursor=public.md")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -53,7 +53,7 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes/public.md")
+                .uri("/api/v1/knowledgebases/notes/public.md")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -63,7 +63,7 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes?prefix=.notedthat%2F")
+                .uri("/api/v1/knowledgebases/notes?prefix=.notedthat%2F")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -72,7 +72,7 @@ async fn anonymous_browse_continues_past_internal_pages_with_public_cursor_seman
     let authenticated = app
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes")
+                .uri("/api/v1/knowledgebases/notes")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .body(Body::empty())
                 .expect("request"),
@@ -136,7 +136,7 @@ async fn anonymous_search_filters_internal_hits_without_granting_other_reads() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/knowledgebases/notes/search")
+                .uri("/api/v1/knowledgebases/notes/search")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"public"}"#))
                 .expect("request"),
@@ -146,7 +146,7 @@ async fn anonymous_search_filters_internal_hits_without_granting_other_reads() {
     let browse = app
         .oneshot(
             Request::builder()
-                .uri("/v1/knowledgebases/notes")
+                .uri("/api/v1/knowledgebases/notes")
                 .body(Body::empty())
                 .expect("request"),
         )

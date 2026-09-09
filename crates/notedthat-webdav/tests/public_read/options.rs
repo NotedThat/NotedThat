@@ -89,7 +89,7 @@ async fn anonymous_content_preserves_range_and_conditional_responses() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/private/private.md")
+                .uri("/webdav/private/private.md")
                 .header("Range", "bytes=0-2")
                 .body(Body::empty())
                 .expect("valid request"),
@@ -99,7 +99,7 @@ async fn anonymous_content_preserves_range_and_conditional_responses() {
     let conditional = app
         .oneshot(
             Request::builder()
-                .uri("/private/private.md")
+                .uri("/webdav/private/private.md")
                 .header("If-None-Match", "\"private.md\"")
                 .body(Body::empty())
                 .expect("valid request"),

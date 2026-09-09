@@ -10,7 +10,7 @@ fn client(url: &str) -> NotedThatClient {
 
 async fn mount_kbs(server: &MockServer, kbs: &[&str]) {
     Mock::given(method("GET"))
-        .and(path("/v1/knowledgebases"))
+        .and(path("/api/v1/knowledgebases"))
         .and(header("authorization", "Bearer test-token"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"knowledgebases": kbs})),
@@ -35,7 +35,7 @@ async fn mount_list_page(
         "next_cursor": next_cursor,
     }));
 
-    let mock = Mock::given(method("GET")).and(path(format!("/v1/knowledgebases/{kb}")));
+    let mock = Mock::given(method("GET")).and(path(format!("/api/v1/knowledgebases/{kb}")));
     let mock = match cursor {
         Some(value) => mock.and(query_param("cursor", value)),
         None => mock.and(query_param_is_missing("cursor")),

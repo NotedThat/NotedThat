@@ -21,7 +21,7 @@ pub(super) async fn run(
 ) -> Result<CallToolResult, McpError> {
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client.authorized(client.http.delete(url));
     if let Some(if_match) = args.if_match {
@@ -50,7 +50,7 @@ mod tests {
     async fn happy_delete_204() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
@@ -68,7 +68,7 @@ mod tests {
     async fn precondition_failed() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/a.md"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error":"precondition_failed","message":"etag mismatch"
             })))
@@ -87,7 +87,7 @@ mod tests {
     async fn nested_path_is_encoded_once() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
-            .and(path("/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
+            .and(path("/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md"))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
             .mount(&server)

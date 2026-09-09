@@ -29,7 +29,6 @@ These have defaults and can be omitted.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `NOTEDTHAT_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
-| `NOTEDTHAT_WEBDAV_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8081` | Address and port the WebDAV listener binds to. Use `127.0.0.1:8081` to restrict to localhost. |
 | `NOTEDTHAT_S3_ENDPOINT_URL` | URL | (unset, uses AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage, and other S3-compatible stores. |
 | `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `true` or `false` | `false` | Use path-style S3 addressing (`endpoint/bucket/key`) instead of virtual-hosted style (`bucket.endpoint/key`). Set to `true` for SeaweedFS, MinIO, and most self-hosted S3-compatible stores. |
 | `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
@@ -57,10 +56,10 @@ are stored in canonical order when the manifest is serialized.
 
 | Capability | Anonymous HTTP behavior | Anonymous WebDAV behavior |
 | --- | --- | --- |
-| `discover` | `GET /v1/knowledgebases` includes this knowledge base | Root `PROPFIND` includes this knowledge base |
-| `browse` | `GET /v1/knowledgebases/{kb_slug}` lists object metadata | `PROPFIND` within the knowledge base is allowed |
+| `discover` | `GET /api/v1/knowledgebases` includes this knowledge base | Root `PROPFIND` includes this knowledge base |
+| `browse` | `GET /api/v1/knowledgebases/{kb_slug}` lists object metadata | `PROPFIND` within the knowledge base is allowed |
 | `content` | `GET` and `HEAD` on object paths are allowed | `GET` and `HEAD` are allowed |
-| `search` | `POST /v1/knowledgebases/{kb_slug}/search` is allowed | Not applicable |
+| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` is allowed | Not applicable |
 
 Capabilities are independent. For example, `search` can expose matching object paths and snippets
 without granting anonymous browse or content access. Conversely, discovery does not imply browse.
@@ -107,9 +106,9 @@ back to raw Markdown indexing rather than requiring more staging memory.
 
 NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT:
 
-1. **Listeners stop accepting new connections and finish accepted work** — Axum graceful shutdown
-   completes the HTTP API listener (port 8080), WebDAV listener (port 8081), and enabled MCP HTTP
-   listener only after their in-flight requests have finished.
+1. **The unified listener stops accepting new connections and finishes accepted work** — Axum
+   graceful shutdown completes API, WebDAV, and MCP requests on `NOTEDTHAT_LISTEN_ADDR` before
+   the bounded indexer drain begins.
 2. **Indexer drain (up to 31 seconds)** — once the listeners have completed, the background indexer
    worker is signalled to stop and given up to 31 seconds to flush its queue. Any events not
    processed within this window are abandoned.
@@ -152,7 +151,7 @@ When the cap is hit, the server also logs `PROPFIND_TRUNCATED` so operators are 
 
 **Recommended action for clients receiving 507:**
 - Split the knowledge base into smaller units (each under 10 000 objects), or
-- Use the HTTP cursor API (`GET /v1/knowledgebases/{kb_slug}?cursor=...`) for programmatic access to large knowledge bases.
+- Use the HTTP cursor API (`GET /api/v1/knowledgebases/{kb_slug}?cursor=...`) for programmatic access to large knowledge bases.
 
 Post-v1 versions may raise or remove the cap.
 
@@ -172,7 +171,6 @@ NOTEDTHAT_S3_SECRET_ACCESS_KEY=any
 NOTEDTHAT_S3_FORCE_PATH_STYLE=true
 NOTEDTHAT_WEBDAV_USERNAME=webdav-user-please-change
 NOTEDTHAT_WEBDAV_PASSWORD=webdav-pass-please-change
-# NOTEDTHAT_WEBDAV_LISTEN_ADDR=0.0.0.0:8081  # optional, this is the default
 RUST_LOG=info,notedthat=debug
 ```
 
@@ -213,6 +211,27 @@ silently misbehaving at runtime.
 WebDAV credentials (`NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`) are required and
 must not be empty strings. Setting either to an empty string is treated the same as leaving it unset
 and causes a non-zero exit before any listener binds.
+
+### Removed variables
+
+Three variables from the era of separate listeners no longer exist. The server refuses to start
+while any of them is set, naming the replacement, rather than ignoring them:
+
+| Removed variable | Replacement |
+|---|---|
+| `NOTEDTHAT_WEBDAV_LISTEN_ADDR` | WebDAV is always served at `/webdav` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_BIND` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+| `NOTEDTHAT_MCP_HTTP_ENABLED` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
+
+```
+Error: NOTEDTHAT_MCP_HTTP_ENABLED was removed: MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR. Unset NOTEDTHAT_MCP_HTTP_ENABLED to start the server.
+```
+
+Each of these encoded a decision about which network surface was reachable. Silently ignoring one
+would widen exposure on upgrade — a WebDAV listener bound to `127.0.0.1` becoming reachable at
+`/webdav` on a public address, or a disabled MCP transport becoming mounted at `/mcp`. Unset the
+variable to acknowledge the new layout; a startup failure is a five-second fix, an unnoticed
+exposure change is not. See the upgrade notes in [API.md](API.md).
 
 ## What's not configurable in M2
 
@@ -370,26 +389,19 @@ The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three
 
 ## MCP HTTP listener
 
-NotedThat (M8+) includes a built-in MCP-over-HTTP listener that exposes the same tools and resources as the stdio transport, but over streamable HTTP. It runs as a third listener alongside the HTTP API (port 8080) and WebDAV (port 8081).
+NotedThat includes a built-in MCP-over-HTTP surface that exposes the same tools and resources as
+the stdio transport. It is always mounted as streamable HTTP at `POST /mcp` on the single
+`NOTEDTHAT_LISTEN_ADDR` listener, alongside the API at `/api/v1` and WebDAV at `/webdav`.
 
 ### MCP HTTP environment variables
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `NOTEDTHAT_MCP_HTTP_ENABLED` | `true` or `false` | `true` | Whether to start the MCP HTTP listener. When `false`, the listener is not bound and `/readyz` does not check it. |
-| `NOTEDTHAT_MCP_HTTP_BIND` | `host:port` (SocketAddr) | `0.0.0.0:8082` | Address and port the MCP HTTP listener binds to. Use `127.0.0.1:8082` to restrict to localhost. |
 | `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` | comma-separated strings | (unset) | Allowed `Origin` header values. When unset or empty, defaults to `["null"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
 | `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
 
-`NOTEDTHAT_API_TOKEN` is reused for MCP HTTP Bearer authentication. Every request to the MCP HTTP listener must present this token in an `Authorization: Bearer` header. If `NOTEDTHAT_MCP_HTTP_ENABLED` is `true` and `NOTEDTHAT_API_TOKEN` is empty or whitespace-only, the server exits at startup with a non-zero status.
-
-### Disabled listener behavior
-
-When `NOTEDTHAT_MCP_HTTP_ENABLED=false`:
-
-- No socket is bound on port 8082 (or whatever `NOTEDTHAT_MCP_HTTP_BIND` specifies).
-- `/readyz` returns `{"status":"ok"}` without probing or requiring the MCP listener.
-- All other listeners (HTTP API, WebDAV) start normally.
+`NOTEDTHAT_API_TOKEN` is reused for MCP HTTP Bearer authentication. Every request to `POST /mcp`
+must present this token in an `Authorization: Bearer` header.
 
 ### Origin and Host allow-list semantics
 
@@ -412,42 +424,28 @@ NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=localhost,mcp.example.com
 
 The MCP HTTP listener speaks plain HTTP. Bearer tokens sent over plaintext HTTP are acceptable only on loopback or private trusted links (e.g., within a container network or VPN).
 
-For any public-facing deployment, terminate TLS at a reverse proxy before traffic reaches the MCP listener:
+For any public-facing deployment, terminate TLS at one reverse proxy before traffic reaches the
+unified listener. Forward the complete path space so that `/api/v1`, `/webdav`, `/mcp`,
+`/healthz`, `/readyz`, and `/llms.txt` share the same TLS upstream:
 
-- **nginx:** `proxy_pass http://127.0.0.1:8082;` behind an `ssl` server block
-- **Traefik:** route the MCP service through a TLS entrypoint
-- **Caddy:** `reverse_proxy 127.0.0.1:8082` inside a `tls` site block
+- **nginx:** `proxy_pass http://127.0.0.1:8080;` behind an `ssl` server block
+- **Traefik:** route the unified listener through a TLS entrypoint
+- **Caddy:** `reverse_proxy 127.0.0.1:8080` inside a `tls` site block
 
-Do not expose port 8082 directly to the internet without TLS termination.
+Do not expose the unified listener directly to the internet without TLS termination.
 
 ### MCP endpoint
 
-The MCP HTTP listener mounts the streamable HTTP transport at `POST /mcp`. Legacy SSE paths (`GET /mcp`, `POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body directing clients to use `POST /mcp`.
+The unified listener mounts streamable MCP at `POST /mcp`. Legacy SSE paths (`GET /mcp`,
+`POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body directing clients to use
+`POST /mcp`.
 
-### Example: MCP HTTP with loopback defaults
-
-```sh
-# MCP HTTP is enabled by default; these are the implicit values
-NOTEDTHAT_MCP_HTTP_ENABLED=true
-NOTEDTHAT_MCP_HTTP_BIND=0.0.0.0:8082
-# NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS not set -> ["null"]
-# NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS not set -> ["127.0.0.1","localhost","::1"]
-```
-
-### Example: disable MCP HTTP
+### Example: public MCP through the shared TLS upstream
 
 ```sh
-NOTEDTHAT_MCP_HTTP_ENABLED=false
-```
-
-### Example: public MCP HTTP behind a reverse proxy
-
-```sh
-NOTEDTHAT_MCP_HTTP_ENABLED=true
-NOTEDTHAT_MCP_HTTP_BIND=127.0.0.1:8082
 NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS=https://mcp.example.com
 NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=mcp.example.com
-# Reverse proxy terminates TLS and forwards to 127.0.0.1:8082
+# Reverse proxy terminates TLS and forwards all routes to 127.0.0.1:8080
 ```
 
 ---

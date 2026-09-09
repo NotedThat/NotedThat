@@ -11,7 +11,7 @@ use super::super::backpressure::{
     move_source_tombstone_backpressure_response,
 };
 use super::super::helpers::{object_target_or_collection_error, response_with_optional_etag};
-use super::super::path_validation::parse_uri_path;
+use super::super::path_validation::parse_webdav_uri_path;
 
 fn single_header(headers: &HeaderMap, name: &'static str) -> Result<Option<String>, ()> {
     let mut values = headers.get_all(name).iter();
@@ -66,10 +66,10 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
                 .into_response();
         }
     }
-    let Ok(src_target) = parse_uri_path(req.uri().path(), &state.declared_kbs) else {
+    let Ok(src_target) = parse_webdav_uri_path(req.uri().path(), &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let Ok(dst_target) = parse_uri_path(dest_uri.path(), &state.declared_kbs) else {
+    let Ok(dst_target) = parse_webdav_uri_path(dest_uri.path(), &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let (src_kb, src_obj) = match object_target_or_collection_error(src_target) {

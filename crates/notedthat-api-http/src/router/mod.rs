@@ -8,12 +8,13 @@ mod objects;
 
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::handler::Handler;
-use axum::http::HeaderName;
+use axum::http::{HeaderName, StatusCode};
 use axum::middleware::from_fn_with_state;
-use axum::routing::get;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
+use axum::{Json, Router};
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -28,6 +29,40 @@ use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
+
+/// The API route table, declared once in two forms.
+///
+/// `ROUTE_*` is the path relative to [`API_V1_PREFIX`], which is what
+/// `build_router` registers under `nest`. `MATCHED_*` is the absolute path,
+/// which is what axum reports as `MatchedPath` and what the public-read match in
+/// [`crate::middleware`] compares against. Both come from one suffix literal, so
+/// the mount point and each route are each written exactly once.
+///
+/// The routes stay nested rather than registered absolutely and merged: a
+/// `.layer()` on an absolutely-routed sub-router also wraps its fallback, and
+/// merging that fallback answers every unrouted path — `/v1/...` included — with
+/// the API's 401 instead of a 404.
+macro_rules! api_routes {
+    ($($route:ident / $matched:ident => $suffix:literal,)+) => {
+        $(
+            pub(crate) const $route: &str = $suffix;
+            pub(crate) const $matched: &str = concat!("/api/v1", $suffix);
+        )+
+    };
+}
+
+/// Mount point of the versioned machine API on the unified listener (D44).
+pub const API_V1_PREFIX: &str = "/api/v1";
+
+/// Mount point reserved for the future browse surface (D44, #100).
+pub const BROWSE_PREFIX: &str = "/browse";
+
+api_routes! {
+    ROUTE_KBS / MATCHED_KBS => "/knowledgebases",
+    ROUTE_KB / MATCHED_KB => "/knowledgebases/{kb_slug}",
+    ROUTE_KB_SEARCH / MATCHED_KB_SEARCH => "/knowledgebases/{kb_slug}/search",
+    ROUTE_KB_OBJECT / MATCHED_KB_OBJECT => "/knowledgebases/{kb_slug}/{*object_path}",
+}
 
 /// Maximum body size for PUT requests: 16 MiB (D35).
 pub const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
@@ -47,20 +82,17 @@ impl MakeRequestId for MakeRequestUuidV7 {
 /// Build the complete axum [`Router`] with all routes and middleware.
 pub fn build_router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/llms.txt", get(llms_txt))
-        .route("/v1/knowledgebases", get(list_kbs))
-        .route("/v1/knowledgebases/{kb_slug}", get(list_objects))
+    let api_routes = Router::new()
+        .route(ROUTE_KBS, get(list_kbs))
+        .route(ROUTE_KB, get(list_objects))
         .route(
-            "/v1/knowledgebases/{kb_slug}/search",
+            ROUTE_KB_SEARCH,
             axum::routing::post(crate::search_route::search_kb).layer(
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
         .route(
-            "/v1/knowledgebases/{kb_slug}/{*object_path}",
+            ROUTE_KB_OBJECT,
             get(get_object)
                 .head(head_object)
                 .put(put_object)
@@ -73,15 +105,79 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(helpers::body_limit_usize(
                     MAX_BODY_BYTES,
                 )))
+                .layer(from_fn_with_state(state.clone(), auth_middleware)),
+        )
+        .with_state(state);
+
+    // Request-id generation and tracing wrap every surface this router serves,
+    // including the unauthenticated root routes. Only `auth_middleware` and the
+    // API body limit stay nested on `/api/v1`.
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/llms.txt", get(llms_txt))
+        .route(BROWSE_PREFIX, any(browse_not_implemented))
+        .route(&format!("{BROWSE_PREFIX}/"), any(browse_not_implemented))
+        .route(
+            &format!("{BROWSE_PREFIX}/{{*path}}"),
+            any(browse_not_implemented),
+        )
+        .nest(API_V1_PREFIX, api_routes)
+        .layer(
+            ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
                     request_id_header.clone(),
                     MakeRequestUuidV7,
                 ))
                 .layer(PropagateRequestIdLayer::new(request_id_header))
-                .layer(TraceLayer::new_for_http())
-                .layer(from_fn_with_state(state.clone(), auth_middleware)),
+                .layer(TraceLayer::new_for_http()),
         )
-        .with_state(state)
+}
+
+/// `/browse` is reserved for the future browse surface (D44, #100). Answering
+/// `501 Not Implemented` makes the reservation observable; a bare 404 is
+/// indistinguishable from a mistyped path.
+async fn browse_not_implemented(request: Request) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .and_then(|id| id.header_value().to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "not_implemented",
+            "message": "The browse surface is reserved and not implemented",
+            "request_id": request_id,
+        })),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod route_constants {
+    use super::{
+        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS, ROUTE_KB,
+        ROUTE_KB_OBJECT, ROUTE_KB_SEARCH, ROUTE_KBS,
+    };
+
+    /// The router registers the relative form and the middleware matches the
+    /// absolute one. If the two stop agreeing, public-read authorization
+    /// silently stops matching the routes it is meant to guard.
+    #[test]
+    fn matched_paths_are_the_nested_routes_under_the_mount_point() {
+        assert_eq!(API_V1_PREFIX, "/api/v1");
+        for (route, matched) in [
+            (ROUTE_KBS, MATCHED_KBS),
+            (ROUTE_KB, MATCHED_KB),
+            (ROUTE_KB_SEARCH, MATCHED_KB_SEARCH),
+            (ROUTE_KB_OBJECT, MATCHED_KB_OBJECT),
+        ] {
+            assert_eq!(matched, format!("{API_V1_PREFIX}{route}"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +284,7 @@ mod patch_route {
     ) -> Response {
         let mut builder = Request::builder()
             .method("PATCH")
-            .uri(format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}"))
+            .uri(format!("/api/v1/knowledgebases/{KB}/{OBJECT_PATH}"))
             .header("authorization", format!("Bearer {TOKEN}"))
             .header(header_name, header_value);
         if let Some(etag) = if_match {
@@ -228,7 +324,7 @@ mod patch_route {
                 .headers()
                 .get(axum::http::header::LOCATION)
                 .unwrap(),
-            &format!("/v1/knowledgebases/{KB}/{OBJECT_PATH}")
+            &format!("/api/v1/knowledgebases/{KB}/{OBJECT_PATH}")
         );
         assert!(
             response
@@ -343,7 +439,7 @@ mod patch_route {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri(format!("/v1/knowledgebases/{KB}/missing.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/missing.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("content-range", "bytes 0-1/*")
                     .header(axum::http::header::IF_MATCH, etag)
@@ -705,7 +801,7 @@ mod line_range_get {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/ranges.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::RANGE, range)
                     .body(Body::empty())
@@ -864,7 +960,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "text/markdown")
                     .body(Body::from(Bytes::from_static(body)))
@@ -891,7 +987,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -910,7 +1006,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, if_match)
@@ -942,7 +1038,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/bar.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/bar.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_RANGE, "lines 1-1/*")
                     .header(axum::http::header::IF_MATCH, etag)
@@ -965,7 +1061,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/delete.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/delete.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -981,7 +1077,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/foo.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/foo.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1077,7 +1173,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/cond.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("if-none-match", "*")
                     .body(Body::from(Bytes::from_static(b"first content")))
@@ -1103,7 +1199,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/cond.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/cond.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header("if-none-match", "*")
                     .body(Body::from(Bytes::from_static(b"second content")))
@@ -1166,7 +1262,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/v1/knowledgebases/{KB}/to-delete.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/to-delete.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),

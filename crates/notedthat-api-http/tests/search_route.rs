@@ -59,7 +59,7 @@ fn auth_header() -> (&'static str, &'static str) {
 fn search_request(body: impl Into<Body>) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri(format!("/v1/knowledgebases/{KB}/search"))
+        .uri(format!("/api/v1/knowledgebases/{KB}/search"))
         .header(auth_header().0, auth_header().1)
         .header("content-type", "application/json")
         .body(body.into())
@@ -219,7 +219,7 @@ async fn test7_bad_slug_format_returns_400_invalid_request() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/knowledgebases/BAD_SLUG!/search")
+                .uri("/api/v1/knowledgebases/BAD_SLUG!/search")
                 .header(auth_header().0, auth_header().1)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"install cargo"}"#))
@@ -240,7 +240,7 @@ async fn test8_undeclared_kb_returns_404_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/knowledgebases/unknown-kb/search")
+                .uri("/api/v1/knowledgebases/unknown-kb/search")
                 .header(auth_header().0, auth_header().1)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"install cargo"}"#))
@@ -261,7 +261,7 @@ async fn test9_missing_auth_returns_401_unauthorized() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"install cargo"}"#))
                 .unwrap(),
@@ -281,7 +281,7 @@ async fn test10_wrong_bearer_token_returns_401_unauthorized() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header("authorization", "Bearer wrong-token")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"query":"install cargo"}"#))
@@ -318,7 +318,7 @@ async fn test12_missing_content_type_returns_400_invalid_request() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header(auth_header().0, auth_header().1)
                 .body(Body::from(r#"{"query":"install cargo"}"#))
                 .unwrap(),
@@ -338,7 +338,7 @@ async fn test13_malformed_json_returns_400_invalid_request() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/knowledgebases/{KB}/search"))
+                .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                 .header(auth_header().0, auth_header().1)
                 .header("content-type", "application/json")
                 .body(Body::from("{not-valid-json"))

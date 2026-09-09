@@ -1,6 +1,7 @@
 //! Shared helpers used across router handlers: path parsing, size limits,
 //! percent-encoding, KB lookup, and PATCH/replace precondition parsing.
 
+use super::API_V1_PREFIX;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::Request;
@@ -28,6 +29,18 @@ pub(super) fn parse_path(raw: &str) -> Result<ObjectPath, ApiError> {
 
 pub(super) fn body_limit_usize(max_body_size: u64) -> usize {
     usize::try_from(max_body_size.saturating_add(1)).unwrap_or(usize::MAX)
+}
+
+/// Absolute path of an object under the API mount, as returned in `Location`
+/// and `Content-Location` headers.
+///
+/// One definition so the write, patch and replace paths cannot drift from each
+/// other or from the route they name.
+pub(super) fn object_location(kb_slug: &str, object_path: &str) -> String {
+    format!(
+        "{API_V1_PREFIX}/knowledgebases/{kb_slug}/{}",
+        percent_encode_path(object_path)
+    )
 }
 
 pub(super) fn percent_encode_path(path: &str) -> String {

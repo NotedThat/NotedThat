@@ -411,7 +411,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "text/markdown")
                     .body(Body::from(Bytes::from_static(body)))
@@ -435,7 +435,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/knowledgebases/{KB}/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -457,7 +457,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/{path}"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/{path}"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, if_match)
@@ -691,7 +691,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(Bytes::from_static(
@@ -711,7 +711,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, "*")
@@ -732,7 +732,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, "\"a\",\"b\"")
@@ -753,7 +753,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
@@ -772,7 +772,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
@@ -791,7 +791,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/replace/hello.md"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/replace/hello.md"))
                     .header("authorization", format!("Bearer {TOKEN}"))
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::IF_MATCH, "\"valid-etag\"")
@@ -823,7 +823,7 @@ mod tests {
         assert!(response.headers().get(axum::http::header::ETAG).is_some());
         assert_eq!(
             response.headers().get("content-location").unwrap(),
-            "/v1/knowledgebases/notes/hello.md"
+            "/api/v1/knowledgebases/notes/hello.md"
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1129,7 +1129,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("PUT")
-                        .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                        .uri(format!("/api/v1/knowledgebases/{KB}/ranges.md"))
                         .header("authorization", format!("Bearer {TOKEN}"))
                         .header(axum::http::header::CONTENT_TYPE, "text/markdown")
                         .body(Body::from(Bytes::from(twenty_line_markdown())))
@@ -1181,7 +1181,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("GET")
-                        .uri(format!("/v1/knowledgebases/{KB}/ranges.md"))
+                        .uri(format!("/api/v1/knowledgebases/{KB}/ranges.md"))
                         .header("authorization", format!("Bearer {TOKEN}"))
                         .header(axum::http::header::RANGE, "lines=100-200")
                         .body(Body::empty())

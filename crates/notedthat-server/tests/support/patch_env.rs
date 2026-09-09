@@ -32,7 +32,7 @@ impl PatchServer {
         let config = runtime.config;
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);
-        let mcp_url = format!("http://{}/mcp", config.mcp_http_bind);
+        let mcp_url = format!("{base_url}/mcp");
         let server_handle = tokio::spawn(async move {
             notedthat_server::run::run_with(config, backends)
                 .await
@@ -51,7 +51,10 @@ impl PatchServer {
     }
 
     pub fn object_url(&self, path: &str) -> String {
-        format!("{}/v1/knowledgebases/{}/{}", self.base_url, self.kb, path)
+        format!(
+            "{}/api/v1/knowledgebases/{}/{}",
+            self.base_url, self.kb, path
+        )
     }
 
     pub async fn put_text(&self, path: &str, body: &str) -> String {
@@ -129,7 +132,7 @@ impl PatchServer {
         replace_all: bool,
     ) -> Response {
         let url = format!(
-            "{}/v1/knowledgebases/{}/replace/{}",
+            "{}/api/v1/knowledgebases/{}/replace/{}",
             self.base_url, self.kb, path
         );
         let body = serde_json::json!({

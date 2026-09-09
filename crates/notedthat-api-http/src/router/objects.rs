@@ -1,5 +1,5 @@
 //! Object-level CRUD + PATCH + POST replace handlers on
-//! `/v1/knowledgebases/{kb_slug}/{*object_path}`.
+//! `/api/v1/knowledgebases/{kb_slug}/{*object_path}`.
 
 mod patch;
 mod read;

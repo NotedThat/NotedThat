@@ -102,7 +102,7 @@ pub(super) async fn run(
     }
 
     let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let content_range = match (
         args.line_start,
@@ -181,7 +181,7 @@ mod tests {
     async fn sends_patch_with_line_range_and_if_match_headers() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("Content-Range", "lines 2-3/*"))
             .and(header("If-Match", "\"abc\""))
             .respond_with(ResponseTemplate::new(200))
@@ -200,11 +200,11 @@ mod tests {
     async fn ok_response_returns_etag() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"next\"")
-                    .insert_header("Location", "/v1/knowledgebases/notes/hello.md"),
+                    .insert_header("Location", "/api/v1/knowledgebases/notes/hello.md"),
             )
             .mount(&server)
             .await;
@@ -220,7 +220,7 @@ mod tests {
     async fn precondition_failed_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error": "precondition_failed",
                 "message": "etag mismatch"
@@ -269,7 +269,7 @@ mod tests {
     async fn insert_point_encoding_sends_reversed_adjacent_line_range() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("Content-Range", "lines 5-4/*"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
@@ -287,7 +287,7 @@ mod tests {
     async fn byte_mode_happy_path_sends_content_range_bytes_100_199() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("Content-Range", "bytes 100-199/*"))
             .and(header("If-Match", "\"e\""))
             .and(wiremock::matchers::body_string("…"))
@@ -330,7 +330,7 @@ mod tests {
     async fn byte_mode_delete_empty_body() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("Content-Range", "bytes 100-199/*"))
             .and(wiremock::matchers::body_string(""))
             .respond_with(ResponseTemplate::new(200))
@@ -420,7 +420,7 @@ mod tests {
     async fn byte_end_off_by_one_conversion_regression() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
-            .and(path("/v1/knowledgebases/notes/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/hello.md"))
             .and(header("Content-Range", "bytes 0-9/*"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)

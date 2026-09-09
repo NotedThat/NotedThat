@@ -74,7 +74,7 @@ async fn real_router_manual_read_qa_scenario() {
         .oneshot(
             Request::builder()
                 .method("PROPFIND")
-                .uri("/")
+                .uri("/webdav")
                 .header("Depth", "1")
                 .body(Body::from(PROPFIND_BODY))
                 .expect("valid request"),
@@ -87,7 +87,7 @@ async fn real_router_manual_read_qa_scenario() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/discoverable/public.md")
+                .uri("/webdav/discoverable/public.md")
                 .header("Range", "bytes=0-2")
                 .body(Body::empty())
                 .expect("valid request"),
@@ -134,7 +134,7 @@ async fn real_router_manual_denial_qa_scenario() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/discoverable/public.md")
+                .uri("/webdav/discoverable/public.md")
                 .header("Authorization", "Basic !!!")
                 .body(Body::empty())
                 .expect("valid request"),
@@ -157,7 +157,7 @@ async fn real_router_manual_denial_qa_scenario() {
         .oneshot(
             Request::builder()
                 .method("MOVE")
-                .uri("/discoverable/public.md")
+                .uri("/webdav/discoverable/public.md")
                 .header("Destination", "http://[malformed")
                 .body(Body::empty())
                 .expect("valid request"),

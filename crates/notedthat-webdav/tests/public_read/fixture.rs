@@ -48,9 +48,10 @@ pub(super) fn state_with_policies(
 }
 
 pub(super) fn request(method: &str, uri: &str) -> Request<Body> {
+    let scoped_uri = format!("/webdav{uri}");
     Request::builder()
         .method(method)
-        .uri(uri)
+        .uri(scoped_uri)
         .body(if method == "PROPFIND" {
             Body::from(PROPFIND_BODY)
         } else {

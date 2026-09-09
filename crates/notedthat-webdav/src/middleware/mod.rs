@@ -20,7 +20,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use handlers::{handle_copy, handle_delete, handle_move, handle_put};
-use path_validation::{parse_uri_path, validate_read_uri_path};
+pub(crate) use path_validation::WEBDAV_PREFIX;
+use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 pub(crate) use public_read::AnonymousAccess;
 pub use public_read::basic_auth_middleware;
 
@@ -114,7 +115,7 @@ pub async fn intercept_propfind_too_large(
         .strip_suffix('/')
         .filter(|path| !path.is_empty())
         .unwrap_or(uri_path);
-    let Ok(target) = parse_uri_path(target_path, &state.declared_kbs) else {
+    let Ok(target) = parse_webdav_uri_path(target_path, &state.declared_kbs) else {
         return next.run(req).await;
     };
 
@@ -167,7 +168,7 @@ pub async fn intercept_read_methods(
 ) -> Response {
     match req.method().as_str() {
         "GET" | "HEAD" | "PROPFIND" => {
-            if validate_read_uri_path(req.uri().path(), &state.declared_kbs).is_err() {
+            if validate_webdav_read_uri_path(req.uri().path(), &state.declared_kbs).is_err() {
                 return StatusCode::BAD_REQUEST.into_response();
             }
             next.run(req).await
@@ -321,14 +322,14 @@ mod basic_auth {
         fn app() -> Router {
             let state = test_state();
             Router::new()
-                .route("/", get(|| async { "ok" }))
+                .route("/webdav", get(|| async { "ok" }))
                 .layer(from_fn_with_state(state, basic_auth_middleware))
         }
 
         fn app_with_request_id() -> Router {
             let state = test_state();
             Router::new()
-                .route("/", get(|| async { "ok" }))
+                .route("/webdav", get(|| async { "ok" }))
                 .layer(from_fn_with_state(state.clone(), basic_auth_middleware))
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         }
@@ -342,7 +343,12 @@ mod basic_auth {
         #[tokio::test]
         async fn test_rejects_missing_auth() {
             let resp = app()
-                .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/webdav")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
 
@@ -358,7 +364,7 @@ mod basic_auth {
             let resp = app()
                 .oneshot(
                     HttpRequest::builder()
-                        .uri("/")
+                        .uri("/webdav")
                         .header("authorization", "Basic garbage!")
                         .body(Body::empty())
                         .unwrap(),
@@ -374,7 +380,7 @@ mod basic_auth {
             let resp = app()
                 .oneshot(
                     HttpRequest::builder()
-                        .uri("/")
+                        .uri("/webdav")
                         .header("authorization", basic_header("wronguser", "testpass"))
                         .body(Body::empty())
                         .unwrap(),
@@ -390,7 +396,7 @@ mod basic_auth {
             let resp = app()
                 .oneshot(
                     HttpRequest::builder()
-                        .uri("/")
+                        .uri("/webdav")
                         .header("authorization", basic_header("testuser", "wrongpass"))
                         .body(Body::empty())
                         .unwrap(),
@@ -406,7 +412,7 @@ mod basic_auth {
             let resp = app()
                 .oneshot(
                     HttpRequest::builder()
-                        .uri("/")
+                        .uri("/webdav")
                         .header("authorization", basic_header("testuser", "testpass"))
                         .body(Body::empty())
                         .unwrap(),
@@ -422,7 +428,7 @@ mod basic_auth {
             let resp = app()
                 .oneshot(
                     HttpRequest::builder()
-                        .uri("/")
+                        .uri("/webdav")
                         .header("authorization", basic_header("testuser", "wrongpass"))
                         .body(Body::empty())
                         .unwrap(),
@@ -440,7 +446,12 @@ mod basic_auth {
         #[tokio::test]
         async fn test_401_contains_request_id_header() {
             let resp = app_with_request_id()
-                .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/webdav")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
 
@@ -461,7 +472,7 @@ mod intercept_options {
 
         fn app() -> Router {
             Router::new()
-                .route("/", any(|| async { "inner handler reached" }))
+                .route("/webdav", any(|| async { "inner handler reached" }))
                 .layer(from_fn(intercept_options))
         }
 
@@ -469,7 +480,7 @@ mod intercept_options {
         async fn test_options_returns_204_dav_1() {
             let req = HttpRequest::builder()
                 .method("OPTIONS")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -486,7 +497,7 @@ mod intercept_options {
         async fn test_options_body_empty() {
             let req = HttpRequest::builder()
                 .method("OPTIONS")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -502,7 +513,7 @@ mod intercept_options {
         async fn test_non_options_passes_through() {
             let req = HttpRequest::builder()
                 .method("GET")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -523,7 +534,7 @@ mod intercept_proppatch {
 
         fn app() -> Router {
             Router::new()
-                .route("/", any(|| async { "inner handler reached" }))
+                .route("/webdav", any(|| async { "inner handler reached" }))
                 .layer(from_fn(intercept_proppatch))
         }
 
@@ -531,7 +542,7 @@ mod intercept_proppatch {
         async fn test_proppatch_returns_405() {
             let req = HttpRequest::builder()
                 .method("PROPPATCH")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -543,7 +554,7 @@ mod intercept_proppatch {
         async fn test_proppatch_allow_header_present() {
             let req = HttpRequest::builder()
                 .method("PROPPATCH")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -565,7 +576,7 @@ mod intercept_lock {
 
         fn app() -> Router {
             Router::new()
-                .route("/", any(|| async { "inner handler reached" }))
+                .route("/webdav", any(|| async { "inner handler reached" }))
                 .layer(from_fn(intercept_lock_unlock))
         }
 
@@ -573,7 +584,7 @@ mod intercept_lock {
         async fn test_lock_returns_405() {
             let req = HttpRequest::builder()
                 .method("LOCK")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -585,7 +596,7 @@ mod intercept_lock {
         async fn test_unlock_returns_405() {
             let req = HttpRequest::builder()
                 .method("UNLOCK")
-                .uri("/")
+                .uri("/webdav")
                 .body(Body::empty())
                 .unwrap();
             let resp = app().oneshot(req).await.unwrap();
@@ -1076,7 +1087,12 @@ mod intercept_write_methods {
         async fn test_get_passes_through() {
             let storage = Arc::new(MockStorage::default());
             let resp = app(storage)
-                .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/webdav")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
 
@@ -1091,7 +1107,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/new.md")
+                        .uri("/webdav/notes/new.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# New"))
                         .unwrap(),
@@ -1112,7 +1128,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/old.md")
+                        .uri("/webdav/notes/old.md")
                         .body(Body::from("new"))
                         .unwrap(),
                 )
@@ -1129,7 +1145,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/old.md")
+                        .uri("/webdav/notes/old.md")
                         .header("if-match", "\"wrong\"")
                         .body(Body::from("new"))
                         .unwrap(),
@@ -1146,7 +1162,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/huge.md")
+                        .uri("/webdav/notes/huge.md")
                         .header(
                             "content-length",
                             (notedthat_write::MAX_UPLOAD_BYTES + 1).to_string(),
@@ -1167,7 +1183,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/sniff.md")
+                        .uri("/webdav/notes/sniff.md")
                         .header("content-type", "application/octet-stream")
                         .body(Body::from("# Markdown"))
                         .unwrap(),
@@ -1186,7 +1202,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/unknown/file.md")
+                        .uri("/webdav/unknown/file.md")
                         .body(Body::from("x"))
                         .unwrap(),
                 )
@@ -1212,7 +1228,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/x.md")
+                        .uri("/webdav/notes/x.md")
                         .body(Body::from("x"))
                         .unwrap(),
                 )
@@ -1234,7 +1250,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("DELETE")
-                        .uri("/notes/missing.md")
+                        .uri("/webdav/notes/missing.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1244,7 +1260,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("DELETE")
-                        .uri("/notes/missing.md")
+                        .uri("/webdav/notes/missing.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1262,7 +1278,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("DELETE")
-                        .uri("/notes/delete.md")
+                        .uri("/webdav/notes/delete.md")
                         .header("if-match", "\"wrong\"")
                         .body(Body::empty())
                         .unwrap(),
@@ -1288,7 +1304,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("DELETE")
-                        .uri("/notes/y.md")
+                        .uri("/webdav/notes/y.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1311,7 +1327,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
+                        .uri("/webdav/notes/source.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1327,7 +1343,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
+                        .uri("/webdav/notes/source.md")
                         .header("host", "example.test")
                         .header("destination", "http://other.test/notes/dest.md")
                         .body(Body::empty())
@@ -1350,8 +1366,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
-                        .header("destination", "/scratch/dest.md")
+                        .uri("/webdav/notes/source.md")
+                        .header("destination", "/webdav/scratch/dest.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1374,8 +1390,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
-                        .header("destination", "/notes/dest.md")
+                        .uri("/webdav/notes/source.md")
+                        .header("destination", "/webdav/notes/dest.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1403,8 +1419,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("COPY")
-                        .uri("/notes/source.md")
-                        .header("destination", "/notes/copy.md")
+                        .uri("/webdav/notes/source.md")
+                        .header("destination", "/webdav/notes/copy.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1440,8 +1456,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("COPY")
-                        .uri("/notes/src.md")
-                        .header("destination", "/notes/dst.md")
+                        .uri("/webdav/notes/src.md")
+                        .header("destination", "/webdav/notes/dst.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1477,8 +1493,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/src.md")
-                        .header("destination", "/notes/dst.md")
+                        .uri("/webdav/notes/src.md")
+                        .header("destination", "/webdav/notes/dst.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1512,8 +1528,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/src.md")
-                        .header("destination", "/notes/dst.md")
+                        .uri("/webdav/notes/src.md")
+                        .header("destination", "/webdav/notes/dst.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1536,8 +1552,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/missing.md")
-                        .header("destination", "/notes/dest.md")
+                        .uri("/webdav/notes/missing.md")
+                        .header("destination", "/webdav/notes/dest.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1553,7 +1569,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/")
+                        .uri("/webdav")
                         .body(Body::from("x"))
                         .unwrap(),
                 )
@@ -1569,7 +1585,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("DELETE")
-                        .uri("/notes/")
+                        .uri("/webdav/notes/")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1585,8 +1601,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/")
-                        .header("destination", "/notes/dest.md")
+                        .uri("/webdav/notes/")
+                        .header("destination", "/webdav/notes/dest.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1603,7 +1619,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/Untitled%201.canvas")
+                        .uri("/webdav/notes/Untitled%201.canvas")
                         .header("content-type", "application/json")
                         .body(Body::from("{}"))
                         .unwrap(),
@@ -1632,7 +1648,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/my%20folder/notes.md")
+                        .uri("/webdav/notes/my%20folder/notes.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# Notes"))
                         .unwrap(),
@@ -1653,7 +1669,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/file%25.md")
+                        .uri("/webdav/notes/file%25.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# Percent"))
                         .unwrap(),
@@ -1685,61 +1701,61 @@ mod intercept_write_methods {
             let cases = [
                 Case {
                     name: "reject_empty_middle_segment",
-                    raw_uri: "/notes//file.md",
+                    raw_uri: "/webdav/notes//file.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "reject_double_leading_slash",
-                    raw_uri: "//notes/file.md",
+                    raw_uri: "/webdav//notes/file.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "reject_decoded_slash_in_segment",
-                    raw_uri: "/notes/%2Ffile.md",
+                    raw_uri: "/webdav/notes/%2Ffile.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "reject_decoded_parent_segment",
-                    raw_uri: "/notes/%2E%2E/foo.md",
+                    raw_uri: "/webdav/notes/%2E%2E/foo.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "allow_leading_dot_filename",
-                    raw_uri: "/notes/%2Efoo.md",
+                    raw_uri: "/webdav/notes/%2Efoo.md",
                     should_succeed: true,
                     stored_key: Some(".foo.md"),
                 },
                 Case {
                     name: "reject_decoded_backslash",
-                    raw_uri: "/notes/file%5Cbad.md",
+                    raw_uri: "/webdav/notes/file%5Cbad.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "reject_decoded_nul",
-                    raw_uri: "/notes/file%00.md",
+                    raw_uri: "/webdav/notes/file%00.md",
                     should_succeed: false,
                     stored_key: None,
                 },
                 Case {
                     name: "allow_literal_percent_filename",
-                    raw_uri: "/notes/file%25.md",
+                    raw_uri: "/webdav/notes/file%25.md",
                     should_succeed: true,
                     stored_key: Some("file%.md"),
                 },
                 Case {
                     name: "allow_query_not_part_of_path",
-                    raw_uri: "/notes/file%3Fname.md?ignored=1",
+                    raw_uri: "/webdav/notes/file%3Fname.md?ignored=1",
                     should_succeed: true,
                     stored_key: Some("file?name.md"),
                 },
                 Case {
                     name: "reject_decoded_slash_in_middle_segment",
-                    raw_uri: "/notes/segment%2Fwith-slash/file.md",
+                    raw_uri: "/webdav/notes/segment%2Fwith-slash/file.md",
                     should_succeed: false,
                     stored_key: None,
                 },
@@ -1795,7 +1811,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/%E6%97%A5%E6%9C%AC%E8%AA%9E.md")
+                        .uri("/webdav/notes/%E6%97%A5%E6%9C%AC%E8%AA%9E.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# Japanese"))
                         .unwrap(),
@@ -1816,7 +1832,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/file%23with%3Fchars.md")
+                        .uri("/webdav/notes/file%23with%3Fchars.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# Reserved"))
                         .unwrap(),
@@ -1837,7 +1853,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("PUT")
-                        .uri("/notes/%FF%FE.md")
+                        .uri("/webdav/notes/%FF%FE.md")
                         .header("content-type", "text/markdown")
                         .body(Body::from("# Bad"))
                         .unwrap(),
@@ -1868,8 +1884,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
-                        .header("destination", "/notes/renamed%20file.md")
+                        .uri("/webdav/notes/source.md")
+                        .header("destination", "/webdav/notes/renamed%20file.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1901,8 +1917,8 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("COPY")
-                        .uri("/notes/source.md")
-                        .header("destination", "/notes/renamed%20file.md")
+                        .uri("/webdav/notes/source.md")
+                        .header("destination", "/webdav/notes/renamed%20file.md")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1934,7 +1950,7 @@ mod intercept_write_methods {
                 .oneshot(
                     HttpRequest::builder()
                         .method("MOVE")
-                        .uri("/notes/source.md")
+                        .uri("/webdav/notes/source.md")
                         .header("host", "localhost")
                         .header("destination", "http://localhost/notes/file.md#fragment")
                         .body(Body::empty())

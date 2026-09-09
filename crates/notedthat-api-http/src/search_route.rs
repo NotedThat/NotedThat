@@ -1,4 +1,4 @@
-//! Handler for `POST /v1/knowledgebases/{kb_slug}/search`.
+//! Handler for `POST /api/v1/knowledgebases/{kb_slug}/search`.
 
 use axum::{
     Json,
@@ -20,7 +20,7 @@ use crate::{
 /// reasonable filter payload.
 pub const SEARCH_BODY_MAX_BYTES: usize = 64 * 1024;
 
-/// Handle `POST /v1/knowledgebases/{kb_slug}/search`.
+/// Handle `POST /api/v1/knowledgebases/{kb_slug}/search`.
 pub async fn search_kb(
     State(state): State<AppState>,
     Path(kb_slug_raw): Path<String>,
@@ -106,14 +106,14 @@ mod tests {
         };
 
         Router::new()
-            .route("/v1/knowledgebases/{kb_slug}/search", post(search_kb))
+            .route("/api/v1/knowledgebases/{kb_slug}/search", post(search_kb))
             .with_state(state)
     }
 
     fn request(body: impl Into<Body>) -> Request<Body> {
         Request::builder()
             .method("POST")
-            .uri(format!("/v1/knowledgebases/{KB}/search"))
+            .uri(format!("/api/v1/knowledgebases/{KB}/search"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(body.into())
             .unwrap()
@@ -144,7 +144,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/knowledgebases/{KB}/search"))
+                    .uri(format!("/api/v1/knowledgebases/{KB}/search"))
                     .body(Body::from(r#"{"query":"install cargo"}"#))
                     .unwrap(),
             )

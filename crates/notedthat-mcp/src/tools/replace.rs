@@ -51,7 +51,7 @@ pub(super) async fn run(
     }
 
     let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.v1_url(&["knowledgebases", &kb_enc, "replace", &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", &kb_enc, "replace", &args.path]);
 
     let replace_all_flag = args.replace_all.unwrap_or(false);
     let body = serde_json::json!({
@@ -123,7 +123,7 @@ mod tests {
     async fn single_match_happy_sends_post_with_json_body_and_if_match() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/replace/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/replace/hello.md"))
             .and(header("If-Match", "\"abc\""))
             .and(header("Content-Type", "application/json"))
             .and(body_string_contains("\"old_string\":\"world\""))
@@ -148,7 +148,7 @@ mod tests {
     async fn replace_all_true_forwards_the_flag() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/replace/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/replace/hello.md"))
             .and(body_string_contains("\"replace_all\":true"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "etag": "\"new\"",
@@ -174,7 +174,7 @@ mod tests {
     async fn no_match_422_response_returns_no_match_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/replace/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/replace/hello.md"))
             .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
                 "error": "no_match",
                 "message": "world was not found"
@@ -197,7 +197,7 @@ mod tests {
     async fn ambiguous_match_422_response_returns_ambiguous_match_with_count() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/replace/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/replace/hello.md"))
             .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
                 "error": "ambiguous_match",
                 "message": "world matched more than once",
@@ -247,7 +247,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(
-                "/v1/knowledgebases/notes/replace/docs%2Frfc%2F7231.md",
+                "/api/v1/knowledgebases/notes/replace/docs%2Frfc%2F7231.md",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "etag": "\"new\"",
@@ -273,7 +273,7 @@ mod tests {
     async fn precondition_failed_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/knowledgebases/notes/replace/hello.md"))
+            .and(path("/api/v1/knowledgebases/notes/replace/hello.md"))
             .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
                 "error": "precondition_failed",
                 "message": "etag mismatch"

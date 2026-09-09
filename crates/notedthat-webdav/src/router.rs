@@ -1,6 +1,6 @@
 //! Axum router wiring for the `WebDAV` surface.
 
-use axum::{Router, middleware::from_fn, middleware::from_fn_with_state};
+use axum::{Router, middleware::from_fn, middleware::from_fn_with_state, routing::any};
 use dav_server::DavHandler;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -12,7 +12,7 @@ use tower_http::{
 use crate::{
     filesystem::WebDavStorage,
     middleware::{
-        basic_auth_middleware, intercept_lock_unlock, intercept_options,
+        WEBDAV_PREFIX, basic_auth_middleware, intercept_lock_unlock, intercept_options,
         intercept_propfind_too_large, intercept_proppatch, intercept_read_methods,
         intercept_write_methods,
     },
@@ -20,12 +20,13 @@ use crate::{
     state::WebDavState,
 };
 
-/// Build the `WebDAV` axum router with dav-server fallback and guard middleware.
+/// Build the `WebDAV` router scoped to `/webdav` and its descendants.
 pub fn build_router(state: WebDavState) -> Router {
     let storage_state = Arc::new(state.clone());
     let dav_handler = DavHandler::builder()
         .filesystem(Box::new(WebDavStorage::new(Arc::clone(&storage_state))))
         .autoindex(false)
+        .strip_prefix(WEBDAV_PREFIX)
         .build_handler();
 
     let dav_service = move |req: axum::extract::Request| {
@@ -39,19 +40,23 @@ pub fn build_router(state: WebDavState) -> Router {
                 .is_some();
             match (listing, anonymous) {
                 (Some(listing), anonymous) => {
-                    let request_config = DavHandler::builder().filesystem(Box::new(
-                        WebDavStorage::with_propfind_listing(
+                    let request_config = DavHandler::builder()
+                        .filesystem(Box::new(WebDavStorage::with_propfind_listing(
                             storage_state,
                             Some(listing),
                             anonymous,
-                        ),
-                    ));
+                        )))
+                        .strip_prefix(WEBDAV_PREFIX);
                     handler.handle_with(request_config, req).await
                 }
                 (None, true) => {
-                    let request_config = DavHandler::builder().filesystem(Box::new(
-                        WebDavStorage::with_propfind_listing(storage_state, None, true),
-                    ));
+                    let request_config = DavHandler::builder()
+                        .filesystem(Box::new(WebDavStorage::with_propfind_listing(
+                            storage_state,
+                            None,
+                            true,
+                        )))
+                        .strip_prefix(WEBDAV_PREFIX);
                     handler.handle_with(request_config, req).await
                 }
                 (None, false) => handler.handle(req).await,
@@ -59,7 +64,7 @@ pub fn build_router(state: WebDavState) -> Router {
         }
     };
 
-    Router::new().fallback(dav_service).layer(
+    let dav_route = any(dav_service).layer(
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .layer(PropagateRequestIdLayer::x_request_id())
@@ -74,7 +79,12 @@ pub fn build_router(state: WebDavState) -> Router {
             .layer(from_fn(intercept_options))
             .layer(from_fn(intercept_proppatch))
             .layer(from_fn(intercept_lock_unlock)),
-    )
+    );
+
+    Router::new()
+        .route(WEBDAV_PREFIX, dav_route.clone())
+        .route("/webdav/", dav_route.clone())
+        .route("/webdav/{*path}", dav_route)
 }
 
 #[cfg(test)]

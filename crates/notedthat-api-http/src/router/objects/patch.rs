@@ -1,5 +1,5 @@
 use super::super::helpers::{
-    body_limit_usize, lookup_kb, parse_path, patch_mode_from_headers, percent_encode_path,
+    body_limit_usize, lookup_kb, object_location, parse_path, patch_mode_from_headers,
 };
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -106,10 +106,7 @@ pub(in crate::router) async fn patch_object(
     .await
     .map_err(|e| err(ApiError::from(e)))?;
 
-    let location = format!(
-        "/v1/knowledgebases/{kb_slug}/{}",
-        percent_encode_path(path.as_str())
-    );
+    let location = object_location(&kb_slug, path.as_str());
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(axum::http::header::LOCATION, location);

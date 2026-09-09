@@ -4,7 +4,7 @@
 # Requires: cadaver OR curl. Set DAV_URL, DAV_KB, DAV_USER, DAV_PASS.
 set -euo pipefail
 
-DAV_URL="${DAV_URL:-http://127.0.0.1:8081}"
+DAV_URL="${DAV_URL:-http://127.0.0.1:8080/webdav}"
 DAV_KB="${DAV_KB:-notes}"
 DAV_USER="${DAV_USER:-webdav-user-please-change}"
 DAV_PASS="${DAV_PASS:-webdav-pass-please-change}"

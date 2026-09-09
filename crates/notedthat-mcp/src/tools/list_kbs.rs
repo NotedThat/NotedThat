@@ -21,7 +21,7 @@ struct ListKbsResponse {
 }
 
 pub(super) async fn run(client: &NotedThatClient) -> Result<CallToolResult, McpError> {
-    let url = client.v1_url(&["knowledgebases"]);
+    let url = client.api_v1_url(&["knowledgebases"]);
     let resp = client
         .authorized(client.http.get(url))
         .send()
@@ -58,7 +58,7 @@ mod tests {
     async fn happy_returns_entries() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases"))
+            .and(path("/api/v1/knowledgebases"))
             .and(header("authorization", "Bearer test-token"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -98,7 +98,7 @@ mod tests {
     async fn unauthorized_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases"))
+            .and(path("/api/v1/knowledgebases"))
             .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
                 "error":"unauthorized","message":"bad token","request_id":"r1"
             })))

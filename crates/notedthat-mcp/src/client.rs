@@ -20,7 +20,7 @@ pub enum ConfigError {
     ClientBuild(reqwest::Error),
 }
 
-/// Async HTTP client for the `NotedThat` v1 API.
+/// Async HTTP client for the `NotedThat` API.
 ///
 /// Clone-cheap: clones share the underlying reqwest connection pool.
 #[derive(Clone, Debug)]
@@ -70,13 +70,14 @@ impl NotedThatClient {
         self.base_url.as_str()
     }
 
-    /// Build a URL for the v1 API: `<base>/v1/<segments joined with '/'>`.
-    pub(crate) fn v1_url(&self, path_segments: &[&str]) -> Url {
+    /// Build a URL for the API: `<base>/api/v1/<segments joined with '/'>`.
+    pub(crate) fn api_v1_url(&self, path_segments: &[&str]) -> Url {
         let mut url = self.base_url.clone();
         {
             let mut segments = url.path_segments_mut().unwrap_or_else(|()| {
                 unreachable!("validated http/https URL always supports path segments")
             });
+            segments.push("api");
             segments.push("v1");
             for seg in path_segments {
                 segments.push(seg);
@@ -98,16 +99,19 @@ mod tests {
     #[test]
     fn url_normalization_trailing_slash_stripped() {
         let c = NotedThatClient::new("http://localhost:8080/", "tok").unwrap();
-        // v1_url should work and NOT double-slash
-        let u = c.v1_url(&["knowledgebases"]);
-        assert_eq!(u.as_str(), "http://localhost:8080/v1/knowledgebases");
+        // api_v1_url should work and NOT double-slash
+        let u = c.api_v1_url(&["knowledgebases"]);
+        assert_eq!(u.as_str(), "http://localhost:8080/api/v1/knowledgebases");
     }
 
     #[test]
     fn url_normalization_no_trailing_slash() {
         let c = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
-        let u = c.v1_url(&["knowledgebases", "notes"]);
-        assert_eq!(u.as_str(), "http://localhost:8080/v1/knowledgebases/notes");
+        let u = c.api_v1_url(&["knowledgebases", "notes"]);
+        assert_eq!(
+            u.as_str(),
+            "http://localhost:8080/api/v1/knowledgebases/notes"
+        );
     }
 
     #[test]
@@ -152,18 +156,18 @@ mod tests {
     }
 
     #[test]
-    fn v1_url_encodes_raw_object_path_exactly_once() {
-        // Characterization test: v1_url with raw object path input already encodes
+    fn api_v1_url_encodes_raw_object_path_exactly_once() {
+        // Characterization test: api_v1_url with raw object path input already encodes
         // exactly once. This is NOT the red gate — it passes before AND after the fix.
-        // It documents that the v1_url function itself is correct; the bug was
-        // in the tool code pre-encoding before calling v1_url.
+        // It documents that the api_v1_url function itself is correct; the bug was
+        // in the tool code pre-encoding before calling api_v1_url.
         let c = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
 
         // Raw nested path → exactly one encoding pass
-        let u = c.v1_url(&["knowledgebases", "notes", "docs/rfc/7231.md"]);
+        let u = c.api_v1_url(&["knowledgebases", "notes", "docs/rfc/7231.md"]);
         let path = u.path();
         assert_eq!(
-            path, "/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
+            path, "/api/v1/knowledgebases/notes/docs%2Frfc%2F7231.md",
             "raw nested path should be encoded exactly once"
         );
         assert!(
@@ -172,7 +176,7 @@ mod tests {
         );
 
         // Literal percent in input → encoded to %25, never %2525
-        let u2 = c.v1_url(&["knowledgebases", "notes", "a%b.md"]);
+        let u2 = c.api_v1_url(&["knowledgebases", "notes", "a%b.md"]);
         let path2 = u2.path();
         assert!(
             path2.contains("%25b"),

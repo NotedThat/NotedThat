@@ -110,7 +110,7 @@ async fn replace_on_nonexistent_path_returns_404() {
 
     // When: a replace is issued to a path that does not exist.
     let url = format!(
-        "{}/v1/knowledgebases/{}/replace/never-existed.md",
+        "{}/api/v1/knowledgebases/{}/replace/never-existed.md",
         server.base_url, server.kb
     );
     let response = server
@@ -171,7 +171,7 @@ async fn concurrent_replaces_with_same_if_match_surface_conflicts() {
     for suffix in ["A", "B", "C"] {
         let server_client = server.client.clone();
         let url = format!(
-            "{}/v1/knowledgebases/{}/replace/concurrent.md",
+            "{}/api/v1/knowledgebases/{}/replace/concurrent.md",
             server.base_url, server.kb
         );
         let etag = starting_etag.clone();
@@ -222,7 +222,7 @@ async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts(
 
     // When: a PATCH and a replace race with the same If-Match precondition.
     let patch_url = format!(
-        "{}/v1/knowledgebases/{}/cross.md",
+        "{}/api/v1/knowledgebases/{}/cross.md",
         server.base_url, server.kb
     );
     let patch_client = server.client.clone();
@@ -241,7 +241,7 @@ async fn concurrent_replace_and_byte_patch_with_same_if_match_surface_conflicts(
     });
 
     let replace_url = format!(
-        "{}/v1/knowledgebases/{}/replace/cross.md",
+        "{}/api/v1/knowledgebases/{}/replace/cross.md",
         server.base_url, server.kb
     );
     let replace_client = server.client.clone();
@@ -301,7 +301,7 @@ async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_sile
 
     // When: a DELETE and a replace race with the same If-Match precondition.
     let delete_url = format!(
-        "{}/v1/knowledgebases/{}/racy.md",
+        "{}/api/v1/knowledgebases/{}/racy.md",
         server.base_url, server.kb
     );
     let delete_client = server.client.clone();
@@ -318,7 +318,7 @@ async fn concurrent_replace_and_delete_with_same_if_match_never_lose_writes_sile
     });
 
     let replace_url = format!(
-        "{}/v1/knowledgebases/{}/replace/racy.md",
+        "{}/api/v1/knowledgebases/{}/replace/racy.md",
         server.base_url, server.kb
     );
     let replace_client = server.client.clone();

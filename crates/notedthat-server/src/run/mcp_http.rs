@@ -2,37 +2,17 @@ use crate::config::Config;
 use anyhow::Context;
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
-    middleware::{self, Next},
-    response::Response,
+    http::StatusCode,
+    middleware,
+    response::{IntoResponse, Response},
+    routing::{any, get, post_service},
 };
 use notedthat_mcp::{
-    McpHttpService, McpHttpServiceConfig,
-    auth::require_bearer_auth,
-    client::NotedThatClient,
-    sse_refusal::{refusal_body, should_refuse_request},
+    McpHttpService, McpHttpServiceConfig, auth::require_bearer_auth, client::NotedThatClient,
+    sse_refusal::refusal_body,
 };
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
-
-pub(crate) async fn bind_listener(config: &Config) -> anyhow::Result<Option<TcpListener>> {
-    if !config.mcp_http_enabled {
-        return Ok(None);
-    }
-
-    let listener = TcpListener::bind(config.mcp_http_bind)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to bind MCP HTTP listener on {}",
-                config.mcp_http_bind
-            )
-        })?;
-    info!(mcp = %listener.local_addr()?, "MCP HTTP listener bound");
-    Ok(Some(listener))
-}
 
 pub(crate) fn build_router(
     config: &Config,
@@ -49,22 +29,30 @@ pub(crate) fn build_router(
     .context("failed to build MCP HTTP service config")?;
     let mcp_service = McpHttpService::new(client, &mcp_config);
     let token = config.api_token.clone();
+    let authenticated_mcp = post_service(mcp_service.into_service())
+        .route_layer(middleware::from_fn_with_state(token, require_bearer_auth));
     Ok(axum::Router::new()
-        .route_service("/mcp", mcp_service.into_service())
-        .route_layer(middleware::from_fn_with_state(token, require_bearer_auth))
-        .layer(middleware::from_fn(sse_refusal_check)))
+        .route(
+            "/mcp",
+            get(legacy_transport_refusal)
+                .delete(legacy_transport_refusal)
+                .merge(authenticated_mcp),
+        )
+        .route(
+            "/sse",
+            get(legacy_transport_refusal).post(legacy_transport_refusal),
+        )
+        .route("/sse/", any(legacy_transport_refusal))
+        .route("/sse/{*path}", any(legacy_transport_refusal)))
 }
 
-async fn sse_refusal_check(request: Request<Body>, next: Next) -> Response {
-    if should_refuse_request(request.method().as_str(), request.uri().path()) {
-        Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .header("content-type", "application/json")
-            .body(Body::from(refusal_body().to_vec()))
-            .expect("SSE refusal response is infallible")
-    } else {
-        next.run(request).await
-    }
+async fn legacy_transport_refusal() -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [("content-type", "application/json")],
+        Body::from(refusal_body()),
+    )
+        .into_response()
 }
 
 pub(crate) fn internal_http_api_url(addr: SocketAddr) -> String {
@@ -78,4 +66,31 @@ pub(crate) fn internal_http_api_url(addr: SocketAddr) -> String {
         addr => addr,
     };
     format!("http://{mapped_addr}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    #[tokio::test]
+    async fn trailing_slash_sse_path_refuses_every_method() {
+        let router = axum::Router::new().route("/sse/", any(legacy_transport_refusal));
+
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/sse/")
+                        .body(Body::empty())
+                        .expect("test request is valid"),
+                )
+                .await
+                .expect("refusal route is infallible");
+            assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+    }
 }

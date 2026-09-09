@@ -33,13 +33,13 @@ curl -sSf -X PUT \
   -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
   -H 'Content-Type: text/markdown' \
   --data-binary @examples/okf/metrics/revenue.md \
-  http://127.0.0.1:8080/v1/knowledgebases/notes/metrics%2Frevenue.md
+  http://127.0.0.1:8080/api/v1/knowledgebases/notes/metrics%2Frevenue.md
 
 curl -sSf -X POST \
   -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"query":"revenue","filter":{"concept_type":"Metric","tags":["finance"]}}' \
-  http://127.0.0.1:8080/v1/knowledgebases/notes/search
+  http://127.0.0.1:8080/api/v1/knowledgebases/notes/search
 ```
 
 `concept_type` is an exact, case-sensitive match. `tags` matches at least one supplied tag. Different filter fields are AND-composed. MCP's `search` tool uses the same fields inside its `filters` argument.

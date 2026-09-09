@@ -89,7 +89,7 @@ async fn test_options_returns_dav_1() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(reqwest::Method::OPTIONS, &url)
+        .request(reqwest::Method::OPTIONS, format!("{url}/webdav"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -119,7 +119,7 @@ async fn test_request_without_auth_returns_401() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("{url}/notes/anything.md"))
+        .get(format!("{url}/webdav/notes/anything.md"))
         .send()
         .await
         .expect("GET without auth");
@@ -143,7 +143,7 @@ async fn test_propfind_root_lists_kbs() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"PROPFIND"), format!("{url}/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -172,7 +172,7 @@ async fn test_propfind_kb_lists_objects() {
 
     // PUT a file so there is something to list.
     let put_resp = client
-        .put(format!("{url}/notes/listed-file.md"))
+        .put(format!("{url}/webdav/notes/listed-file.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Listed")
@@ -183,7 +183,7 @@ async fn test_propfind_kb_lists_objects() {
 
     // PROPFIND the KB.
     let resp = client
-        .request(webdav_method(b"PROPFIND"), format!("{url}/notes/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav/notes/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -210,7 +210,7 @@ async fn test_propfind_depth_infinity_returns_501() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"PROPFIND"), format!("{url}/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "infinity")
         .send()
@@ -232,7 +232,7 @@ async fn test_put_creates_object_and_returns_etag() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{url}/notes/new-object.md"))
+        .put(format!("{url}/webdav/notes/new-object.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Hello WebDAV")
@@ -261,7 +261,7 @@ async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
 
     // PUT with octet-stream Content-Type for a .md file.
     let put_resp = client
-        .put(format!("{url}/notes/sniff-test.md"))
+        .put(format!("{url}/webdav/notes/sniff-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "application/octet-stream")
         .body("# MIME Sniff Test")
@@ -272,7 +272,7 @@ async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
 
     // HEAD to verify the stored Content-Type was sniffed as text/markdown.
     let head_resp = client
-        .head(format!("{url}/notes/sniff-test.md"))
+        .head(format!("{url}/webdav/notes/sniff-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -306,7 +306,7 @@ async fn test_put_17mib_body_succeeds() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{url}/notes/large-upload.bin"))
+        .put(format!("{url}/webdav/notes/large-upload.bin"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "application/octet-stream")
         .body(body_17mib)
@@ -335,7 +335,7 @@ async fn test_put_with_if_match_wrong_etag_returns_412() {
 
     // Create the object first so it exists.
     let first = client
-        .put(format!("{url}/notes/conditional.md"))
+        .put(format!("{url}/webdav/notes/conditional.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("initial content")
@@ -346,7 +346,7 @@ async fn test_put_with_if_match_wrong_etag_returns_412() {
 
     // Attempt overwrite with an ETag that doesn't match.
     let resp = client
-        .put(format!("{url}/notes/conditional.md"))
+        .put(format!("{url}/webdav/notes/conditional.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .header("If-Match", "\"definitely-wrong-etag\"")
@@ -372,7 +372,7 @@ async fn test_get_full_body() {
     let content = "# Full Body Test\nHello, World!\n";
 
     client
-        .put(format!("{url}/notes/get-test.md"))
+        .put(format!("{url}/webdav/notes/get-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body(content)
@@ -381,7 +381,7 @@ async fn test_get_full_body() {
         .expect("PUT get-test.md");
 
     let resp = client
-        .get(format!("{url}/notes/get-test.md"))
+        .get(format!("{url}/webdav/notes/get-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -406,7 +406,7 @@ async fn test_get_range() {
     let content = "Hello, Range Requests!";
 
     client
-        .put(format!("{url}/notes/range-test.md"))
+        .put(format!("{url}/webdav/notes/range-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body(content)
@@ -415,7 +415,7 @@ async fn test_get_range() {
         .expect("PUT range-test.md");
 
     let resp = client
-        .get(format!("{url}/notes/range-test.md"))
+        .get(format!("{url}/webdav/notes/range-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Range", "bytes=0-4")
         .send()
@@ -438,7 +438,7 @@ async fn test_head_returns_metadata_no_body() {
     let client = reqwest::Client::new();
 
     client
-        .put(format!("{url}/notes/head-test.md"))
+        .put(format!("{url}/webdav/notes/head-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Head Test")
@@ -447,7 +447,7 @@ async fn test_head_returns_metadata_no_body() {
         .expect("PUT head-test.md");
 
     let resp = client
-        .head(format!("{url}/notes/head-test.md"))
+        .head(format!("{url}/webdav/notes/head-test.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -480,7 +480,7 @@ async fn test_delete_idempotent_returns_204() {
 
     // First DELETE — object does not exist; still idempotent.
     let resp1 = client
-        .delete(format!("{url}/notes/delete-me.md"))
+        .delete(format!("{url}/webdav/notes/delete-me.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -488,7 +488,7 @@ async fn test_delete_idempotent_returns_204() {
 
     // Second DELETE — same path, already gone.
     let resp2 = client
-        .delete(format!("{url}/notes/delete-me.md"))
+        .delete(format!("{url}/webdav/notes/delete-me.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -520,7 +520,10 @@ async fn test_mkcol_returns_201_no_persistence() {
 
     // MKCOL should succeed (create_dir always returns Ok in v1).
     let mkcol_resp = client
-        .request(webdav_method(b"MKCOL"), format!("{url}/notes/newfolder/"))
+        .request(
+            webdav_method(b"MKCOL"),
+            format!("{url}/webdav/notes/newfolder/"),
+        )
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -530,7 +533,7 @@ async fn test_mkcol_returns_201_no_persistence() {
 
     // PROPFIND /notes/ must NOT list "newfolder" — S3 has no empty-directory primitive.
     let propfind_resp = client
-        .request(webdav_method(b"PROPFIND"), format!("{url}/notes/"))
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav/notes/"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Depth", "1")
         .send()
@@ -558,7 +561,7 @@ async fn test_single_object_move_succeeds() {
     let client = reqwest::Client::new();
 
     client
-        .put(format!("{url}/notes/move-source.md"))
+        .put(format!("{url}/webdav/notes/move-source.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Move Me")
@@ -569,10 +572,10 @@ async fn test_single_object_move_succeeds() {
     let move_resp = client
         .request(
             webdav_method(b"MOVE"),
-            format!("{url}/notes/move-source.md"),
+            format!("{url}/webdav/notes/move-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
-        .header("Destination", format!("{url}/notes/move-dest.md"))
+        .header("Destination", format!("{url}/webdav/notes/move-dest.md"))
         .send()
         .await
         .expect("MOVE move-source.md → move-dest.md");
@@ -581,7 +584,7 @@ async fn test_single_object_move_succeeds() {
 
     // Source must be gone.
     let get_src = client
-        .get(format!("{url}/notes/move-source.md"))
+        .get(format!("{url}/webdav/notes/move-source.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -594,7 +597,7 @@ async fn test_single_object_move_succeeds() {
 
     // Destination must be present with the correct body.
     let get_dst = client
-        .get(format!("{url}/notes/move-dest.md"))
+        .get(format!("{url}/webdav/notes/move-dest.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -616,7 +619,7 @@ async fn test_single_object_copy_succeeds() {
     let client = reqwest::Client::new();
 
     client
-        .put(format!("{url}/notes/copy-source.md"))
+        .put(format!("{url}/webdav/notes/copy-source.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Copy Me")
@@ -627,10 +630,10 @@ async fn test_single_object_copy_succeeds() {
     let copy_resp = client
         .request(
             webdav_method(b"COPY"),
-            format!("{url}/notes/copy-source.md"),
+            format!("{url}/webdav/notes/copy-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
-        .header("Destination", format!("{url}/notes/copy-dest.md"))
+        .header("Destination", format!("{url}/webdav/notes/copy-dest.md"))
         .send()
         .await
         .expect("COPY copy-source.md → copy-dest.md");
@@ -639,7 +642,7 @@ async fn test_single_object_copy_succeeds() {
 
     // Source must still be present.
     let get_src = client
-        .get(format!("{url}/notes/copy-source.md"))
+        .get(format!("{url}/webdav/notes/copy-source.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -652,7 +655,7 @@ async fn test_single_object_copy_succeeds() {
 
     // Destination must be present with the correct body.
     let get_dst = client
-        .get(format!("{url}/notes/copy-dest.md"))
+        .get(format!("{url}/webdav/notes/copy-dest.md"))
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -674,9 +677,9 @@ async fn test_collection_move_returns_403_no_collection_move() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .request(webdav_method(b"MOVE"), format!("{url}/notes/"))
+        .request(webdav_method(b"MOVE"), format!("{url}/webdav/notes/"))
         .header("Authorization", basic_auth(&username, &password))
-        .header("Destination", format!("{url}/notes/dest.md"))
+        .header("Destination", format!("{url}/webdav/notes/dest.md"))
         .send()
         .await
         .expect("MOVE /notes/ (collection)");
@@ -703,7 +706,7 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
 
     // PUT in "notes".
     client
-        .put(format!("{url}/notes/cross-kb-source.md"))
+        .put(format!("{url}/webdav/notes/cross-kb-source.md"))
         .header("Authorization", basic_auth(&username, &password))
         .header("Content-Type", "text/markdown")
         .body("# Cross KB")
@@ -715,10 +718,13 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
     let resp = client
         .request(
             webdav_method(b"MOVE"),
-            format!("{url}/notes/cross-kb-source.md"),
+            format!("{url}/webdav/notes/cross-kb-source.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
-        .header("Destination", format!("{url}/scratch/cross-kb-dest.md"))
+        .header(
+            "Destination",
+            format!("{url}/webdav/scratch/cross-kb-dest.md"),
+        )
         .send()
         .await
         .expect("MOVE notes → scratch");
@@ -743,7 +749,10 @@ async fn test_lock_returns_405() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"LOCK"), format!("{url}/notes/any-file.md"))
+        .request(
+            webdav_method(b"LOCK"),
+            format!("{url}/webdav/notes/any-file.md"),
+        )
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -764,7 +773,10 @@ async fn test_unlock_returns_405() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .request(webdav_method(b"UNLOCK"), format!("{url}/notes/any-file.md"))
+        .request(
+            webdav_method(b"UNLOCK"),
+            format!("{url}/webdav/notes/any-file.md"),
+        )
         .header("Authorization", basic_auth(&username, &password))
         .send()
         .await
@@ -787,7 +799,7 @@ async fn test_proppatch_returns_405() {
     let resp = client
         .request(
             webdav_method(b"PROPPATCH"),
-            format!("{url}/notes/any-file.md"),
+            format!("{url}/webdav/notes/any-file.md"),
         )
         .header("Authorization", basic_auth(&username, &password))
         .send()

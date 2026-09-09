@@ -973,9 +973,10 @@ mod tests {
     }
 
     fn propfind_request_with_depth(uri: &str, depth: &str) -> Request<Body> {
+        let scoped_uri = format!("/webdav{uri}");
         Request::builder()
             .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
-            .uri(uri)
+            .uri(scoped_uri)
             .header("Authorization", "Basic dXNlcjpwYXNz")
             .header("Depth", depth)
             .body(Body::from(
@@ -985,9 +986,10 @@ mod tests {
     }
 
     fn propfind_request_without_depth(uri: &str) -> Request<Body> {
+        let scoped_uri = format!("/webdav{uri}");
         Request::builder()
             .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
-            .uri(uri)
+            .uri(scoped_uri)
             .header("Authorization", "Basic dXNlcjpwYXNz")
             .body(Body::from(
                 r#"<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#,
@@ -1335,7 +1337,7 @@ mod tests {
         let app = crate::router::build_router((*state).clone());
         let request = Request::builder()
             .method(Method::from_bytes(b"PROPFIND").expect("valid PROPFIND method"))
-            .uri("/notes/")
+            .uri("/webdav/notes/")
             .header("Authorization", "Basic dXNlcjpwYXNz")
             .header("Depth", "1")
             .header("Depth", "infinity")

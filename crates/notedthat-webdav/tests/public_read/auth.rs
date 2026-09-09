@@ -24,7 +24,7 @@ async fn supplied_invalid_basic_never_falls_back_to_content_access() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/private/private.md")
+                    .uri("/webdav/private/private.md")
                     .header("Authorization", authorization)
                     .body(Body::empty())
                     .expect("valid request"),
@@ -54,7 +54,7 @@ async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets(
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/private/private.md")
+                .uri("/webdav/private/private.md")
                 .header("Authorization", "Basic dXNlcjpiYWQ=")
                 .body(Body::empty())
                 .expect("valid request"),
@@ -102,7 +102,7 @@ async fn duplicate_authorization_headers_are_rejected_even_when_first_is_valid()
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/private/private.md")
+                .uri("/webdav/private/private.md")
                 .header("Authorization", "Basic dXNlcjpwYXNz")
                 .header("Authorization", "Basic dXNlcjpiYWQ=")
                 .body(Body::empty())
@@ -134,7 +134,7 @@ async fn malformed_path_is_rejected_but_malformed_basic_takes_precedence() {
     let malformed = app
         .oneshot(
             Request::builder()
-                .uri("/discoverable/%2e%2e/private.md")
+                .uri("/webdav/discoverable/%2e%2e/private.md")
                 .header("Authorization", "Basic !!!")
                 .body(Body::empty())
                 .expect("valid request"),

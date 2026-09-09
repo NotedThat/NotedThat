@@ -10,7 +10,7 @@ async fn put_body_read_failure_returns_400_without_storage_write() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/interrupted.md")
+                .uri("/webdav/notes/interrupted.md")
                 .body(body)
                 .unwrap(),
         )
@@ -27,7 +27,7 @@ async fn put_shorter_than_content_length_returns_400_without_storage_write() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/truncated.md")
+                .uri("/webdav/notes/truncated.md")
                 .header("content-length", "10")
                 .body(Body::from("short"))
                 .unwrap(),
@@ -45,7 +45,7 @@ async fn put_malformed_content_length_returns_400_before_storage() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/file.md")
+                .uri("/webdav/notes/file.md")
                 .header("content-length", "many")
                 .body(Body::from("body"))
                 .unwrap(),
@@ -63,7 +63,7 @@ async fn put_duplicate_content_length_returns_400_before_storage() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/file.md")
+                .uri("/webdav/notes/file.md")
                 .header("content-length", "4")
                 .header("content-length", "5")
                 .body(Body::from("body"))
@@ -83,7 +83,7 @@ async fn put_accepts_17_mib_body_via_staging_file() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/large.bin")
+                .uri("/webdav/notes/large.bin")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -111,7 +111,7 @@ async fn stress_put_accepts_actual_5_gib_without_content_length() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/five-gib.bin")
+                .uri("/webdav/notes/five-gib.bin")
                 .body(body)
                 .unwrap(),
         )
@@ -152,7 +152,7 @@ async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     .oneshot(
         HttpRequest::builder()
             .method("PUT")
-            .uri("/notes/too-large.bin")
+            .uri("/webdav/notes/too-large.bin")
             .body(Body::from_stream(generated))
             .unwrap(),
     )
@@ -177,7 +177,7 @@ async fn put_staging_disk_failure_returns_507_without_storage_write() {
         .oneshot(
             HttpRequest::builder()
                 .method("PUT")
-                .uri("/notes/large.bin")
+                .uri("/webdav/notes/large.bin")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -193,8 +193,8 @@ async fn self_copy_or_move(method: &'static str, error_name: &str) {
         .oneshot(
             HttpRequest::builder()
                 .method(method)
-                .uri("/notes/my%7Efile.md")
-                .header("destination", "/notes/my~file.md")
+                .uri("/webdav/notes/my%7Efile.md")
+                .header("destination", "/webdav/notes/my~file.md")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -224,8 +224,8 @@ async fn copy_overwrite_false_existing_destination_returns_412() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .header("overwrite", "F")
                 .body(Body::empty())
                 .unwrap(),
@@ -254,8 +254,8 @@ async fn copy_overwrite_false_protects_destination_creation_race() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .header("overwrite", "F")
                 .body(Body::empty())
                 .unwrap(),
@@ -278,8 +278,8 @@ async fn copy_source_change_before_native_copy_returns_412_without_destination()
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -302,8 +302,8 @@ async fn copy_overwrite_true_replaces_destination_and_preserves_mime() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .header("overwrite", "T")
                 .body(Body::empty())
                 .unwrap(),
@@ -336,8 +336,8 @@ async fn copy_infers_markdown_mime_from_destination_path() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.tmp")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.tmp")
+                .header("destination", "/webdav/notes/dst.md")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -363,8 +363,8 @@ async fn copy_invalid_overwrite_returns_400_before_storage() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .header("overwrite", "true")
                 .body(Body::empty())
                 .unwrap(),
@@ -382,8 +382,8 @@ async fn copy_duplicate_overwrite_returns_400_before_storage() {
         .oneshot(
             HttpRequest::builder()
                 .method("COPY")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .header("overwrite", "T")
                 .header("overwrite", "F")
                 .body(Body::empty())
@@ -404,8 +404,8 @@ async fn move_source_change_returns_412_with_partial_completion_body() {
         .oneshot(
             HttpRequest::builder()
                 .method("MOVE")
-                .uri("/notes/src.md")
-                .header("destination", "/notes/dst.md")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
                 .body(Body::empty())
                 .unwrap(),
         )

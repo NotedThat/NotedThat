@@ -1,7 +1,7 @@
 use super::SearchHit;
 use serde::{Deserialize, Serialize};
 
-/// Response from `POST /v1/knowledgebases/{kb_slug}/search`.
+/// Response from `POST /api/v1/knowledgebases/{kb_slug}/search`.
 ///
 /// `#[non_exhaustive]` establishes a new convention in `notedthat-core`:
 /// response types get `non_exhaustive` so post-v1 additions (e.g. `next_cursor`)

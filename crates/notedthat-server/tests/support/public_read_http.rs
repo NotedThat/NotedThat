@@ -31,7 +31,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     let discovery = wire(
         "HTTP anonymous discovery after restart",
         client
-            .get(format!("{}/v1/knowledgebases", server.http_url))
+            .get(format!("{}/api/v1/knowledgebases", server.http_url))
             .send()
             .await
             .expect("discovery"),
@@ -44,7 +44,10 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     let browse = wire(
         "HTTP anonymous browse",
         client
-            .get(format!("{}/v1/knowledgebases/{PUBLIC_KB}", server.http_url))
+            .get(format!(
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}",
+                server.http_url
+            ))
             .send()
             .await
             .expect("browse"),
@@ -58,7 +61,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
         "HTTP anonymous range",
         client
             .get(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                 server.http_url
             ))
             .header("Range", "bytes=0-5")
@@ -74,7 +77,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
         "HTTP anonymous HEAD",
         client
             .head(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                 server.http_url
             ))
             .send()
@@ -99,7 +102,7 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
             "HTTP supplied invalid credential",
             client
                 .get(format!(
-                    "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                    "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                     server.http_url
                 ))
                 .header("Authorization", authorization)
@@ -114,7 +117,7 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
         "HTTP duplicate Authorization smuggling probe",
         client
             .get(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                 server.http_url
             ))
             .header("Authorization", format!("Bearer {API_TOKEN}"))
@@ -128,11 +131,11 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
 
     for path in [
         format!(
-            "{}/v1/knowledgebases/{PRIVATE_KB}/private.md",
+            "{}/api/v1/knowledgebases/{PRIVATE_KB}/private.md",
             server.http_url
         ),
         format!(
-            "{}/v1/knowledgebases/{PUBLIC_KB}/.notedthat/manifest.json",
+            "{}/api/v1/knowledgebases/{PUBLIC_KB}/.notedthat/manifest.json",
             server.http_url
         ),
     ] {
@@ -148,7 +151,7 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
         "HTTP authenticated private content",
         client
             .get(format!(
-                "{}/v1/knowledgebases/{PRIVATE_KB}/private.md",
+                "{}/api/v1/knowledgebases/{PRIVATE_KB}/private.md",
                 server.http_url
             ))
             .bearer_auth(API_TOKEN)
@@ -166,7 +169,7 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
                 .request(
                     method(write_method),
                     format!(
-                        "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                        "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                         server.http_url
                     ),
                 )
@@ -182,7 +185,7 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
         "HTTP authenticated unchanged after denied writes",
         client
             .get(format!(
-                "{}/v1/knowledgebases/{PUBLIC_KB}/public.md",
+                "{}/api/v1/knowledgebases/{PUBLIC_KB}/public.md",
                 server.http_url
             ))
             .bearer_auth(API_TOKEN)

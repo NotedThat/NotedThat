@@ -42,10 +42,7 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
     }
 }
 
-fn test_config_with_webdav(
-    http_addr: std::net::SocketAddr,
-    dav_addr: std::net::SocketAddr,
-) -> notedthat_server::config::Config {
+fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_server::config::Config {
     use notedthat_core::{KbSlug, TenantSlug};
     use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
     use notedthat_storage_s3::S3Config;
@@ -58,7 +55,7 @@ fn test_config_with_webdav(
         api_token: API_TOKEN.to_string(),
         kbs,
         tenant_slug: TenantSlug::default(),
-        listen_addr: http_addr,
+        listen_addr,
         s3: S3Config {
             endpoint_url: Some("http://127.0.0.1:1".to_string()),
             region: "us-east-1".to_string(),
@@ -84,11 +81,8 @@ fn test_config_with_webdav(
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        webdav_listen_addr: dav_addr,
         webdav_username: WEBDAV_USER.to_string(),
         webdav_password: WEBDAV_PASS.to_string(),
-        mcp_http_bind: notedthat_api_http::testing::reserve_addr(),
-        mcp_http_enabled: true,
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec![
             "127.0.0.1".to_string(),
@@ -201,9 +195,8 @@ async fn poll_search_gone(
 
 #[tokio::test]
 async fn webdav_put_becomes_searchable_via_http() {
-    let http_addr = notedthat_api_http::testing::reserve_addr();
-    let dav_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config_with_webdav(http_addr, dav_addr);
+    let listen_addr = notedthat_api_http::testing::reserve_addr();
+    let config = test_config_with_webdav(listen_addr);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -212,8 +205,8 @@ async fn webdav_put_becomes_searchable_via_http() {
             .expect("server run failed");
     });
 
-    let http_url = format!("http://{http_addr}");
-    let dav_url = format!("http://{dav_addr}");
+    let http_url = format!("http://{listen_addr}");
+    let dav_url = format!("{http_url}/webdav");
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
     wait_for_dav_options(&dav_url, Duration::from_secs(10)).await;
 
@@ -235,7 +228,7 @@ async fn webdav_put_becomes_searchable_via_http() {
     );
 
     let resp = client
-        .get(format!("{http_url}/v1/knowledgebases/notes/e2e.md"))
+        .get(format!("{http_url}/api/v1/knowledgebases/notes/e2e.md"))
         .header("Authorization", format!("Bearer {API_TOKEN}"))
         .send()
         .await
@@ -247,7 +240,7 @@ async fn webdav_put_becomes_searchable_via_http() {
         "HTTP GET body should contain the unique phrase; got: {body_text:?}"
     );
 
-    let search_url = format!("{http_url}/v1/knowledgebases/notes/search");
+    let search_url = format!("{http_url}/api/v1/knowledgebases/notes/search");
     let found = poll_search(
         &client,
         &search_url,

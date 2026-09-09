@@ -6,6 +6,23 @@ use std::collections::BTreeMap;
 
 use crate::filesystem::DavTarget;
 
+pub(crate) const WEBDAV_PREFIX: &str = "/webdav";
+
+pub(super) fn strip_webdav_prefix(uri_path: &str) -> Result<&str, ()> {
+    match uri_path.strip_prefix(WEBDAV_PREFIX) {
+        Some("") => Ok("/"),
+        Some(path) if path.starts_with('/') => Ok(path),
+        Some(_) | None => Err(()),
+    }
+}
+
+pub(super) fn parse_webdav_uri_path(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<DavTarget, ()> {
+    parse_uri_path(strip_webdav_prefix(uri_path)?, declared_kbs)
+}
+
 pub(super) fn decode_uri_segment(raw_segment: &str) -> Result<Cow<'_, str>, ()> {
     percent_encoding::percent_decode_str(raw_segment)
         .decode_utf8()
@@ -113,4 +130,90 @@ pub(super) fn validate_read_uri_path(
         uri_path
     };
     parse_uri_path(candidate_uri, declared_kbs).map(|_| ())
+}
+
+pub(super) fn validate_webdav_read_uri_path(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<(), ()> {
+    validate_read_uri_path(strip_webdav_prefix(uri_path)?, declared_kbs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn declared_kbs() -> BTreeMap<String, KbSlug> {
+        let slug = KbSlug::try_new("notes").expect("`notes` is a valid slug");
+        BTreeMap::from([("notes".to_string(), slug)])
+    }
+
+    #[test]
+    fn strip_webdav_prefix_accepts_only_the_mount_point() {
+        assert_eq!(strip_webdav_prefix("/webdav/notes/a.md"), Ok("/notes/a.md"));
+        assert_eq!(strip_webdav_prefix("/webdav"), Ok("/"));
+        assert_eq!(strip_webdav_prefix("/webdav/"), Ok("/"));
+
+        // A prefix match is not a mount-point match: `/webdavfoo` must not be
+        // mistaken for a path inside `/webdav`.
+        assert_eq!(strip_webdav_prefix("/webdavfoo/notes/a.md"), Err(()));
+        assert_eq!(strip_webdav_prefix("/webdav-backup"), Err(()));
+        // The mount point is case-sensitive, and `//webdav` is a different path.
+        assert_eq!(strip_webdav_prefix("/WebDAV/notes/a.md"), Err(()));
+        assert_eq!(strip_webdav_prefix("//webdav/notes/a.md"), Err(()));
+        // Other surfaces on the shared listener, and unprefixed paths.
+        assert_eq!(strip_webdav_prefix("/api/v1/knowledgebases"), Err(()));
+        assert_eq!(strip_webdav_prefix("/mcp"), Err(()));
+        assert_eq!(strip_webdav_prefix("/notes/a.md"), Err(()));
+        assert_eq!(strip_webdav_prefix(""), Err(()));
+    }
+
+    /// `COPY`/`MOVE` pass the attacker-controlled `Destination` header straight
+    /// into [`parse_webdav_uri_path`] without routing, so this function — not
+    /// the router — is what confines a destination to `/webdav`.
+    #[test]
+    fn parse_webdav_uri_path_confines_copy_move_destinations_to_the_mount_point() {
+        let kbs = declared_kbs();
+
+        // Inside the mount point and inside a declared KB.
+        assert!(matches!(
+            parse_webdav_uri_path("/webdav/notes/a.md", &kbs),
+            Ok(DavTarget::Object(_, _))
+        ));
+        // The mount point itself resolves to the collection root, which the
+        // COPY/MOVE handlers reject as a non-object destination.
+        assert_eq!(parse_webdav_uri_path("/webdav", &kbs), Ok(DavTarget::Root));
+        assert_eq!(parse_webdav_uri_path("/webdav/", &kbs), Ok(DavTarget::Root));
+
+        // Outside the mount point.
+        for destination in [
+            "/webdavfoo/notes/a.md",
+            "/WebDAV/notes/a.md",
+            "//webdav/notes/a.md",
+            "/api/v1/knowledgebases/notes/a.md",
+            "/mcp",
+            "/notes/a.md",
+        ] {
+            assert_eq!(
+                parse_webdav_uri_path(destination, &kbs),
+                Err(()),
+                "destination {destination} must not resolve inside /webdav"
+            );
+        }
+
+        // Inside the mount point but rejected by D40 segment rules: traversal
+        // raw and percent-encoded, and empty segments.
+        for destination in [
+            "/webdav/../api/v1/knowledgebases/notes/a.md",
+            "/webdav/%2e%2e/notes/a.md",
+            "/webdav/notes/../../etc/passwd",
+            "/webdav//notes/a.md",
+        ] {
+            assert_eq!(
+                parse_webdav_uri_path(destination, &kbs),
+                Err(()),
+                "destination {destination} must be rejected after prefix stripping"
+            );
+        }
+    }
 }

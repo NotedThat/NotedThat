@@ -26,6 +26,8 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     )
     .await;
     assert_eq!(root.status.as_u16(), 207);
+    assert!(root.text().contains("/webdav/"));
+    assert!(root.text().contains("/webdav/public/"));
     assert!(root.text().contains(PUBLIC_KB));
     assert!(!root.text().contains(PRIVATE_KB));
     let kb = wire(
@@ -43,6 +45,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     )
     .await;
     assert_eq!(kb.status.as_u16(), 207);
+    assert!(kb.text().contains("/webdav/public/public.md"));
     assert!(kb.text().contains("public.md"));
     assert!(!kb.text().contains(".notedthat"));
     let content = wire(

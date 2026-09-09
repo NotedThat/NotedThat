@@ -64,12 +64,12 @@ TOKEN=dev-token-please-change
 curl --fail http://127.0.0.1:8080/healthz
 printf '# Hello NotedThat\nsemantic search works\n' | curl --fail -X PUT \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: text/markdown' \
-  --data-binary @- http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+  --data-binary @- http://127.0.0.1:8080/api/v1/knowledgebases/notes/hello.md
 curl --fail -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/v1/knowledgebases/notes/hello.md
+  http://127.0.0.1:8080/api/v1/knowledgebases/notes/hello.md
 curl --fail -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"query":"semantic search"}' \
-  http://127.0.0.1:8080/v1/knowledgebases/notes/search
+  http://127.0.0.1:8080/api/v1/knowledgebases/notes/search
 ```
 
 The search result is asynchronous: retry the final request until the uploaded document
@@ -91,8 +91,6 @@ server natively. Reuse your local embedding values from `.env` without committin
 docker compose up -d seaweedfs qdrant
 set -a; . ./.env; set +a
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
-export NOTEDTHAT_WEBDAV_LISTEN_ADDR=127.0.0.1:8081
-export NOTEDTHAT_MCP_HTTP_BIND=127.0.0.1:8082
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
 export NOTEDTHAT_S3_FORCE_PATH_STYLE=true
 export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
@@ -112,7 +110,7 @@ docker pull ghcr.io/notedthat/server:latest
 docker compose up -d seaweedfs qdrant
 set -a; . ./.env; set +a
 docker run --rm --stop-timeout 45 --add-host=host.docker.internal:host-gateway \
-  -p 8080:8080 -p 8081:8081 -p 8082:8082 \
+  -p 8080:8080 \
   -e NOTEDTHAT_API_TOKEN -e NOTEDTHAT_KBS \
   -e NOTEDTHAT_S3_REGION -e NOTEDTHAT_S3_ACCESS_KEY_ID -e NOTEDTHAT_S3_SECRET_ACCESS_KEY \
   -e NOTEDTHAT_WEBDAV_USERNAME -e NOTEDTHAT_WEBDAV_PASSWORD \
@@ -123,11 +121,9 @@ docker run --rm --stop-timeout 45 --add-host=host.docker.internal:host-gateway \
   ghcr.io/notedthat/server:latest
 ```
 
-Ports published:
-
-- **8080** — HTTP API
-- **8081** — WebDAV
-- **8082** — MCP HTTP (Streamable HTTP, `POST /mcp`; TLS-terminate at a reverse proxy before exposing publicly)
+The image publishes one HTTP port, **8080**: the API is under `/api/v1`, WebDAV is under
+`/webdav`, and streamable MCP is at `POST /mcp`. Public deployments should terminate TLS once at
+a reverse proxy and forward the complete path space to this upstream.
 
 The default temporary directory stages uploads and index snapshots. For production-sized uploads,
 ensure its backing filesystem has at least 5 GiB for every concurrent maximum-size upload, plus
@@ -154,21 +150,21 @@ export NOTEDTHAT_WEBDAV_PASSWORD=webdav-pass-please-change
 ```sh
 # 7. PROPFIND root (list KBs)
 curl -X PROPFIND -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  -H 'Depth: 1' http://127.0.0.1:8081/
+  -H 'Depth: 1' http://127.0.0.1:8080/webdav/
 
 # 8. PUT a markdown file via WebDAV
 echo "# Hello WebDAV" | curl -X PUT \
   -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
   --data-binary @- \
-  http://127.0.0.1:8081/notes/hello-webdav.md
+  http://127.0.0.1:8080/webdav/notes/hello-webdav.md
 
 # 9. GET it back
 curl -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  http://127.0.0.1:8081/notes/hello-webdav.md
+  http://127.0.0.1:8080/webdav/notes/hello-webdav.md
 
 # 10. DELETE it
 curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  http://127.0.0.1:8081/notes/hello-webdav.md
+  http://127.0.0.1:8080/webdav/notes/hello-webdav.md
 ```
 
 ### MCP (Claude Desktop, Cursor, Zed)
@@ -179,9 +175,9 @@ With the server running, configure your MCP client to launch `notedthat-mcp-stdi
 
 NotedThat also exposes an HTTP MCP endpoint for remote clients that support the MCP HTTP transport:
 
-- **Endpoint**: `POST /mcp` on port 8082 (configurable via `NOTEDTHAT_MCP_HTTP_BIND`)
+- **Endpoint**: `POST /mcp` on the same listener as the API and WebDAV
 - **Auth**: `Authorization: Bearer <NOTEDTHAT_API_TOKEN>` (same token as the HTTP API)
-- **Note**: public deployments require HTTPS termination at a reverse proxy before exposing this port
+- **Note**: public deployments require HTTPS termination at a reverse proxy before exposing this listener
 
 See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protocol docs.
 

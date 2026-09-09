@@ -27,16 +27,10 @@ pub struct Config {
     pub qdrant: ServerQdrantConfig,
     /// Embedder configuration.
     pub embedder: EmbedderConfig,
-    /// Socket address the `WebDAV` server binds to (`NOTEDTHAT_WEBDAV_LISTEN_ADDR`; default `0.0.0.0:8081`).
-    pub webdav_listen_addr: SocketAddr,
     /// `WebDAV` Basic authentication username (`NOTEDTHAT_WEBDAV_USERNAME`; required).
     pub webdav_username: String,
     /// `WebDAV` Basic authentication password (`NOTEDTHAT_WEBDAV_PASSWORD`; required).
     pub webdav_password: String,
-    /// Socket address the MCP HTTP server binds to (`NOTEDTHAT_MCP_HTTP_BIND`; default `0.0.0.0:8082`).
-    pub mcp_http_bind: SocketAddr,
-    /// Whether the MCP HTTP listener is enabled (`NOTEDTHAT_MCP_HTTP_ENABLED`; default `true`).
-    pub mcp_http_enabled: bool,
     /// Allowed origins for MCP HTTP CORS (`NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS`; empty → `["null"]`).
     pub mcp_http_allowed_origins: Vec<String>,
     /// Allowed hosts for MCP HTTP Host header validation (`NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`; empty → `["127.0.0.1", "localhost", "::1"]`).
@@ -46,6 +40,28 @@ pub struct Config {
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
 }
+
+/// Environment variables removed when the API, `WebDAV`, and MCP surfaces moved
+/// onto one listener, each paired with the setup that replaces it.
+///
+/// Leaving one of these set is a silent exposure change on upgrade — a
+/// `WebDAV` listener that was bound to loopback becomes reachable at `/webdav` on the
+/// public listener, and `NOTEDTHAT_MCP_HTTP_ENABLED=false` no longer disables
+/// `/mcp`. Per D39 the server refuses to start instead, naming the replacement.
+const REMOVED_LISTENER_ENV_VARS: [(&str, &str); 3] = [
+    (
+        "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
+        "WebDAV is always served at /webdav on NOTEDTHAT_LISTEN_ADDR",
+    ),
+    (
+        "NOTEDTHAT_MCP_HTTP_BIND",
+        "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
+    ),
+    (
+        "NOTEDTHAT_MCP_HTTP_ENABLED",
+        "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
+    ),
+];
 
 /// Tracing output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,10 +77,21 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required variable is missing
-    /// or if any value is invalid (empty token, bad slug, duplicate slug, etc.).
+    /// Returns `Err(Error::Config { .. })` if any required variable is missing,
+    /// if any value is invalid (empty token, bad slug, duplicate slug, etc.), or
+    /// if any [`REMOVED_LISTENER_ENV_VARS`] entry is still set.
     #[allow(clippy::too_many_lines)]
     pub fn from_env() -> Result<Self, Error> {
+        for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
+            if std::env::var_os(key).is_some() {
+                return Err(Error::Config {
+                    message: format!(
+                        "{key} was removed: {replacement}. Unset {key} to start the server."
+                    ),
+                });
+            }
+        }
+
         let api_token = std::env::var("NOTEDTHAT_API_TOKEN").map_err(|_| Error::Config {
             message: "NOTEDTHAT_API_TOKEN is required".into(),
         })?;
@@ -140,29 +167,9 @@ impl Config {
             });
         }
 
-        let webdav_listen_addr = std::env::var("NOTEDTHAT_WEBDAV_LISTEN_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:8081".to_string())
-            .parse::<SocketAddr>()
-            .map_err(|e| Error::Config {
-                message: format!("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid: {e}"),
-            })?;
-
-        let mcp_http_enabled = !matches!(
-            std::env::var("NOTEDTHAT_MCP_HTTP_ENABLED").as_deref(),
-            Ok("false" | "0")
-        );
-
-        let mcp_http_bind = std::env::var("NOTEDTHAT_MCP_HTTP_BIND")
-            .unwrap_or_else(|_| "0.0.0.0:8082".to_string())
-            .parse::<SocketAddr>()
-            .map_err(|e| Error::Config {
-                message: format!("NOTEDTHAT_MCP_HTTP_BIND is invalid: {e}"),
-            })?;
-
-        // Fail-fast: if MCP HTTP is enabled and API token is empty/whitespace, reject startup.
-        if mcp_http_enabled && api_token.trim().is_empty() {
+        if api_token.trim().is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_API_TOKEN must not be empty when MCP HTTP is enabled".into(),
+                message: "NOTEDTHAT_API_TOKEN must not be empty".into(),
             });
         }
 
@@ -221,11 +228,8 @@ impl Config {
             log_format,
             qdrant,
             embedder,
-            webdav_listen_addr,
             webdav_username,
             webdav_password,
-            mcp_http_bind,
-            mcp_http_enabled,
             mcp_http_allowed_origins,
             mcp_http_allowed_hosts,
             max_patchable_size,
@@ -579,35 +583,41 @@ mod tests {
     }
 
     #[test]
-    fn test_default_webdav_listen_addr() {
-        let cfg =
-            run_with_env(&[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None)], Config::from_env).unwrap();
-        assert_eq!(cfg.webdav_listen_addr.to_string(), "0.0.0.0:8081");
+    fn removed_listener_variables_are_rejected_with_their_replacement() {
+        for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
+            let result = run_with_env(&[(key, Some("some-stale-value"))], Config::from_env);
+            let message = result.map_or_else(
+                |e| e.to_string(),
+                |_| panic!("{key} must be rejected at startup"),
+            );
+
+            assert!(message.contains(key), "{key} error must name the variable");
+            assert!(
+                message.contains(replacement),
+                "{key} error must name its replacement"
+            );
+        }
     }
 
     #[test]
-    fn test_custom_webdav_listen_addr() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", Some("127.0.0.1:9999"))],
-            Config::from_env,
-        )
-        .unwrap();
-        assert_eq!(cfg.webdav_listen_addr.to_string(), "127.0.0.1:9999");
-    }
-
-    #[test]
-    fn test_invalid_webdav_listen_addr() {
+    fn removed_listener_variables_are_rejected_even_when_empty() {
         let result = run_with_env(
-            &[("NOTEDTHAT_WEBDAV_LISTEN_ADDR", Some("not-an-addr"))],
+            &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some(""))],
             Config::from_env,
         );
-        assert!(result.is_err());
+
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("NOTEDTHAT_WEBDAV_LISTEN_ADDR is invalid")
+            result.is_err(),
+            "an empty removed variable is still an explicit operator setting"
         );
+    }
+
+    #[test]
+    fn unset_removed_listener_variables_leave_the_default_listener() {
+        let config = run_with_env(&[], Config::from_env)
+            .expect("configuration must parse when no removed variable is set");
+
+        assert_eq!(config.listen_addr.to_string(), "0.0.0.0:8080");
     }
 
     #[test]
@@ -831,77 +841,10 @@ mod tests {
         #[test]
         fn mcp_http_defaults() {
             let cfg = run_with_env(&[], Config::from_env).unwrap();
-            assert_eq!(cfg.mcp_http_bind.to_string(), "0.0.0.0:8082");
-            assert!(cfg.mcp_http_enabled);
             assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
             assert_eq!(
                 cfg.mcp_http_allowed_hosts,
                 vec!["127.0.0.1", "localhost", "::1"]
-            );
-        }
-
-        #[test]
-        fn mcp_http_enabled_false() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false"))],
-                Config::from_env,
-            )
-            .unwrap();
-            assert!(!cfg.mcp_http_enabled);
-        }
-
-        #[test]
-        fn mcp_http_enabled_zero() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("0"))],
-                Config::from_env,
-            )
-            .unwrap();
-            assert!(!cfg.mcp_http_enabled);
-        }
-
-        #[test]
-        fn mcp_http_enabled_true_by_default() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true"))],
-                Config::from_env,
-            )
-            .unwrap();
-            assert!(cfg.mcp_http_enabled);
-        }
-
-        #[test]
-        fn mcp_http_enabled_any_other_value_is_true() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some("anything"))],
-                Config::from_env,
-            )
-            .unwrap();
-            assert!(cfg.mcp_http_enabled);
-        }
-
-        #[test]
-        fn mcp_http_custom_bind_addr() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_BIND", Some("127.0.0.1:9999"))],
-                Config::from_env,
-            )
-            .unwrap();
-            assert_eq!(cfg.mcp_http_bind.to_string(), "127.0.0.1:9999");
-        }
-
-        #[test]
-        fn mcp_http_invalid_bind_addr() {
-            let result = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_BIND", Some("not-an-addr"))],
-                Config::from_env,
-            );
-            assert!(result.is_err());
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("NOTEDTHAT_MCP_HTTP_BIND is invalid")
             );
         }
 
@@ -1033,14 +976,8 @@ mod tests {
         }
 
         #[test]
-        fn mcp_http_enabled_with_empty_token_fails() {
-            let result = run_with_env(
-                &[
-                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true")),
-                    ("NOTEDTHAT_API_TOKEN", Some("")),
-                ],
-                Config::from_env,
-            );
+        fn mcp_http_with_empty_token_fails() {
+            let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", Some(""))], Config::from_env);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -1050,33 +987,14 @@ mod tests {
         }
 
         #[test]
-        fn mcp_http_enabled_with_whitespace_token_fails() {
-            let result = run_with_env(
-                &[
-                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("true")),
-                    ("NOTEDTHAT_API_TOKEN", Some("   ")),
-                ],
-                Config::from_env,
-            );
+        fn mcp_http_with_whitespace_token_fails() {
+            let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", Some("   "))], Config::from_env);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
                 msg.contains("NOTEDTHAT_API_TOKEN"),
                 "error should mention NOTEDTHAT_API_TOKEN: {msg}"
             );
-        }
-
-        #[test]
-        fn mcp_http_disabled_with_empty_token_succeeds() {
-            let cfg = run_with_env(
-                &[
-                    ("NOTEDTHAT_MCP_HTTP_ENABLED", Some("false")),
-                    ("NOTEDTHAT_API_TOKEN", Some("test-token")),
-                ],
-                Config::from_env,
-            )
-            .unwrap();
-            assert!(!cfg.mcp_http_enabled);
         }
     }
 }

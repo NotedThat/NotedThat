@@ -276,7 +276,7 @@ mod resources_shared {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases/kb/note.md"))
+            .and(path("/api/v1/knowledgebases/kb/note.md"))
             .respond_with(ResponseTemplate::new(200).set_body_string("# Hello"))
             .mount(&server)
             .await;
@@ -301,7 +301,7 @@ mod resources_shared {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/knowledgebases"))
+            .and(path("/api/v1/knowledgebases"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "knowledgebases": []
             })))

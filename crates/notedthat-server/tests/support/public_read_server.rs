@@ -16,7 +16,7 @@ pub struct ServerInstance {
 impl ServerInstance {
     pub fn start(config: Config) -> Self {
         let http_url = format!("http://{}", config.listen_addr);
-        let dav_url = format!("http://{}", config.webdav_listen_addr);
+        let dav_url = format!("http://{}/webdav", config.listen_addr);
         let (stop, stopped) = oneshot::channel();
         let server_thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -84,7 +84,7 @@ pub async fn wait_ready(client: &reqwest::Client, server: &ServerInstance) {
             .await
             .is_ok_and(|response| response.status().is_success());
         let dav_ready = client
-            .request(reqwest::Method::OPTIONS, format!("{}/", server.dav_url))
+            .request(reqwest::Method::OPTIONS, &server.dav_url)
             .basic_auth(DAV_USER, Some(DAV_PASS))
             .send()
             .await
