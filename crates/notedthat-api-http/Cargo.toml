@@ -12,8 +12,8 @@ authors.workspace = true
 test-support = ["notedthat-core/test-support"]
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.1.6" }
-notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6" }
+notedthat-core = { path = "../notedthat-core", version = "0.2.0" }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.2.0" }
 notedthat-write = { workspace = true }
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "json", "matched-path", "query", "tokio"] }
@@ -32,7 +32,7 @@ thiserror.workspace = true
 [dev-dependencies]
 # `test-support` carries InMemoryVectorStore, which backs search_e2e.rs in place
 # of a Qdrant testcontainer.
-notedthat-indexer = { path = "../notedthat-indexer", version = "0.1.6", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.2.0", features = ["test-support"] }
 notedthat-api-http = { path = ".", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
