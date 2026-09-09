@@ -12,10 +12,11 @@ cargo install notedthat
 | `notedthat-server` | The server — HTTP API, WebDAV, and remote MCP as a single process against an S3-backed knowledgebase. |
 | `notedthat-mcp-stdio` | Bridges an MCP client (Claude Desktop, Cursor, Zed, …) to a running `notedthat-server` over stdio JSON-RPC. |
 
-Both are configured entirely through environment variables — there are no
-command-line flags. See [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md) for
-the full reference, and the workspace
-[README](../../README.md#running-locally) to get a server running.
+Every setting on both binaries can be given as an environment variable or as the
+flag named after it, and the flag wins; run either with `--help` to see them all.
+See [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md) for the full reference,
+and the workspace [README](../../README.md#running-locally) to get a server
+running.
 
 The implementations live in [`notedthat-server`](../notedthat-server) and
 [`notedthat-mcp-stdio`](../notedthat-mcp-stdio), which are library-only. Hosting

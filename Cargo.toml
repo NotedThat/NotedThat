@@ -38,6 +38,10 @@ schemars = { version = "1.2", features = ["derive"] }
 percent-encoding = "2"
 url = "2"
 
+# Command-line interface. Every setting is reachable as a flag as well as an
+# environment variable, and `env = "..."` on an arg is what makes the flag win.
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+
 # Async runtime & primitives
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", features = ["rt"] }

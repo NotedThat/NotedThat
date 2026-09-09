@@ -1,11 +1,17 @@
-//! Environment-variable-based configuration for `notedthat-server`.
+//! Configuration for `notedthat-server`.
 //!
-//! There are no CLI flags and no config files — env vars are the only
-//! configuration surface. See `docs/CONFIGURATION.md` for the full reference.
+//! Every setting arrives from one of two places: the command line, or the
+//! process environment. [`crate::cli::ServerCli`] resolves which — the flag wins
+//! — and hands the raw values here; nothing in this module reads the
+//! environment itself. See `docs/CONFIGURATION.md` for the full reference.
 
-use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug};
+use crate::cli::ServerCli;
+use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
+use notedthat_storage_fs::FsSettings;
+use notedthat_storage_s3::S3Settings;
 use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::net::SocketAddr;
 
 /// Which storage backend the server runs on.
@@ -60,30 +66,62 @@ impl StorageConfig {
     }
 }
 
-/// Environment variables owned by one storage backend.
+/// Every setting owned by one storage backend, paired with its backend and with
+/// whether this run supplied it at all.
 ///
-/// A variable whose owner is not the selected backend is a startup error rather than an
+/// A setting whose owner is not the selected backend is a startup error rather than an
 /// ignored setting — silently ignoring `NOTEDTHAT_FS_ROOT` under the default `s3` backend
 /// is how an operator ends up believing their bytes are on a disk they are not on. Same
 /// reasoning as [`REMOVED_LISTENER_ENV_VARS`] (D39), applied to backend selection.
 ///
-/// Deliberately confined to variables this server reads. `AWS_*` is not listed:
+/// "Supplied" means presence, not value, and spans both sources: `--s3-region ""` and
+/// `NOTEDTHAT_S3_REGION=` both count, matching how an empty variable counted when the
+/// environment was the only source.
+///
+/// Deliberately confined to settings this server reads. `AWS_*` is not listed:
 /// `S3Config::build_client` uses a static credential provider and never consults the
 /// ambient credential chain, so rejecting an `AWS_ACCESS_KEY_ID` on a shared runner would
 /// be a pure false positive.
-fn backend_owned_env_vars() -> Vec<(&'static str, StorageBackendKind)> {
-    notedthat_storage_s3::S3_ENV_VARS
-        .iter()
-        .map(|name| (*name, StorageBackendKind::S3))
-        .chain(
-            notedthat_storage_fs::FS_ENV_VARS
-                .iter()
-                .map(|name| (*name, StorageBackendKind::Fs)),
-        )
-        .collect()
+///
+/// The names are asserted against each adapter's own inventory — `S3_ENV_VARS` and
+/// `FS_ENV_VARS` — by a test, so this table cannot drift from what those adapters read.
+fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendKind, bool)> {
+    use StorageBackendKind::{Fs, S3};
+    vec![
+        ("NOTEDTHAT_S3_REGION", S3, cli.s3_region.is_some()),
+        (
+            "NOTEDTHAT_S3_ACCESS_KEY_ID",
+            S3,
+            cli.s3_access_key_id.is_some(),
+        ),
+        (
+            "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
+            S3,
+            cli.s3_secret_access_key.is_some(),
+        ),
+        (
+            "NOTEDTHAT_S3_ENDPOINT_URL",
+            S3,
+            cli.s3_endpoint_url.is_some(),
+        ),
+        (
+            "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+            S3,
+            cli.s3_force_path_style.is_some(),
+        ),
+        ("NOTEDTHAT_FS_ROOT", Fs, cli.fs_root.is_some()),
+        ("NOTEDTHAT_FS_METADATA", Fs, cli.fs_metadata.is_some()),
+        ("NOTEDTHAT_FS_FILE_MODE", Fs, cli.fs_file_mode.is_some()),
+        ("NOTEDTHAT_FS_DIR_MODE", Fs, cli.fs_dir_mode.is_some()),
+        (
+            "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
+            Fs,
+            cli.fs_allow_lossy_names.is_some(),
+        ),
+    ]
 }
 
-/// Parse `NOTEDTHAT_STORAGE_BACKEND`, returning `None` when it is unset.
+/// Parse the backend selector, returning `None` when it was not supplied.
 ///
 /// Strict, unlike `NOTEDTHAT_LOG_FORMAT` and `NOTEDTHAT_S3_FORCE_PATH_STYLE`, which
 /// silently fall back on an unrecognised value. Those two can afford leniency because a
@@ -92,45 +130,46 @@ fn backend_owned_env_vars() -> Vec<(&'static str, StorageBackendKind)> {
 /// selector cannot: `NOTEDTHAT_STORAGE_BACKEND=fs3` would fall back to `s3`, start
 /// cleanly, provision buckets and serve a knowledge base that looks empty because the
 /// operator's data is on disk. Nothing later in the run would say so.
-fn parse_storage_backend() -> Result<Option<StorageBackendKind>, Error> {
-    let Some(value) = std::env::var_os("NOTEDTHAT_STORAGE_BACKEND") else {
+fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBackendKind>, Error> {
+    let Some(value) = supplied else {
         return Ok(None);
     };
+    let name = setting("NOTEDTHAT_STORAGE_BACKEND");
     let value = value.to_str().ok_or_else(|| Error::Config {
-        message: "NOTEDTHAT_STORAGE_BACKEND must be valid UTF-8".into(),
+        message: format!("{name} must be valid UTF-8"),
     })?;
     if value.is_empty() {
         return Err(Error::Config {
-            message: "NOTEDTHAT_STORAGE_BACKEND must not be empty".into(),
+            message: format!("{name} must not be empty"),
         });
     }
     match value {
         "s3" => Ok(Some(StorageBackendKind::S3)),
         "fs" => Ok(Some(StorageBackendKind::Fs)),
         other => Err(Error::Config {
-            message: format!(
-                "NOTEDTHAT_STORAGE_BACKEND is invalid: expected \"s3\" or \"fs\", got \"{other}\""
-            ),
+            message: format!("{name} is invalid: expected \"s3\" or \"fs\", got \"{other}\""),
         }),
     }
 }
 
-/// Refuse to start when variables belonging to the unselected backend are set.
+/// Refuse to start when settings belonging to the unselected backend are supplied.
 ///
 /// Reports every offender at once: the realistic case is a whole `NOTEDTHAT_S3_*` family
 /// left behind by an operator switching to `fs`, and naming one per restart would take
-/// five restarts. Presence is tested with `var_os`, so an empty value still counts —
-/// matching [`REMOVED_LISTENER_ENV_VARS`].
+/// five restarts.
 ///
 /// The check runs when the selector is unset too, and says so. That is the highest-value
 /// case: an operator who sets `NOTEDTHAT_FS_ROOT` and forgets the selector would
 /// otherwise get a perfectly healthy S3 deployment with an unread root.
-fn reject_other_backends_variables(selected: Option<StorageBackendKind>) -> Result<(), Error> {
+fn reject_other_backends_settings(
+    selected: Option<StorageBackendKind>,
+    cli: &ServerCli,
+) -> Result<(), Error> {
     let effective = selected.unwrap_or(StorageBackendKind::S3);
-    let offenders: Vec<&str> = backend_owned_env_vars()
+    let offenders: Vec<String> = backend_owned_settings(cli)
         .into_iter()
-        .filter(|(name, owner)| *owner != effective && std::env::var_os(name).is_some())
-        .map(|(name, _)| name)
+        .filter(|(_, owner, supplied)| *owner != effective && *supplied)
+        .map(|(name, _, _)| setting(name))
         .collect();
 
     if offenders.is_empty() {
@@ -142,15 +181,14 @@ fn reject_other_backends_variables(selected: Option<StorageBackendKind>) -> Resu
     } else {
         StorageBackendKind::S3
     };
+    let selector = setting("NOTEDTHAT_STORAGE_BACKEND");
     let selection = match selected {
-        Some(kind) => format!("NOTEDTHAT_STORAGE_BACKEND is {kind}"),
-        None => {
-            "NOTEDTHAT_STORAGE_BACKEND is unset, so the default s3 backend is selected".to_string()
-        }
+        Some(kind) => format!("{selector} is {kind}"),
+        None => format!("{selector} is unset, so the default s3 backend is selected"),
     };
     Err(Error::Config {
         message: format!(
-            "{selection}, but these variables belong to the {owner} backend and would be ignored: {}. \
+            "{selection}, but these settings belong to the {owner} backend and would be ignored: {}. \
              Unset them or set NOTEDTHAT_STORAGE_BACKEND={owner} to start the server.",
             offenders.join(", ")
         ),
@@ -174,7 +212,7 @@ pub fn unroutable_storage_placeholder() -> StorageConfig {
     })
 }
 
-/// Server-wide configuration, parsed from environment variables.
+/// Server-wide configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Static Bearer token for API authentication (`NOTEDTHAT_API_TOKEN`).
@@ -208,13 +246,17 @@ pub struct Config {
     pub staging: StagingConfig,
 }
 
-/// Environment variables removed when the API, `WebDAV`, and MCP surfaces moved
-/// onto one listener, each paired with the setup that replaces it.
+/// Settings removed when the API, `WebDAV`, and MCP surfaces moved onto one
+/// listener, each paired with the setup that replaces it.
 ///
 /// Leaving one of these set is a silent exposure change on upgrade — a
 /// `WebDAV` listener that was bound to loopback becomes reachable at `/webdav` on the
 /// public listener, and `NOTEDTHAT_MCP_HTTP_ENABLED=false` no longer disables
 /// `/mcp`. Per D39 the server refuses to start instead, naming the replacement.
+///
+/// [`ServerCli`] still accepts each one as a hidden flag for the same reason it is
+/// checked here: an operator who reaches for the removed setting deserves the
+/// replacement, not "unexpected argument".
 const REMOVED_LISTENER_ENV_VARS: [(&str, &str); 3] = [
     (
         "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
@@ -240,17 +282,38 @@ pub enum LogFormat {
 }
 
 impl Config {
-    /// Parse configuration from environment variables.
+    /// Parse configuration from the environment alone.
+    ///
+    /// Equivalent to [`Config::from_cli`] over an empty `argv`, which is what a
+    /// container that passes no arguments gets.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required variable is missing,
-    /// if any value is invalid (empty token, bad slug, duplicate slug, etc.), or
-    /// if any [`REMOVED_LISTENER_ENV_VARS`] entry is still set.
-    #[allow(clippy::too_many_lines)]
+    /// As [`Config::from_cli`], plus `Err(Error::Config { .. })` if a variable holds a
+    /// value the parser cannot accept at all.
     pub fn from_env() -> Result<Self, Error> {
-        for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
-            if std::env::var_os(key).is_some() {
+        let cli = ServerCli::from_env().map_err(|error| Error::Config {
+            message: error.to_string(),
+        })?;
+        Self::from_cli(cli)
+    }
+
+    /// Validate the settings this run supplied, from either source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Error::Config { .. })` if any required setting is missing,
+    /// if any value is invalid (empty token, bad slug, duplicate slug, etc.), or
+    /// if any [`REMOVED_LISTENER_ENV_VARS`] entry was supplied.
+    #[allow(clippy::too_many_lines)]
+    pub fn from_cli(mut cli: ServerCli) -> Result<Self, Error> {
+        let removed = [
+            cli.webdav_listen_addr.is_some(),
+            cli.mcp_http_bind.is_some(),
+            cli.mcp_http_enabled.is_some(),
+        ];
+        for ((key, replacement), supplied) in REMOVED_LISTENER_ENV_VARS.iter().zip(removed) {
+            if supplied {
                 return Err(Error::Config {
                     message: format!(
                         "{key} was removed: {replacement}. Unset {key} to start the server."
@@ -259,21 +322,24 @@ impl Config {
             }
         }
 
-        let api_token = std::env::var("NOTEDTHAT_API_TOKEN").map_err(|_| Error::Config {
-            message: "NOTEDTHAT_API_TOKEN is required".into(),
+        let api_token = cli.api_token.take().ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("NOTEDTHAT_API_TOKEN")),
         })?;
-        if api_token.is_empty() {
+        if api_token.trim().is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_API_TOKEN must not be empty".into(),
+                message: format!("{} must not be empty", setting("NOTEDTHAT_API_TOKEN")),
             });
         }
 
-        let kbs_raw = std::env::var("NOTEDTHAT_KBS").map_err(|_| Error::Config {
-            message: "NOTEDTHAT_KBS is required".into(),
+        let kbs_raw = cli.kbs.take().ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("NOTEDTHAT_KBS")),
         })?;
         if kbs_raw.trim().is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_KBS must declare at least one knowledge base".into(),
+                message: format!(
+                    "{} must declare at least one knowledge base",
+                    setting("NOTEDTHAT_KBS")
+                ),
             });
         }
 
@@ -284,116 +350,141 @@ impl Config {
             })?;
             if kbs.insert(slug.as_str().to_string(), slug).is_some() {
                 return Err(Error::Config {
-                    message: format!("duplicate KB slug in NOTEDTHAT_KBS: {token:?}"),
+                    message: format!(
+                        "duplicate KB slug in {}: {token:?}",
+                        setting("NOTEDTHAT_KBS")
+                    ),
                 });
             }
         }
         if kbs.is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_KBS must declare at least one knowledge base".into(),
+                message: format!(
+                    "{} must declare at least one knowledge base",
+                    setting("NOTEDTHAT_KBS")
+                ),
             });
         }
 
         // Tenant slug is hardcoded to "default" per Metis directive.
-        // NOTEDTHAT_TENANT_SLUG env var intentionally not read.
+        // NOTEDTHAT_TENANT_SLUG intentionally not read.
         let tenant_slug = TenantSlug::default();
 
-        let listen_addr_str =
-            std::env::var("NOTEDTHAT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        // Taken, not moved: the backend-rejection check below needs the whole
+        // `cli` by reference, and reordering the two would change which error an
+        // operator sees when both are wrong.
+        let listen_addr_str = cli
+            .listen_addr
+            .take()
+            .unwrap_or_else(|| "0.0.0.0:8080".to_string());
         let listen_addr: SocketAddr = listen_addr_str.parse().map_err(|e| Error::Config {
-            message: format!("NOTEDTHAT_LISTEN_ADDR is invalid: {e}"),
+            message: format!("{} is invalid: {e}", setting("NOTEDTHAT_LISTEN_ADDR")),
         })?;
 
-        let selected = parse_storage_backend()?;
-        reject_other_backends_variables(selected)?;
+        let selected = parse_storage_backend(cli.storage_backend.as_deref())?;
+        reject_other_backends_settings(selected, &cli)?;
         let storage = match selected.unwrap_or(StorageBackendKind::S3) {
             StorageBackendKind::S3 => {
-                StorageConfig::S3(notedthat_storage_s3::S3Config::from_env()?)
+                StorageConfig::S3(notedthat_storage_s3::S3Config::from_settings(S3Settings {
+                    region: cli.s3_region,
+                    access_key_id: cli.s3_access_key_id,
+                    secret_access_key: cli.s3_secret_access_key,
+                    endpoint_url: cli.s3_endpoint_url,
+                    force_path_style: cli.s3_force_path_style,
+                })?)
             }
             StorageBackendKind::Fs => {
-                StorageConfig::Fs(notedthat_storage_fs::FsConfig::from_env()?)
+                StorageConfig::Fs(notedthat_storage_fs::FsConfig::from_settings(FsSettings {
+                    root: cli.fs_root,
+                    metadata: cli.fs_metadata,
+                    file_mode: cli.fs_file_mode,
+                    dir_mode: cli.fs_dir_mode,
+                    allow_lossy_names: cli.fs_allow_lossy_names,
+                })?)
             }
         };
 
-        let log_format = match std::env::var("NOTEDTHAT_LOG_FORMAT").as_deref() {
-            Ok("json") => LogFormat::Json,
+        let log_format = match cli.log_format.as_deref() {
+            Some("json") => LogFormat::Json,
             _ => LogFormat::Pretty,
         };
 
-        let qdrant = ServerQdrantConfig::from_env()?;
-        let embedder = EmbedderConfig::from_env()?;
+        let qdrant = ServerQdrantConfig::from_parts(
+            cli.qdrant_url,
+            cli.qdrant_api_key,
+            cli.qdrant_timeout_ms.as_deref(),
+            cli.qdrant_connect_timeout_ms.as_deref(),
+        )?;
+        let embedder = EmbedderConfig::from_parts(EmbedderParts {
+            endpoint_url: cli.embedding_endpoint_url,
+            model: cli.embedding_model,
+            api_key: cli.embedding_api_key,
+            dimensions: cli.embedding_dimensions,
+            batch_size: cli.embedding_batch_size,
+            timeout_ms: cli.embedding_timeout_ms,
+            max_retries: cli.embedding_max_retries,
+            max_input_tokens: cli.embedding_max_input_tokens,
+        })?;
 
-        let webdav_username =
-            std::env::var("NOTEDTHAT_WEBDAV_USERNAME").map_err(|_| Error::Config {
-                message: "NOTEDTHAT_WEBDAV_USERNAME is required".into(),
-            })?;
+        let webdav_username = cli.webdav_username.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_USERNAME")),
+        })?;
         if webdav_username.is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_WEBDAV_USERNAME is required and must not be empty".into(),
+                message: format!(
+                    "{} is required and must not be empty",
+                    setting("NOTEDTHAT_WEBDAV_USERNAME")
+                ),
             });
         }
 
-        let webdav_password =
-            std::env::var("NOTEDTHAT_WEBDAV_PASSWORD").map_err(|_| Error::Config {
-                message: "NOTEDTHAT_WEBDAV_PASSWORD is required".into(),
-            })?;
+        let webdav_password = cli.webdav_password.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_PASSWORD")),
+        })?;
         if webdav_password.is_empty() {
             return Err(Error::Config {
-                message: "NOTEDTHAT_WEBDAV_PASSWORD is required and must not be empty".into(),
-            });
-        }
-
-        if api_token.trim().is_empty() {
-            return Err(Error::Config {
-                message: "NOTEDTHAT_API_TOKEN must not be empty".into(),
+                message: format!(
+                    "{} is required and must not be empty",
+                    setting("NOTEDTHAT_WEBDAV_PASSWORD")
+                ),
             });
         }
 
         let mcp_http_allowed_origins =
-            match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS").as_deref() {
-                Ok(s) if !s.trim().is_empty() => s
-                    .split(',')
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .collect(),
-                _ => vec!["null".to_string()],
-            };
+            comma_list(cli.mcp_http_allowed_origins.as_deref(), &["null"]);
+        let mcp_http_allowed_hosts = comma_list(
+            cli.mcp_http_allowed_hosts.as_deref(),
+            &["127.0.0.1", "localhost", "::1"],
+        );
 
-        let mcp_http_allowed_hosts =
-            match std::env::var("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS").as_deref() {
-                Ok(s) if !s.trim().is_empty() => s
-                    .split(',')
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .collect(),
-                _ => vec![
-                    "127.0.0.1".to_string(),
-                    "localhost".to_string(),
-                    "::1".to_string(),
-                ],
-            };
-
-        let max_patchable_size = std::env::var("NOTEDTHAT_MAX_PATCHABLE_SIZE")
-            .unwrap_or_else(|_| (100 * 1024 * 1024u64).to_string())
+        let max_patchable_size = cli
+            .max_patchable_size
+            .unwrap_or_else(|| (100 * 1024 * 1024u64).to_string())
             .parse::<u64>()
             .map_err(|_e: std::num::ParseIntError| Error::Config {
-                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must be a valid u64 integer".into(),
+                message: format!(
+                    "{} must be a valid u64 integer",
+                    setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")
+                ),
             })?;
         if max_patchable_size == 0 {
             return Err(Error::Config {
-                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must be > 0".into(),
+                message: format!("{} must be > 0", setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")),
             });
         }
         if max_patchable_size > MAX_UPLOAD_BYTES {
             return Err(Error::Config {
-                message: "NOTEDTHAT_MAX_PATCHABLE_SIZE must not exceed MAX_UPLOAD_BYTES (5 GiB)"
-                    .into(),
+                message: format!(
+                    "{} must not exceed MAX_UPLOAD_BYTES (5 GiB)",
+                    setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")
+                ),
             });
         }
 
-        let staging = StagingConfig::from_env().map_err(|error| Error::Config {
-            message: error.to_string(),
-        })?;
+        let staging =
+            StagingConfig::from_setting(cli.upload_tmp_dir).map_err(|error| Error::Config {
+                message: error.to_string(),
+            })?;
 
         Ok(Self {
             api_token,
@@ -414,7 +505,23 @@ impl Config {
     }
 }
 
-/// Qdrant client configuration, parsed from env vars.
+/// Split a comma-separated allowlist, falling back to `default` when nothing usable
+/// was supplied.
+///
+/// An empty or whitespace-only value means "not configured" rather than "allow
+/// nothing", because both defaults here are the safe, loopback-only ones.
+fn comma_list(supplied: Option<&str>, default: &[&str]) -> Vec<String> {
+    match supplied {
+        Some(s) if !s.trim().is_empty() => s
+            .split(',')
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect(),
+        _ => default.iter().map(|v| (*v).to_string()).collect(),
+    }
+}
+
+/// Qdrant client configuration.
 #[derive(Debug, Clone)]
 pub struct ServerQdrantConfig {
     /// Qdrant gRPC/HTTP endpoint (`NOTEDTHAT_QDRANT_URL`; required).
@@ -432,44 +539,66 @@ pub struct ServerQdrantConfig {
 }
 
 impl ServerQdrantConfig {
-    /// Parse Qdrant configuration from environment variables.
+    /// Validate the Qdrant settings this run supplied.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if `NOTEDTHAT_QDRANT_URL` is missing.
-    pub fn from_env() -> Result<Self, Error> {
-        let url = std::env::var("NOTEDTHAT_QDRANT_URL").map_err(|_| Error::Config {
-            message: "NOTEDTHAT_QDRANT_URL is required".into(),
+    /// Returns `Err(Error::Config { .. })` if the URL is missing or a timeout is
+    /// not a positive integer.
+    fn from_parts(
+        url: Option<String>,
+        api_key: Option<String>,
+        timeout_ms: Option<&str>,
+        connect_timeout_ms: Option<&str>,
+    ) -> Result<Self, Error> {
+        let url = url.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("NOTEDTHAT_QDRANT_URL")),
         })?;
-        let api_key = std::env::var("NOTEDTHAT_QDRANT_API_KEY").ok();
-        let timeout_ms = parse_millis("NOTEDTHAT_QDRANT_TIMEOUT_MS", 30_000)?;
-        let connect_timeout_ms = parse_millis("NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", 10_000)?;
         Ok(Self {
             url,
             api_key,
-            timeout_ms,
-            connect_timeout_ms,
+            timeout_ms: parse_millis("NOTEDTHAT_QDRANT_TIMEOUT_MS", timeout_ms, 30_000)?,
+            connect_timeout_ms: parse_millis(
+                "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
+                connect_timeout_ms,
+                10_000,
+            )?,
         })
     }
 }
 
-/// Parse a millisecond duration from the environment, rejecting zero.
-fn parse_millis(var: &str, default: u64) -> Result<u64, Error> {
-    let Ok(raw) = std::env::var(var) else {
+/// Parse a millisecond duration, rejecting zero.
+fn parse_millis(var: &str, supplied: Option<&str>, default: u64) -> Result<u64, Error> {
+    let Some(raw) = supplied else {
         return Ok(default);
     };
     let value = raw.parse::<u64>().map_err(|_| Error::Config {
-        message: format!("{var} must be a valid u64 integer"),
+        message: format!("{} must be a valid u64 integer", setting(var)),
     })?;
     if value == 0 {
         return Err(Error::Config {
-            message: format!("{var} must be > 0"),
+            message: format!("{} must be > 0", setting(var)),
         });
     }
     Ok(value)
 }
 
-/// Embedder configuration, parsed from env vars.
+/// The raw embedder settings, before validation.
+///
+/// A struct rather than eight positional arguments, because eight `Option<String>`
+/// parameters in a row is a call site nothing can typecheck.
+struct EmbedderParts {
+    endpoint_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+    dimensions: Option<String>,
+    batch_size: Option<String>,
+    timeout_ms: Option<String>,
+    max_retries: Option<String>,
+    max_input_tokens: Option<String>,
+}
+
+/// Embedder configuration.
 #[derive(Debug, Clone)]
 pub struct EmbedderConfig {
     /// OpenAI-compatible embedding endpoint URL (`EMBEDDING_ENDPOINT_URL`; required).
@@ -491,71 +620,64 @@ pub struct EmbedderConfig {
 }
 
 impl EmbedderConfig {
-    /// Parse embedder configuration from environment variables.
+    /// Validate the embedder settings this run supplied.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required variable is missing or invalid.
-    pub fn from_env() -> Result<Self, Error> {
-        let endpoint_url = std::env::var("EMBEDDING_ENDPOINT_URL").map_err(|_| Error::Config {
-            message: "EMBEDDING_ENDPOINT_URL is required".into(),
+    /// Returns `Err(Error::Config { .. })` if any required setting is missing or invalid.
+    fn from_parts(parts: EmbedderParts) -> Result<Self, Error> {
+        let endpoint_url = parts.endpoint_url.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("EMBEDDING_ENDPOINT_URL")),
         })?;
-        let model = std::env::var("EMBEDDING_MODEL").map_err(|_| Error::Config {
-            message: "EMBEDDING_MODEL is required".into(),
+        let model = parts.model.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("EMBEDDING_MODEL")),
         })?;
-        let api_key = std::env::var("EMBEDDING_API_KEY").map_err(|_| Error::Config {
-            message: "EMBEDDING_API_KEY is required".into(),
+        let api_key = parts.api_key.ok_or_else(|| Error::Config {
+            message: format!("{} is required", setting("EMBEDDING_API_KEY")),
         })?;
-        let dimensions: u32 = std::env::var("EMBEDDING_DIMENSIONS")
-            .map_err(|_| Error::Config {
-                message: "EMBEDDING_DIMENSIONS is required".into(),
-            })?
-            .parse()
-            .map_err(|e: std::num::ParseIntError| Error::Config {
-                message: format!("EMBEDDING_DIMENSIONS is invalid: {e}"),
-            })?;
-        let batch_size: usize = std::env::var("EMBEDDING_BATCH_SIZE")
-            .unwrap_or_else(|_| "32".to_string())
-            .parse()
-            .map_err(|e: std::num::ParseIntError| Error::Config {
-                message: format!("EMBEDDING_BATCH_SIZE is invalid: {e}"),
-            })?;
-        let timeout_ms: u64 = std::env::var("EMBEDDING_TIMEOUT_MS")
-            .unwrap_or_else(|_| "30000".to_string())
-            .parse()
-            .map_err(|e: std::num::ParseIntError| Error::Config {
-                message: format!("EMBEDDING_TIMEOUT_MS is invalid: {e}"),
-            })?;
-        let max_retries: u32 = std::env::var("EMBEDDING_MAX_RETRIES")
-            .unwrap_or_else(|_| "3".to_string())
-            .parse()
-            .map_err(|e: std::num::ParseIntError| Error::Config {
-                message: format!("EMBEDDING_MAX_RETRIES is invalid: {e}"),
-            })?;
-        let max_input_tokens: usize = std::env::var("EMBEDDING_MAX_INPUT_TOKENS")
-            .unwrap_or_else(|_| "8192".to_string())
-            .parse()
-            .map_err(|e: std::num::ParseIntError| Error::Config {
-                message: format!("EMBEDDING_MAX_INPUT_TOKENS is invalid: {e}"),
+        let dimensions = parse_number("EMBEDDING_DIMENSIONS", parts.dimensions.as_deref())?
+            .ok_or_else(|| Error::Config {
+                message: format!("{} is required", setting("EMBEDDING_DIMENSIONS")),
             })?;
         Ok(Self {
             endpoint_url,
             model,
             api_key,
             dimensions,
-            batch_size,
-            timeout_ms,
-            max_retries,
-            max_input_tokens,
+            batch_size: parse_number("EMBEDDING_BATCH_SIZE", parts.batch_size.as_deref())?
+                .unwrap_or(32),
+            timeout_ms: parse_number("EMBEDDING_TIMEOUT_MS", parts.timeout_ms.as_deref())?
+                .unwrap_or(30_000),
+            max_retries: parse_number("EMBEDDING_MAX_RETRIES", parts.max_retries.as_deref())?
+                .unwrap_or(3),
+            max_input_tokens: parse_number(
+                "EMBEDDING_MAX_INPUT_TOKENS",
+                parts.max_input_tokens.as_deref(),
+            )?
+            .unwrap_or(8192),
         })
     }
 }
 
+/// Parse an optional integer setting, naming it on failure.
+fn parse_number<T>(var: &str, supplied: Option<&str>) -> Result<Option<T>, Error>
+where
+    T: std::str::FromStr<Err = std::num::ParseIntError>,
+{
+    supplied
+        .map(|raw| {
+            raw.parse::<T>().map_err(|e| Error::Config {
+                message: format!("{} is invalid: {e}", setting(var)),
+            })
+        })
+        .transpose()
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    const ALL_ENV_KEYS: [&str; 34] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 36] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -573,6 +695,8 @@ mod tests {
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
         "NOTEDTHAT_QDRANT_URL",
         "NOTEDTHAT_QDRANT_API_KEY",
+        "NOTEDTHAT_QDRANT_TIMEOUT_MS",
+        "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
         "NOTEDTHAT_WEBDAV_USERNAME",
         "NOTEDTHAT_WEBDAV_PASSWORD",
         "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
@@ -591,6 +715,16 @@ mod tests {
         "EMBEDDING_MAX_RETRIES",
         "EMBEDDING_MAX_INPUT_TOKENS",
     ];
+
+    /// A configuration diagnostic has to be actionable from either direction, so
+    /// it names the environment variable, the flag that overrides it, and what is
+    /// wrong. Asserting on all three at once keeps the check readable while making
+    /// it stricter than a single `contains`.
+    fn names_setting(message: &str, env_var: &str, complaint: &str) -> bool {
+        message.contains(env_var)
+            && message.contains(&notedthat_core::flag_for(env_var))
+            && message.contains(complaint)
+    }
 
     fn run_with_env<F: FnOnce() -> R, R>(overrides: &[(&str, Option<&str>)], f: F) -> R {
         let mut vars: Vec<(&str, Option<&str>)> = vec![
@@ -611,6 +745,8 @@ mod tests {
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
             ("NOTEDTHAT_QDRANT_URL", Some("http://localhost:6334")),
             ("NOTEDTHAT_QDRANT_API_KEY", None),
+            ("NOTEDTHAT_QDRANT_TIMEOUT_MS", None),
+            ("NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", None),
             ("NOTEDTHAT_WEBDAV_USERNAME", Some("webdav-user")),
             ("NOTEDTHAT_WEBDAV_PASSWORD", Some("webdav-pass")),
             ("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None),
@@ -822,9 +958,12 @@ mod tests {
         assert_eq!(cfg.webdav_password, "mypass");
     }
 
+    /// The inventory is what `cli::tests::every_setting_has_both_a_flag_and_a_variable`
+    /// checks the parser against, so a setting missing from here is a setting that
+    /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 34);
+        assert_eq!(ALL_ENV_KEYS.len(), 36);
     }
 
     #[test]
@@ -851,12 +990,11 @@ mod tests {
             Config::from_env,
         );
         assert!(matches!(result, Err(Error::Config { .. })));
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must be > 0")
-        );
+        assert!(names_setting(
+            &result.unwrap_err().to_string(),
+            "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+            "must be > 0"
+        ));
     }
 
     #[test]
@@ -866,12 +1004,11 @@ mod tests {
             Config::from_env,
         );
         assert!(matches!(result, Err(Error::Config { .. })));
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must not exceed MAX_UPLOAD_BYTES (5 GiB)")
-        );
+        assert!(names_setting(
+            &result.unwrap_err().to_string(),
+            "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+            "must not exceed MAX_UPLOAD_BYTES (5 GiB)"
+        ));
     }
 
     #[test]
@@ -881,12 +1018,11 @@ mod tests {
             Config::from_env,
         );
         assert!(matches!(result, Err(Error::Config { .. })));
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("NOTEDTHAT_MAX_PATCHABLE_SIZE must be a valid u64 integer")
-        );
+        assert!(names_setting(
+            &result.unwrap_err().to_string(),
+            "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+            "must be a valid u64 integer"
+        ));
     }
 
     #[test]
@@ -1244,7 +1380,10 @@ mod tests {
                 ],
                 || {
                     let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("NOTEDTHAT_FS_ROOT is required"), "{error}");
+                    assert!(
+                        names_setting(&error, "NOTEDTHAT_FS_ROOT", "is required"),
+                        "{error}"
+                    );
                 },
             );
         }
@@ -1275,7 +1414,7 @@ mod tests {
             run_with_env(&[("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat"))], || {
                 let error = Config::from_env().unwrap_err().to_string();
                 assert!(
-                    error.contains("NOTEDTHAT_STORAGE_BACKEND is unset"),
+                    names_setting(&error, "NOTEDTHAT_STORAGE_BACKEND", "is unset"),
                     "{error}"
                 );
                 assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
@@ -1301,30 +1440,41 @@ mod tests {
             );
         }
 
-        /// The rejection table is built from each adapter's own inventory, so it cannot
-        /// drift from what those adapters actually read.
+        /// The rejection table is checked against each adapter's own inventory, so it
+        /// cannot drift from what those adapters actually read.
         #[test]
         fn the_rejection_table_matches_each_adapter_inventory() {
-            let table = backend_owned_env_vars();
+            let table = backend_owned_settings(&ServerCli::default());
             let s3: Vec<&str> = table
                 .iter()
-                .filter(|(_, kind)| *kind == StorageBackendKind::S3)
-                .map(|(name, _)| *name)
+                .filter(|(_, kind, _)| *kind == StorageBackendKind::S3)
+                .map(|(name, _, _)| *name)
                 .collect();
             let fs: Vec<&str> = table
                 .iter()
-                .filter(|(_, kind)| *kind == StorageBackendKind::Fs)
-                .map(|(name, _)| *name)
+                .filter(|(_, kind, _)| *kind == StorageBackendKind::Fs)
+                .map(|(name, _, _)| *name)
                 .collect();
             assert_eq!(s3, notedthat_storage_s3::S3_ENV_VARS.to_vec());
             assert_eq!(fs, notedthat_storage_fs::FS_ENV_VARS.to_vec());
 
-            for (name, _) in &table {
+            for (name, _, _) in &table {
                 assert!(
                     ALL_ENV_KEYS.contains(name),
                     "{name} is read but missing from ALL_ENV_KEYS"
                 );
             }
+        }
+
+        /// A default `ServerCli` supplies nothing, so nothing can be an offender —
+        /// the guard against a field being wired to the wrong entry in the table.
+        #[test]
+        fn nothing_is_supplied_by_a_default_command_line() {
+            assert!(
+                backend_owned_settings(&ServerCli::default())
+                    .iter()
+                    .all(|(_, _, supplied)| !supplied)
+            );
         }
     }
 }

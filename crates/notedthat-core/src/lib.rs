@@ -13,6 +13,7 @@ pub mod preconditions;
 mod public_read;
 pub mod range;
 pub mod search;
+pub mod setting;
 pub mod slug;
 pub mod staging;
 pub mod storage;
@@ -41,6 +42,7 @@ pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,
     parse_range_header,
 };
+pub use setting::{flag_for, setting};
 pub use slug::{KbSlug, TenantSlug};
 pub use staging::{
     AsyncReadSeek, ReadSeek, StageError, StagedBody, StagingConfig, UPLOAD_TMP_DIR_ENV,

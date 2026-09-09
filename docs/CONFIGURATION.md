@@ -1,11 +1,52 @@
 # NotedThat Configuration
 
-NotedThat is configured entirely through environment variables. There are no CLI flags, no config
-files, and no `.env` file auto-loading. Every setting the server needs must be present in the
-process environment before startup.
+Every NotedThat setting can be given two ways: as an environment variable, or as the command-line
+flag named after it. There are no config files and no `.env` auto-loading.
 
-This keeps the configuration surface explicit and container-friendly: pass vars via `docker run -e`,
-a Kubernetes `Secret`, or your shell's `export` statements.
+## Precedence
+
+**Command-line flag > environment variable > default.**
+
+A flag overrides the variable it mirrors for that one run, and leaves the deployment's own
+configuration untouched. Nothing else changes: a process given no arguments — which is what a
+container gets — behaves exactly as it did when variables were the only source.
+
+```sh
+# The deployment's address, from the environment
+NOTEDTHAT_LISTEN_ADDR=0.0.0.0:8080 notedthat-server
+
+# Same deployment, bound to loopback for one run
+NOTEDTHAT_LISTEN_ADDR=0.0.0.0:8080 notedthat-server --listen-addr 127.0.0.1:8080
+```
+
+The flag name is the variable name with the `NOTEDTHAT_` prefix dropped, lowercased, underscores
+turned into dashes: `NOTEDTHAT_S3_ENDPOINT_URL` is `--s3-endpoint-url`, and `EMBEDDING_MODEL` —
+which has no such prefix — is `--embedding-model`. `notedthat-server --help` lists all of them with
+their variables, and `notedthat-mcp-stdio --help` lists its two.
+
+Startup diagnostics name both forms, so an error is actionable whichever one you reached for:
+
+```
+Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) is required when NOTEDTHAT_STORAGE_BACKEND=fs
+```
+
+## Passing secrets
+
+> **A command line is not private.** Arguments are visible to every user on the host through `ps`,
+> are recorded in shell history, and are kept in `docker inspect` output for the life of the
+> container. Prefer the environment variable — or a secret manager — for `--api-token`,
+> `--webdav-password`, `--s3-access-key-id`, `--s3-secret-access-key`, `--qdrant-api-key`,
+> `--embedding-api-key` and `--token`. The flags exist for local development and one-off runs.
+
+`--help` never prints a credential's value. It names each setting's variable and, for
+non-credentials, shows the value currently in effect; for the settings above it shows the variable
+name alone.
+
+## The one exception: `RUST_LOG`
+
+`RUST_LOG` has no flag. It is read by `tracing-subscriber` rather than by NotedThat's own
+configuration, and it is a convention shared across the Rust ecosystem, so it stays where every
+other Rust program keeps it. Every other setting on this page has a flag.
 
 Which storage variables are required depends on the selected backend — see
 [Storage backend](#storage-backend).
@@ -15,59 +56,63 @@ Which storage variables are required depends on the selected backend — see
 These must be set. The server exits with a non-zero status and a descriptive error message if any
 are missing or invalid.
 
-| Variable | Type | Description | Example |
-|----------|------|-------------|---------|
-| `NOTEDTHAT_API_TOKEN` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A read request may omit it only for its configured manifest `public_read` capability. | `s3cr3t-token` |
-| `NOTEDTHAT_WEBDAV_USERNAME` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
-| `NOTEDTHAT_WEBDAV_PASSWORD` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
-| `NOTEDTHAT_KBS` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
+| Variable | Flag | Type | Description | Example |
+|----------|------|------|-------------|---------|
+| `NOTEDTHAT_API_TOKEN` | `--api-token` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A read request may omit it only for its configured manifest `public_read` capability. | `s3cr3t-token` |
+| `NOTEDTHAT_WEBDAV_USERNAME` | `--webdav-username` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
+| `NOTEDTHAT_WEBDAV_PASSWORD` | `--webdav-password` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
+| `NOTEDTHAT_KBS` | `--kbs` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
 
 ## Optional environment variables
 
 These have defaults and can be omitted.
 
-| Variable | Type | Default | Description |
-|----------|------|---------|-------------|
-| `NOTEDTHAT_LISTEN_ADDR` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
-| `NOTEDTHAT_LOG_FORMAT` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
-| `RUST_LOG` | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
-| NOTEDTHAT_MAX_PATCHABLE_SIZE | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
-| `NOTEDTHAT_UPLOAD_TMP_DIR` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+| Variable | Flag | Type | Default | Description |
+|----------|------|------|---------|-------------|
+| `NOTEDTHAT_LISTEN_ADDR` | `--listen-addr` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
+| `NOTEDTHAT_LOG_FORMAT` | `--log-format` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
+| `RUST_LOG` | *(none — see above)* | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
+| `NOTEDTHAT_MAX_PATCHABLE_SIZE` | `--max-patchable-size` | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
+| `NOTEDTHAT_UPLOAD_TMP_DIR` | `--upload-tmp-dir` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
 
 ## Storage backend
 
 NotedThat keeps objects either in an S3-compatible object store or in a local directory tree.
 One backend is active per process, chosen at startup.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `NOTEDTHAT_STORAGE_BACKEND` | No | `s3` | `s3` or `fs`. Any other value is a startup error — it is not silently defaulted, because pointing the server at the wrong store produces a deployment that looks healthy while serving nothing. |
-| `NOTEDTHAT_S3_REGION` | Yes, when `s3` | — | AWS region. Required even with a custom endpoint. |
-| `NOTEDTHAT_S3_ACCESS_KEY_ID` | Yes, when `s3` | — | Access key ID. No credential chain is consulted; this value is used directly. |
-| `NOTEDTHAT_S3_SECRET_ACCESS_KEY` | Yes, when `s3` | — | Secret access key for the key ID above. |
-| `NOTEDTHAT_S3_ENDPOINT_URL` | No | (AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage and R2. |
-| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. |
-| `NOTEDTHAT_FS_ROOT` | Yes, when `fs` | — | Absolute path of the storage root. |
-| `NOTEDTHAT_FS_METADATA` | No | `sidecar` | Where per-object metadata is kept. `sidecar` is the only accepted value today. |
-| `NOTEDTHAT_FS_FILE_MODE` | No | `0644` | Octal mode for created object files. |
-| `NOTEDTHAT_FS_DIR_MODE` | No | `0755` | Octal mode for created directories. |
-| `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES` | No | `false` | Start even on a filesystem that folds case or normalizes Unicode. See the warning below. |
+| Variable | Flag | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `NOTEDTHAT_STORAGE_BACKEND` | `--storage-backend` | No | `s3` | `s3` or `fs`. Any other value is a startup error — it is not silently defaulted, because pointing the server at the wrong store produces a deployment that looks healthy while serving nothing. |
+| `NOTEDTHAT_S3_REGION` | `--s3-region` | Yes, when `s3` | — | AWS region. Required even with a custom endpoint. |
+| `NOTEDTHAT_S3_ACCESS_KEY_ID` | `--s3-access-key-id` | Yes, when `s3` | — | Access key ID. No credential chain is consulted; this value is used directly. |
+| `NOTEDTHAT_S3_SECRET_ACCESS_KEY` | `--s3-secret-access-key` | Yes, when `s3` | — | Secret access key for the key ID above. |
+| `NOTEDTHAT_S3_ENDPOINT_URL` | `--s3-endpoint-url` | No | (AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage and R2. |
+| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `--s3-force-path-style` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. |
+| `NOTEDTHAT_FS_ROOT` | `--fs-root` | Yes, when `fs` | — | Absolute path of the storage root. |
+| `NOTEDTHAT_FS_METADATA` | `--fs-metadata` | No | `sidecar` | Where per-object metadata is kept. `sidecar` is the only accepted value today. |
+| `NOTEDTHAT_FS_FILE_MODE` | `--fs-file-mode` | No | `0644` | Octal mode for created object files. |
+| `NOTEDTHAT_FS_DIR_MODE` | `--fs-dir-mode` | No | `0755` | Octal mode for created directories. |
+| `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES` | `--fs-allow-lossy-names` | No | `false` | Start even on a filesystem that folds case or normalizes Unicode. See the warning below. |
 
-### Variables belonging to the unselected backend are rejected
+### Settings belonging to the unselected backend are rejected
 
-Setting `NOTEDTHAT_FS_ROOT` while the `s3` backend is selected — including by leaving the
-selector unset — refuses startup rather than ignoring the variable, and the error names every
-conflicting variable at once:
+Supplying `NOTEDTHAT_FS_ROOT` or `--fs-root` while the `s3` backend is selected — including by
+leaving the selector unset — refuses startup rather than ignoring the setting, and the error names
+every conflicting one at once:
 
 ```
-Error: configuration error: NOTEDTHAT_STORAGE_BACKEND is fs, but these variables belong to the
-s3 backend and would be ignored: NOTEDTHAT_S3_REGION, NOTEDTHAT_S3_ACCESS_KEY_ID. Unset them or
-set NOTEDTHAT_STORAGE_BACKEND=s3 to start the server.
+Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is fs, but these
+settings belong to the s3 backend and would be ignored: NOTEDTHAT_S3_REGION (--s3-region),
+NOTEDTHAT_S3_ACCESS_KEY_ID (--s3-access-key-id). Unset them or set
+NOTEDTHAT_STORAGE_BACKEND=s3 to start the server.
 ```
 
 The alternative is an operator who believes their notes are on a disk that nothing is reading.
-**An empty value is still a value** — `NOTEDTHAT_S3_REGION=` counts as set, matching how removed
-variables are checked. Note this if you pass variables through Compose with the `${VAR-}` form.
+The check is over resolved values, so a flag counts exactly as a variable does.
+
+**An empty value is still a value** — both `NOTEDTHAT_S3_REGION=` and `--s3-region ""` count as
+supplied, matching how removed settings are checked. Note this if you pass variables through
+Compose with the `${VAR-}` form.
 
 `AWS_*` variables are never considered: the S3 client uses the credentials given above and never
 consults the ambient credential chain, so ambient AWS variables have no effect either way.
@@ -263,6 +308,25 @@ RUST_LOG=info,notedthat=debug
 > these variables manually or use a tool like [direnv](https://direnv.net/) to load them
 > automatically when you enter the project directory.
 
+The same configuration as one command, with nothing exported:
+
+```sh
+notedthat-server \
+  --api-token dev-token-please-change \
+  --kbs notes,scratch \
+  --listen-addr 127.0.0.1:8080 \
+  --s3-endpoint-url http://127.0.0.1:8333 \
+  --s3-region us-east-1 \
+  --s3-access-key-id any \
+  --s3-secret-access-key any \
+  --s3-force-path-style \
+  --webdav-username webdav-user-please-change \
+  --webdav-password webdav-pass-please-change
+```
+
+`--s3-force-path-style` takes no value when you mean `true`; write `--s3-force-path-style=false` to
+turn it off for a run where the variable sets it. The same applies to `--fs-allow-lossy-names`.
+
 ## Example: AWS S3
 
 ```sh
@@ -289,7 +353,7 @@ export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 ```
 
 Do not also set `NOTEDTHAT_S3_*`; see
-[Variables belonging to the unselected backend are rejected](#variables-belonging-to-the-unselected-backend-are-rejected).
+[Settings belonging to the unselected backend are rejected](#settings-belonging-to-the-unselected-backend-are-rejected).
 
 ## Startup validation
 
@@ -298,16 +362,19 @@ required variable is missing, empty, or invalid, the process exits immediately w
 status code and prints a descriptive error to stderr. For example:
 
 ```
-Error: NOTEDTHAT_API_TOKEN is required
-Error: NOTEDTHAT_KBS must declare at least one knowledge base
-Error: configuration error: NOTEDTHAT_S3_REGION is required
-Error: NOTEDTHAT_LISTEN_ADDR is invalid: invalid socket address syntax
+Error: NOTEDTHAT_API_TOKEN (--api-token) is required
+Error: NOTEDTHAT_KBS (--kbs) must declare at least one knowledge base
+Error: configuration error: NOTEDTHAT_S3_REGION (--s3-region) is required
+Error: NOTEDTHAT_LISTEN_ADDR (--listen-addr) is invalid: invalid socket address syntax
 Error: invalid KB slug "My Notes": slugs must match [a-z0-9-]{1,40}
-Error: duplicate KB slug in NOTEDTHAT_KBS: "notes"
-Error: configuration error: NOTEDTHAT_STORAGE_BACKEND is invalid: expected "s3" or "fs", got "filesystem"
-Error: configuration error: NOTEDTHAT_FS_ROOT is required when NOTEDTHAT_STORAGE_BACKEND=fs
-Error: configuration error: NOTEDTHAT_FS_ROOT must be an absolute path, got 'data'
+Error: duplicate KB slug in NOTEDTHAT_KBS (--kbs): "notes"
+Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is invalid: expected "s3" or "fs", got "filesystem"
+Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) is required when NOTEDTHAT_STORAGE_BACKEND=fs
+Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) must be an absolute path, got 'data'
 ```
+
+Each names the environment variable and the flag that overrides it, because which one you used is
+not knowable from inside the check.
 
 With the filesystem backend, the storage root is checked and claimed straight after the staging
 directory, before any backend client is built:
@@ -326,8 +393,10 @@ and causes a non-zero exit before any listener binds.
 
 ### Removed variables
 
-Three variables from the era of separate listeners no longer exist. The server refuses to start
-while any of them is set, naming the replacement, rather than ignoring them:
+Three settings from the era of separate listeners no longer exist. The server refuses to start
+while any of them is supplied, naming the replacement, rather than ignoring them. Their flags are
+still accepted by the parser, and hidden from `--help`, so that reaching for one gets the same
+explanation rather than "unexpected argument":
 
 | Removed variable | Replacement |
 |---|---|
@@ -347,7 +416,7 @@ exposure change is not. See the upgrade notes in [API.md](API.md).
 
 ## What's not configurable in M2
 
-- **Tenant slug:** Hardcoded to `"default"`. There is no `NOTEDTHAT_TENANT_SLUG` variable.
+- **Tenant slug:** Hardcoded to `"default"`. There is no `NOTEDTHAT_TENANT_SLUG` variable and no flag.
 - **Upload buffer sizes:** Fixed at 16 MiB. Configurable buffer sizes are planned for a later
   release.
 - **Rate limits:** No built-in per-client or global rate limiter. Operators exposing anonymous
@@ -365,12 +434,12 @@ exposure change is not. See the upgrade notes in [API.md](API.md).
 
 NotedThat uses [Qdrant](https://qdrant.tech/) for vector search indexing (M4+). Qdrant v1.15.2 or later is required for server-side `qdrant/bm25` sparse inference.
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `NOTEDTHAT_QDRANT_URL` | Yes | | Qdrant gRPC endpoint (e.g. `http://127.0.0.1:6334`) |
-| `NOTEDTHAT_QDRANT_API_KEY` | No | | API key for authenticated Qdrant instances |
-| `NOTEDTHAT_QDRANT_TIMEOUT_MS` | No | `30000` | Per-RPC timeout in milliseconds. Must be > 0. |
-| `NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS` | No | `10000` | Connection-establishment timeout in milliseconds. Must be > 0. |
+| Variable | Flag | Required | Default | Description |
+|---|---|---|---|---|
+| `NOTEDTHAT_QDRANT_URL` | `--qdrant-url` | Yes | | Qdrant gRPC endpoint (e.g. `http://127.0.0.1:6334`) |
+| `NOTEDTHAT_QDRANT_API_KEY` | `--qdrant-api-key` | No | | API key for authenticated Qdrant instances |
+| `NOTEDTHAT_QDRANT_TIMEOUT_MS` | `--qdrant-timeout-ms` | No | `30000` | Per-RPC timeout in milliseconds. Must be > 0. |
+| `NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS` | `--qdrant-connect-timeout-ms` | No | `10000` | Connection-establishment timeout in milliseconds. Must be > 0. |
 
 > **Why the timeout is set explicitly.** `qdrant-client` defaults to **5 seconds
 > for every RPC**, and NotedThat did not override it. That is too tight for this
@@ -394,16 +463,16 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `EMBEDDING_ENDPOINT_URL` | Yes | | Base URL of the OpenAI-compatible endpoint (e.g. `https://api.openai.com`) |
-| `EMBEDDING_MODEL` | Yes | | Model name (e.g. `text-embedding-3-small`, `voyage-3`, `BAAI/bge-m3`) |
-| `EMBEDDING_API_KEY` | Yes | | Bearer token / API key for the endpoint |
-| `EMBEDDING_DIMENSIONS` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
-| `EMBEDDING_BATCH_SIZE` | No | `32` | Number of text chunks per HTTP embedding request |
-| `EMBEDDING_TIMEOUT_MS` | No | `30000` | Per-request HTTP timeout (milliseconds) |
-| `EMBEDDING_MAX_RETRIES` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
-| `EMBEDDING_MAX_INPUT_TOKENS` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
+| Variable | Flag | Required | Default | Description |
+|---|---|---|---|---|
+| `EMBEDDING_ENDPOINT_URL` | `--embedding-endpoint-url` | Yes | | Base URL of the OpenAI-compatible endpoint (e.g. `https://api.openai.com`) |
+| `EMBEDDING_MODEL` | `--embedding-model` | Yes | | Model name (e.g. `text-embedding-3-small`, `voyage-3`, `BAAI/bge-m3`) |
+| `EMBEDDING_API_KEY` | `--embedding-api-key` | Yes | | Bearer token / API key for the endpoint |
+| `EMBEDDING_DIMENSIONS` | `--embedding-dimensions` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
+| `EMBEDDING_BATCH_SIZE` | `--embedding-batch-size` | No | `32` | Number of text chunks per HTTP embedding request |
+| `EMBEDDING_TIMEOUT_MS` | `--embedding-timeout-ms` | No | `30000` | Per-request HTTP timeout (milliseconds) |
+| `EMBEDDING_MAX_RETRIES` | `--embedding-max-retries` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
+| `EMBEDDING_MAX_INPUT_TOKENS` | `--embedding-max-input-tokens` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
 
 ### Examples
 
@@ -510,10 +579,10 @@ the stdio transport. It is always mounted as streamable HTTP at `POST /mcp` on t
 
 ### MCP HTTP environment variables
 
-| Variable | Type | Default | Description |
-|----------|------|---------|-------------|
-| `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` | comma-separated strings | (unset) | Allowed `Origin` header values. When unset or empty, defaults to `["null"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
-| `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
+| Variable | Flag | Type | Default | Description |
+|----------|------|------|---------|-------------|
+| `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` | `--mcp-http-allowed-origins` | comma-separated strings | (unset) | Allowed `Origin` header values. When unset or empty, defaults to `["null"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
+| `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | `--mcp-http-allowed-hosts` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
 
 `NOTEDTHAT_API_TOKEN` is reused for MCP HTTP Bearer authentication. Every request to `POST /mcp`
 must present this token in an `Authorization: Bearer` header.
@@ -567,13 +636,17 @@ NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=mcp.example.com
 
 ## MCP stdio client (`notedthat-mcp-stdio`)
 
-The `notedthat-mcp-stdio` binary is configured exclusively via environment variables. It refuses to start if either variable is missing, empty (after trimming whitespace), or if `NOTEDTHAT_URL` is not a valid http/https URL.
+The `notedthat-mcp-stdio` binary takes both settings either way — `--url` and `--token`, or the variables beside them, with the flag winning. This matters for MCP client configuration files, which often make passing arguments to a child process easier than setting variables for it. It refuses to start if either setting is unsupplied, empty (after trimming whitespace), or if the URL is not a valid http/https URL.
+
+```json
+{ "command": "notedthat-mcp-stdio", "args": ["--url", "http://localhost:8080"], "env": { "NOTEDTHAT_TOKEN": "..." } }
+```
 
 Install it with `cargo install notedthat`, which ships both this binary and `notedthat-server`.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NOTEDTHAT_URL` | Yes | HTTP base URL of the running `notedthat-server` (e.g., `http://localhost:8080`). Trailing slash is stripped automatically. |
-| `NOTEDTHAT_TOKEN` | Yes | Bearer token matching the server's `NOTEDTHAT_API_TOKEN`. Whitespace is trimmed; empty-after-trim is rejected. |
+| Variable | Flag | Required | Description |
+|----------|------|----------|-------------|
+| `NOTEDTHAT_URL` | `--url` | Yes | HTTP base URL of the running `notedthat-server` (e.g., `http://localhost:8080`). Trailing slash is stripped automatically. |
+| `NOTEDTHAT_TOKEN` | `--token` | Yes | Bearer token matching the server's `NOTEDTHAT_API_TOKEN`. Whitespace is trimmed; empty-after-trim is rejected. |
 
 Note: `NOTEDTHAT_TOKEN` (MCP client) is distinct from the server-side `NOTEDTHAT_API_TOKEN`. The MCP client sends `NOTEDTHAT_TOKEN` as a `Bearer` header to the server, which validates it against `NOTEDTHAT_API_TOKEN`.

@@ -30,6 +30,7 @@ dist = true
 notedthat-server = { path = "../notedthat-server", version = "0.3.0" }
 notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.3.0" }
 anyhow.workspace = true
+clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 # The suites that drive the real binaries live here, because Cargo sets

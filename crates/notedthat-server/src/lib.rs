@@ -2,6 +2,7 @@
 //! See `docs/CONFIGURATION.md` for env var reference.
 #![deny(missing_docs)]
 
+pub mod cli;
 pub mod config;
 pub mod provision;
 pub mod run;
