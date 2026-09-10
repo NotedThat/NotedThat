@@ -14,7 +14,8 @@
 //! cargo test -p notedthat-storage-fs --locked --test storage_integration_s3 -- --include-ignored
 //! ```
 //!
-//! **One container for the whole suite.** This used to be one container per test
+//! **One container while scenarios overlap in time**, which under this suite's default
+//! parallelism means one container for the run. This used to be one container per test
 //! function, and CI's integration job has a fifteen-minute budget whose breach *cancels*
 //! the job and silently skips release-plz. The container is shared through a `Weak`
 //! rather than a `static` holding it: `testcontainers` removes a container on `Drop` and
@@ -22,6 +23,18 @@
 //! outlives the test run. Held as a `Weak`, it is started by whichever test needs it
 //! first, shared by every test overlapping that one, and removed when the last of them
 //! finishes.
+//!
+//! That lifetime is the union of the tests holding an `Arc`, so it has gaps wherever the
+//! running scenarios all finish before the next one asks for the container — and
+//! `--test-threads=1` is nothing but gaps: every scenario starts and removes one of its
+//! own, twenty boots plus twenty removals, which is worse than the arrangement this
+//! replaced. **Do not run this suite serialized**, which is unfortunately the first flag
+//! anyone reaches for when debugging a container test.
+//!
+//! A strong reference held for the binary's lifetime would close those gaps, but libtest
+//! gives a test binary no teardown hook to drop it from, so it would reinstate exactly
+//! the leak the `Weak` exists to avoid: a container left running after the run. The gaps
+//! are the cheaper of the two, so they are written down here instead of removed.
 
 #[path = "support/integration_scenarios.rs"]
 mod scenarios;
@@ -89,6 +102,10 @@ async fn start_seaweedfs() -> Seaweed {
 ///
 /// The lock is held across the start so that a cold suite boots one container rather than
 /// one per test that raced to find the slot empty.
+///
+/// `Weak`, so the container's lifetime is the union of the scenarios holding an `Arc` and
+/// nothing lingers past the last one. See the module comment for what that costs when the
+/// scenarios do not overlap.
 static SHARED: tokio::sync::Mutex<Weak<Seaweed>> = tokio::sync::Mutex::const_new(Weak::new());
 
 async fn shared_seaweed() -> Arc<Seaweed> {
