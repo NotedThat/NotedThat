@@ -192,3 +192,66 @@ async fn a_page_may_come_back_short_while_still_reporting_a_cursor() {
         "30 keys at 5 per page needs at least 6 requests, took {requests}"
     );
 }
+
+/// A knowledge base of `count` objects under one prefix, entirely outside the
+/// grant, so a disjoint request has a whole scan budget to burn if it is not
+/// recognised as disjoint.
+async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axum::Router {
+    let notes = KbSlug::try_new("notes").expect("valid slug");
+    let storage = Arc::new(InMemoryStorage::default());
+    for index in 0..count {
+        let key = format!("{prefix}/{index:06}.md");
+        storage
+            .put_object(
+                &notes,
+                &ObjectPath::try_from(key.as_str()).expect("valid path"),
+                Bytes::from("body"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("seed");
+    }
+
+    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+    build_router(AppState {
+        storage,
+        declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
+        access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
+        bearer_token: Arc::new("token".to_string()),
+        max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
+        indexer_tx,
+        searcher: Arc::new(NoopSearcher),
+    })
+}
+
+#[tokio::test]
+async fn a_prefix_that_only_shares_text_with_the_grant_is_disjoint_not_scanned() {
+    // Given — `public/**` granted, and a sibling prefix that shares the *text*
+    // `public` but not the segment. Seeded past the scan budget
+    // (`LIST_SCAN_MAX_CALLS` × `LIST_SCAN_PAGE`) so an unrecognised disjoint
+    // request would spend all of it.
+    let app = one_prefix_app(20_001, "public-internal", public_list_grant()).await;
+
+    // When
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/knowledgebases/notes?prefix=public-internal/")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    // Then — no key under `public-internal/` can satisfy `public/**`, so the
+    // answer is a complete empty page. `truncated: true` with a live cursor here
+    // would send a client walking the whole knowledge base to receive nothing.
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert_eq!(body["objects"].as_array().expect("objects").len(), 0);
+    assert_eq!(body["truncated"], serde_json::json!(false));
+    assert_eq!(body["next_cursor"], serde_json::Value::Null);
+}

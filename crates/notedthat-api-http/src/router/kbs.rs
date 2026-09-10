@@ -1,6 +1,6 @@
 //! Knowledgebase-level routes: list KBs and list objects within a KB.
 
-use crate::authz::{KbAccess, visible_in_listing};
+use crate::authz::{KbAccess, ScanScope, effective_prefix, visible_in_listing};
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
@@ -206,37 +206,6 @@ async fn list_filtered_objects(
         truncated: true,
         next_cursor: page_cursor,
     })
-}
-
-/// Where a filtered listing should ask storage to start.
-enum ScanScope {
-    /// Scan from this prefix; `None` means the whole knowledge base.
-    From(Option<String>),
-    /// The caller's prefix and the grant's scope cannot overlap, so no key can
-    /// match and storage need not be asked at all.
-    Disjoint,
-}
-
-/// Narrow the backend scan to the overlap of the caller's prefix and the grant's.
-///
-/// Without this, a grant scoped to `public/**` would scan a whole knowledge base
-/// to return one page of it — the difference between a feature and a trap on a
-/// large deployment.
-fn effective_prefix(requested: Option<&str>, hint: Option<&str>) -> ScanScope {
-    match (requested, hint) {
-        (None, None) => ScanScope::From(None),
-        (Some(prefix), None) => ScanScope::From(Some(prefix.to_string())),
-        (None, Some(hint)) => ScanScope::From(Some(hint.to_string())),
-        // Whichever is longer is the tighter bound, and it is only a valid bound
-        // when one extends the other.
-        (Some(prefix), Some(hint)) if prefix.starts_with(hint) => {
-            ScanScope::From(Some(prefix.to_string()))
-        }
-        (Some(prefix), Some(hint)) if hint.starts_with(prefix) => {
-            ScanScope::From(Some(hint.to_string()))
-        }
-        (Some(_), Some(_)) => ScanScope::Disjoint,
-    }
 }
 
 fn empty_page() -> ListResponse {
