@@ -1,4 +1,5 @@
-use super::super::helpers::{body_limit_usize, lookup_kb, object_location, parse_path};
+use super::super::helpers::{body_limit_usize, object_location, parse_path};
+use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
@@ -7,7 +8,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError};
+use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
 
 pub(in crate::router) async fn put_object(
     State(state): State<AppState>,
@@ -20,8 +21,12 @@ pub(in crate::router) async fn put_object(
         request_id: request_id.clone(),
     };
 
-    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    // Authorized before the body is read or staged, so a denied write
+    // never spools bytes to memory or disk.
+    access.require(Verb::Write, path.as_str()).map_err(&err)?;
+    let kb = access.kb().clone();
 
     let content_length = req
         .headers()
@@ -97,8 +102,12 @@ pub(in crate::router) async fn delete_object(
         request_id: request_id.clone(),
     };
 
-    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    // Authorized before the body is read or staged, so a denied write
+    // never spools bytes to memory or disk.
+    access.require(Verb::Delete, path.as_str()).map_err(&err)?;
+    let kb = access.kb().clone();
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     notedthat_write::commit_delete(

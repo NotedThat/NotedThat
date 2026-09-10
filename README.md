@@ -32,19 +32,37 @@ A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and We
 
 All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
-## Anonymous public reads
+## Access rules
 
 Each knowledge base has its own S3 bucket, and that bucket is the policy boundary. Its
-`.notedthat/manifest.json` may add a `public_read` array with independent `discover`, `browse`,
-`content`, and `search` capabilities. Missing or empty means private. This does not create an
-anonymous write mode: every HTTP and WebDAV mutation remains authenticated, valid credentials
-retain full access, and supplied invalid credentials receive `401` rather than anonymous access.
+`.notedthat/manifest.json` carries an `access` array of allow-only rules, each naming a principal
+(`anyone` for callers with no credential, `signed-in` for the token holder), the verbs it grants
+(`list`, `read`, `write`, `delete`, `search`), and optionally the object-key globs it applies
+`under`:
 
-The server reads policies once during startup; restart it after changing a manifest. Public-read
-policy does not apply to MCP authentication, does not support namespace or path-prefix grants, and
-does not add an application rate limiter. Configure reverse-proxy rate and burst limits before
-exposing anonymous search. See [Configuration](docs/CONFIGURATION.md#manifest-controlled-anonymous-reads)
-for the manifest and operational procedure.
+```json
+"access": [
+  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+]
+```
+
+Private by default. The rules govern the HTTP API, WebDAV, MCP and the browse pages from one
+evaluator, and they bind the token holder as well as anonymous callers — so a read-only deployment
+is expressible, and so is a mistake that locks you out. `.notedthat` is the exception that makes
+that recoverable: unreachable for `anyone`, always reachable for `signed-in`.
+
+Granting `write` or `delete` to `anyone` refuses startup. The server reads policies once at
+startup; restart it after editing a manifest. There is no application rate limiter — configure
+reverse-proxy rate and burst limits before exposing anonymous search. See
+[Configuration](docs/CONFIGURATION.md#manifest-access-rules) for the full model and the upgrade
+path from the removed `public_read` field.
+
+## Browse surface
+
+`/browse` serves plain server-rendered HTML directory listings of whatever the caller may read —
+no JavaScript, no accounts, no editing. File links point at the object's existing `/api/v1` URL
+rather than a second download path. See the [API reference](docs/API.md#browse-surface).
 
 ## Running locally
 

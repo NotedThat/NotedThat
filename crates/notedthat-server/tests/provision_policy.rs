@@ -1,9 +1,7 @@
 //! Startup manifest-policy loading tests.
 
 use notedthat_api_http::testing::InMemoryStorage;
-use notedthat_core::{
-    KbManifest, KbSlug, PublicReadCapability, PublicReadPolicy, Storage, TenantSlug,
-};
+use notedthat_core::{AccessPolicy, KbManifest, KbSlug, Principal, Storage, TenantSlug, Verb};
 use notedthat_indexer::{QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore};
 use notedthat_server::provision::provision_kbs;
 use std::sync::Arc;
@@ -40,7 +38,7 @@ async fn provision_kbs_returns_policy_loaded_from_existing_manifest() {
         "kb_slug": "notes",
         "display_name": "Notes",
         "created_at": 1_700_000_000_i64,
-        "public_read": ["content"]
+        "access": [{ "who": "anyone", "may": ["read"] }]
     }))
     .expect("valid public manifest");
     storage
@@ -66,7 +64,7 @@ async fn provision_kbs_returns_policy_loaded_from_existing_manifest() {
         policies
             .get("notes")
             .expect("declared KB has a policy")
-            .allows(PublicReadCapability::Content)
+            .allows(Principal::Anyone, Verb::Read, "public.md")
     );
 }
 
@@ -123,7 +121,7 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
         "kb_slug": "notes",
         "display_name": "Notes",
         "created_at": 1_700_000_000_i64,
-        "public_read": ["content"]
+        "access": [{ "who": "anyone", "may": ["read"] }]
     }))
     .expect("valid public manifest");
     storage
@@ -141,7 +139,7 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
     )
     .await
     .expect("initial provisioning succeeds");
-    manifest.public_read = PublicReadPolicy::default();
+    manifest.access = AccessPolicy::empty();
     storage
         .write_manifest(&kb, &manifest)
         .await
@@ -165,12 +163,70 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
         first_snapshot
             .get("notes")
             .expect("first policy exists")
-            .allows(PublicReadCapability::Content)
+            .allows(Principal::Anyone, Verb::Read, "public.md")
     );
     assert!(
-        restarted_snapshot
+        !restarted_snapshot
             .get("notes")
             .expect("restarted policy exists")
-            .is_private()
+            .allows(Principal::Anyone, Verb::Read, "public.md"),
+        "a restart is what picks up a manifest edit"
+    );
+}
+
+#[tokio::test]
+async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access() {
+    // Given: a manifest written before D51, carrying the removed `public_read`
+    // field. The field is gone from the struct, serde ignores unknown keys, and
+    // no `access` field means the default — so the knowledge base comes up with
+    // its credentialed reach intact and its public grants silently gone.
+    //
+    // This is a deliberate migration choice, not an oversight, and it is exactly
+    // the sort of thing that should be pinned rather than remembered: an
+    // operator upgrading a public knowledge base gets a private one, and the
+    // release notes are the only warning.
+    let storage = InMemoryStorage::default();
+    let tenant = TenantSlug::default();
+    let kb = KbSlug::try_new("notes").expect("valid slug");
+    storage.ensure_bucket(&kb).await.expect("bucket created");
+    let manifest: KbManifest = serde_json::from_value(serde_json::json!({
+        "notedthat_version": "0.3.1",
+        "manifest_version": 1,
+        "tenant_slug": "default",
+        "kb_slug": "notes",
+        "display_name": "Notes",
+        "created_at": 1_700_000_000_i64,
+        "public_read": ["discover", "browse", "content", "search"]
+    }))
+    .expect("a pre-D51 manifest still parses");
+    storage
+        .write_manifest(&kb, &manifest)
+        .await
+        .expect("manifest stored");
+
+    // When
+    let policies = provision_kbs(
+        &storage,
+        &tenant,
+        std::slice::from_ref(&kb),
+        &provisioner(),
+        "test-model",
+        3,
+        None,
+    )
+    .await
+    .expect("provisioning succeeds rather than refusing the old field");
+
+    // Then
+    let policy = policies.get("notes").expect("declared KB has a policy");
+    for verb in Verb::ALL {
+        assert!(
+            !policy.allows(Principal::Anyone, verb, "public.md"),
+            "the removed field must grant nothing: {verb:?}"
+        );
+    }
+    assert!(
+        policy.allows(Principal::SignedIn, Verb::Write, "public.md"),
+        "credentialed access must survive the upgrade untouched"
     );
 }

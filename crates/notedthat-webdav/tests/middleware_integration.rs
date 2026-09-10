@@ -163,24 +163,23 @@ impl Storage for MockStorage {
 
 fn make_state() -> WebDavState {
     let (tx, _rx) = mpsc::channel(100);
+    let declared = BTreeMap::from([
+        (
+            "notes".to_string(),
+            KbSlug::try_new("notes").expect("valid slug"),
+        ),
+        (
+            "scratch".to_string(),
+            KbSlug::try_new("scratch").expect("valid slug"),
+        ),
+    ]);
     WebDavState {
         username: Arc::new("testuser".to_string()),
         password: Arc::new("testpass".to_string()),
         storage: Arc::new(MockStorage),
         staging_config: notedthat_core::StagingConfig::default(),
-        declared_kbs: Arc::new({
-            let mut m = BTreeMap::new();
-            m.insert(
-                "notes".to_string(),
-                KbSlug::try_new("notes").expect("valid slug"),
-            );
-            m.insert(
-                "scratch".to_string(),
-                KbSlug::try_new("scratch").expect("valid slug"),
-            );
-            m
-        }),
-        public_read_policies: Arc::new(BTreeMap::new()),
+        declared_kbs: Arc::new(declared.clone()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared)),
         indexer_tx: tx,
     }
 }

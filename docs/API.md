@@ -10,9 +10,7 @@ responses and plain bytes for object bodies.
 All API data-plane routes are prefixed with `/api/v1/`. WebDAV is mounted at `/webdav`, and
 streamable MCP is mounted at `/mcp`. Health probes (`/healthz`, `/readyz`) and the LLM
 navigation document (`/llms.txt`) sit at the root with no version prefix.
-`/browse/...` is reserved for a future browse surface. It is routed but unimplemented: any
-method returns `501 Not Implemented` with an `error` of `not_implemented`, so the reservation
-is distinguishable from a mistyped path.
+`/browse/...` serves human-facing HTML directory listings — see [Browse surface](#browse-surface).
 
 ```
 http://HOST:PORT/api/v1/knowledgebases/...
@@ -31,6 +29,52 @@ includes credentials, configured knowledge-base names, or deployment-specific de
 Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
 The document explains when `/api/v1/` discovery, object, and search operations require authentication
 and when a configured anonymous capability may be used without a header.
+
+## Browse surface
+
+`/browse` serves server-rendered HTML directory listings for people with a browser. It is a
+read-only view over the same storage and the same [access rules](#manifest-access-rules) as every
+other surface — not a document manager. There is no JavaScript, no accounts, no editing and no
+search UI.
+
+| Request | Response |
+| --- | --- |
+| `GET /browse` | `308` redirect to `/browse/` |
+| `GET /browse/` | Index of knowledge bases you can see |
+| `GET /browse/{kb_slug}` | `307` redirect to `/browse/{kb_slug}/` |
+| `GET /browse/{kb_slug}/` | The knowledge base's top level |
+| `GET /browse/{kb_slug}/{prefix}/` | One directory level |
+| `GET /browse/{kb_slug}/{key}` | `303` redirect to the object's `/api/v1` URL, or `307` to the slashed form if it is a folder |
+| Any other method | `405` with an `Allow` header |
+
+Directory paths use ordinary multi-segment URLs, unlike the machine API's single percent-encoded
+segment. `HEAD` behaves as `GET`.
+
+**Object links point at `/api/v1/knowledgebases/{kb_slug}/{path}`** — the existing representation.
+There is no second download path, and Markdown is not rendered to HTML.
+
+**What a row means.** Directories are synthesised from object keys; storage has no directories
+(D40). A folder appears exactly when at least one key you can see sits beneath it. A file's name is
+a link when you hold `read` on that key, and plain text when you do not — with glob-scoped rules a
+single directory can be listable while only part of it is readable. Folders show `—` for size and
+date rather than an invented value. `.notedthat` is never rendered, for any caller.
+
+**Authentication.** Anonymous by default. A valid `Authorization: Bearer` header browses as the
+credential holder; a supplied credential that does not verify is `401`, never a downgrade to a
+public view. Browsers cannot send a Bearer token, so credentialed browsing is currently a `curl`
+affair.
+
+**Very large directories.** A page reads at most 10 000 keys. Past that it renders what it read and
+says where the listing stops, rather than failing — keys arrive in lexicographic order, so a partial
+page is a correct prefix of the truth. (WebDAV `PROPFIND` answers `507` in the same situation,
+because a sync client would mistake a partial listing for a complete one and delete the difference.)
+
+**For proxy operators.** Responses carry `Cache-Control: no-store` and `Vary: Authorization`:
+anonymous and credentialed callers share a URL and see different pages, so a cached anonymous copy
+served to a credentialed caller — or the reverse — would be a disclosure. Pages also carry
+`X-Content-Type-Options: nosniff`, a restrictive `Content-Security-Policy`, and
+`<meta name="robots" content="noindex, nofollow">` so an accidentally public knowledge base does not
+land in a search index by default.
 
 ## Authentication
 
@@ -51,29 +95,85 @@ through its manifest. A client must omit `Authorization` only when it knows the 
 capability is configured: a supplied malformed or invalid credential always returns `401
 unauthorized` and never falls back to anonymous access.
 
-### Manifest-controlled anonymous reads
+### Manifest access rules
 
-The optional version-1 manifest field `public_read` is an array of independent capability names.
-Missing or empty means private. The policy is scoped to one knowledge base (one bucket), not to a
-namespace or path prefix.
+Each knowledge base's `.notedthat/manifest.json` carries an `access` array. Each rule names a
+principal, the verbs it grants, and the object-key patterns it applies to:
 
-| Capability | Anonymous route | Meaning |
-| --- | --- | --- |
-| `discover` | `GET /api/v1/knowledgebases` | Includes that knowledge base in discovery |
-| `browse` | `GET /api/v1/knowledgebases/{kb_slug}` | Lists its object metadata |
-| `content` | `GET` or `HEAD /api/v1/knowledgebases/{kb_slug}/{path}` | Reads one object's bytes or metadata |
-| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` | Searches that knowledge base |
+```json
+"access": [
+  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "anyone",    "may": ["search"] },
+  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+]
+```
 
-Capabilities do not imply one another. In particular, anonymous search can return matching object
-paths and snippets while browse and content remain private. Anonymous callers never see
-`.notedthat` or its descendants through reads, listings, search, or WebDAV `PROPFIND`.
+| Principal | Who it is |
+| --- | --- |
+| `anyone` | A caller supplying no `Authorization` header |
+| `signed-in` | A caller holding the configured Bearer token (or WebDAV Basic credential) |
 
-All mutations remain authenticated, including HTTP `PUT`, `PATCH`, `POST` write actions, and
-`DELETE`, plus WebDAV `PUT`, `DELETE`, `MOVE`, `COPY`, and `MKCOL`. Public-read policy does not
-apply to MCP: both MCP transports continue to require Bearer authentication. Policies are loaded
-at startup and require a server restart after a manifest edit; there is no hot reload, namespace
-grant, or built-in rate-limit setting. Operators enabling anonymous search must configure reverse-
-proxy rate and burst controls.
+| Verb | What it allows |
+| --- | --- |
+| `list` | `GET /api/v1/knowledgebases/{kb_slug}`, WebDAV `PROPFIND`, browse pages |
+| `read` | `GET` or `HEAD` on an object |
+| `write` | `PUT`, `PATCH`, `POST .../replace/...`, WebDAV `PUT` |
+| `delete` | `DELETE` |
+| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` |
+
+Rules are **allow-only**: private by default, and the answer is the union of every matching rule, so
+their order never changes a decision. Omitting `under` grants the whole knowledge base.
+
+Pattern syntax: `*` matches within one path segment and never `/`; `**` matches whole segments and
+must be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. `public/**`
+matches the key `public` and everything beneath it. There is no escape character.
+
+A knowledge base appears in `GET /api/v1/knowledgebases` — and on the browse index — when the caller
+holds any grant in it. There is no separate discovery capability.
+
+**Verbs do not imply one another, and `search` is filtered by its own patterns rather than by
+`read`.** That is deliberate, and it has a consequence worth stating plainly: a broad `search` grant
+combined with a narrow `read` grant returns object paths, heading paths and preview text for keys
+the caller cannot fetch. Previews are content. An operator choosing that combination is publishing
+excerpts.
+
+**The rules bind the credential holder too.** A manifest can narrow what the configured token may
+do, and MCP holds that token, so a read-only MCP deployment is expressible — and a manifest mistake
+can lock an operator out of their own knowledge base. One thing is never revocable: `.notedthat` is
+unreachable for `anyone` and always reachable for `signed-in`, so a bad policy can be repaired by
+`PUT`ting a corrected manifest and restarting.
+
+Granting `write` or `delete` to `anyone` refuses startup rather than being honoured.
+
+Policies load once at startup and need a restart after a manifest edit — no hot reload — and there
+is no built-in rate limit. Operators enabling anonymous `search` must configure reverse-proxy rate
+and burst controls.
+
+If a manifest still carries the removed `public_read` field, it is ignored: the knowledge base comes
+up private to anonymous callers, with credentialed access unchanged.
+
+### Authorization failures
+
+| Situation | Status |
+| --- | --- |
+| No credential supplied, and the rules do not grant it | `404 not_found` — see below |
+| A credential supplied that does not verify | `401 unauthorized` — never downgraded to anonymous |
+| A valid credential the rules do not grant | `403 forbidden` |
+| The knowledge base is not declared | `404 not_found` — not an authorization answer |
+
+**An anonymous denial is `404`, and deliberately indistinguishable from an undeclared knowledge
+base** — same status, and the same error body. Access rules are allow-only and private by default,
+so any other status would be an oracle: a `401` for a declared-but-hidden knowledge base and a `404`
+for an undeclared one lets anyone willing to guess slugs enumerate a deployment's private knowledge
+bases, which is exactly what leaving them out of `GET /api/v1/knowledgebases` is meant to prevent.
+The same reasoning already governs `/browse`, and the two surfaces now agree.
+
+The cost is accepted rather than overlooked: an anonymous client is not told that a credential might
+change the answer. `401` keeps its narrower meaning — the credential is missing where one is
+unconditionally required, such as on any mutating route, or it was supplied and did not verify — and
+both of those come from the authentication layer, which knows nothing about any particular knowledge
+base. Use the `request_id` in the error body and the server logs to tell the two apart when
+diagnosing; that is where the distinction was moved to, not removed.
 
 **401 response when the token is missing or wrong:**
 
@@ -116,8 +216,8 @@ All error responses use the same JSON envelope:
 | HTTP status | `error` code | When it occurs |
 |-------------|--------------|----------------|
 | 400 | `invalid_request` | Malformed path, invalid KB slug, malformed `Range` header, or other bad input |
-| 401 | `unauthorized` | Missing or invalid `Authorization` header |
-| 404 | `not_found` | KB slug not declared, or object does not exist |
+| 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
+| 404 | `not_found` | KB slug not declared, object does not exist, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
@@ -381,11 +481,13 @@ curl http://localhost:8080/readyz
 
 List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sorted order.
 
-**Authentication:** A valid Bearer token returns every declared knowledge base. Without an
-`Authorization` header, this is anonymous discovery: the response contains only knowledge bases
-whose manifest grants `discover`. If no declared knowledge base grants `discover`, the request
-returns `401`. `HEAD` follows the same authorization policy as `GET`. A supplied invalid credential
-returns `401`.
+**Authentication:** The response lists the knowledge bases the caller can see — those whose access
+rules grant them anything at all. A valid Bearer token sees every declared knowledge base. If an
+anonymous caller can see none, the request returns `401` rather than an empty array: both disclose
+the same nothing, but `401` is the truthful answer to "may I look at this deployment". This is the
+one route that still answers `401` to an anonymous caller the rules refuse, and it can: it names no
+knowledge base, so there is no slug whose existence the status could disclose. Every route that does
+name one answers `404` instead. `HEAD` follows `GET`. A supplied invalid credential returns `401`.
 
 **Response:**
 
@@ -417,8 +519,10 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 List objects in a knowledge base. Supports optional prefix filtering and a result limit.
 
-**Authentication:** Required unless the client omits `Authorization` and this knowledge base's
-manifest grants `browse`. A supplied invalid credential returns `401`.
+**Authentication:** Requires the `list` verb. Keys the caller may not `list` are omitted, so a
+page can be shorter than `limit` — and can even be empty — while `truncated` is still `true`. Drive
+pagination from `next_cursor`, never from the number of objects returned. A supplied invalid
+credential returns `401`; a valid credential the rules do not grant returns `403`.
 
 **Path parameters:**
 
@@ -1093,7 +1197,7 @@ curl -sSf -X POST \
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
-| ANY | `/browse`, `/browse/{path}` | No | Reserved for the future browse surface; returns `501 Not Implemented` |
+| GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
 | HEAD | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Object metadata, no body |
@@ -1113,13 +1217,29 @@ NotedThat exposes a WebDAV read-write surface at `/webdav` on the same listener 
 and MCP. Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` /
 `NOTEDTHAT_WEBDAV_PASSWORD`).
 
-WebDAV supports the same optional manifest-controlled anonymous reads as the HTTP API. `discover`
-allows a root `PROPFIND` to reveal the knowledge base; `browse` allows `PROPFIND` within it; and
-`content` allows `GET` and `HEAD`. `search` has no WebDAV equivalent. Anonymous `OPTIONS` returns
-only the read methods allowed by the policy at its target path; authenticated `OPTIONS` returns the
-normal read-write method set. `.notedthat` and descendants stay hidden from anonymous direct
+WebDAV is governed by the same [access rules](#manifest-access-rules) as the HTTP API, mapped onto
+its own methods:
+
+| Method | Verb |
+| --- | --- |
+| `PROPFIND` | `list` |
+| `GET`, `HEAD` | `read` |
+| `PUT`, `MKCOL`, `COPY` | `write` |
+| `DELETE` | `delete` |
+| `MOVE` | `write` at the destination, `delete` at the source |
+| `OPTIONS` | none; it reports what the others allow |
+
+`PROPFIND` maps to `list` at every depth, including `Depth: 0` on a single file, where the HTTP
+API's `HEAD` maps to `read`. `PROPFIND` returns properties and never bytes, and a `list` grant
+already exposes a child's size, etag and mtime — so requiring `read` at `Depth: 0` would produce a
+listing whose own entries refused to describe themselves.
+
+`OPTIONS` reports the methods allowed for that caller at that path, so it now narrows for a
+restricted credential as well as for an anonymous one. `.notedthat` stays hidden from anonymous
 reads and `PROPFIND` responses. Supplying invalid Basic credentials returns `401` with a Basic
-challenge rather than falling back to anonymous access. All WebDAV writes remain authenticated.
+challenge rather than falling back to anonymous access; a valid credential the rules do not grant
+returns `403`. An unrecognised method is treated as a write, so an unauthenticated `PROPPATCH`
+answers `401` rather than advertising which methods are unimplemented.
 
 ### Path normalization and traversal rejection
 
@@ -1314,8 +1434,9 @@ returned to the operator instead of being made silently.
 container now exposes only `8080`. Terminate TLS once, in front of that port. Per-surface proxy
 rules that pointed at the old WebDAV or MCP ports must be removed.
 
-**`/browse` is reserved.** Any method under `/browse` returns `501 Not Implemented`. It is not a
-usable surface yet; do not route traffic to it.
+**`/browse` is a live surface.** Forward it like any other route. Its responses carry
+`Cache-Control: no-store` and `Vary: Authorization`, because anonymous and credentialed callers
+share a URL and see different pages — do not configure a proxy cache that ignores either header.
 
 ---
 

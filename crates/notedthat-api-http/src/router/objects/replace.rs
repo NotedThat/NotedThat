@@ -1,6 +1,5 @@
-use super::super::helpers::{
-    body_limit_usize, lookup_kb, object_location, parse_path, replace_conditionals,
-};
+use super::super::helpers::{body_limit_usize, object_location, parse_path, replace_conditionals};
+use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
@@ -9,7 +8,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError};
+use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -63,8 +62,12 @@ async fn replace_object(
         request_id: request_id.clone(),
     };
 
-    let kb = lookup_kb(&state, &kb_slug).map_err(&err)?;
     let path = parse_path(&object_path).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    // Authorized before the body is read or staged, so a denied write
+    // never spools bytes to memory or disk.
+    access.require(Verb::Write, path.as_str()).map_err(&err)?;
+    let kb = access.kb().clone();
     let json_cap_u64 = state
         .max_patchable_size
         .saturating_mul(2)

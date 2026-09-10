@@ -13,6 +13,14 @@ pub enum ApiError {
     /// The request lacked valid Bearer credentials.
     #[error("unauthorized")]
     Unauthorized,
+    /// The credential is valid, but the knowledge base's access policy does not
+    /// grant this operation on this key.
+    ///
+    /// Distinct from [`Self::Unauthorized`] on purpose: `401` tells a caller
+    /// that credentials might help, and `403` tells them that theirs are fine
+    /// and the answer is still no. D43 reserved this code for exactly this.
+    #[error("forbidden")]
+    Forbidden,
     /// Indexer queue was full while enqueueing an upsert (PUT/COPY).
     #[error("indexer upsert backpressure")]
     IndexerBackpressureUpsert,
@@ -165,6 +173,7 @@ impl ApiError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::IndexerBackpressureUpsert | Self::IndexerBackpressureTombstone => {
                 (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
             }
@@ -376,8 +385,8 @@ mod tests {
 
         crate::router::build_router(crate::state::AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
@@ -396,8 +405,8 @@ mod tests {
         kbs.insert(KB.to_string(), kb);
         crate::router::build_router(crate::state::AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
@@ -1114,8 +1123,8 @@ mod tests {
 
             crate::router::build_router(crate::state::AppState {
                 storage: Arc::new(crate::testing::InMemoryStorage::default()),
+                access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
                 declared_kbs: Arc::new(kbs),
-                public_read_policies: Arc::new(BTreeMap::new()),
                 bearer_token: Arc::new(TOKEN.to_string()),
                 max_body_size: 16 * 1024 * 1024,
                 max_patchable_size: 16 * 1024 * 1024,

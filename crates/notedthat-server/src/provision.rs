@@ -3,11 +3,12 @@
 //! See `SPECIFICATIONS.md` §6.12 provisioning steps and D39 (fail-fast startup).
 
 use notedthat_core::{
-    Error, KbManifest, KbSlug, PublicReadPolicy, Storage, TenantSlug, derive_bucket_name,
+    AccessPolicy, Error, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name,
     validate_bucket_name,
 };
 use notedthat_indexer::{ProvisionError, QdrantProvisioner};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
@@ -28,8 +29,8 @@ pub async fn provision_kbs(
     embedder_model: &str,
     embedder_dim: u32,
     embedder_endpoint_hint: Option<&str>,
-) -> Result<BTreeMap<String, PublicReadPolicy>, Error> {
-    let mut public_read_policies = BTreeMap::new();
+) -> Result<BTreeMap<String, Arc<AccessPolicy>>, Error> {
+    let mut access_policies = BTreeMap::new();
     for kb in kbs {
         validate_bucket_name(tenant, kb)?;
 
@@ -108,9 +109,22 @@ pub async fn provision_kbs(
                 "qdrant manifest cross-check failed; continuing startup"
             ),
         }
-        public_read_policies.insert(kb.as_str().to_string(), manifest.public_read.clone());
+        if manifest.access.is_empty() {
+            // Allow-only rules mean an empty array grants nothing to anyone. The
+            // knowledge base is inert but not unrecoverable — the credential
+            // holder still reaches `.notedthat` — and silently inert is worse
+            // than loud.
+            warn!(kb = %kb.as_str(), "ACCESS_RULES_EMPTY");
+        }
+        info!(
+            kb = %kb.as_str(),
+            rules = manifest.access.rules().len(),
+            anonymous = manifest.access.visible_in_listing(notedthat_core::Principal::Anyone),
+            "access policy loaded"
+        );
+        access_policies.insert(kb.as_str().to_string(), Arc::new(manifest.access.clone()));
     }
-    Ok(public_read_policies)
+    Ok(access_policies)
 }
 
 fn provision_error(err: &ProvisionError) -> Error {

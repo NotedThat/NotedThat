@@ -27,8 +27,8 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size,
         max_patchable_size: max_body_size,
@@ -186,40 +186,81 @@ async fn legacy_v1_routes_are_not_authenticated_before_404() {
 }
 
 #[tokio::test]
-async fn reserved_browse_paths_answer_501_without_authentication() {
-    for uri in ["/browse", "/browse/", "/browse/notes", "/browse/index.html"] {
+async fn browse_paths_render_html_without_authentication() {
+    // Given / When / Then — the surface that replaced the 501 reservation.
+    for (uri, expected) in [
+        ("/browse", StatusCode::PERMANENT_REDIRECT),
+        ("/browse/", StatusCode::OK),
+    ] {
         let response = app()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
 
+        assert_eq!(response.status(), expected, "{uri}");
         assert_eq!(
-            response.status(),
-            StatusCode::NOT_IMPLEMENTED,
-            "{uri} must announce the reservation rather than 404"
+            response
+                .headers()
+                .get("content-type")
+                .expect("content-type"),
+            "text/html; charset=utf-8",
+            "{uri}"
         );
         assert!(
             response.headers().contains_key("x-request-id"),
             "{uri} must carry a correlation id"
         );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .expect("cache-control"),
+            "no-store",
+            "{uri}: anonymous and credentialed callers share this URL"
+        );
+        assert_eq!(
+            response.headers().get("vary").expect("vary"),
+            "authorization",
+            "{uri}"
+        );
     }
 }
 
 #[tokio::test]
-async fn reserved_browse_paths_refuse_every_method() {
-    for method in ["GET", "POST", "PUT", "DELETE", "PROPFIND"] {
+async fn browse_refuses_methods_other_than_get_and_head() {
+    // Given / When / Then — axum answers the rest with 405 and an Allow header,
+    // which is a truer statement than the old blanket 501.
+    for method in ["POST", "PUT", "DELETE", "PATCH", "PROPFIND"] {
         let response = app()
             .oneshot(
                 Request::builder()
                     .method(method)
-                    .uri("/browse/notes")
+                    .uri("/browse/notes/")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{method}");
+        assert_eq!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method}"
+        );
+    }
+
+    for method in ["GET", "HEAD"] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/browse/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
     }
 }
 
@@ -776,8 +817,8 @@ async fn delete_enqueues_tombstone_on_success() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -831,8 +872,8 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
         declared_kbs: Arc::new(kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

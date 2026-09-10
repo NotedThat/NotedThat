@@ -1,5 +1,10 @@
 //! Axum router builder and HTTP handlers for the `NotedThat` API.
 
+// `lookup_kb` is the single definition of "is this knowledge base declared";
+// `crate::authz::KbAccess::resolve` is its only caller.
+pub(crate) use helpers::{kb_not_found, lookup_kb};
+
+mod browse;
 mod health;
 mod helpers;
 mod kbs;
@@ -8,13 +13,12 @@ mod objects;
 
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::handler::Handler;
-use axum::http::{HeaderName, StatusCode};
+use axum::http::HeaderName;
 use axum::middleware::from_fn_with_state;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
-use axum::{Json, Router};
+use axum::routing::get;
 use tower::ServiceBuilder;
 use tower_http::request_id::{
     MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -22,9 +26,7 @@ use tower_http::request_id::{
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-// Re-export helpers used by sibling modules in this crate.
-pub(crate) use helpers::lookup_kb;
-
+use browse::{browse_path, browse_root};
 use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
@@ -54,7 +56,7 @@ macro_rules! api_routes {
 /// Mount point of the versioned machine API on the unified listener (D44).
 pub const API_V1_PREFIX: &str = "/api/v1";
 
-/// Mount point reserved for the future browse surface (D44, #100).
+/// Mount point of the human-facing browse surface (D52, #100).
 pub const BROWSE_PREFIX: &str = "/browse";
 
 api_routes! {
@@ -107,7 +109,7 @@ pub fn build_router(state: AppState) -> Router {
                 )))
                 .layer(from_fn_with_state(state.clone(), auth_middleware)),
         )
-        .with_state(state);
+        .with_state(state.clone());
 
     // Request-id generation and tracing wrap every surface this router serves,
     // including the unauthenticated root routes. Only `auth_middleware` and the
@@ -116,12 +118,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/llms.txt", get(llms_txt))
-        .route(BROWSE_PREFIX, any(browse_not_implemented))
-        .route(&format!("{BROWSE_PREFIX}/"), any(browse_not_implemented))
-        .route(
-            &format!("{BROWSE_PREFIX}/{{*path}}"),
-            any(browse_not_implemented),
-        )
+        .route(BROWSE_PREFIX, get(browse_root))
+        .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
+        .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))
         .nest(API_V1_PREFIX, api_routes)
         .layer(
             ServiceBuilder::new()
@@ -132,28 +131,11 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(PropagateRequestIdLayer::new(request_id_header))
                 .layer(TraceLayer::new_for_http()),
         )
-}
-
-/// `/browse` is reserved for the future browse surface (D44, #100). Answering
-/// `501 Not Implemented` makes the reservation observable; a bare 404 is
-/// indistinguishable from a mistyped path.
-async fn browse_not_implemented(request: Request) -> Response {
-    let request_id = request
-        .extensions()
-        .get::<RequestId>()
-        .and_then(|id| id.header_value().to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "not_implemented",
-            "message": "The browse surface is reserved and not implemented",
-            "request_id": request_id,
-        })),
-    )
-        .into_response()
+        // `/browse` is stateful and sits on the outer router, outside
+        // `auth_middleware` — it resolves its own principal with the same rules
+        // (see `middleware::resolve_principal`), because nesting it under
+        // `/api/v1` would move the mount point.
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -224,8 +206,8 @@ mod patch_route {
         kbs.insert(KB.to_string(), kb);
         let router = build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -265,8 +247,8 @@ mod patch_route {
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
@@ -786,8 +768,8 @@ mod line_range_get {
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
             storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -945,8 +927,8 @@ mod tests {
 
         build_router(AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1158,8 +1140,8 @@ mod tests {
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
             storage: storage.clone(),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
@@ -1248,8 +1230,8 @@ mod tests {
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
             storage: storage.clone(),
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            public_read_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(TOKEN.to_string()),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,

@@ -58,7 +58,7 @@ are missing or invalid.
 
 | Variable | Flag | Type | Description | Example |
 |----------|------|------|-------------|---------|
-| `NOTEDTHAT_API_TOKEN` | `--api-token` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A read request may omit it only for its configured manifest `public_read` capability. | `s3cr3t-token` |
+| `NOTEDTHAT_API_TOKEN` | `--api-token` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A request may omit it only where the knowledge base's manifest `access` rules grant `anyone` that verb. | `s3cr3t-token` |
 | `NOTEDTHAT_WEBDAV_USERNAME` | `--webdav-username` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
 | `NOTEDTHAT_WEBDAV_PASSWORD` | `--webdav-password` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
 | `NOTEDTHAT_KBS` | `--kbs` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
@@ -222,51 +222,116 @@ uid; a named volume avoids the question.
 filesystem cannot make `a/b` both a file and a directory, so the second write is refused with an
 error naming the conflict. This is the one place the two backends genuinely differ.
 
-## Manifest-controlled anonymous reads
+## Manifest access rules
 
-Anonymous access is configured in each knowledge base's existing
-`s3://<kb_bucket>/.notedthat/manifest.json`, not with an environment variable. One knowledge base
-uses one bucket, so one bucket is one public-read policy boundary; there are no namespace or
-path-prefix grants.
-
-`public_read` is an additive optional field in manifest version `1`:
+Access is configured in each knowledge base's `.notedthat/manifest.json`, not with an environment
+variable. One knowledge base is one bucket, and that bucket is the policy boundary.
 
 ```json
-"public_read": ["discover", "browse", "content", "search"]
+"access": [
+  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "anyone",    "may": ["search"] },
+  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+]
 ```
 
-Missing `public_read` and `public_read: []` both keep the knowledge base private. The only accepted
-string values are `discover`, `browse`, `content`, and `search`; the field must be an array of those
-strings. Unknown names and wrong JSON types make startup fail. Duplicate values are harmless and
-are stored in canonical order when the manifest is serialized.
+Each rule names **who** it grants to, **what** verbs, and **where**:
 
-| Capability | Anonymous HTTP behavior | Anonymous WebDAV behavior |
+| Principal | Who it is |
+| --- | --- |
+| `anyone` | A caller supplying no credential |
+| `signed-in` | A caller holding `NOTEDTHAT_API_TOKEN`, or the WebDAV Basic credential |
+
+| Verb | HTTP | WebDAV |
 | --- | --- | --- |
-| `discover` | `GET /api/v1/knowledgebases` includes this knowledge base | Root `PROPFIND` includes this knowledge base |
-| `browse` | `GET /api/v1/knowledgebases/{kb_slug}` lists object metadata | `PROPFIND` within the knowledge base is allowed |
-| `content` | `GET` and `HEAD` on object paths are allowed | `GET` and `HEAD` are allowed |
-| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` is allowed | Not applicable |
+| `list` | `GET /api/v1/knowledgebases/{kb_slug}` | `PROPFIND` |
+| `read` | `GET`, `HEAD` on an object | `GET`, `HEAD` |
+| `write` | `PUT`, `PATCH`, `POST .../replace/...` | `PUT`, `MKCOL`, `COPY`, `MOVE` destination |
+| `delete` | `DELETE` | `DELETE`, `MOVE` source |
+| `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` | Not applicable |
 
-Capabilities are independent. For example, `search` can expose matching object paths and snippets
-without granting anonymous browse or content access. Conversely, discovery does not imply browse.
-For anonymous callers, `.notedthat` and all of its descendants are hidden from direct reads,
-listings, WebDAV `PROPFIND`, and search.
+Rules are **allow-only** and the answer is the union of every matching rule, so their order does not
+matter. Omit `under` to grant the whole knowledge base.
 
-The server validates and loads every policy once during startup provisioning. It does not watch
-manifests or hot-reload policy changes: edit the manifest through your storage administration
-workflow, then restart the server. A valid HTTP Bearer token or valid WebDAV Basic credential still
-has full access to every declared knowledge base. If a client supplies an invalid credential, the
-server returns `401 unauthorized` (and WebDAV supplies its Basic challenge) instead of treating that
-request as anonymous. Every HTTP and WebDAV write remains authenticated.
+Pattern syntax: `*` matches within one segment and never `/`; `**` matches whole segments and must
+be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. So `public/*` grants
+the files directly in `public/`, and `public/**` grants everything beneath it as well. There is no
+escape character, so a key containing a literal `*`, `?` or `{` cannot be matched.
 
-`/healthz`, `/readyz`, and `/llms.txt` are globally public. MCP authentication is unchanged and
-always requires its Bearer token; public-read capabilities do not grant MCP access. Anonymous
-WebDAV `OPTIONS` returns only the read methods allowed at that path, while authenticated `OPTIONS`
-advertises the normal method set.
+A knowledge base shows up in `GET /api/v1/knowledgebases`, in the WebDAV root and on `/browse/` when
+the caller holds any grant in it. There is no separate discovery capability to enable.
 
-There are no built-in public-read rate or burst settings. Before enabling anonymous `search`, set
-rate and burst controls at the reverse proxy for that route, and tune them to the capacity of the
-embedding and search backends. Do not add an application configuration variable for this control.
+### Things worth knowing before you write one
+
+**Verbs are independent, and `search` is filtered by its own patterns rather than by `read`.** A
+broad `search` grant with a narrow `read` grant returns object paths, heading paths and preview text
+for keys the caller cannot fetch. Previews are content — if you configure that combination, you are
+publishing excerpts.
+
+**The rules bind the credential holder too.** A manifest can narrow what `NOTEDTHAT_API_TOKEN` may
+do. That is useful — `{"who": "signed-in", "may": ["list", "read", "search"]}` gives you a read-only
+deployment, MCP included — and it means a mistake can lock you out of your own knowledge base.
+
+**The way back in.** `.notedthat` is not addressable by any rule: `anyone` can never reach it, and
+`signed-in` always can, whatever the rules say. So a manifest that revokes everything else is still
+repairable:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $TOKEN" \
+  --data-binary @fixed-manifest.json \
+  "http://localhost:8080/api/v1/knowledgebases/notes/.notedthat%2Fmanifest.json"
+# then restart the server — policies are a startup snapshot
+```
+
+**Anonymous writes are refused at startup, not silently ignored.** A rule granting `write` or
+`delete` to `anyone` stops the server booting with a message naming the rule.
+
+**An empty `access: []` grants nobody anything.** The knowledge base becomes inert — reachable only
+through the `.notedthat` repair path above — and startup logs `ACCESS_RULES_EMPTY` naming it.
+
+**A manifest with no `access` field** means the credential holder may do everything and anonymous
+callers nothing. That is what every manifest written before this model already meant, so upgrading
+changes nothing for credentialed access.
+
+### Upgrading from `public_read`
+
+The `public_read` array is removed. A manifest still carrying it parses, the field is ignored, and
+**the knowledge base comes up private to anonymous callers**. Nothing in the server warns about
+this. If you had published a knowledge base, translate it before upgrading:
+
+| Old capability | New equivalent |
+| --- | --- |
+| `discover` | No equivalent — visibility follows from holding any grant |
+| `browse` | `{"who": "anyone", "may": ["list"]}` |
+| `content` | `{"who": "anyone", "may": ["read"]}` |
+| `search` | `{"who": "anyone", "may": ["search"]}` |
+
+The new model can also do what the old one could not: scope any of those to part of the knowledge
+base with `under`.
+
+### Operational notes
+
+Policies are validated and loaded once during startup provisioning. The server does not watch
+manifests or hot-reload them: edit the manifest through your storage administration workflow, then
+restart. Keeping authorization off the storage path is deliberate — a policy decision never waits on
+a bucket.
+
+Authorization failures answer `403` when a valid credential is not granted, and `404` both when the
+knowledge base is not declared and when an anonymous caller is refused — the two are deliberately
+indistinguishable, body included, so the status cannot be used to enumerate private knowledge bases
+or prefixes. `/browse` and `/api/v1` agree on this. `401` is reserved for a credential that is
+missing where one is unconditionally required or that failed to verify; the one exception is
+`GET /api/v1/knowledgebases`, which names no knowledge base and so has no existence to conceal. See
+*Authorization failures* in `docs/API.md` for the trade-off this accepts.
+
+MCP holds `NOTEDTHAT_API_TOKEN`, so it resolves as `signed-in` and inherits that principal's rules,
+including any restriction placed on them.
+
+There are no built-in rate or burst settings. Before enabling anonymous `search`, set rate and burst
+controls at the reverse proxy for that route, tuned to the capacity of the embedding and search
+backends. Do not add an application configuration variable for this control.
+
+`/healthz`, `/readyz` and `/llms.txt` are globally public.
 
 ## Upload and index staging directory
 

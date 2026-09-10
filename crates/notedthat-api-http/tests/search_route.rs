@@ -27,7 +27,7 @@ fn make_app() -> axum::Router {
     let state = AppState {
         storage: Arc::new(InMemoryStorage::default()),
         declared_kbs: Arc::new(declared_kbs()),
-        public_read_policies: Arc::new(BTreeMap::new()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -42,7 +42,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
     let state = AppState {
         storage: Arc::new(InMemoryStorage::default()),
         declared_kbs: Arc::new(declared_kbs()),
-        public_read_policies: Arc::new(BTreeMap::new()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         bearer_token: Arc::new(TOKEN.to_string()),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -255,8 +255,11 @@ async fn test8_undeclared_kb_returns_404_not_found() {
     assert_error_envelope(&json, "not_found");
 }
 
+/// No credential at all is answered as an undeclared knowledge base would be,
+/// so the status cannot be used to discover that this one is declared. Contrast
+/// `test10`: a credential that fails to verify is still `401`.
 #[tokio::test]
-async fn test9_missing_auth_returns_401_unauthorized() {
+async fn test9_missing_auth_returns_404_not_found() {
     let resp = make_app()
         .oneshot(
             Request::builder()
@@ -269,10 +272,10 @@ async fn test9_missing_auth_returns_401_unauthorized() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_json_content_type(&resp);
     let json = response_json(resp).await;
-    assert_error_envelope(&json, "unauthorized");
+    assert_error_envelope(&json, "not_found");
 }
 
 #[tokio::test]

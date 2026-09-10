@@ -48,8 +48,8 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
         password: Arc::new(password.clone()),
         storage: storage as Arc<dyn notedthat_core::Storage>,
         staging_config: notedthat_core::StagingConfig::default(),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
         declared_kbs: Arc::new(declared_kbs),
-        public_read_policies: Arc::new(BTreeMap::new()),
         indexer_tx: tx,
     };
 

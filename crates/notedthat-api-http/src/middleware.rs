@@ -3,39 +3,49 @@
 use crate::error::ApiErrorResponse;
 use crate::router::{MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS};
 use crate::state::AppState;
-use axum::RequestExt;
 use axum::body::Body;
-use axum::extract::{MatchedPath, Path, State};
+use axum::extract::{MatchedPath, State};
 use axum::http::{Method, Request, header::AUTHORIZATION};
 use axum::middleware::Next;
 use axum::response::Response;
-use notedthat_core::{PublicReadCapability, extract_bearer_from_header, verify_bearer_token};
+use notedthat_core::{Principal, extract_bearer_from_header, verify_bearer_token};
 use tower_http::request_id::RequestId;
 
-/// Authentication state established at the HTTP boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AuthContext {
-    /// A valid Bearer token was supplied.
-    Authenticated,
-    /// No credentials were supplied and a public route capability allowed access.
-    Anonymous,
-}
-
-impl AuthContext {
-    /// Return whether the request is using anonymous public-read access.
-    #[must_use]
-    pub const fn is_anonymous(self) -> bool {
-        matches!(self, Self::Anonymous)
-    }
-}
-
-/// Axum middleware that validates the `Authorization: Bearer <token>` header.
+/// The `(method, route)` pairs an anonymous request is allowed to reach.
 ///
-/// This layer is mounted on the `/api/v1` routes only; the unauthenticated root
-/// routes (`/healthz`, `/readyz`, `/llms.txt`, `/browse`) never reach it. A
-/// supplied credential must always be a single valid Bearer token. When no
-/// credential is supplied, only explicitly granted read capabilities pass
-/// through as anonymous requests.
+/// Authorization itself is per key and lives in the handlers, because a
+/// path-scoped rule cannot be evaluated from a route pattern — `read` on
+/// `{*object_path}` has no answer until the key is known. That would leave a
+/// route added later without an authorization call open to the world, so the
+/// table is inverted instead of deleted: a `(method, route)` pair absent from
+/// here is unreachable without a credential, and opening a new route means
+/// coming here and saying so.
+///
+/// Every route listed **must** have a handler that calls
+/// [`crate::authz::KbAccess::require`] or `require_any`; `route_backstop.rs`
+/// asserts the two stay in step.
+const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
+    (&Method::GET, MATCHED_KBS),
+    (&Method::HEAD, MATCHED_KBS),
+    (&Method::GET, MATCHED_KB),
+    (&Method::HEAD, MATCHED_KB),
+    (&Method::GET, MATCHED_KB_OBJECT),
+    (&Method::HEAD, MATCHED_KB_OBJECT),
+    (&Method::POST, MATCHED_KB_SEARCH),
+];
+
+/// Axum middleware that establishes the request's [`Principal`].
+///
+/// This layer authenticates; it does not authorize. A valid Bearer token makes
+/// the request [`Principal::SignedIn`], an absent credential makes it
+/// [`Principal::Anyone`], and a supplied credential that does not verify is
+/// always `401` — never quietly downgraded to anonymous, which is the rule that
+/// stops a typo'd token from silently becoming a public view.
+///
+/// It is mounted on the `/api/v1` routes only. The unauthenticated root routes
+/// (`/healthz`, `/readyz`, `/llms.txt`) never reach it, and `/browse` resolves
+/// its own principal with the same rules because it is mounted outside this
+/// layer (see [`crate::router::browse`]).
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request<Body>,
@@ -43,70 +53,77 @@ pub async fn auth_middleware(
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
 
-    let mut authorization_values = req.headers().get_all(AUTHORIZATION).iter();
-    if let Some(header) = authorization_values.next() {
-        if authorization_values.next().is_some() {
-            return Err(ApiErrorResponse::unauthorized(request_id));
-        }
-        header
-            .to_str()
-            .ok()
-            .and_then(extract_bearer_from_header)
-            .filter(|token| verify_bearer_token(token, &state.bearer_token))
-            .ok_or_else(|| ApiErrorResponse::unauthorized(request_id.clone()))?;
-        req.extensions_mut().insert(AuthContext::Authenticated);
-        return Ok(next.run(req).await);
-    }
+    let principal = resolve_principal(req.headers(), &state.bearer_token)
+        .map_err(|CredentialRefused| ApiErrorResponse::unauthorized(request_id.clone()))?;
 
-    if anonymous_capability(&mut req, &state).await.is_some() {
-        req.extensions_mut().insert(AuthContext::Anonymous);
-        return Ok(next.run(req).await);
+    if principal == Principal::Anyone && !anonymous_may_reach(&req) {
+        return Err(ApiErrorResponse::unauthorized(request_id));
     }
-
-    Err(ApiErrorResponse::unauthorized(request_id))
+    req.extensions_mut().insert(principal);
+    Ok(next.run(req).await)
 }
 
-async fn anonymous_capability(
-    req: &mut Request<Body>,
-    state: &AppState,
-) -> Option<PublicReadCapability> {
-    let matched_path = req.extensions().get::<MatchedPath>()?.as_str();
-    let capability = match (req.method(), matched_path) {
-        (&Method::GET | &Method::HEAD, MATCHED_KBS) => {
-            return state
-                .declared_kbs
-                .keys()
-                .any(|slug| {
-                    state
-                        .public_read_policies
-                        .get(slug)
-                        .is_some_and(|policy| policy.allows(PublicReadCapability::Discover))
-                })
-                .then_some(PublicReadCapability::Discover);
-        }
-        (&Method::GET | &Method::HEAD, MATCHED_KB) => PublicReadCapability::Browse,
-        (&Method::GET | &Method::HEAD, MATCHED_KB_OBJECT) => PublicReadCapability::Content,
-        (&Method::POST, MATCHED_KB_SEARCH) => PublicReadCapability::Search,
-        _ => return None,
+/// Whether this request's route lets an anonymous caller through to a handler
+/// that will authorize it per key.
+fn anonymous_may_reach<B>(req: &Request<B>) -> bool {
+    let Some(matched) = req.extensions().get::<MatchedPath>() else {
+        return false;
     };
-    let Path(params) = req
-        .extract_parts::<Path<std::collections::BTreeMap<String, String>>>()
-        .await
-        .ok()?;
-    let kb_slug = params.get("kb_slug")?;
-    state
-        .public_read_policies
-        .get(kb_slug)
-        .filter(|policy| policy.allows(capability))
-        .map(|_| capability)
+    let matched = matched.as_str();
+    ANONYMOUS_REACHABLE
+        .iter()
+        .any(|(method, route)| *method == req.method() && *route == matched)
 }
 
-/// Return the request authentication context, defaulting to anonymous when the auth layer has not run.
-pub fn auth_context<B>(req: &Request<B>) -> AuthContext {
+/// Resolve a principal from a request's `Authorization` headers.
+///
+/// The single definition of the credential rules, so `/browse` — which is
+/// mounted outside this layer and has to resolve its own principal — cannot
+/// drift from `/api/v1`. [`CredentialRefused`] means a credential was supplied
+/// and did not verify, which is always a refusal and never a downgrade to
+/// anonymous.
+///
+/// # Errors
+///
+/// [`CredentialRefused`] when an `Authorization` header is present and does not
+/// carry exactly one valid Bearer token.
+pub fn resolve_principal(
+    headers: &axum::http::HeaderMap,
+    expected_token: &str,
+) -> Result<Principal, CredentialRefused> {
+    let mut values = headers.get_all(AUTHORIZATION).iter();
+    let Some(header) = values.next() else {
+        return Ok(Principal::Anyone);
+    };
+    if values.next().is_some() {
+        return Err(CredentialRefused);
+    }
+    header
+        .to_str()
+        .ok()
+        .and_then(extract_bearer_from_header)
+        .filter(|token| verify_bearer_token(token, expected_token))
+        .map(|_| Principal::SignedIn)
+        .ok_or(CredentialRefused)
+}
+
+/// A credential was supplied and did not verify.
+///
+/// Distinct from "no credential", which is [`Principal::Anyone`] and may still
+/// be granted access — the whole point of the distinction is that a supplied
+/// credential never silently downgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialRefused;
+
+/// The principal established at the HTTP boundary.
+///
+/// Defaults to [`Principal::Anyone`] when the auth layer has not run, so a
+/// handler reached by an unexpected route fails closed rather than open.
+pub fn principal<B>(req: &Request<B>) -> Principal {
     req.extensions()
-        .get::<AuthContext>()
+        .get::<Principal>()
         .copied()
-        .unwrap_or(AuthContext::Anonymous)
+        .unwrap_or(Principal::Anyone)
 }
 
 pub use notedthat_core::is_internal_path;
@@ -143,7 +160,7 @@ mod tests {
         AppState {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),
-            public_read_policies: Arc::new(BTreeMap::new()),
+            access_policies: Arc::new(BTreeMap::new()),
             bearer_token: Arc::new(token.to_string()),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size: 16 * 1024 * 1024,

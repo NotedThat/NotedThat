@@ -1,6 +1,7 @@
 //! HTTP API surface for `NotedThat` — axum router with static-Bearer auth.
 #![deny(missing_docs)]
 
+pub(crate) mod authz;
 pub mod error;
 pub mod middleware;
 pub mod router;

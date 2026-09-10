@@ -16,10 +16,22 @@ pub(super) const REPLACE_IF_MATCH_ERROR: &str =
     "If-Match is required for POST replace and must be a single strong ETag";
 
 pub(crate) fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
-    state.declared_kbs.get(slug).cloned().ok_or_else(|| {
-        ApiError::Core(CoreError::NotFound {
-            resource: format!("KB '{slug}' not declared"),
-        })
+    state
+        .declared_kbs
+        .get(slug)
+        .cloned()
+        .ok_or_else(|| kb_not_found(slug))
+}
+
+/// The `404` for a knowledge base an anonymous caller may not know about.
+///
+/// One constructor, because [`crate::authz::KbAccess::denial`] answers a
+/// concealed knowledge base with this exact error and the concealment holds
+/// only while the two are byte-identical. A different `message` on either side
+/// would restore the slug-existence oracle that the shared status code closes.
+pub(crate) fn kb_not_found(slug: &str) -> ApiError {
+    ApiError::Core(CoreError::NotFound {
+        resource: format!("KB '{slug}' not declared"),
     })
 }
 
@@ -36,14 +48,14 @@ pub(super) fn body_limit_usize(max_body_size: u64) -> usize {
 ///
 /// One definition so the write, patch and replace paths cannot drift from each
 /// other or from the route they name.
-pub(super) fn object_location(kb_slug: &str, object_path: &str) -> String {
+pub(in crate::router) fn object_location(kb_slug: &str, object_path: &str) -> String {
     format!(
         "{API_V1_PREFIX}/knowledgebases/{kb_slug}/{}",
         percent_encode_path(object_path)
     )
 }
 
-pub(super) fn percent_encode_path(path: &str) -> String {
+pub(in crate::router) fn percent_encode_path(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for &byte in path.as_bytes() {
         match byte {
