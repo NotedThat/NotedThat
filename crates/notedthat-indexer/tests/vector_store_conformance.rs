@@ -40,7 +40,7 @@ use notedthat_core::KbSlug;
 use notedthat_core::search::SearchFilter;
 use notedthat_indexer::testing::InMemoryVectorStore;
 use notedthat_indexer::vector_store::{
-    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use notedthat_indexer::{QdrantClient, QdrantConfig};
 use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
@@ -485,6 +485,116 @@ async fn observe_deletes(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     out
 }
 
+/// What each backend reports about which objects it currently holds.
+///
+/// Seeds its own points rather than reusing [`CORPUS`], because this is the one
+/// scenario that turns on the `etag` payload — the field reconciliation compares
+/// against storage — and on an object having several chunks that all repeat it.
+async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
+    store
+        .create_collection(kb, DENSE_DIM)
+        .await
+        .expect("create_collection");
+    store
+        .create_payload_index(kb, "object_key", PayloadFieldKind::Keyword)
+        .await
+        .expect("create_payload_index");
+
+    // `notes/a.md` deliberately spans three chunks: one object must be reported
+    // once, not once per chunk.
+    let points: Vec<PointStruct> = [
+        ("notes/a.md", 0, "\"aaa\""),
+        ("notes/a.md", 1, "\"aaa\""),
+        ("notes/a.md", 2, "\"aaa\""),
+        ("notes/b.md", 0, "\"bbb\""),
+        ("other/c.md", 0, "\"ccc\""),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(id, (object_key, chunk_index, etag))| {
+        let mut payload = HashMap::<String, Value>::new();
+        payload.insert("object_key".to_string(), (*object_key).to_string().into());
+        payload.insert("chunk_index".to_string(), i64::from(*chunk_index).into());
+        payload.insert("etag".to_string(), (*etag).to_string().into());
+        payload.insert("text".to_string(), "shared".to_string().into());
+        let vectors = HashMap::from([
+            ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
+            (
+                "sparse_bm25".to_string(),
+                Vector::from(Document::new("shared".to_string(), "qdrant/bm25")),
+            ),
+        ]);
+        PointStruct::new(id as u64 + 1, vectors, payload)
+    })
+    .collect();
+    store
+        .upsert_points(kb, points)
+        .await
+        .expect("upsert_points");
+
+    let mut out: Observations = Vec::new();
+
+    out.push((
+        "etag_of_indexed_object",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "notes/a.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_unknown_object",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "nope.md").await.expect("etag")
+        ),
+    ));
+    out.push(("all_objects", render(store.indexed_objects(kb, None).await)));
+    out.push((
+        "objects_under_prefix",
+        render(store.indexed_objects(kb, Some("notes/")).await),
+    ));
+    out.push((
+        "objects_under_unmatched_prefix",
+        render(store.indexed_objects(kb, Some("zzz/")).await),
+    ));
+
+    // A tombstoned object stops being reported at all — the property that lets
+    // reconciliation treat "indexed" and "on disk" as two comparable sets.
+    store
+        .delete_points(
+            kb,
+            PointSelector::Object {
+                object_key: "notes/a.md".to_string(),
+            },
+        )
+        .await
+        .expect("delete Object");
+    out.push((
+        "etag_after_tombstone",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "notes/a.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "all_objects_after_tombstone",
+        render(store.indexed_objects(kb, None).await),
+    ));
+
+    out
+}
+
+/// Render an `indexed_objects` result as `key=etag` pairs, sorted.
+fn render(result: Result<Vec<IndexedObject>, VectorStoreError>) -> String {
+    let mut rendered: Vec<String> = result
+        .expect("indexed_objects")
+        .into_iter()
+        .map(|object| format!("{}={}", object.object_key, object.etag))
+        .collect();
+    rendered.sort();
+    rendered.join(",")
+}
+
 /// Collection lifecycle and the missing-collection error.
 async fn observe_lifecycle(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     let mut out: Observations = Vec::new();
@@ -591,6 +701,18 @@ async fn selectors_delete_the_same_points_in_both_backends() {
 
     let from_qdrant = observe_deletes(&qdrant, &kb).await;
     let from_memory = observe_deletes(&InMemoryVectorStore::new(), &kb).await;
+
+    assert_agree(&from_qdrant, &from_memory);
+}
+
+#[tokio::test]
+#[ignore = "requires a Qdrant testcontainer"]
+async fn both_backends_report_the_same_indexed_objects() {
+    let (_container, qdrant) = start_qdrant().await;
+    let kb = slug("indexed");
+
+    let from_qdrant = observe_indexed(&qdrant, &kb).await;
+    let from_memory = observe_indexed(&InMemoryVectorStore::new(), &kb).await;
 
     assert_agree(&from_qdrant, &from_memory);
 }

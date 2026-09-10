@@ -63,6 +63,18 @@ pub enum PointSelector {
     },
 }
 
+/// One object a collection holds chunks for, and the `ETag` those chunks were built from.
+///
+/// Reported by [`VectorStore::indexed_objects`] so a caller can compare what is indexed
+/// against what is in storage without reading a single chunk's text or vector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedObject {
+    /// Object key the chunks belong to.
+    pub object_key: String,
+    /// `ETag` recorded on those chunks when they were written.
+    pub etag: String,
+}
+
 /// One hybrid query: dense nearest-neighbour and sparse BM25 prefetches, fused.
 #[derive(Debug, Clone)]
 pub struct HybridQuery {
@@ -141,6 +153,32 @@ pub trait VectorStore: Send + Sync {
         kb: &KbSlug,
         selector: PointSelector,
     ) -> Result<(), VectorStoreError>;
+
+    /// The `ETag` recorded on `object_key`'s chunks, or `None` when it has none.
+    ///
+    /// Answers "is what I have on disk already indexed?" for one object. That question is
+    /// what keeps a re-examined but unchanged object from being embedded again — see
+    /// `IndexEvent::Refresh`.
+    async fn indexed_etag(
+        &self,
+        kb: &KbSlug,
+        object_key: &str,
+    ) -> Result<Option<String>, VectorStoreError>;
+
+    /// Every object the collection holds chunks for, optionally narrowed to `prefix`.
+    ///
+    /// The same question as [`VectorStore::indexed_etag`], asked of a whole knowledge base
+    /// in one round trip — which is what makes reconciliation cost one call rather than
+    /// one per object. It also reports keys that storage no longer has, the only way to
+    /// discover an object deleted while nothing was watching.
+    ///
+    /// Reads payloads, never vectors or chunk text. Implementations may apply `prefix`
+    /// client-side; `qdrant-client` 1.15 has no keyword prefix matcher (see issue #68).
+    async fn indexed_objects(
+        &self,
+        kb: &KbSlug,
+        prefix: Option<&str>,
+    ) -> Result<Vec<IndexedObject>, VectorStoreError>;
 
     /// Run a hybrid query and return fused, payload-carrying results.
     async fn hybrid_search(

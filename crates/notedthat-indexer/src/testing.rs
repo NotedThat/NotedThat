@@ -23,7 +23,7 @@
 //! A test that needs any of those needs a real Qdrant.
 
 use crate::vector_store::{
-    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
@@ -523,6 +523,59 @@ impl VectorStore for InMemoryVectorStore {
             }
         });
         Ok(())
+    }
+
+    async fn indexed_etag(
+        &self,
+        kb: &KbSlug,
+        object_key: &str,
+    ) -> Result<Option<String>, VectorStoreError> {
+        let state = self.inner.read().await;
+        Ok(state
+            .get(kb.as_str())
+            .into_iter()
+            .flat_map(|collection| collection.points.values())
+            .find(|point| {
+                point
+                    .payload
+                    .get("object_key")
+                    .and_then(as_string)
+                    .as_deref()
+                    == Some(object_key)
+            })
+            .and_then(|point| point.payload.get("etag").and_then(as_string)))
+    }
+
+    async fn indexed_objects(
+        &self,
+        kb: &KbSlug,
+        prefix: Option<&str>,
+    ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+        let state = self.inner.read().await;
+        let mut by_key: BTreeMap<String, String> = BTreeMap::new();
+        for point in state
+            .get(kb.as_str())
+            .into_iter()
+            .flat_map(|collection| collection.points.values())
+        {
+            let Some(object_key) = point.payload.get("object_key").and_then(as_string) else {
+                continue;
+            };
+            if prefix.is_some_and(|prefix| !object_key.starts_with(prefix)) {
+                continue;
+            }
+            by_key.entry(object_key).or_insert_with(|| {
+                point
+                    .payload
+                    .get("etag")
+                    .and_then(as_string)
+                    .unwrap_or_default()
+            });
+        }
+        Ok(by_key
+            .into_iter()
+            .map(|(object_key, etag)| IndexedObject { object_key, etag })
+            .collect())
     }
 
     async fn hybrid_search(

@@ -8,7 +8,7 @@
 //! depends on `qdrant-client`.
 
 use crate::vector_store::{
-    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use crate::worker::collection_name;
 use async_trait::async_trait;
@@ -16,10 +16,12 @@ use notedthat_core::KbSlug;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
-    Distance, Document, FieldType, Filter, Fusion, Modifier, PointStruct, PrefetchQueryBuilder,
-    Query, QueryPointsBuilder, Range, ScoredPoint, SparseVectorParamsBuilder,
-    SparseVectorsConfigBuilder, UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
+    Distance, Document, FieldType, Filter, Fusion, Modifier, PayloadIncludeSelector, PointStruct,
+    PrefetchQueryBuilder, Query, QueryPointsBuilder, Range, RetrievedPoint, ScoredPoint,
+    ScrollPointsBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
+    UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -174,6 +176,28 @@ fn backend_error(
     ))
 }
 
+/// How many points one reconciliation page pulls back.
+///
+/// Payload-only rows for two short keyword fields, so a page is a few hundred kilobytes.
+/// Large enough that a knowledge base of any ordinary size takes a handful of round trips,
+/// small enough that one page never has to be held alongside a big embedding batch.
+const SCROLL_PAGE: u32 = 1024;
+
+/// The payload fields reconciliation reads. Vectors and chunk text are never fetched.
+fn indexed_payload_fields() -> PayloadIncludeSelector {
+    PayloadIncludeSelector {
+        fields: vec!["object_key".to_string(), "etag".to_string()],
+    }
+}
+
+/// Read a string payload field, treating a missing or non-string value as absent.
+fn payload_string(point: &RetrievedPoint, field: &str) -> Option<String> {
+    match point.payload.get(field)?.kind.as_ref()? {
+        qdrant_client::qdrant::value::Kind::StringValue(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl VectorStore for QdrantClient {
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
@@ -254,6 +278,88 @@ impl VectorStore for QdrantClient {
             .await
             .map(|_| ())
             .map_err(|err| backend_error(kb, "delete_points", &err))
+    }
+
+    async fn indexed_etag(
+        &self,
+        kb: &KbSlug,
+        object_key: &str,
+    ) -> Result<Option<String>, VectorStoreError> {
+        // One point is enough: every chunk of an object carries the same `ETag`. Selecting
+        // by filter rather than by the chunk-0 point id keeps this correct even if the
+        // chunk numbering ever changes.
+        let response = self
+            .inner()
+            .scroll(
+                ScrollPointsBuilder::new(collection_name(kb))
+                    .filter(Filter::must([Condition::matches(
+                        "object_key",
+                        object_key.to_string(),
+                    )]))
+                    .limit(1)
+                    .with_payload(indexed_payload_fields())
+                    .with_vectors(false),
+            )
+            .await
+            .map_err(|err| backend_error(kb, "indexed_etag", &err))?;
+
+        Ok(response
+            .result
+            .first()
+            .and_then(|point| payload_string(point, "etag")))
+    }
+
+    async fn indexed_objects(
+        &self,
+        kb: &KbSlug,
+        prefix: Option<&str>,
+    ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+        // `prefix` is filtered here rather than pushed into Qdrant because qdrant-client
+        // 1.15 has no keyword prefix matcher — the same limitation issue #68 records for
+        // search. Paging still happens server-side, so the cost is bandwidth on a
+        // reconciliation path, never a full download on a request path.
+        let mut by_key: BTreeMap<String, String> = BTreeMap::new();
+        let mut offset = None;
+
+        loop {
+            let mut request = ScrollPointsBuilder::new(collection_name(kb))
+                .limit(SCROLL_PAGE)
+                .with_payload(indexed_payload_fields())
+                .with_vectors(false);
+            if let Some(offset) = offset {
+                request = request.offset(offset);
+            }
+
+            let response = self
+                .inner()
+                .scroll(request)
+                .await
+                .map_err(|err| backend_error(kb, "indexed_objects", &err))?;
+
+            for point in &response.result {
+                let Some(object_key) = payload_string(point, "object_key") else {
+                    continue;
+                };
+                if prefix.is_some_and(|prefix| !object_key.starts_with(prefix)) {
+                    continue;
+                }
+                // Every chunk repeats its object's `ETag`, so the first one wins and the
+                // rest are the same value.
+                by_key
+                    .entry(object_key)
+                    .or_insert_with(|| payload_string(point, "etag").unwrap_or_default());
+            }
+
+            match response.next_page_offset {
+                Some(next) => offset = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(by_key
+            .into_iter()
+            .map(|(object_key, etag)| IndexedObject { object_key, etag })
+            .collect())
     }
 
     async fn hybrid_search(
