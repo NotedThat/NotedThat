@@ -316,9 +316,13 @@ manifests or hot-reload them: edit the manifest through your storage administrat
 restart. Keeping authorization off the storage path is deliberate — a policy decision never waits on
 a bucket.
 
-Authorization failures answer `401` when no credential was supplied (credentials might help), `403`
-when a valid credential is not granted, and `404` when the knowledge base is not declared. On
-`/browse`, an anonymous denial is `404` so the status cannot be used to enumerate private prefixes.
+Authorization failures answer `403` when a valid credential is not granted, and `404` both when the
+knowledge base is not declared and when an anonymous caller is refused — the two are deliberately
+indistinguishable, body included, so the status cannot be used to enumerate private knowledge bases
+or prefixes. `/browse` and `/api/v1` agree on this. `401` is reserved for a credential that is
+missing where one is unconditionally required or that failed to verify; the one exception is
+`GET /api/v1/knowledgebases`, which names no knowledge base and so has no existence to conceal. See
+*Authorization failures* in `docs/API.md` for the trade-off this accepts.
 
 MCP holds `NOTEDTHAT_API_TOKEN`, so it resolves as `signed-in` and inherits that principal's rules,
 including any restriction placed on them.

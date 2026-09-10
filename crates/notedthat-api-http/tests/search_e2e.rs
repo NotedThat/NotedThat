@@ -526,9 +526,15 @@ async fn e2e_delete_removes_from_search() {
     env.join().await;
 }
 
-/// A POST /search request without an `Authorization` header must return 401.
+/// A POST /search request without an `Authorization` header must answer exactly
+/// as an undeclared knowledge base does: `404`.
+///
+/// The anonymous caller is not told that this knowledge base is declared, which
+/// is what stops the status from enumerating a deployment's private bases. A
+/// credential that is supplied but does not verify still answers `401` — that
+/// comes from the middleware, which knows nothing about any knowledge base.
 #[tokio::test]
-async fn e2e_401_on_missing_bearer() {
+async fn e2e_404_on_missing_bearer() {
     let router = simple_router_for(KB);
     let resp = router
         .oneshot(
@@ -541,7 +547,7 @@ async fn e2e_401_on_missing_bearer() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 /// A POST /search request against an undeclared knowledge base must return 404

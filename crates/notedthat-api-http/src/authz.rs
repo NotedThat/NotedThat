@@ -61,9 +61,8 @@ impl KbAccess {
     ///
     /// # Errors
     ///
-    /// [`ApiError::Unauthorized`] for an anonymous caller, because credentials
-    /// might change the answer; [`ApiError::Forbidden`] for a credentialed one,
-    /// because theirs will not.
+    /// As [`Self::denial`]: [`ApiError::NotFound`] for an anonymous caller,
+    /// [`ApiError::Forbidden`] for a credentialed one.
     pub(crate) fn require(&self, verb: Verb, key: &str) -> Result<(), ApiError> {
         if self.policy.allows(self.principal, verb, key) {
             return Ok(());
@@ -90,8 +89,8 @@ impl KbAccess {
     /// Whether any declared rule grants this principal the verb, on any path.
     ///
     /// The browse surface asks this directly rather than through
-    /// [`Self::require_any`] because it answers a denial with `404`, not with a
-    /// status this helper could produce.
+    /// [`Self::require_any`] because it answers with a rendered page rather than
+    /// an [`ApiError`].
     pub(crate) fn policy_grants_any(&self, verb: Verb) -> bool {
         self.policy.grants_any(self.principal, verb)
     }
@@ -109,9 +108,32 @@ impl KbAccess {
         self.policy.key_filter(self.principal, verb)
     }
 
+    /// The answer for a caller the rules do not grant.
+    ///
+    /// An anonymous caller gets `404`, the same answer an undeclared slug gets
+    /// from [`Self::resolve`] — and the same answer `/browse` gives, so the two
+    /// surfaces cannot be played against each other. Under allow-only,
+    /// private-by-default rules the alternative is an oracle: a `401` here and a
+    /// `404` there tells an anonymous caller which slugs are declared, which is
+    /// exactly the concealment `visible_in_listing` exists to provide. Anyone
+    /// willing to guess names could enumerate a deployment's private knowledge
+    /// bases without holding anything.
+    ///
+    /// The cost is real and accepted: an anonymous client is no longer told that
+    /// a credential might change the answer. `401` still means what it always
+    /// did — the credential is missing where one is unconditionally required, or
+    /// it did not verify — and both of those come from the middleware, which
+    /// knows nothing about any particular knowledge base.
+    ///
+    /// A credentialed caller gets `403`: their credential verified, so there is
+    /// no slug to conceal from them and nothing a different one would change.
     fn denial(&self) -> ApiError {
         match self.principal {
-            Principal::Anyone => ApiError::Unauthorized,
+            // Byte-identical to the undeclared-slug answer, body included: a
+            // differing `message` would restore the oracle the status code
+            // closes. The knowledge base is therefore described to this caller
+            // as undeclared, which is the fiction concealment consists of.
+            Principal::Anyone => crate::router::kb_not_found(self.kb.as_str()),
             Principal::SignedIn => ApiError::Forbidden,
         }
     }

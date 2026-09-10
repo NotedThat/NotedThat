@@ -96,8 +96,8 @@ async fn a_read_grant_serves_get_and_head_but_never_the_internal_namespace() {
     // Then
     assert_eq!(get.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(head.status(), StatusCode::OK);
-    assert_eq!(internal.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json(internal).await["error"], "unauthorized");
+    assert_eq!(internal.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json(internal).await["error"], "not_found");
 }
 
 #[tokio::test]
@@ -133,7 +133,7 @@ async fn a_prefix_scoped_read_grant_serves_only_keys_under_that_prefix() {
 
     // Then
     assert_eq!(inside.status(), StatusCode::OK);
-    assert_eq!(outside.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(outside.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -164,7 +164,7 @@ async fn a_list_grant_does_not_imply_a_read_grant() {
 
     // Then
     assert_eq!(listing.status(), StatusCode::OK);
-    assert_eq!(read.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(read.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -294,7 +294,7 @@ async fn an_anonymous_caller_never_reaches_the_internal_namespace_under_any_gran
         .expect("response");
 
     // Then
-    assert_eq!(read.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(read.status(), StatusCode::NOT_FOUND);
     let keys = super::fixture::listed_keys(listing).await;
     assert!(
         !keys.iter().any(|key| key.starts_with(".notedthat")),

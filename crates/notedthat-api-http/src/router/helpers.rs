@@ -16,10 +16,22 @@ pub(super) const REPLACE_IF_MATCH_ERROR: &str =
     "If-Match is required for POST replace and must be a single strong ETag";
 
 pub(crate) fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
-    state.declared_kbs.get(slug).cloned().ok_or_else(|| {
-        ApiError::Core(CoreError::NotFound {
-            resource: format!("KB '{slug}' not declared"),
-        })
+    state
+        .declared_kbs
+        .get(slug)
+        .cloned()
+        .ok_or_else(|| kb_not_found(slug))
+}
+
+/// The `404` for a knowledge base an anonymous caller may not know about.
+///
+/// One constructor, because [`crate::authz::KbAccess::denial`] answers a
+/// concealed knowledge base with this exact error and the concealment holds
+/// only while the two are byte-identical. A different `message` on either side
+/// would restore the slug-existence oracle that the shared status code closes.
+pub(crate) fn kb_not_found(slug: &str) -> ApiError {
+    ApiError::Core(CoreError::NotFound {
+        resource: format!("KB '{slug}' not declared"),
     })
 }
 

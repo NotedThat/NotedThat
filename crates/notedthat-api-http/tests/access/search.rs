@@ -121,8 +121,9 @@ async fn a_denied_search_never_reaches_the_searcher() {
     // When
     let response = search(app).await;
 
-    // Then
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // Then — `404` for an anonymous denial, so the status does not reveal that
+    // this knowledge base is declared.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         searcher.call_count(),
         0,

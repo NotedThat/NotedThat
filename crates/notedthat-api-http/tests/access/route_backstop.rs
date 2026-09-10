@@ -47,10 +47,19 @@ async fn every_route_refuses_a_principal_holding_no_grant() {
             .await
             .expect("response");
 
-        assert_eq!(
-            response.status(),
-            StatusCode::UNAUTHORIZED,
-            "{method} {uri} let an ungranted anonymous caller through"
+        // Two refusals are correct here, from two different layers, and which
+        // one a route gives is not what this asserts. The middleware answers
+        // `401` for a `(method, route)` pair absent from `ANONYMOUS_REACHABLE`;
+        // a handler that was reached answers `404`, because an anonymous denial
+        // must not be distinguishable from an undeclared slug. What must never
+        // happen is the request succeeding.
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND
+            ),
+            "{method} {uri} answered {} — an ungranted anonymous caller got through",
+            response.status()
         );
     }
 }

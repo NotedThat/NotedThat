@@ -78,6 +78,13 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
         })
         .collect();
 
+    // A person who lands on `/browse` and can see nothing gets a page saying so,
+    // where `GET /api/v1/knowledgebases` answers `401` for the same fact. The
+    // divergence is deliberate and specific to this route: a browser cannot act
+    // on `401` — it has no way to offer a Bearer token — so the status would
+    // read as a dead end rather than an invitation. Neither answer discloses
+    // anything, because neither names a knowledge base. Every route that *does*
+    // name one agrees on `404` for an anonymous denial; see `KbAccess::denial`.
     let summary = if rows.is_empty() {
         "Nothing is published here.".to_string()
     } else {

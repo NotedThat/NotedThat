@@ -156,13 +156,24 @@ up private to anonymous callers, with credentialed access unchanged.
 
 | Situation | Status |
 | --- | --- |
-| No credential supplied, and the rules do not grant it | `401 unauthorized` — credentials might help |
+| No credential supplied, and the rules do not grant it | `404 not_found` — see below |
 | A credential supplied that does not verify | `401 unauthorized` — never downgraded to anonymous |
 | A valid credential the rules do not grant | `403 forbidden` |
 | The knowledge base is not declared | `404 not_found` — not an authorization answer |
 
-On `/browse`, an anonymous denial is `404` rather than `401`, so the status cannot be used to
-enumerate private prefixes.
+**An anonymous denial is `404`, and deliberately indistinguishable from an undeclared knowledge
+base** — same status, and the same error body. Access rules are allow-only and private by default,
+so any other status would be an oracle: a `401` for a declared-but-hidden knowledge base and a `404`
+for an undeclared one lets anyone willing to guess slugs enumerate a deployment's private knowledge
+bases, which is exactly what leaving them out of `GET /api/v1/knowledgebases` is meant to prevent.
+The same reasoning already governs `/browse`, and the two surfaces now agree.
+
+The cost is accepted rather than overlooked: an anonymous client is not told that a credential might
+change the answer. `401` keeps its narrower meaning — the credential is missing where one is
+unconditionally required, such as on any mutating route, or it was supplied and did not verify — and
+both of those come from the authentication layer, which knows nothing about any particular knowledge
+base. Use the `request_id` in the error body and the server logs to tell the two apart when
+diagnosing; that is where the distinction was moved to, not removed.
 
 **401 response when the token is missing or wrong:**
 
@@ -205,8 +216,8 @@ All error responses use the same JSON envelope:
 | HTTP status | `error` code | When it occurs |
 |-------------|--------------|----------------|
 | 400 | `invalid_request` | Malformed path, invalid KB slug, malformed `Range` header, or other bad input |
-| 401 | `unauthorized` | Missing or invalid `Authorization` header |
-| 404 | `not_found` | KB slug not declared, or object does not exist |
+| 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
+| 404 | `not_found` | KB slug not declared, object does not exist, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
@@ -473,8 +484,10 @@ List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sor
 **Authentication:** The response lists the knowledge bases the caller can see — those whose access
 rules grant them anything at all. A valid Bearer token sees every declared knowledge base. If an
 anonymous caller can see none, the request returns `401` rather than an empty array: both disclose
-the same nothing, but `401` is the truthful answer to "may I look at this deployment". `HEAD`
-follows `GET`. A supplied invalid credential returns `401`.
+the same nothing, but `401` is the truthful answer to "may I look at this deployment". This is the
+one route that still answers `401` to an anonymous caller the rules refuse, and it can: it names no
+knowledge base, so there is no slug whose existence the status could disclose. Every route that does
+name one answers `404` instead. `HEAD` follows `GET`. A supplied invalid credential returns `401`.
 
 **Response:**
 

@@ -150,8 +150,57 @@ async fn listing_is_refused_without_a_list_grant() {
         .await
         .expect("response");
 
-    // Then
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // Then — `404`, not `401`: an anonymous denial must be indistinguishable
+    // from an undeclared slug, or the status enumerates declared knowledge bases.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_anonymous_denial_is_indistinguishable_from_an_undeclared_slug() {
+    // Given — `notes` is declared but grants an anonymous caller nothing, and
+    // `nope` is not declared at all. `visible_in_listing` keeps `notes` out of
+    // the anonymous index; this is the other half of that concealment.
+    let app = app(notes([signed_in_everything()])).await;
+
+    // When
+    let hidden = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/knowledgebases/notes")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let undeclared = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/knowledgebases/nope")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    // Then — the same status, and the same message once the slug the caller
+    // asked for is factored out. A body that differed by anything else would be
+    // the very oracle the status codes were made to agree about.
+    assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    assert_eq!(undeclared.status(), StatusCode::NOT_FOUND);
+    let hidden = super::fixture::json(hidden).await;
+    let undeclared = super::fixture::json(undeclared).await;
+    assert_eq!(hidden["error"], undeclared["error"]);
+    assert_eq!(
+        hidden["message"]
+            .as_str()
+            .expect("message")
+            .replace("notes", "<slug>"),
+        undeclared["message"]
+            .as_str()
+            .expect("message")
+            .replace("nope", "<slug>"),
+    );
 }
 
 #[tokio::test]
