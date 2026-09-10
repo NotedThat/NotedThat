@@ -63,6 +63,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(delete_if_match_correct_succeeds);
         $emit!(content_range_reflects_object_size);
         $emit!(copy_enforces_both_preconditions);
+        $emit!(list_objects_pagination_walks_cursor);
     };
 }
 
@@ -746,4 +747,111 @@ pub async fn copy_enforces_both_preconditions(store: &dyn Storage, kb: &KbSlug) 
             .await,
         Err(StorageError::NotFound { .. })
     ));
+}
+
+/// Walking a truncated listing must yield every key exactly once, in order.
+///
+/// This is the absolute half of the pagination contract, and it is the one no single
+/// backend can be excused from: `truncated` and `next_cursor` have to agree, a cursor has
+/// to resume *after* the key it names, and the pages have to compose back into the seeded
+/// set with nothing dropped and nothing repeated. `S3Storage` derives all of that from
+/// `is_truncated` and `NextContinuationToken`, `FsStorage` from an encoded walk position
+/// and `InMemoryStorage` from a key comparison, so agreeing is not the same as being
+/// right — `storage_conformance_*.rs` compares the three, this pins them.
+pub async fn list_objects_pagination_walks_cursor(store: &dyn Storage, kb: &KbSlug) {
+    const SEEDED: u32 = 25;
+    const PAGE: u32 = 10;
+
+    store.ensure_bucket(kb).await.expect("ensure_bucket");
+
+    let expected: Vec<String> = (0..SEEDED).map(|i| format!("page/doc-{i:04}.md")).collect();
+    for key in &expected {
+        store
+            .put_object(
+                kb,
+                &path(key),
+                Bytes::from_static(b"x"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("seed a page key");
+    }
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages: u32 = 0;
+    loop {
+        let page = store
+            .list_objects(kb, Some("page/"), PAGE, cursor.as_deref())
+            .await
+            .expect("list a page");
+        assert_eq!(
+            page.truncated,
+            page.next_cursor.is_some(),
+            "truncated must mean a cursor and a cursor must mean truncated"
+        );
+        let returned = u32::try_from(page.objects.len()).expect("a page fits in u32");
+        assert!(
+            returned <= PAGE,
+            "a page must not exceed the requested limit: {returned} > {PAGE}"
+        );
+        seen.extend(page.objects.into_iter().map(|object| object.key));
+        pages += 1;
+        assert!(pages <= SEEDED, "pagination did not terminate");
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    assert!(
+        pages > 1,
+        "a {PAGE}-key page over {SEEDED} keys should have truncated at least once"
+    );
+    assert_eq!(
+        seen, expected,
+        "the pages should compose back into the seeded keys, in order, exactly once each"
+    );
+
+    // A limit that covers the whole prefix must not claim a further page. The wrong answer
+    // here is the one `S3Storage` fails closed on — `is_truncated=true` with no
+    // `NextContinuationToken` is a `BackendUnavailable`, not an empty final page.
+    let whole = store
+        .list_objects(kb, Some("page/"), SEEDED, None)
+        .await
+        .expect("list the whole prefix");
+    assert!(
+        !whole.truncated,
+        "a page covering every key is not truncated"
+    );
+    assert_eq!(whole.next_cursor, None);
+    assert_eq!(whole.objects.len(), expected.len());
+
+    // The cursor names a key, not an index: deleting that key must not break a listing
+    // already in flight. WebDAV pages a whole knowledge base in a loop, so a concurrent
+    // delete has to leave the walk resumable.
+    let first = store
+        .list_objects(kb, Some("page/"), 2, None)
+        .await
+        .expect("first page of two");
+    let cursor = first.next_cursor.expect("two of twenty-five is truncated");
+    let named = first.objects.last().expect("a second key").key.clone();
+    store
+        .delete_object(kb, &path(&named), ConditionalHeaders::default())
+        .await
+        .expect("delete the key the cursor names");
+    let resumed = store
+        .list_objects(kb, Some("page/"), 2, Some(&cursor))
+        .await
+        .expect("a cursor survives deletion of the key it names");
+    assert_eq!(
+        resumed
+            .objects
+            .iter()
+            .map(|o| o.key.as_str())
+            .collect::<Vec<_>>(),
+        [expected[2].as_str(), expected[3].as_str()],
+        "resuming must continue after the deleted key, not restart"
+    );
 }
