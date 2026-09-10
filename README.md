@@ -122,8 +122,11 @@ cargo run -p notedthat-server
 ```
 
 Objects are files under `$NOTEDTHAT_FS_ROOT`, at their key paths — `ls -R` it, open it in
-an editor, back it up with any file-level tool. `.env` sets `NOTEDTHAT_S3_*`, which the
-`fs` backend refuses to start alongside, so unset those three or comment them out first.
+an editor, back it up with any file-level tool. Edits made that way are picked up: the tree
+is watched, so a note changed outside NotedThat is re-indexed and searchable shortly
+afterwards ([configuration](docs/CONFIGURATION.md#filesystem-storage-backend)). `.env` sets
+`NOTEDTHAT_S3_*`, which the `fs` backend refuses to start alongside, so unset those three
+or comment them out first.
 
 ### Native server: Compose-managed dependencies
 
