@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+mod fs_watch;
 mod mcp_http;
 
 #[cfg(test)]
@@ -141,6 +142,7 @@ async fn build_infrastructure(
     WebDavState,
     CancellationToken,
     tokio::task::JoinHandle<()>,
+    Option<fs_watch::FsWatch>,
 )> {
     let backends::Backends {
         storage,
@@ -207,7 +209,20 @@ async fn build_infrastructure(
         .run(),
     );
 
-    Ok((state, dav_state, indexer_shutdown, worker_handle))
+    // After provisioning, so every knowledge base's directory exists to be watched, and
+    // after the worker is spawned, so the first reconciliation has somewhere to send.
+    let watch = match &config.storage {
+        StorageConfig::S3(_) => None,
+        StorageConfig::Fs(fs) => fs_watch::start(
+            fs,
+            config.tenant_slug.clone(),
+            kb_list,
+            store.clone(),
+            state.indexer_tx.clone(),
+        )?,
+    };
+
+    Ok((state, dav_state, indexer_shutdown, worker_handle, watch))
 }
 
 /// Start the HTTP server with the provided configuration.
@@ -263,9 +278,21 @@ async fn open_storage_root(config: &Config) -> anyhow::Result<Option<RootLock>> 
 
 /// Start the HTTP server with the provided configuration and backends.
 ///
-/// Skips both `backends_from_config` and the storage-root claim: `config.storage` is not
-/// read at all, so claiming a root derived from it would lock a directory this server
-/// never touches.
+/// Skips both `backends_from_config` and the storage-root claim: the caller supplies the
+/// backends, so it is the caller that knows which root, if any, this server will touch.
+///
+/// # The caller's obligation
+///
+/// `config.storage` is still read for one thing — it is what says whether there is a
+/// filesystem tree to watch, and which one — so a caller passing `StorageConfig::Fs` gets
+/// recursive watches over every declared knowledge base's directory and a second
+/// `FsStorage` over that root, which can write to it (a sidecar repair, never object
+/// content). **That caller must hold the [`RootLock`] itself**, exactly as [`run`] does on
+/// its own path, because the single-process guarantee the lock exists for is that two
+/// servers must not both be repairing sidecars in one tree. `tests/fs_backend_e2e.rs` is
+/// the worked example: it calls `open_root` and keeps the guard alive for the server's
+/// lifetime. A caller that does not want the obligation passes `StorageConfig::S3`, or
+/// sets `NOTEDTHAT_FS_WATCH=false`.
 ///
 /// Same startup sequence as [`run`], but over backends the caller supplies.
 /// Tests use this to exercise the real routers, indexer worker and shutdown
@@ -291,7 +318,7 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 /// Both callers validate `config.staging` before constructing or accepting
 /// backends, so this body may assume it is already valid.
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
-    let (state, dav_state, indexer_shutdown, worker_handle) =
+    let (state, dav_state, indexer_shutdown, worker_handle, fs_watch) =
         build_infrastructure(config.clone(), backends).await?;
     let shutdown_token = CancellationToken::new();
     let serve_result = async {
@@ -327,6 +354,12 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
     }
     .await;
     shutdown_token.cancel();
+    // Before the drain, not after: the watcher holds a sender on the indexing queue, so
+    // draining while it still runs would chase a live producer and never see the queue
+    // close — thirty seconds of every shutdown, spent waiting for work that keeps arriving.
+    if let Some(fs_watch) = fs_watch {
+        fs_watch.stop().await;
+    }
     complete_shutdown(indexer_shutdown, worker_handle).await;
     serve_result
 }

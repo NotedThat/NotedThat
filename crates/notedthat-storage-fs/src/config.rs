@@ -15,18 +15,38 @@ pub const FS_FILE_MODE_ENV: &str = "NOTEDTHAT_FS_FILE_MODE";
 pub const FS_DIR_MODE_ENV: &str = "NOTEDTHAT_FS_DIR_MODE";
 /// Opt out of the case-sensitivity and Unicode-normalization startup checks.
 pub const FS_ALLOW_LOSSY_NAMES_ENV: &str = "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES";
+/// Watch the tree and re-examine objects changed outside `NotedThat`.
+pub const FS_WATCH_ENV: &str = "NOTEDTHAT_FS_WATCH";
+/// How long a path must go quiet before a change to it is acted on.
+pub const FS_WATCH_DEBOUNCE_MS_ENV: &str = "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS";
 
 /// Every environment variable this backend reads.
 ///
 /// `notedthat-server` uses this to reject variables belonging to the backend that is not
 /// selected, so the list must stay complete.
-pub const FS_ENV_VARS: [&str; 5] = [
+pub const FS_ENV_VARS: [&str; 7] = [
     FS_ROOT_ENV,
     FS_METADATA_ENV,
     FS_FILE_MODE_ENV,
     FS_DIR_MODE_ENV,
     FS_ALLOW_LOSSY_NAMES_ENV,
+    FS_WATCH_ENV,
+    FS_WATCH_DEBOUNCE_MS_ENV,
 ];
+
+/// Default settle window. Long enough to collapse the several writes an editor makes when
+/// saving one file, short enough that a save feels searchable straight away.
+const DEFAULT_WATCH_DEBOUNCE_MS: u64 = 500;
+
+/// Shortest settle window accepted.
+///
+/// Below this, a rename that arrives as a removal followed by a creation can be acted on
+/// between its two halves, which reads as a file that briefly vanished. Refused rather than
+/// clamped, so a value that would not do what it says is not silently accepted.
+const MIN_WATCH_DEBOUNCE_MS: u64 = 50;
+
+/// Longest settle window accepted. Beyond a minute, a change is stale before it lands.
+const MAX_WATCH_DEBOUNCE_MS: u64 = 60_000;
 
 /// Where per-object metadata (`ETag`, content type) is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,6 +98,15 @@ pub struct FsConfig {
     pub dir_mode: u32,
     /// Start even when the root's filesystem folds case or normalizes Unicode.
     pub allow_lossy_names: bool,
+    /// Watch the tree, so an object changed outside `NotedThat` is re-examined.
+    ///
+    /// On by default. The whole point of this backend is a store people edit directly, and
+    /// leaving the search index behind whenever they do would make that a trap rather than
+    /// a feature. Turning it off restores the older behaviour, where only writes through
+    /// `NotedThat` update the index.
+    pub watch: bool,
+    /// How long a path must go quiet before a change to it is acted on.
+    pub watch_debounce: std::time::Duration,
 }
 
 /// The raw, unvalidated value of every setting this backend reads.
@@ -103,6 +132,10 @@ pub struct FsSettings {
     pub dir_mode: Option<OsString>,
     /// [`FS_ALLOW_LOSSY_NAMES_ENV`].
     pub allow_lossy_names: Option<OsString>,
+    /// [`FS_WATCH_ENV`].
+    pub watch: Option<OsString>,
+    /// [`FS_WATCH_DEBOUNCE_MS_ENV`].
+    pub watch_debounce_ms: Option<OsString>,
 }
 
 impl FsSettings {
@@ -115,6 +148,8 @@ impl FsSettings {
             file_mode: std::env::var_os(FS_FILE_MODE_ENV),
             dir_mode: std::env::var_os(FS_DIR_MODE_ENV),
             allow_lossy_names: std::env::var_os(FS_ALLOW_LOSSY_NAMES_ENV),
+            watch: std::env::var_os(FS_WATCH_ENV),
+            watch_debounce_ms: std::env::var_os(FS_WATCH_DEBOUNCE_MS_ENV),
         }
     }
 }
@@ -179,6 +214,12 @@ impl FsConfig {
             settings.allow_lossy_names.as_deref(),
             false,
         )?;
+        let watch = parse_bool(FS_WATCH_ENV, settings.watch.as_deref(), true)?;
+        let watch_debounce_ms = parse_millis(
+            FS_WATCH_DEBOUNCE_MS_ENV,
+            settings.watch_debounce_ms.as_deref(),
+            DEFAULT_WATCH_DEBOUNCE_MS,
+        )?;
 
         Ok(Self {
             root,
@@ -186,6 +227,8 @@ impl FsConfig {
             file_mode,
             dir_mode,
             allow_lossy_names,
+            watch,
+            watch_debounce: std::time::Duration::from_millis(watch_debounce_ms),
         })
     }
 
@@ -198,6 +241,8 @@ impl FsConfig {
             file_mode: 0o644,
             dir_mode: 0o755,
             allow_lossy_names: false,
+            watch: true,
+            watch_debounce: std::time::Duration::from_millis(DEFAULT_WATCH_DEBOUNCE_MS),
         }
     }
 }
@@ -250,6 +295,29 @@ fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, 
         })
 }
 
+fn parse_millis(var: &str, supplied: Option<&OsStr>, default: u64) -> Result<u64, Error> {
+    let Some(value) = supplied else {
+        return Ok(default);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
+    if value.is_empty() {
+        return Err(config_error(format!("{} must not be empty", setting(var))));
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|millis| (MIN_WATCH_DEBOUNCE_MS..=MAX_WATCH_DEBOUNCE_MS).contains(millis))
+        .ok_or_else(|| {
+            config_error(format!(
+                "{} is invalid: expected {MIN_WATCH_DEBOUNCE_MS}-{MAX_WATCH_DEBOUNCE_MS} \
+                 milliseconds, got \"{value}\"",
+                setting(var)
+            ))
+        })
+}
+
 fn parse_bool(var: &str, supplied: Option<&OsStr>, default: bool) -> Result<bool, Error> {
     parse_enum(
         var,
@@ -279,6 +347,8 @@ mod tests {
             ("NOTEDTHAT_FS_FILE_MODE", None),
             ("NOTEDTHAT_FS_DIR_MODE", None),
             ("NOTEDTHAT_FS_ALLOW_LOSSY_NAMES", None),
+            ("NOTEDTHAT_FS_WATCH", None),
+            ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", None),
         ];
         let mut merged: Vec<(&str, Option<&str>)> = baseline.to_vec();
         for (key, value) in vars {
@@ -328,6 +398,64 @@ mod tests {
             assert_eq!(config.dir_mode, 0o755);
             assert!(!config.allow_lossy_names);
         });
+    }
+
+    /// Watching is on unless an operator turns it off. The gap it closes is the one thing
+    /// a browsable store would otherwise get silently wrong.
+    #[test]
+    fn watching_is_on_by_default() {
+        with(&[("NOTEDTHAT_FS_ROOT", Some("/srv/nt"))], || {
+            let config = FsConfig::from_env().expect("valid");
+            assert!(config.watch);
+            assert_eq!(config.watch_debounce.as_millis(), 500);
+        });
+    }
+
+    #[test]
+    fn watching_can_be_turned_off() {
+        with(
+            &[
+                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
+                ("NOTEDTHAT_FS_WATCH", Some("false")),
+            ],
+            || {
+                assert!(!FsConfig::from_env().expect("valid").watch);
+            },
+        );
+    }
+
+    #[test]
+    fn a_debounce_within_range_is_accepted() {
+        with(
+            &[
+                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
+                ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", Some("1200")),
+            ],
+            || {
+                let config = FsConfig::from_env().expect("valid");
+                assert_eq!(config.watch_debounce.as_millis(), 1200);
+            },
+        );
+    }
+
+    /// Refused rather than clamped: a settle window too short to outlast a rename would
+    /// act between its two halves, and silently substituting a working value would hide
+    /// that the setting does not mean what it says.
+    #[test]
+    fn a_debounce_outside_the_accepted_range_is_refused() {
+        for value in ["0", "10", "60001", "soon"] {
+            with(
+                &[
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
+                    ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", Some(value)),
+                ],
+                || {
+                    let error = FsConfig::from_env().unwrap_err().to_string();
+                    assert!(error.contains("milliseconds"), "{value}: {error}");
+                    assert!(error.contains("--fs-watch-debounce-ms"), "{value}: {error}");
+                },
+            );
+        }
     }
 
     #[test]

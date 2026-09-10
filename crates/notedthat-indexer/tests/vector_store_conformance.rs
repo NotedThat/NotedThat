@@ -40,7 +40,7 @@ use notedthat_core::KbSlug;
 use notedthat_core::search::SearchFilter;
 use notedthat_indexer::testing::InMemoryVectorStore;
 use notedthat_indexer::vector_store::{
-    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use notedthat_indexer::{QdrantClient, QdrantConfig};
 use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
@@ -485,6 +485,154 @@ async fn observe_deletes(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     out
 }
 
+/// What each backend reports about which objects it currently holds.
+///
+/// Seeds its own points rather than reusing [`CORPUS`], because this is the one
+/// scenario that turns on the `etag` payload — the field reconciliation compares
+/// against storage — and on an object having several chunks that all repeat it.
+async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
+    let mut out: Observations = observe_indexed_before_create(store, kb).await;
+
+    store
+        .create_collection(kb, DENSE_DIM)
+        .await
+        .expect("create_collection");
+    store
+        .create_payload_index(kb, "object_key", PayloadFieldKind::Keyword)
+        .await
+        .expect("create_payload_index");
+
+    // `notes/a.md` deliberately spans three chunks: one object must be reported
+    // once, not once per chunk. Written in an order that is not key order, so an
+    // implementation reporting insertion order fails the ordering assertion below
+    // instead of passing by coincidence.
+    let points: Vec<PointStruct> = [
+        ("other/c.md", 0, "\"ccc\""),
+        ("notes/b.md", 0, "\"bbb\""),
+        ("notes/a.md", 2, "\"aaa\""),
+        ("notes/a.md", 0, "\"aaa\""),
+        ("notes/a.md", 1, "\"aaa\""),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(id, (object_key, chunk_index, etag))| {
+        let mut payload = HashMap::<String, Value>::new();
+        payload.insert("object_key".to_string(), (*object_key).to_string().into());
+        payload.insert("chunk_index".to_string(), i64::from(*chunk_index).into());
+        payload.insert("etag".to_string(), (*etag).to_string().into());
+        payload.insert("text".to_string(), "shared".to_string().into());
+        let vectors = HashMap::from([
+            ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
+            (
+                "sparse_bm25".to_string(),
+                Vector::from(Document::new("shared".to_string(), "qdrant/bm25")),
+            ),
+        ]);
+        PointStruct::new(id as u64 + 1, vectors, payload)
+    })
+    .collect();
+    store
+        .upsert_points(kb, points)
+        .await
+        .expect("upsert_points");
+
+    out.push((
+        "etag_of_indexed_object",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "notes/a.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_unknown_object",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "nope.md").await.expect("etag")
+        ),
+    ));
+    out.push(("all_objects", render(store.indexed_objects(kb, None).await)));
+    out.push((
+        "objects_under_prefix",
+        render(store.indexed_objects(kb, Some("notes/")).await),
+    ));
+    out.push((
+        "objects_under_unmatched_prefix",
+        render(store.indexed_objects(kb, Some("zzz/")).await),
+    ));
+
+    // A tombstoned object stops being reported at all — the property that lets
+    // reconciliation treat "indexed" and "on disk" as two comparable sets.
+    store
+        .delete_points(
+            kb,
+            PointSelector::Object {
+                object_key: "notes/a.md".to_string(),
+            },
+        )
+        .await
+        .expect("delete Object");
+    out.push((
+        "etag_after_tombstone",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "notes/a.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "all_objects_after_tombstone",
+        render(store.indexed_objects(kb, None).await),
+    ));
+
+    out
+}
+
+/// What each backend answers about a knowledge base whose collection does not exist.
+///
+/// The one state the two had no reason to agree on and every reason to be asked about.
+/// Provisioning only warns when `ensure_collection` fails, so a transient hiccup at
+/// startup leaves a knowledge base whose every reconciliation pass consults an index that
+/// is not there — and reconciliation cannot tell "nothing is indexed" from "I could not
+/// ask" unless these two say so.
+async fn observe_indexed_before_create(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
+    vec![
+        (
+            "etag_before_create",
+            format!(
+                "{:?}",
+                store
+                    .indexed_etag(kb, "notes/a.md")
+                    .await
+                    .map_err(|error| error_kind(&error))
+            ),
+        ),
+        (
+            "objects_before_create",
+            format!(
+                "{:?}",
+                store
+                    .indexed_objects(kb, None)
+                    .await
+                    .map_err(|error| error_kind(&error))
+            ),
+        ),
+    ]
+}
+
+/// Render an `indexed_objects` result as `key=etag` pairs, in the order it returned them.
+///
+/// Deliberately not sorted here. `reconcile`'s two-cursor merge is only correct if both
+/// implementations return ascending `object_key` order, and this is the one place the two
+/// are compared against each other — normalising the order away would make the invariant
+/// the merge depends on the one thing this suite could not catch.
+fn render(result: Result<Vec<IndexedObject>, VectorStoreError>) -> String {
+    result
+        .expect("indexed_objects")
+        .into_iter()
+        .map(|object| format!("{}={}", object.object_key, object.etag))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Collection lifecycle and the missing-collection error.
 async fn observe_lifecycle(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     let mut out: Observations = Vec::new();
@@ -593,6 +741,64 @@ async fn selectors_delete_the_same_points_in_both_backends() {
     let from_memory = observe_deletes(&InMemoryVectorStore::new(), &kb).await;
 
     assert_agree(&from_qdrant, &from_memory);
+}
+
+#[tokio::test]
+#[ignore = "requires a Qdrant testcontainer"]
+async fn both_backends_report_the_same_indexed_objects() {
+    let (_container, qdrant) = start_qdrant().await;
+    let kb = slug("indexed");
+
+    let from_qdrant = observe_indexed(&qdrant, &kb).await;
+    let from_memory = observe_indexed(&InMemoryVectorStore::new(), &kb).await;
+
+    // Guard the premise: agreeing on `Ok([])` would mean the missing-collection case
+    // was never asked, and reconciliation would read "nothing is indexed" from a
+    // knowledge base it simply could not consult.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_eq!(
+            observations[0],
+            (
+                "etag_before_create",
+                "Err(\"CollectionNotFound\")".to_string()
+            ),
+            "a knowledge base with no collection must not read as an empty one"
+        );
+    }
+
+    // Agreeing is not enough on its own here: `reconcile` merges this against a
+    // sorted directory walk with two cursors, and two implementations that were
+    // wrong the same way would still agree. Pin the order itself, on both.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_ascending(observations, "all_objects");
+        assert_ascending(observations, "objects_under_prefix");
+    }
+
+    assert_agree(&from_qdrant, &from_memory);
+}
+
+/// Assert one rendered `indexed_objects` observation is in ascending key order.
+///
+/// The order `VectorStore::indexed_objects` documents, and the one reconciliation's
+/// merge join silently depends on.
+fn assert_ascending(observations: &Observations, name: &str) {
+    let (_, rendered) = observations
+        .iter()
+        .find(|(observed, _)| *observed == name)
+        .unwrap_or_else(|| panic!("no observation named '{name}'"));
+    let keys: Vec<&str> = rendered
+        .split(',')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.split('=').next().unwrap_or(entry))
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        keys, sorted,
+        "'{name}': indexed_objects must return ascending object_key order — \
+         reconcile's two-cursor merge over unsorted input skips real differences \
+         rather than failing"
+    );
 }
 
 #[tokio::test]

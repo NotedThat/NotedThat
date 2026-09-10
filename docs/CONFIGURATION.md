@@ -93,6 +93,8 @@ One backend is active per process, chosen at startup.
 | `NOTEDTHAT_FS_FILE_MODE` | `--fs-file-mode` | No | `0644` | Octal mode for created object files. |
 | `NOTEDTHAT_FS_DIR_MODE` | `--fs-dir-mode` | No | `0755` | Octal mode for created directories. |
 | `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES` | `--fs-allow-lossy-names` | No | `false` | Start even on a filesystem that folds case or normalizes Unicode. See the warning below. |
+| `NOTEDTHAT_FS_WATCH` | `--fs-watch` | No | `true` | Watch the tree and re-index objects changed outside NotedThat. See below. |
+| `NOTEDTHAT_FS_WATCH_DEBOUNCE_MS` | `--fs-watch-debounce-ms` | No | `500` | How long a file must go quiet before a change to it is acted on. Accepted range `50`–`60000`. |
 
 ### Settings belonging to the unselected backend are rejected
 
@@ -135,10 +137,64 @@ control. Nothing but objects appears inside a knowledge base directory — metad
 live above them.
 
 **Editing files in place works.** An object changed outside the server is detected on the next
-request and its `ETag` recomputed from content, so clients are never served stale validators.
-The *search index* is a different matter: it is only updated by writes that go through NotedThat,
-so an out-of-band edit leaves the object stale in search until it is written through the API,
-WebDAV or MCP again.
+request and its `ETag` recomputed from content, so clients are never served stale validators — and
+the search index keeps up as well. NotedThat watches each knowledge base's directory and re-indexes
+what changes, so a note edited in an editor, restored by `git`, or copied in by a script becomes
+searchable shortly afterwards. Every knowledge base is also compared against the index once at
+startup, which is how changes made while the server was not running are picked up.
+
+Almost all of that costs nothing when nothing has changed: an object already indexed from exactly
+the bytes on disk is recognised and left alone, so a startup comparison over an unchanged knowledge
+base reads no file content and sends nothing to the embedding endpoint.
+
+### What is watched, and what is not
+
+The watcher deliberately looks at less than the API will store, because it sees files nobody asked
+NotedThat to hold:
+
+- Paths containing a `.git`, `.svn` or `.hg` component are ignored, so a knowledge base kept under
+  version control does not re-index on every commit.
+- Symbolic links are not followed and their targets are not indexed, matching how the backend
+  already refuses to serve a symlink as an object.
+- Everything under `.notedthat/`, including the manifest, stays private.
+- Reading an object is never treated as changing it, so `grep -r` over the tree costs nothing.
+
+Known limits:
+
+- A file being written continuously — an in-place `rsync` of a large one — may be indexed from
+  partial content and corrected on a later pass.
+- Hardlinked objects are indexed under the name that was written, not under other names for the
+  same file.
+- On a filesystem needing `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES`, watching inherits the same
+  key-collision hazard.
+- Changing `EMBEDDING_MODEL` or `EMBEDDING_DIMENSIONS` still re-indexes nothing. Recognising
+  unchanged content does not repair vectors built by a different model — drop the Qdrant collection
+  to rebuild.
+- Watching is supported on Linux and macOS. Other platforms compile but are untested; on BSD,
+  kqueue needs one file descriptor per file, so a large tree will exhaust `kern.maxfiles`. Set
+  `NOTEDTHAT_FS_WATCH=false` there.
+
+### Operating it
+
+Linux keeps one watch per **directory** — not per file — so a knowledge base of 100,000 notes in
+500 directories costs 500 watches. If the tree is deep enough to exceed `fs.inotify.max_user_watches`
+(often 8192, sometimes 65536), the server refuses to start and says so, naming both the limit and
+the number of watches it needed. Raise the limit, or set `NOTEDTHAT_FS_WATCH=false` to serve without
+watching:
+
+```console
+$ sudo sysctl -w fs.inotify.max_user_watches=524288
+```
+
+Two log codes on the `notedthat::watch` target are worth alerting on:
+
+| Code | Meaning |
+|------|---------|
+| `FS_WATCH_LOST` | A watch could not be kept. Changes below newly created directories may go unnoticed until the next comparison. Usually the watch limit. |
+| `FS_WATCH_RESCAN` | Events were dropped — by the kernel, or because more changed at once than was worth tracking individually — so the affected knowledge base is being compared against the index in full. Informational unless it repeats. |
+
+Turning watching off with `NOTEDTHAT_FS_WATCH=false` restores the older behaviour, where only
+writes through the API, WebDAV or MCP update the search index.
 
 **One process per root.** Conditional writes (`If-Match`, `If-None-Match`) are made atomic by an
 in-process lock, so a second server on the same root would reintroduce the lost writes that

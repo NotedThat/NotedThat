@@ -22,6 +22,6 @@ pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
 pub use searcher::Searcher;
 pub use vector_store::{
-    HybridQuery, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 pub use worker::{DRAIN_TIMEOUT, IndexerWorker};

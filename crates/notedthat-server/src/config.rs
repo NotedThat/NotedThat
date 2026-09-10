@@ -118,6 +118,12 @@ fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendK
             Fs,
             cli.fs_allow_lossy_names.is_some(),
         ),
+        ("NOTEDTHAT_FS_WATCH", Fs, cli.fs_watch.is_some()),
+        (
+            "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS",
+            Fs,
+            cli.fs_watch_debounce_ms.is_some(),
+        ),
     ]
 }
 
@@ -400,6 +406,8 @@ impl Config {
                     file_mode: cli.fs_file_mode,
                     dir_mode: cli.fs_dir_mode,
                     allow_lossy_names: cli.fs_allow_lossy_names,
+                    watch: cli.fs_watch,
+                    watch_debounce_ms: cli.fs_watch_debounce_ms,
                 })?)
             }
         };
@@ -677,7 +685,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 36] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 38] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -686,6 +694,8 @@ pub(crate) mod tests {
         "NOTEDTHAT_FS_FILE_MODE",
         "NOTEDTHAT_FS_DIR_MODE",
         "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
+        "NOTEDTHAT_FS_WATCH",
+        "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS",
         "NOTEDTHAT_S3_REGION",
         "NOTEDTHAT_S3_ACCESS_KEY_ID",
         "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
@@ -963,7 +973,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 36);
+        assert_eq!(ALL_ENV_KEYS.len(), 38);
     }
 
     #[test]

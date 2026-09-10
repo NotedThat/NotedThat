@@ -70,6 +70,55 @@ impl FsStorage {
         bucket_name(&self.inner.tenant, kb)
     }
 
+    /// Directory holding one knowledge base's objects.
+    ///
+    /// The one place outside this module that needs a real path: watching a knowledge base
+    /// starts from its directory, and nothing else should be re-deriving that name.
+    pub(crate) fn bucket_dir(&self, kb: &KbSlug) -> PathBuf {
+        self.inner.layout.bucket_dir(&self.bucket(kb))
+    }
+
+    /// Every object under `prefix`, with the `ETag` a read would report, in one pass.
+    ///
+    /// Keys come back in the byte-lexicographic order `list_objects` uses, so a caller
+    /// comparing this against an equally sorted list of indexed keys can merge the two in
+    /// step rather than building a lookup table.
+    ///
+    /// Cheap by design: [`crate::meta`]'s freshness stamp means each object costs a stat
+    /// and a sidecar read, and content is hashed only where the recorded stamp no longer
+    /// describes the file. Confirming an unchanged knowledge base therefore reads none of
+    /// its content.
+    pub(crate) async fn walk_etags(
+        &self,
+        kb: &KbSlug,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        let bucket = self.bucket(kb);
+        let prefix = prefix.map(str::to_string);
+        self.blocking(move |inner| {
+            let mut walk = OrderedWalk::new(inner.layout.bucket_dir(&bucket));
+            let mut found = Vec::new();
+            while let Some(entry) = walk.next_match(None, prefix.as_deref()) {
+                match inner.resolve(&bucket, &entry.key) {
+                    Ok((_, _, attrs)) => found.push((entry.key, attrs.etag)),
+                    // Vanished between the walk and the stat, or unreadable. Skipping it
+                    // means the pass reports nothing about that key, which leaves the index
+                    // as it was — the safe direction, and the next event covers it.
+                    Err(error) if error.is_not_found() => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            key = %entry.key,
+                            %error,
+                            "skipping an unreadable object while walking for reconciliation"
+                        );
+                    }
+                }
+            }
+            Ok(found)
+        })
+        .await
+    }
+
     /// Run blocking filesystem work off the async runtime.
     ///
     /// One `spawn_blocking` per operation rather than per syscall: `tokio::fs` is itself

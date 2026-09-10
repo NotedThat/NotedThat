@@ -85,6 +85,31 @@ Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install e
   release-plz — no release, no failure report. Run them locally with
   `cargo test --workspace -- --ignored stress_`.
 
+### Filesystem watching
+
+`notedthat-storage-fs` watches the storage tree, which means part of its behaviour is the
+*kernel's*, not ours. Two things follow.
+
+Most of the logic is pure functions over synthesized `notify` events — which paths count,
+which event kinds count, how reports are coalesced — so it can be tested with no kernel and
+no filesystem, on any platform. Put new rules there. `crates/notedthat-storage-fs/tests/watch.rs`
+covers only what the kernel itself does, and is the smaller half on purpose.
+
+**CI is Linux-only**, so inotify is the only backend exercised here. FSEvents and kqueue are
+compile-checked by the release build matrix and nothing more. Writing tests against the
+crate's own signal type rather than against `notify::Event` is what keeps them meaningful on
+a developer's Mac, which is the only place that path runs at all.
+
+Asserting that something produces *no* report needs care: waiting a fixed period to "prove"
+silence is both slow and a lie. Touch a second file afterwards and wait for that instead —
+its arrival proves the watcher worked through everything queued before it. The suite has a
+helper for this; read its comment before changing it.
+
+```sh
+cargo test -p notedthat-storage-fs --test watch
+cargo test -p notedthat-server --test fs_backend_e2e
+```
+
 ### Backends in tests
 
 Almost everything runs on in-process substitutes. `notedthat_indexer::testing`

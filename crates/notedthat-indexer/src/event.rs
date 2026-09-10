@@ -23,6 +23,27 @@ pub enum IndexEvent {
         /// Modification time (Unix timestamp).
         mtime: i64,
     },
+    /// An object may have changed on disk — re-derive its index entry from current state.
+    ///
+    /// Carries no `ETag` or mtime on purpose. By the time the worker acts, the bytes may
+    /// already differ from the ones that raised this, so it reads the object's current
+    /// state rather than trusting a stamp taken earlier.
+    ///
+    /// It is also why there is no *detected deletion* variant: a deletion is a `Refresh`
+    /// whose re-read reports the object missing, which the worker already turns into a
+    /// tombstone. A delayed event can therefore never outrace a re-create and delete
+    /// points that are once again live — the one failure here that nothing would repair.
+    ///
+    /// Skipped when the indexed chunks already carry the object's current `ETag`. That
+    /// skip is what makes reconciling a whole knowledge base affordable, and why
+    /// [`IndexEvent::Upsert`] is deliberately never skipped: re-writing an object is the
+    /// only reindex mechanism v1 offers (D42), so it has to keep forcing the work.
+    Refresh {
+        /// Knowledge-base slug for routing.
+        kb: KbSlug,
+        /// Object key in the KB bucket.
+        object_key: ObjectPath,
+    },
     /// Object was deleted from S3; delete matching points from Qdrant.
     Tombstone {
         /// Knowledge-base slug for routing.
@@ -36,16 +57,18 @@ impl IndexEvent {
     /// Returns the KB slug for logging and routing.
     pub fn kb(&self) -> &KbSlug {
         match self {
-            IndexEvent::Upsert { kb, .. } | IndexEvent::Tombstone { kb, .. } => kb,
+            IndexEvent::Upsert { kb, .. }
+            | IndexEvent::Refresh { kb, .. }
+            | IndexEvent::Tombstone { kb, .. } => kb,
         }
     }
 
     /// Returns the object key for logging.
     pub fn object_key(&self) -> &ObjectPath {
         match self {
-            IndexEvent::Upsert { object_key, .. } | IndexEvent::Tombstone { object_key, .. } => {
-                object_key
-            }
+            IndexEvent::Upsert { object_key, .. }
+            | IndexEvent::Refresh { object_key, .. }
+            | IndexEvent::Tombstone { object_key, .. } => object_key,
         }
     }
 
@@ -53,6 +76,7 @@ impl IndexEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             IndexEvent::Upsert { .. } => "upsert",
+            IndexEvent::Refresh { .. } => "refresh",
             IndexEvent::Tombstone { .. } => "tombstone",
         }
     }

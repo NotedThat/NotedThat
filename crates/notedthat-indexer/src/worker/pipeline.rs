@@ -1,7 +1,7 @@
 use super::chunks::{ChunkCursor, open_chunk_cursor, take_chunk_batch, validate_chunk_byte_bound};
 use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
-use super::{IndexerWorker, is_indexable};
+use super::{IndexerWorker, Skip, is_indexable};
 use crate::chunker;
 use crate::vector_store::PointSelector;
 use futures::StreamExt;
@@ -27,6 +27,7 @@ impl IndexerWorker {
         &self,
         kb: KbSlug,
         object_key: ObjectPath,
+        skip: Skip,
     ) -> Result<(), String> {
         let head = match self
             .storage
@@ -67,6 +68,16 @@ impl IndexerWorker {
             return self.handle_tombstone(kb, object_key).await;
         }
 
+        if skip == Skip::IfUnchanged && self.already_indexed(&kb, &object_key, &head).await {
+            tracing::debug!(
+                target: "notedthat::indexing",
+                kb = %kb.as_str(),
+                path = %object_key.as_str(),
+                "unchanged since it was last indexed; skipping"
+            );
+            return Ok(());
+        }
+
         let max_input_tokens = self.embedder.max_input_tokens();
         if max_input_tokens == 0 {
             return Err("embedder input limit must be greater than zero".to_owned());
@@ -89,6 +100,41 @@ impl IndexerWorker {
             "indexed"
         );
         Ok(())
+    }
+
+    /// Whether `head`'s `ETag` is already the one recorded on this object's chunks.
+    ///
+    /// Compared before staging, and against the `ETag` `head_object` reports rather than a
+    /// hash of the bytes, because that is what makes a reconciliation pass cheap: on the
+    /// filesystem backend a `HEAD` reads a stat and a sidecar, rehashing only when the
+    /// recorded stamp no longer describes the file (see `notedthat_storage_fs::meta`). So
+    /// an unchanged corpus is confirmed unchanged without reading one byte of content.
+    ///
+    /// A backend failure answers "not indexed". Re-indexing something that did not need it
+    /// costs an embedding request; skipping something that did leaves a document wrong in
+    /// search until it is written again, and nothing would notice.
+    async fn already_indexed(
+        &self,
+        kb: &KbSlug,
+        object_key: &ObjectPath,
+        head: &ObjectMeta,
+    ) -> bool {
+        let Some(head_etag) = head.etag.as_deref() else {
+            return false;
+        };
+        match self.store.indexed_etag(kb, object_key.as_str()).await {
+            Ok(indexed) => indexed.as_deref() == Some(head_etag),
+            Err(error) => {
+                tracing::warn!(
+                    target: "notedthat::indexing",
+                    kb = %kb.as_str(),
+                    path = %object_key.as_str(),
+                    %error,
+                    "could not read the indexed ETag; indexing rather than risking a stale skip"
+                );
+                false
+            }
+        }
     }
 
     async fn stage_snapshot(
@@ -115,6 +161,15 @@ impl IndexerWorker {
             .await
             .map_err(|err| format!("storage.get_object_stream failed: {err}"))?;
         if object_stream.meta.etag.as_deref() != Some(head_etag.as_str()) {
+            // Deliberately not retried: retrying would only race the same writer again,
+            // from further behind. Where the filesystem watcher is running, the change
+            // that lost us this race raises its own event and re-enqueues the key.
+            //
+            // That repair is configuration-dependent, and this error is terminal —
+            // `process_event` logs INDEXING_FAILED and drops it, with no backoff and no
+            // dead-letter queue. On S3, or on the filesystem with NOTEDTHAT_FS_WATCH=false,
+            // nothing re-enqueues it and the object stays stale in the index until it is
+            // next written.
             return Err("streamed snapshot ETag differs from preceding HEAD".to_owned());
         }
         let object_meta = object_stream.meta;

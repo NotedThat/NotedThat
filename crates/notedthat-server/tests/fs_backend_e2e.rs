@@ -16,7 +16,7 @@ use notedthat_server::config::{
 };
 use notedthat_server::run::Backends;
 use notedthat_storage_fs::{FsConfig, FsStorage, RootLock};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,15 +28,37 @@ struct Server {
     addr: std::net::SocketAddr,
     handle: tokio::task::JoinHandle<()>,
     _root: RootLock,
-    _dir: tempfile::TempDir,
+    dir: Option<tempfile::TempDir>,
     store_root: std::path::PathBuf,
     kb: String,
+    /// The same store the server indexes into, for asserting on what was indexed.
+    store: InMemoryVectorStore,
+    slug: KbSlug,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         self.handle.abort();
     }
+}
+
+/// Stop a server and start another over the same tree and the same index.
+///
+/// Everything a restart preserves is preserved: the directory, its contents, and what was
+/// indexed before. Only the process-level state — the root lock, the watcher, the queue —
+/// is rebuilt, which is what makes the startup comparison the only thing that could notice
+/// a change made in between.
+async fn restart(mut previous: Server, between: impl FnOnce(&Path)) -> Server {
+    previous.handle.abort();
+    let dir = previous
+        .dir
+        .take()
+        .expect("the directory outlives one server");
+    let store = previous.store.clone();
+    let kb = previous.kb.clone();
+    // Releases the root lock, so the next server can claim it.
+    drop(previous);
+    start_over(dir, Some((store, kb)), between).await
 }
 
 impl Server {
@@ -51,19 +73,42 @@ impl Server {
 }
 
 async fn start() -> Server {
-    let dir = tempfile::tempdir().expect("tempdir");
+    start_seeded(|_| {}).await
+}
+
+/// Start a server over a tree that already has content, so the boot comparison has
+/// something to find.
+///
+/// `seed` runs against the knowledge base's directory before the server starts, standing in
+/// for whatever changed the tree while nothing was running.
+async fn start_seeded(seed: impl FnOnce(&Path)) -> Server {
+    start_over(tempfile::tempdir().expect("tempdir"), None, seed).await
+}
+
+/// Start a server over a given directory, optionally reusing an index a previous one built.
+///
+/// Reusing the index is what makes a restart observable: the tree and what is indexed both
+/// carry over, so the startup comparison has the same two sides a real restart would.
+async fn start_over(
+    dir: tempfile::TempDir,
+    existing: Option<(InMemoryVectorStore, String)>,
+    seed: impl FnOnce(&Path),
+) -> Server {
     let fs_config = FsConfig::new(dir.path().to_path_buf());
     let root = notedthat_storage_fs::open_root(&fs_config)
         .await
         .expect("storage root");
     let store_root = root.root().to_path_buf();
 
-    let kb = format!("notes-{}", std::process::id());
+    let kb = existing.as_ref().map_or_else(
+        || format!("notes-{}", std::process::id()),
+        |(_, kb)| kb.clone(),
+    );
     let slug = KbSlug::try_new(&kb).expect("slug");
     let addr = notedthat_api_http::testing::reserve_addr();
 
     let mut kbs = BTreeMap::new();
-    kbs.insert(kb.clone(), slug);
+    kbs.insert(kb.clone(), slug.clone());
 
     let config = Config {
         api_token: TOKEN.to_string(),
@@ -96,14 +141,19 @@ async fn start() -> Server {
         staging: notedthat_core::StagingConfig::default(),
     };
 
+    let bucket_dir = store_root.join(format!("nt-default-{kb}"));
+    std::fs::create_dir_all(&bucket_dir).expect("bucket directory");
+    seed(&bucket_dir);
+
     // The real adapter, not a substitute — only Qdrant and the embedder are stood in for.
+    let store = existing.map_or_else(InMemoryVectorStore::new, |(store, _)| store);
     let backends = Backends {
         storage: Arc::new(FsStorage::new(
             &fs_config,
             store_root.clone(),
             TenantSlug::default(),
         )),
-        store: Arc::new(InMemoryVectorStore::new()),
+        store: Arc::new(store.clone()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
     };
 
@@ -118,9 +168,11 @@ async fn start() -> Server {
         addr,
         handle,
         _root: root,
-        _dir: dir,
+        dir: Some(dir),
         store_root,
+        slug,
         kb,
+        store,
     }
 }
 
@@ -450,4 +502,155 @@ fn entries(dir: &Path) -> Vec<String> {
         .flatten()
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect()
+}
+
+// ─── Changes made to the tree directly ──────────────────────────────────────
+
+impl Server {
+    /// Wait until `key` has index entries, or until `present` is satisfied.
+    ///
+    /// Polls rather than sleeps: a fast machine returns immediately and a slow one still
+    /// passes, and the deadline only elapses when something is actually wrong.
+    async fn wait_until(&self, what: &str, present: impl Fn(&BTreeSet<String>) -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let keys = self.store.indexed_object_keys(&self.slug).await;
+            if present(&keys) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}; indexed keys are {keys:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn indexed(&self) -> BTreeSet<String> {
+        self.store.indexed_object_keys(&self.slug).await
+    }
+}
+
+/// The gap this whole feature closes: a file put into the tree by anything at all becomes
+/// searchable, without ever being written through `NotedThat`.
+#[tokio::test]
+async fn a_file_written_into_the_tree_becomes_searchable() {
+    let server = start().await;
+
+    std::fs::write(
+        server.bucket_dir().join("from-outside.md"),
+        "# Outside\n\nWritten by something that is not NotedThat.",
+    )
+    .expect("write");
+
+    server
+        .wait_until("the new file to be indexed", |keys| {
+            keys.contains("from-outside.md")
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn a_file_deleted_from_the_tree_stops_being_searchable() {
+    let server = start().await;
+    let path = server.bucket_dir().join("doomed.md");
+    std::fs::write(&path, "# Doomed\n\nBody.").expect("write");
+    server
+        .wait_until("the file to be indexed", |keys| keys.contains("doomed.md"))
+        .await;
+
+    std::fs::remove_file(&path).expect("remove");
+
+    server
+        .wait_until("the file to be forgotten", |keys| {
+            !keys.contains("doomed.md")
+        })
+        .await;
+}
+
+/// Renaming a folder is the operation a watcher alone gets wrong: the kernel reports the
+/// two directories and none of the files under either, so both sides have to be compared.
+#[tokio::test]
+async fn renaming_a_folder_moves_its_files_in_search() {
+    let server = start().await;
+    std::fs::create_dir_all(server.bucket_dir().join("before")).expect("mkdir");
+    std::fs::write(
+        server.bucket_dir().join("before/note.md"),
+        "# Note\n\nBody.",
+    )
+    .expect("write");
+    server
+        .wait_until("the file to be indexed", |keys| {
+            keys.contains("before/note.md")
+        })
+        .await;
+
+    std::fs::rename(
+        server.bucket_dir().join("before"),
+        server.bucket_dir().join("after"),
+    )
+    .expect("rename");
+
+    server
+        .wait_until("the rename to be reflected", |keys| {
+            keys.contains("after/note.md") && !keys.contains("before/note.md")
+        })
+        .await;
+}
+
+/// Changes made while the server was not running raise no events at all, so the boot
+/// comparison is the only thing that can find them.
+#[tokio::test]
+async fn a_tree_the_server_has_never_seen_is_indexed_at_startup() {
+    let server = start_seeded(|bucket| {
+        std::fs::create_dir_all(bucket.join("deep")).expect("mkdir");
+        std::fs::write(bucket.join("existing.md"), "# Existing\n\nBody.").expect("write");
+        std::fs::write(bucket.join("deep/nested.md"), "# Nested\n\nBody.").expect("write");
+    })
+    .await;
+
+    server
+        .wait_until("the pre-existing tree to be indexed", |keys| {
+            keys.contains("existing.md") && keys.contains("deep/nested.md")
+        })
+        .await;
+}
+
+/// The half no walk can find on its own. A file deleted while the server was down leaves
+/// nothing behind, so the only evidence is the index entry with no file under it.
+#[tokio::test]
+async fn a_file_deleted_while_the_server_was_down_is_forgotten_at_startup() {
+    let server = start_seeded(|bucket| {
+        std::fs::write(bucket.join("survivor.md"), "# Survivor\n\nBody.").expect("write");
+    })
+    .await;
+    server
+        .wait_until("the seeded tree to be indexed", |keys| {
+            keys.contains("survivor.md")
+        })
+        .await;
+
+    // Index an object, then take it away behind the server's back and start again over the
+    // same store — exactly what a restart across a deletion looks like.
+    std::fs::write(server.bucket_dir().join("removed.md"), "# Removed\n\nBody.").expect("write");
+    server
+        .wait_until("the second file to be indexed", |keys| {
+            keys.contains("removed.md")
+        })
+        .await;
+
+    let server = restart(server, |bucket| {
+        std::fs::remove_file(bucket.join("removed.md")).expect("remove");
+    })
+    .await;
+
+    server
+        .wait_until("the deleted object to be forgotten", |keys| {
+            !keys.contains("removed.md")
+        })
+        .await;
+    assert!(
+        server.indexed().await.contains("survivor.md"),
+        "only the deleted object should be forgotten"
+    );
 }
