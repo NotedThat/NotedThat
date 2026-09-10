@@ -159,6 +159,13 @@ pub trait VectorStore: Send + Sync {
     /// Answers "is what I have on disk already indexed?" for one object. That question is
     /// what keeps a re-examined but unchanged object from being embedded again — see
     /// `IndexEvent::Refresh`.
+    ///
+    /// # Errors
+    ///
+    /// A knowledge base with no collection is [`VectorStoreError::CollectionNotFound`],
+    /// not an empty answer. "Nothing is indexed" would send every object in the tree to
+    /// be embedded and then fail every write, since the collection they would be written
+    /// to is the one that is missing.
     async fn indexed_etag(
         &self,
         kb: &KbSlug,
@@ -183,6 +190,11 @@ pub trait VectorStore: Send + Sync {
     /// merge reports keys as changed that are not, reports live keys as orphaned, and
     /// skips real differences entirely — objects left wrong in search with nothing to
     /// notice. The conformance suite pins this for both implementations.
+    ///
+    /// # Errors
+    ///
+    /// As for [`VectorStore::indexed_etag`], a knowledge base with no collection is
+    /// [`VectorStoreError::CollectionNotFound`] rather than an empty result.
     async fn indexed_objects(
         &self,
         kb: &KbSlug,

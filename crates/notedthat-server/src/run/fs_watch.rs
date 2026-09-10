@@ -146,6 +146,21 @@ async fn reconcile_into(
 ) {
     let indexed = match store.indexed_objects(kb, prefix).await {
         Ok(indexed) => indexed,
+        // Named apart from any other read failure because it is the one an operator can
+        // act on, and the one that never repairs itself: provisioning only warns when
+        // `ensure_collection` fails, so a knowledge base that lost that race skips every
+        // pass from here on, quietly and identically.
+        Err(notedthat_indexer::VectorStoreError::CollectionNotFound { .. }) => {
+            error!(
+                target: "notedthat::watch",
+                kb = %kb.as_str(),
+                prefix = prefix.unwrap_or(""),
+                "FS_WATCH_RESCAN: this knowledge base has no search collection, so every \
+                 pass is skipped and nothing under it will be indexed. Check the \
+                 provisioning warnings from startup and restart once Qdrant is reachable."
+            );
+            return;
+        }
         Err(error) => {
             // Without knowing what is indexed there is nothing to compare against, and
             // guessing would mean either re-embedding everything or silently doing nothing.

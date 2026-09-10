@@ -531,10 +531,15 @@ impl VectorStore for InMemoryVectorStore {
         object_key: &str,
     ) -> Result<Option<String>, VectorStoreError> {
         let state = self.inner.read().await;
-        Ok(state
-            .get(kb.as_str())
-            .into_iter()
-            .flat_map(|collection| collection.points.values())
+        let collection =
+            state
+                .get(kb.as_str())
+                .ok_or_else(|| VectorStoreError::CollectionNotFound {
+                    kb: kb.as_str().to_string(),
+                })?;
+        Ok(collection
+            .points
+            .values()
             .find(|point| {
                 point
                     .payload
@@ -552,12 +557,14 @@ impl VectorStore for InMemoryVectorStore {
         prefix: Option<&str>,
     ) -> Result<Vec<IndexedObject>, VectorStoreError> {
         let state = self.inner.read().await;
+        let collection =
+            state
+                .get(kb.as_str())
+                .ok_or_else(|| VectorStoreError::CollectionNotFound {
+                    kb: kb.as_str().to_string(),
+                })?;
         let mut by_key: BTreeMap<String, String> = BTreeMap::new();
-        for point in state
-            .get(kb.as_str())
-            .into_iter()
-            .flat_map(|collection| collection.points.values())
-        {
+        for point in collection.points.values() {
             let Some(object_key) = point.payload.get("object_key").and_then(as_string) else {
                 continue;
             };

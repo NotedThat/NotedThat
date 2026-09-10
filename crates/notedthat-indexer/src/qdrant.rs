@@ -137,8 +137,9 @@ fn selector_filter(selector: &PointSelector) -> Filter {
 /// signal is the message text. That heuristic over-matches — a proxy 404, a DNS
 /// failure, or a point-level "not found" all contain the same substring — so it
 /// is applied ONLY on the two paths whose callers act on the distinction:
-/// `collection_exists` and `hybrid_search`, where an unknown KB is a 404 to the
-/// client rather than an outage.
+/// `collection_exists`, `hybrid_search` and the two `indexed_*` reads, where an
+/// unknown KB is a 404 to the client, or a knowledge base that was never
+/// provisioned, rather than an outage.
 ///
 /// Every other operation uses [`backend_error`] instead. Misclassifying an
 /// upsert would be worse than useless: the caller only formats the error into a
@@ -301,7 +302,7 @@ impl VectorStore for QdrantClient {
                     .with_vectors(false),
             )
             .await
-            .map_err(|err| backend_error(kb, "indexed_etag", &err))?;
+            .map_err(|err| classify(kb, &err))?;
 
         Ok(response
             .result
@@ -334,7 +335,7 @@ impl VectorStore for QdrantClient {
                 .inner()
                 .scroll(request)
                 .await
-                .map_err(|err| backend_error(kb, "indexed_objects", &err))?;
+                .map_err(|err| classify(kb, &err))?;
 
             for point in &response.result {
                 let Some(object_key) = payload_string(point, "object_key") else {

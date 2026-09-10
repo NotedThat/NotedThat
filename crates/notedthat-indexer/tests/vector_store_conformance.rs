@@ -491,6 +491,8 @@ async fn observe_deletes(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
 /// scenario that turns on the `etag` payload — the field reconciliation compares
 /// against storage — and on an object having several chunks that all repeat it.
 async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
+    let mut out: Observations = observe_indexed_before_create(store, kb).await;
+
     store
         .create_collection(kb, DENSE_DIM)
         .await
@@ -533,8 +535,6 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
         .upsert_points(kb, points)
         .await
         .expect("upsert_points");
-
-    let mut out: Observations = Vec::new();
 
     out.push((
         "etag_of_indexed_object",
@@ -584,6 +584,38 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     ));
 
     out
+}
+
+/// What each backend answers about a knowledge base whose collection does not exist.
+///
+/// The one state the two had no reason to agree on and every reason to be asked about.
+/// Provisioning only warns when `ensure_collection` fails, so a transient hiccup at
+/// startup leaves a knowledge base whose every reconciliation pass consults an index that
+/// is not there — and reconciliation cannot tell "nothing is indexed" from "I could not
+/// ask" unless these two say so.
+async fn observe_indexed_before_create(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
+    vec![
+        (
+            "etag_before_create",
+            format!(
+                "{:?}",
+                store
+                    .indexed_etag(kb, "notes/a.md")
+                    .await
+                    .map_err(|error| error_kind(&error))
+            ),
+        ),
+        (
+            "objects_before_create",
+            format!(
+                "{:?}",
+                store
+                    .indexed_objects(kb, None)
+                    .await
+                    .map_err(|error| error_kind(&error))
+            ),
+        ),
+    ]
 }
 
 /// Render an `indexed_objects` result as `key=etag` pairs, in the order it returned them.
@@ -719,6 +751,20 @@ async fn both_backends_report_the_same_indexed_objects() {
 
     let from_qdrant = observe_indexed(&qdrant, &kb).await;
     let from_memory = observe_indexed(&InMemoryVectorStore::new(), &kb).await;
+
+    // Guard the premise: agreeing on `Ok([])` would mean the missing-collection case
+    // was never asked, and reconciliation would read "nothing is indexed" from a
+    // knowledge base it simply could not consult.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_eq!(
+            observations[0],
+            (
+                "etag_before_create",
+                "Err(\"CollectionNotFound\")".to_string()
+            ),
+            "a knowledge base with no collection must not read as an empty one"
+        );
+    }
 
     // Agreeing is not enough on its own here: `reconcile` merges this against a
     // sorted directory walk with two cursors, and two implementations that were
