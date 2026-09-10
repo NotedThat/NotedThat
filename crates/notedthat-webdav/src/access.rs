@@ -1,7 +1,7 @@
 //! Mapping `WebDAV` methods onto access verbs, and reaching the policy for a
 //! knowledge base.
 //!
-//! The `WebDAV` surface and the HTTP API share one evaluator (D50) but not one
+//! The `WebDAV` surface and the HTTP API share one evaluator (D51) but not one
 //! method vocabulary, so the translation lives here rather than being spelled
 //! out at each call site.
 

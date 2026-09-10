@@ -2,7 +2,7 @@
 //!
 //! [`crate::middleware::auth_middleware`] establishes *who* is asking; this
 //! decides *whether they may*. The two are separate because access rules are
-//! path-scoped (D50), and a route pattern cannot answer `read` on
+//! path-scoped (D51), and a route pattern cannot answer `read` on
 //! `{*object_path}` without the key.
 //!
 //! Handlers reach for [`KbAccess`] immediately after parsing the knowledge base

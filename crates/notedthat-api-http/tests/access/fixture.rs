@@ -37,7 +37,7 @@ pub(super) fn grant_under(
     )
 }
 
-/// Every verb the credential holder needs to behave as it did before D50.
+/// Every verb the credential holder needs to behave as it did before D51.
 pub(super) fn signed_in_everything() -> AccessRule {
     AccessRule::new(Principal::SignedIn, Verb::ALL)
 }

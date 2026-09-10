@@ -154,7 +154,7 @@ async fn paging_at_several_page_sizes_agrees_with_a_single_large_page() {
 #[tokio::test]
 async fn an_unfiltered_listing_takes_the_fast_path_and_matches_the_filtered_walk() {
     // Given — the credential holder with a whole-knowledge-base grant needs no
-    // per-key work, so this is the pre-D50 code path. It must still agree.
+    // per-key work, so this is the pre-D51 code path. It must still agree.
     let app = interleaved_app(40, AccessPolicy::signed_in_full()).await;
 
     // When

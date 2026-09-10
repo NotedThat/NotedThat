@@ -87,7 +87,7 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
             .expect("discovery"),
     )
     .await;
-    // D50: visibility is derived from holding a grant, so PUBLIC_KB's `read`
+    // D51: visibility is derived from holding a grant, so PUBLIC_KB's `read`
     // rule is enough to name it — there is no separate `discover` to withhold.
     // PRIVATE_KB grants anonymous callers nothing and stays absent.
     assert_eq!(discovery.status, StatusCode::OK);

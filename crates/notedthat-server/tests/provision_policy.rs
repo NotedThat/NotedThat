@@ -176,7 +176,7 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
 
 #[tokio::test]
 async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access() {
-    // Given: a manifest written before D50, carrying the removed `public_read`
+    // Given: a manifest written before D51, carrying the removed `public_read`
     // field. The field is gone from the struct, serde ignores unknown keys, and
     // no `access` field means the default — so the knowledge base comes up with
     // its credentialed reach intact and its public grants silently gone.
@@ -198,7 +198,7 @@ async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access()
         "created_at": 1_700_000_000_i64,
         "public_read": ["discover", "browse", "content", "search"]
     }))
-    .expect("a pre-D50 manifest still parses");
+    .expect("a pre-D51 manifest still parses");
     storage
         .write_manifest(&kb, &manifest)
         .await

@@ -91,7 +91,7 @@ fn extract_request_id(req: &Request) -> String {
 ///
 /// Supplied credentials always take precedence over anonymous access, so a
 /// malformed or incorrect Basic credential cannot silently downgrade to a public
-/// view. What changed with D50 is what happens *after* a credential verifies:
+/// view. What changed with D51 is what happens *after* a credential verifies:
 /// the rules bind the credential holder too, so a valid credential is the start
 /// of the authorization question rather than the end of it.
 pub async fn basic_auth_middleware(

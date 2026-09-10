@@ -48,7 +48,7 @@ pub(super) async fn list_kbs(
     // An anonymous caller who can see nothing is refused rather than handed an
     // empty array. Both leak the same amount — nothing — but `401` is the
     // truthful answer to "may I look at this deployment": credentials would
-    // change it. This preserves the pre-D50 contract for the discovery route.
+    // change it. This preserves the pre-D51 contract for the discovery route.
     if slugs.is_empty() && principal == Principal::Anyone {
         return Err(ApiErrorResponse {
             error: ApiError::Unauthorized,

@@ -15,7 +15,7 @@ pub enum McpToolError {
     /// 403 — the credential is valid but the knowledge base's access rules do
     /// not grant this operation on this key.
     ///
-    /// Reachable since access rules began binding the credential holder (D50):
+    /// Reachable since access rules began binding the credential holder (D51):
     /// a manifest can narrow what the configured token may do, and MCP holds
     /// that token, so a read-only MCP deployment is now expressible.
     #[error("forbidden")]

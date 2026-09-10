@@ -1,4 +1,4 @@
-//! A server-rendered HTML view of what a caller may read (#100, D51).
+//! A server-rendered HTML view of what a caller may read (#100, D52).
 //!
 //! Deliberately thin: it renders directory listings over the same storage and
 //! the same access rules as every other surface, and it links objects at their

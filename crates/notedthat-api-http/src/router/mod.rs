@@ -56,7 +56,7 @@ macro_rules! api_routes {
 /// Mount point of the versioned machine API on the unified listener (D44).
 pub const API_V1_PREFIX: &str = "/api/v1";
 
-/// Mount point of the human-facing browse surface (D51, #100).
+/// Mount point of the human-facing browse surface (D52, #100).
 pub const BROWSE_PREFIX: &str = "/browse";
 
 api_routes! {

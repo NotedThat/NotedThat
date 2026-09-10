@@ -39,7 +39,7 @@ pub struct KbManifest {
     /// Embedding configuration (optional, for provisioner cross-check).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<ManifestEmbedding>,
-    /// Who may do what in this knowledge base, and where (D50).
+    /// Who may do what in this knowledge base, and where (D51).
     ///
     /// An absent field means the pre-access-rules default: the credential
     /// holder may do everything, anonymous callers nothing. Every manifest

@@ -169,7 +169,7 @@ async fn a_list_grant_does_not_imply_a_read_grant() {
 
 #[tokio::test]
 async fn a_restricted_credential_is_refused_with_forbidden_rather_than_unauthorized() {
-    // Given — new with D50: the rules bind the credential holder too. The status
+    // Given — new with D51: the rules bind the credential holder too. The status
     // has to differ from the anonymous case, because a 401 would invite the
     // caller to retry with credentials they already sent.
     let app = app(only_notes([grant_under(
@@ -211,7 +211,7 @@ async fn a_restricted_credential_is_refused_with_forbidden_rather_than_unauthori
 #[tokio::test]
 async fn the_credential_holder_can_always_rewrite_the_manifest_that_locked_it_out() {
     // Given — a policy that grants the credential holder nothing at all. This is
-    // the lockout D50 makes possible, and the recovery path has to survive it.
+    // the lockout D51 makes possible, and the recovery path has to survive it.
     let app = app(only_notes([])).await;
 
     // When
