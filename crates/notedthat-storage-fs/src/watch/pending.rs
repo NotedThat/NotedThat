@@ -17,6 +17,20 @@
 //! pending subtree and object beneath it, and a whole-knowledge-base pass swallows
 //! everything. What comes out is the smallest set of work that still covers everything
 //! reported.
+//!
+//! # The two kinds of pending work settle differently
+//!
+//! "Held until it settles" is not quite uniform, and the difference is deliberate.
+//! Reporting an object again defers its deadline, so a file still being written is not
+//! read halfway through. Reporting a subtree again does not: an already-pending prefix
+//! covers the report and returns early, so the subtree is walked a fixed window after its
+//! *first* report rather than after the burst ends.
+//!
+//! Prefixes are the ones that must not wait. A subtree walk that fires early costs one
+//! extra walk of a tree that is mostly unchanged — and an unchanged object costs a stat —
+//! whereas a subtree whose deadline kept being pushed out could starve indefinitely under
+//! sustained churn, which is exactly the case a `git checkout` produces. The asymmetry is
+//! invisible at the call site, so it is written down here.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -39,6 +53,15 @@ pub(super) struct Pending {
     capacity: usize,
 }
 
+/// Every prefix of `path` that a pending prefix could be, broadest first.
+///
+/// Pending prefixes always end in `/`, so these are exactly the positions of `/` in
+/// `path`: `a/b/c.md` yields `a/` and `a/b/`, and `a/b/` yields `a/` and itself — a
+/// prefix covers itself, which is what makes a repeated report of one subtree cheap.
+fn ancestor_prefixes(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(|(at, _)| &path[..=at])
+}
+
 impl Pending {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
@@ -47,9 +70,25 @@ impl Pending {
         }
     }
 
-    /// Total entries held, across all three kinds.
-    fn len(&self) -> usize {
-        self.whole.len() + self.prefixes.len() + self.keys.len()
+    /// Entries held for one knowledge base, across all three kinds.
+    ///
+    /// Counted per knowledge base rather than globally because that is what escalation
+    /// does: `at_capacity` is only ever answered by a full pass over the knowledge base
+    /// whose event is being charged. Counting globally would let a busy knowledge base
+    /// force full passes on quiet ones — expensive, correct, and very hard to diagnose
+    /// from the `FS_WATCH_RESCAN` line, which names only the pass it caused.
+    fn len_for(&self, kb: &KbSlug) -> usize {
+        usize::from(self.whole.contains_key(kb))
+            + self
+                .prefixes
+                .keys()
+                .filter(|(pending, _)| pending == kb)
+                .count()
+            + self
+                .keys
+                .keys()
+                .filter(|(pending, _)| pending == kb)
+                .count()
     }
 
     /// Ask for a whole knowledge base to be re-examined.
@@ -74,7 +113,7 @@ impl Pending {
             .retain(|(pending_kb, pending), _| pending_kb != kb || !pending.starts_with(&prefix));
         self.keys
             .retain(|(pending_kb, key), _| pending_kb != kb || !key.as_str().starts_with(&prefix));
-        if self.at_capacity() {
+        if self.at_capacity(kb) {
             self.whole_kb(kb, now);
             return;
         }
@@ -86,7 +125,7 @@ impl Pending {
         if self.covered(kb, key.as_str()) {
             return;
         }
-        if self.at_capacity() {
+        if self.at_capacity(kb) {
             // Dropping a change silently is the one outcome worth avoiding: nothing else
             // would ever re-enqueue it. A full pass is expensive and correct, so trade
             // down to that instead.
@@ -97,16 +136,23 @@ impl Pending {
     }
 
     /// Whether a broader pending pass already covers `path`.
+    ///
+    /// Asked once per file the kernel reports, on `notify`'s event thread and under the
+    /// lock, so it looks up the prefixes that could contain `path` rather than scanning
+    /// the ones that do not. Every pending prefix ends in `/`, so the only candidates are
+    /// `path`'s own ancestors — a handful of lookups bounded by the key's depth, whatever
+    /// the map holds.
     fn covered(&self, kb: &KbSlug, path: &str) -> bool {
-        self.whole.contains_key(kb)
-            || self
-                .prefixes
-                .keys()
-                .any(|(pending_kb, prefix)| pending_kb == kb && path.starts_with(prefix))
+        if self.whole.contains_key(kb) {
+            return true;
+        }
+        ancestor_prefixes(path)
+            .any(|prefix| self.prefixes.contains_key(&(kb.clone(), prefix.to_owned())))
     }
 
-    fn at_capacity(&mut self) -> bool {
-        if self.len() >= self.capacity {
+    /// Whether `kb` holds as much pending work as is worth tracking individually.
+    fn at_capacity(&mut self, kb: &KbSlug) -> bool {
+        if self.len_for(kb) >= self.capacity {
             self.overflowed = true;
             return true;
         }
@@ -301,6 +347,58 @@ mod tests {
             kb: other,
             key: key("a.md")
         }));
+    }
+
+    /// The deadline is deferred by a further report of an *object*, and deliberately not by
+    /// a further report of a *subtree*: a walk that fires early is cheap, a walk whose
+    /// deadline keeps moving could starve under sustained churn.
+    #[test]
+    fn a_further_report_of_a_subtree_does_not_defer_its_deadline() {
+        let start = Instant::now();
+        let mut pending = Pending::new(64);
+        pending.prefix(&kb(), "top/".to_owned(), start);
+
+        let midway = start + Duration::from_millis(80);
+        pending.prefix(&kb(), "top/".to_owned(), midway);
+
+        assert_eq!(
+            pending.take_settled(start + Duration::from_millis(120), settle()),
+            vec![FsSignal::Prefix {
+                kb: kb(),
+                prefix: "top/".to_owned()
+            }],
+            "a subtree settles against its first report, not its latest"
+        );
+    }
+
+    /// Capacity is charged to the knowledge base that would be escalated. Counting globally
+    /// would make a quiet knowledge base pay a full pass because a different one is busy.
+    #[test]
+    fn one_knowledge_bases_overflow_does_not_escalate_another() {
+        let now = Instant::now();
+        let busy = kb();
+        let quiet = KbSlug::try_new("other").expect("slug");
+        let mut pending = Pending::new(2);
+
+        pending.key(&busy, key("a.md"), now);
+        pending.key(&busy, key("b.md"), now);
+        pending.key(&busy, key("c.md"), now);
+        assert!(
+            pending.take_overflowed(),
+            "the busy one must have traded down"
+        );
+
+        pending.key(&quiet, key("only.md"), now);
+
+        let settled = pending.take_settled(later(now), settle());
+        assert!(settled.contains(&FsSignal::Kb { kb: busy }));
+        assert!(
+            settled.contains(&FsSignal::Changed {
+                kb: quiet,
+                key: key("only.md")
+            }),
+            "the quiet knowledge base must keep its one object, not be escalated"
+        );
     }
 
     /// Dropping work silently is the one outcome worth avoiding — nothing would re-enqueue
