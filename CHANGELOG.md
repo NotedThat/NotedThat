@@ -10,6 +10,34 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/NotedThat/NotedThat/compare/v0.3.1...v0.4.0) - 2026-09-10
+
+### Added
+
+- *(storage-fs)* make watching configurable
+- *(storage-fs)* watch the tree for out-of-band changes
+- *(storage-fs)* reconcile a knowledge base against its index
+- *(indexer)* [**breaking**] skip re-indexing an object whose content has not changed
+- *(indexer)* [**breaking**] report which objects a collection has indexed
+- *(server)* index changes made to the filesystem tree directly
+
+### Fixed
+
+- *(storage-fs)* charge pending capacity to the knowledge base that pays for it
+- *(storage-fs)* drop a removed directory's descendants from the watch set
+- *(storage-fs)* stop reconciliation reporting the manifest every pass
+- *(indexer)* tell a missing collection apart from an empty one
+
+### Other
+
+- *(storage-s3)* say where this crate's backend tests went
+- *(storage)* cover list_objects pagination, and stop over-promising the rest
+- *(storage)* run one integration suite against both real backends
+- Merge pull request #119 from NotedThat/feat/file-watch
+- say what these four comments' code actually does
+- record filesystem watching and its limits
+- *(indexer)* pin the order indexed_objects returns
+
 ## [0.3.1](https://github.com/NotedThat/NotedThat/compare/v0.3.0...v0.3.1) - 2026-09-09
 
 ### Added

@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-api-http"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-indexer"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-mcp"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-mcp-stdio"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-server"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-storage-fs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-storage-s3"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-webdav"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "notedthat-write"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bytes",
