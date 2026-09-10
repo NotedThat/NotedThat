@@ -18,7 +18,7 @@ notify = "8.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "macros"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 

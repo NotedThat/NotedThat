@@ -29,7 +29,7 @@ uuid = { workspace = true, features = ["v7"] }
 path = "src/lib.rs"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
 reqwest = { workspace = true }
 # `test-support` carries InMemoryStorage, which backs webdav_integration.rs in
 # place of a SeaweedFS testcontainer.
