@@ -27,8 +27,8 @@ path = "src/bin/notedthat-mcp-stdio.rs"
 dist = true
 
 [dependencies]
-notedthat-server = { path = "../notedthat-server", version = "0.4.0" }
-notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.4.0" }
+notedthat-server = { path = "../notedthat-server", version = "0.5.0" }
+notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.5.0" }
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -36,13 +36,13 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # The suites that drive the real binaries live here, because Cargo sets
 # CARGO_BIN_EXE_* only for bins of the same package.
 [dev-dependencies]
-notedthat-api-http = { path = "../notedthat-api-http", version = "0.4.0", features = ["test-support"] }
-notedthat-indexer = { path = "../notedthat-indexer", version = "0.4.0", features = ["test-support"] }
+notedthat-api-http = { path = "../notedthat-api-http", version = "0.5.0", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", version = "0.5.0", features = ["test-support"] }
 # `test-support` exposes `run::run_with`, which the cross-surface fixtures use
 # to start a real server over in-memory backends.
-notedthat-server = { path = "../notedthat-server", version = "0.4.0", features = ["test-support"] }
-notedthat-core = { path = "../notedthat-core", version = "0.4.0" }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.4.0" }
+notedthat-server = { path = "../notedthat-server", version = "0.5.0", features = ["test-support"] }
+notedthat-core = { path = "../notedthat-core", version = "0.5.0" }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.5.0" }
 serde_json = { workspace = true }
 wiremock = { workspace = true }
 reqwest = { workspace = true }
