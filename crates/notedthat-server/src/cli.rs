@@ -168,6 +168,22 @@ pub struct ServerCli {
     )]
     pub fs_allow_lossy_names: Option<OsString>,
 
+    /// Re-index objects changed in the tree by anything other than NotedThat
+    /// [default: true].
+    #[arg(
+        long,
+        env = "NOTEDTHAT_FS_WATCH",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = BOOL_FLAG,
+    )]
+    pub fs_watch: Option<OsString>,
+
+    /// How long a file must go quiet before a change to it is acted on, in
+    /// milliseconds [default: 500].
+    #[arg(long, env = "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", value_name = "MS")]
+    pub fs_watch_debounce_ms: Option<OsString>,
+
     /// Qdrant gRPC endpoint, e.g. `http://127.0.0.1:6334`.
     #[arg(long, env = "NOTEDTHAT_QDRANT_URL", value_name = "URL")]
     pub qdrant_url: Option<String>,
