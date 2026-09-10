@@ -602,6 +602,21 @@ impl Storage for S3Storage {
         }
     }
 
+    /// # Coverage
+    ///
+    /// The cursor walk is asserted by `list_objects_pagination_walks_cursor` in
+    /// `notedthat-storage-fs/tests/support/integration_scenarios.rs`: it seeds 25 keys,
+    /// pages through them ten at a time, and requires the pages to compose back into the
+    /// seeded set exactly once and in order. That scenario runs against `S3Storage` over
+    /// `SeaweedFS`, `FsStorage` over a directory tree and `InMemoryStorage`, so what it
+    /// pins is the contract rather than one backend's reading of it.
+    ///
+    /// The two malformed responses handled below have no coverage, because a real backend
+    /// cannot be made to produce either on demand: `is_truncated=false` carrying a
+    /// `NextContinuationToken` (warned about and ignored) and `is_truncated=true` carrying
+    /// none (failed closed as [`StorageError::BackendUnavailable`], rather than silently
+    /// ending the walk). Asserting them needs a stubbed S3 response, which this crate has
+    /// no harness for.
     async fn list_objects(
         &self,
         kb: &KbSlug,
@@ -682,67 +697,4 @@ where
     R: std::fmt::Debug,
 {
     matches!(err.code(), Some("NoSuchKey" | "NotFound"))
-}
-
-#[cfg(test)]
-mod tests {
-
-    /// Test that `list_objects` accepts cursor parameter and passes it through.
-    /// This is a compile-time test to verify the signature is correct.
-    #[test]
-    fn list_objects_signature_accepts_cursor() {
-        // This test verifies that the list_objects method signature includes the cursor parameter.
-        // The actual S3 integration tests (in tests/integration.rs) verify the behavior with a real backend.
-        // This is a documentation test showing the expected signature.
-        //
-        // Expected signature:
-        // async fn list_objects(
-        //     &self,
-        //     kb: &KbSlug,
-        //     prefix: Option<&str>,
-        //     limit: u32,
-        //     cursor: Option<&str>,
-        // ) -> Result<ListResponse, StorageError>
-        //
-        // The implementation:
-        // 1. Accepts cursor: Option<&str> parameter
-        // 2. Passes it to S3 as continuation_token when Some
-        // 3. Returns next_cursor in ListResponse when is_truncated=true
-        // 4. Warns and ignores token when is_truncated=false
-        // 5. Fails closed with BackendUnavailable when is_truncated=true without token
-    }
-
-    /// Test that the logic correctly handles the S3 quirk:
-    /// `is_truncated=false` but `NextContinuationToken` is present.
-    ///
-    /// Expected behavior: warn and ignore the token, return `next_cursor=None`.
-    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
-    #[test]
-    fn list_objects_ignores_token_when_not_truncated_doc() {
-        // Integration test scenario:
-        // 1. Call list_objects with no cursor
-        // 2. S3 returns: is_truncated=false, NextContinuationToken=Some("token")
-        // 3. Expected: warning logged, next_cursor=None, truncated=false
-        //
-        // This behavior is tested at integration level because it requires
-        // a real S3 backend (or SeaweedFS) to produce this edge case.
-        // See tests/integration.rs for the full integration test.
-    }
-
-    /// Test that the logic correctly handles the S3 quirk:
-    /// `is_truncated=true` but `NextContinuationToken` is missing.
-    ///
-    /// Expected behavior: fail closed with `BackendUnavailable`.
-    /// This is verified at integration level via `SeaweedFS` in tests/integration.rs.
-    #[test]
-    fn list_objects_truncated_without_token_is_backend_unavailable_doc() {
-        // Integration test scenario:
-        // 1. Call list_objects with no cursor
-        // 2. S3 returns: is_truncated=true, NextContinuationToken=None
-        // 3. Expected: Err(StorageError::BackendUnavailable { message: "..." })
-        //
-        // This behavior is tested at integration level because it requires
-        // a real S3 backend (or SeaweedFS) to produce this edge case.
-        // See tests/integration.rs for the full integration test.
-    }
 }

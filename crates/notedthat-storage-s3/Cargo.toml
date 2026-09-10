@@ -25,7 +25,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-testcontainers.workspace = true
 temp-env = "0.3"
 tempfile.workspace = true
 wiremock.workspace = true
