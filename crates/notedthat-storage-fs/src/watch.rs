@@ -305,7 +305,15 @@ fn handle_event(
         }
         // Gone, and we knew it as a directory: the files it held raised no events of their
         // own, so the subtree has to be re-examined rather than the name itself.
+        //
+        // Its descendants go with it. A directory renamed out of the tree is reported once,
+        // at its top — the kernel says nothing about what was inside — so an entry left
+        // behind here would outlive the directory it names. That is not merely untidy: a
+        // file later created at that path would be taken for the directory it used to be
+        // and reported as a subtree, and a subtree walk of a path that is a file finds
+        // nothing to compare and reports nothing. The file would never be indexed.
         if directories.remove(path) {
+            directories.retain(|known| !known.starts_with(path));
             pending.prefix(kb, format!("{key}/"), now);
             continue;
         }
@@ -538,6 +546,59 @@ mod tests {
         assert!(!is_change(EventKind::Access(AccessKind::Close(
             AccessMode::Read
         ))));
+    }
+
+    /// A directory renamed out of the tree is reported once, at its top. Anything left
+    /// behind for its children would outlive them — and then mistake a file created at one
+    /// of those paths for the directory that used to be there.
+    #[test]
+    fn a_removed_directorys_descendants_leave_the_set_with_it() {
+        use notify::event::{CreateKind, RemoveKind};
+
+        let watched = watched();
+        let root = PathBuf::from("/srv/nt/nt-default-notes");
+        let mut directories: HashSet<PathBuf> =
+            [root.join("a"), root.join("a/b"), root.join("sibling")]
+                .into_iter()
+                .collect();
+        let mut pending = pending::Pending::new(64);
+        let now = Instant::now();
+
+        let removed = Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(root.join("a"));
+        handle_event(&removed, &watched, &mut directories, &mut pending, now);
+
+        assert_eq!(
+            directories,
+            [root.join("sibling")].into_iter().collect::<HashSet<_>>(),
+            "the removed directory and everything under it must go together"
+        );
+
+        // Drain the subtree pass the removal asked for, so what follows is judged on the
+        // set alone rather than on that pass still covering it.
+        let settled = pending.take_settled(now + Duration::from_secs(1), Duration::from_millis(10));
+        assert_eq!(
+            settled,
+            vec![FsSignal::Prefix {
+                kb: KbSlug::try_new("notes").expect("slug"),
+                prefix: "a/".to_owned(),
+            }]
+        );
+
+        // The file the stale entry would have swallowed. Reported as an object, which is
+        // what the indexer can act on — not as a subtree walk of a path that is a file,
+        // which would compare nothing against nothing and report nothing.
+        let created = Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("a/b"));
+        let later = now + Duration::from_secs(2);
+        handle_event(&created, &watched, &mut directories, &mut pending, later);
+
+        assert_eq!(
+            pending.take_settled(later + Duration::from_secs(1), Duration::from_millis(10)),
+            vec![FsSignal::Changed {
+                kb: KbSlug::try_new("notes").expect("slug"),
+                key: ObjectPath::try_from("a/b").expect("key"),
+            }],
+            "a file at a path a stale entry called a directory must still be indexed"
+        );
     }
 
     #[test]
