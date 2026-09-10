@@ -120,7 +120,15 @@ pub struct FsWatchConfig {
 impl Default for FsWatchConfig {
     fn default() -> Self {
         Self {
-            debounce: Duration::from_millis(500),
+            debounce: crate::config::FsConfig::new(PathBuf::new()).watch_debounce,
+        }
+    }
+}
+
+impl From<&crate::config::FsConfig> for FsWatchConfig {
+    fn from(config: &crate::config::FsConfig) -> Self {
+        Self {
+            debounce: config.watch_debounce,
         }
     }
 }

@@ -45,7 +45,7 @@ pub mod watch;
 
 pub use config::{
     FS_ALLOW_LOSSY_NAMES_ENV, FS_DIR_MODE_ENV, FS_ENV_VARS, FS_FILE_MODE_ENV, FS_METADATA_ENV,
-    FS_ROOT_ENV, FsConfig, FsSettings, MetadataMode,
+    FS_ROOT_ENV, FS_WATCH_DEBOUNCE_MS_ENV, FS_WATCH_ENV, FsConfig, FsSettings, MetadataMode,
 };
 pub use reconcile::{FsChange, IndexedEtag, ReconcileReport, reconcile};
 pub use root::{RootLock, open_root};
