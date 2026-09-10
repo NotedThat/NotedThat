@@ -48,6 +48,25 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Dry-run `cargo package` on every push and PR, for the same reason the
+  # Dockerfile build is dry-run here: release-plz packages each crate on its
+  # own, and a crate that only compiles because a sibling in the workspace
+  # switched a shared feature on is a failure nothing else catches. `cargo
+  # test`, `clippy` and `docker` all build the workspace as one unit, where
+  # Cargo unifies features across every member; the packaged crate has only
+  # the features its own Cargo.toml asks for.
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo package --workspace --locked
+
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
   # push=false — no GHCR login, no cosign, no secrets required (safe for
