@@ -259,3 +259,31 @@ async fn an_empty_tree_reports_every_indexed_key() {
     assert_eq!(report.orphaned, 2);
     assert_eq!(report.on_disk, 0);
 }
+
+/// The manifest is an ordinary file inside the knowledge base's directory, so a walk finds
+/// it — but it is private (D48) and nothing indexes it. Left in, it would be reported as
+/// needing work on every pass, and every startup would tombstone something that was never
+/// indexed.
+#[tokio::test]
+async fn the_private_directory_is_not_compared() {
+    let env = env().await;
+    let manifest =
+        notedthat_core::KbManifest::new_v1(&TenantSlug::default(), &env.kb, "Notes", 1_700_000_000);
+    env.storage
+        .write_manifest(&env.kb, &manifest)
+        .await
+        .expect("write manifest");
+    let a = env.put("a.md", "alpha").await;
+
+    let (keys, report) = env.run(None, &indexed(&[("a.md", &a)])).await;
+
+    assert!(
+        keys.is_empty(),
+        "nothing should need re-examining, got {keys:?}"
+    );
+    assert_eq!(
+        report.on_disk, 1,
+        "the manifest is not one of the objects compared"
+    );
+    assert!(report.clean);
+}

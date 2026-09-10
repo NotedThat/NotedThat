@@ -21,7 +21,7 @@
 //! object whose `ETag` is already the indexed one. Confirming that a large knowledge base
 //! is entirely up to date therefore reads none of its content and embeds nothing.
 
-use notedthat_core::{KbSlug, ObjectPath, StorageError};
+use notedthat_core::{KbSlug, ObjectPath, StorageError, is_internal_path};
 use tokio::sync::mpsc;
 
 use crate::storage::FsStorage;
@@ -96,7 +96,16 @@ pub async fn reconcile(
     indexed: &[IndexedEtag],
     sink: &mpsc::Sender<FsChange>,
 ) -> Result<ReconcileReport, StorageError> {
-    let on_disk = storage.walk_etags(kb, prefix).await?;
+    // `.notedthat/` is private (D48) and nothing indexes it, so comparing it would report
+    // the manifest as needing work on every single pass — and, since the manifest is an
+    // ordinary file inside the knowledge base's directory, the walk does find it. Filtered
+    // on both sides, so a stray entry from an older release is still cleaned up.
+    let on_disk: Vec<(String, String)> = storage
+        .walk_etags(kb, prefix)
+        .await?
+        .into_iter()
+        .filter(|(key, _)| !is_internal_path(key))
+        .collect();
     let indexed: Vec<&IndexedEtag> = indexed
         .iter()
         .filter(|entry| prefix.is_none_or(|prefix| entry.key.starts_with(prefix)))
