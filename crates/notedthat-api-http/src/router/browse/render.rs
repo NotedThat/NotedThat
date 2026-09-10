@@ -114,7 +114,12 @@ pub(super) struct Crumb {
 
 /// Everything a directory or index page needs to render.
 pub(super) struct PageView {
-    /// Browser title, escaped.
+    /// Browser title, **raw**: [`page`] sanitises and escapes it.
+    ///
+    /// The one field on this module's view types that is not pre-escaped, and
+    /// deliberately so — both call sites hand in text built from a slug and a
+    /// URL prefix, which is exactly the shape [`display_text`] exists for. Do
+    /// not pre-escape it: that renders as `&amp;lt;` in the browser tab.
     pub(super) title: String,
     pub(super) crumbs: Vec<Crumb>,
     pub(super) rows: Vec<RowView>,
@@ -213,7 +218,10 @@ fn push_head(html: &mut String, title: &str) {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"robots\" content=\"noindex, nofollow\">\
          <title>{} — NotedThat</title><style>{BROWSE_STYLE}</style></head><body>",
-        escape_html(title),
+        // The full displayed-string treatment, not bare escaping: the title is
+        // built from a URL prefix, so the bidirectional and control characters
+        // every row name is sanitised for reach it too.
+        display_text(title),
     );
 }
 
@@ -280,6 +288,29 @@ mod tests {
         assert_eq!(sanitise_display("a\nb\tc"), "a\u{FFFD}b\u{FFFD}c");
         assert_eq!(sanitise_display("a\u{200B}b"), "a\u{FFFD}b");
         assert_eq!(sanitise_display("ordinary-name.md"), "ordinary-name.md");
+    }
+
+    #[test]
+    fn the_browser_title_is_sanitised_and_escaped_exactly_once() {
+        // Given — a title in the shape both call sites build: slug and prefix.
+        let view = PageView {
+            title: "kb/a & b <c>/\u{202E}dir/".to_string(),
+            crumbs: Vec::new(),
+            rows: Vec::new(),
+            summary: "0 folders, 0 objects".to_string(),
+            notice: None,
+            footnote: None,
+        };
+
+        // When
+        let html = page(&view);
+
+        // Then — escaped once, never twice, and the override is neutralised.
+        assert!(
+            html.contains("<title>kb/a &amp; b &lt;c&gt;/\u{FFFD}dir/ — NotedThat</title>"),
+            "{html}"
+        );
+        assert!(!html.contains("&amp;amp;"), "{html}");
     }
 
     #[test]
