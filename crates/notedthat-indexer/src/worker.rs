@@ -21,6 +21,22 @@ use tokio_util::sync::CancellationToken;
 /// Maximum time to continue draining already queued events after cancellation.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Whether an upsert may be abandoned when the object's content is already indexed.
+///
+/// The distinction exists because the two producers want opposite things. A write through
+/// `NotedThat` is a deliberate act and must always re-index — re-writing an object is the
+/// only reindex mechanism v1 offers (D42), and taking that away would leave an operator
+/// with no way to repair a bad index entry. A change merely *observed* on disk carries no
+/// such intent, and observing the same unchanged bytes is exactly what a reconciliation
+/// pass does thousands of times in a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Skip {
+    /// Always re-read, re-chunk and re-embed.
+    Never,
+    /// Do nothing when the indexed chunks already carry the object's current `ETag`.
+    IfUnchanged,
+}
+
 /// Async indexing worker.
 pub struct IndexerWorker {
     /// Object storage used to re-read source documents before indexing.
@@ -112,7 +128,12 @@ impl IndexerWorker {
         );
 
         let result = match event {
-            IndexEvent::Upsert { kb, object_key, .. } => self.handle_upsert(kb, object_key).await,
+            IndexEvent::Upsert { kb, object_key, .. } => {
+                self.handle_upsert(kb, object_key, Skip::Never).await
+            }
+            IndexEvent::Refresh { kb, object_key } => {
+                self.handle_upsert(kb, object_key, Skip::IfUnchanged).await
+            }
             IndexEvent::Tombstone { kb, object_key } => self.handle_tombstone(kb, object_key).await,
         };
 

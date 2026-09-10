@@ -20,7 +20,9 @@ use notedthat_core::{
 };
 use notedthat_indexer::chunker::stream_chunks;
 use notedthat_indexer::testing::InMemoryVectorStore;
-use notedthat_indexer::vector_store::VectorStore;
+use notedthat_indexer::vector_store::{
+    HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+};
 use notedthat_indexer::{
     Embedder, EmbedderError, IndexEvent, IndexerWorker, OpenAiCompatibleConfig,
     OpenAiCompatibleEmbedder, QdrantProvisioner,
@@ -64,8 +66,24 @@ impl MockStorage {
         }
     }
 
+    /// An `ETag` derived from the bytes, the way a real backend produces one.
+    ///
+    /// A constant would make every object look unchanged forever, which is precisely
+    /// the condition `Skip::IfUnchanged` turns on — so the stub has to vary it.
+    fn etag_for(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("\"{:x}\"", Sha256::digest(bytes))
+    }
+
     fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str) {
         self.insert_bytes(kb, key, Bytes::from(content.to_owned()), content_type);
+    }
+
+    fn remove(&self, kb: &str, key: &str) {
+        self.objects
+            .lock()
+            .unwrap()
+            .remove(&(kb.to_string(), key.to_string()));
     }
 
     fn insert_bytes(&self, kb: &str, key: &str, content: Bytes, content_type: &str) {
@@ -107,6 +125,11 @@ impl ScriptedEmbedder {
 
     fn batch_sizes(&self) -> Vec<usize> {
         self.batch_sizes.lock().unwrap().clone()
+    }
+
+    /// How many embedding requests were made — the number this feature exists to keep down.
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
@@ -174,7 +197,7 @@ impl Storage for MockStorage {
                 size: bytes.len() as u64,
                 last_modified: Some(1_700_000_000),
                 content_type: content_type.clone(),
-                etag: Some("\"test-etag\"".to_string()),
+                etag: Some(Self::etag_for(bytes)),
             }),
             None => Err(StorageError::NotFound {
                 key: path.as_str().to_string(),
@@ -198,7 +221,7 @@ impl Storage for MockStorage {
                     size: bytes.len() as u64,
                     last_modified: Some(1_700_000_000),
                     content_type: content_type.clone(),
-                    etag: Some("\"test-etag\"".to_string()),
+                    etag: Some(Self::etag_for(bytes)),
                 },
                 content_range: None,
             }),
@@ -228,7 +251,7 @@ impl Storage for MockStorage {
             .ok_or_else(|| StorageError::NotFound {
                 key: path.as_str().to_string(),
             })?;
-        let etag = "\"test-etag\"".to_string();
+        let etag = Self::etag_for(&bytes);
         if conditionals.if_match.as_deref() != Some(etag.as_str()) {
             return Err(StorageError::PreconditionFailed);
         }
@@ -315,19 +338,18 @@ impl Storage for MockStorage {
         if options
             .source_if_match
             .as_deref()
-            .is_some_and(|etag| etag != "\"test-etag\"")
+            .is_some_and(|etag| etag != Self::etag_for(&bytes))
             || (options.destination_if_none_match.as_deref() == Some("*")
                 && objects.contains_key(&destination_key))
         {
             return Err(StorageError::PreconditionFailed);
         }
+        let etag = Self::etag_for(&bytes);
         objects.insert(
             destination_key,
             (bytes, options.content_type.or(source_type)),
         );
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".to_owned()),
-        })
+        Ok(PutOutcome { etag: Some(etag) })
     }
 
     async fn delete_object(
@@ -361,7 +383,7 @@ impl Storage for MockStorage {
                 size: bytes.len() as u64,
                 last_modified: Some(1_700_000_000),
                 content_type: ct.clone(),
-                etag: Some("\"test-etag\"".to_string()),
+                etag: Some(Self::etag_for(bytes)),
             })
             .collect();
         let truncated = objects.len() == limit as usize;
@@ -465,6 +487,27 @@ async fn index_once(
     )
     .run()
     .await;
+}
+
+/// Drive one `Refresh` through a worker, the way the filesystem watcher does.
+async fn refresh_once(
+    storage: Arc<MockStorage>,
+    embedder: Arc<dyn Embedder>,
+    store: Arc<dyn VectorStore>,
+    kb: &KbSlug,
+    key: &str,
+) {
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(IndexEvent::Refresh {
+        kb: kb.clone(),
+        object_key: opath(key),
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
+        .run()
+        .await;
 }
 
 fn kb() -> KbSlug {
@@ -1381,4 +1424,242 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     let repaired = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(repaired.len(), 1);
     assert_eq!(string_payload(&repaired[0], "text"), "new stable");
+}
+
+// ─── Refresh: re-derive from disk, and skip when nothing changed ────────────
+
+/// The test that protects the embedding bill.
+///
+/// A reconciliation pass re-examines every object in a knowledge base, and a filesystem
+/// watcher sees the server's own writes echoed back. Both would be unaffordable if
+/// re-examining unchanged bytes cost an embedding request, so assert on the request count
+/// rather than on the points, which would look identical either way.
+#[tokio::test]
+async fn a_refresh_of_unchanged_content_does_not_re_embed() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        kb.as_str(),
+        "note.md",
+        "# Title\n\nBody text.",
+        "text/markdown",
+    );
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+    refresh_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "note.md",
+    )
+    .await;
+    let after_first = embedder.calls();
+    assert!(after_first > 0, "the first refresh must index the object");
+    assert!(count_points(&store, &kb, "note.md").await > 0);
+
+    refresh_once(storage, embedder.clone(), store_arc, &kb, "note.md").await;
+
+    assert_eq!(
+        embedder.calls(),
+        after_first,
+        "re-examining unchanged content must not reach the embedder"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_of_changed_content_re_embeds() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "note.md", "first body", "text/markdown");
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+    refresh_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "note.md",
+    )
+    .await;
+    let after_first = embedder.calls();
+
+    storage.insert(kb.as_str(), "note.md", "second body", "text/markdown");
+    refresh_once(storage, embedder.clone(), store_arc, &kb, "note.md").await;
+
+    assert!(
+        embedder.calls() > after_first,
+        "changed content must be re-embedded"
+    );
+    // Joined, because the stub embedder's small input limit splits the body across chunks.
+    let indexed: String = scroll_points(&store, &kb, "note.md", false)
+        .await
+        .iter()
+        .map(|point| string_payload(point, "text").to_owned())
+        .collect();
+    assert!(
+        indexed.contains("second body"),
+        "the index must hold the new content, got {indexed:?}"
+    );
+}
+
+/// A deletion reaches the worker as a `Refresh`, never as a tombstone — that is what stops
+/// a delayed event from outracing a re-create. The conversion happens here.
+#[tokio::test]
+async fn a_refresh_of_a_deleted_object_tombstones_it() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+    refresh_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "note.md",
+    )
+    .await;
+    assert!(count_points(&store, &kb, "note.md").await > 0);
+
+    storage.remove(kb.as_str(), "note.md");
+    refresh_once(storage, embedder, store_arc, &kb, "note.md").await;
+
+    assert_eq!(count_points(&store, &kb, "note.md").await, 0);
+}
+
+/// Re-writing an object is the only reindex mechanism v1 offers (D42). Skipping unchanged
+/// content on the write path would quietly take it away, so `Upsert` must never skip.
+#[tokio::test]
+async fn a_write_upsert_re_embeds_even_when_unchanged() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+    index_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "note.md",
+        32,
+    )
+    .await;
+    let after_first = embedder.calls();
+
+    index_once(storage, embedder.clone(), store_arc, &kb, "note.md", 32).await;
+
+    assert!(
+        embedder.calls() > after_first,
+        "a write must re-index even when the bytes are identical"
+    );
+}
+
+/// When the lookup itself fails we index rather than skip. A redundant re-index costs an
+/// embedding request; a wrong skip leaves a document wrong in search with nothing left to
+/// notice.
+#[tokio::test]
+async fn a_failed_indexed_etag_lookup_indexes_anyway() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let failing: Arc<dyn VectorStore> = Arc::new(FailingEtagLookup {
+        inner: store.clone(),
+    });
+
+    refresh_once(
+        storage.clone(),
+        embedder.clone(),
+        failing.clone(),
+        &kb,
+        "note.md",
+    )
+    .await;
+    let after_first = embedder.calls();
+
+    refresh_once(storage, embedder.clone(), failing, &kb, "note.md").await;
+
+    assert!(
+        embedder.calls() > after_first,
+        "an unreadable indexed ETag must not be read as 'unchanged'"
+    );
+}
+
+/// A store that behaves normally except that it cannot answer "what is indexed?".
+struct FailingEtagLookup {
+    inner: InMemoryVectorStore,
+}
+
+#[async_trait]
+impl VectorStore for FailingEtagLookup {
+    async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
+        self.inner.collection_exists(kb).await
+    }
+    async fn create_collection(&self, kb: &KbSlug, dense_dim: u64) -> Result<(), VectorStoreError> {
+        self.inner.create_collection(kb, dense_dim).await
+    }
+    async fn create_payload_index(
+        &self,
+        kb: &KbSlug,
+        field: &str,
+        kind: PayloadFieldKind,
+    ) -> Result<(), VectorStoreError> {
+        self.inner.create_payload_index(kb, field, kind).await
+    }
+    async fn upsert_points(
+        &self,
+        kb: &KbSlug,
+        points: Vec<qdrant_client::qdrant::PointStruct>,
+    ) -> Result<(), VectorStoreError> {
+        self.inner.upsert_points(kb, points).await
+    }
+    async fn delete_points(
+        &self,
+        kb: &KbSlug,
+        selector: PointSelector,
+    ) -> Result<(), VectorStoreError> {
+        self.inner.delete_points(kb, selector).await
+    }
+    async fn indexed_etag(
+        &self,
+        _kb: &KbSlug,
+        _object_key: &str,
+    ) -> Result<Option<String>, VectorStoreError> {
+        Err(VectorStoreError::backend("injected lookup failure"))
+    }
+    async fn indexed_objects(
+        &self,
+        _kb: &KbSlug,
+        _prefix: Option<&str>,
+    ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+        Err(VectorStoreError::backend("injected lookup failure"))
+    }
+    async fn hybrid_search(
+        &self,
+        kb: &KbSlug,
+        query: HybridQuery,
+    ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>, VectorStoreError> {
+        self.inner.hybrid_search(kb, query).await
+    }
 }
