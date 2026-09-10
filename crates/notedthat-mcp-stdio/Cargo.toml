@@ -11,14 +11,14 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [dependencies]
-notedthat-mcp = { path = "../notedthat-mcp", version = "0.3.1" }
+notedthat-mcp = { path = "../notedthat-mcp", version = "0.4.0" }
 clap = { workspace = true }
 rmcp = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
-notedthat-core = { path = "../notedthat-core", version = "0.3.1" }
+notedthat-core = { path = "../notedthat-core", version = "0.4.0" }
 
 [dev-dependencies]
 temp-env = "0.3"
