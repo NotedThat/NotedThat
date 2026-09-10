@@ -299,12 +299,10 @@ fn match_tokens(tokens: &[Token], candidate: &str) -> bool {
 
 /// Whether `literal` appears in `chars` starting at `at`.
 fn literal_at(chars: &[char], at: usize, literal: &str) -> bool {
-    let mut index = at;
-    for expected in literal.chars() {
+    for (index, expected) in (at..).zip(literal.chars()) {
         if chars.get(index) != Some(&expected) {
             return false;
         }
-        index += 1;
     }
     true
 }
