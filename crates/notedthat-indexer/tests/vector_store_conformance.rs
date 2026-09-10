@@ -501,13 +501,15 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
         .expect("create_payload_index");
 
     // `notes/a.md` deliberately spans three chunks: one object must be reported
-    // once, not once per chunk.
+    // once, not once per chunk. Written in an order that is not key order, so an
+    // implementation reporting insertion order fails the ordering assertion below
+    // instead of passing by coincidence.
     let points: Vec<PointStruct> = [
+        ("other/c.md", 0, "\"ccc\""),
+        ("notes/b.md", 0, "\"bbb\""),
+        ("notes/a.md", 2, "\"aaa\""),
         ("notes/a.md", 0, "\"aaa\""),
         ("notes/a.md", 1, "\"aaa\""),
-        ("notes/a.md", 2, "\"aaa\""),
-        ("notes/b.md", 0, "\"bbb\""),
-        ("other/c.md", 0, "\"ccc\""),
     ]
     .iter()
     .enumerate()
@@ -584,15 +586,19 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     out
 }
 
-/// Render an `indexed_objects` result as `key=etag` pairs, sorted.
+/// Render an `indexed_objects` result as `key=etag` pairs, in the order it returned them.
+///
+/// Deliberately not sorted here. `reconcile`'s two-cursor merge is only correct if both
+/// implementations return ascending `object_key` order, and this is the one place the two
+/// are compared against each other — normalising the order away would make the invariant
+/// the merge depends on the one thing this suite could not catch.
 fn render(result: Result<Vec<IndexedObject>, VectorStoreError>) -> String {
-    let mut rendered: Vec<String> = result
+    result
         .expect("indexed_objects")
         .into_iter()
         .map(|object| format!("{}={}", object.object_key, object.etag))
-        .collect();
-    rendered.sort();
-    rendered.join(",")
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Collection lifecycle and the missing-collection error.
@@ -714,7 +720,39 @@ async fn both_backends_report_the_same_indexed_objects() {
     let from_qdrant = observe_indexed(&qdrant, &kb).await;
     let from_memory = observe_indexed(&InMemoryVectorStore::new(), &kb).await;
 
+    // Agreeing is not enough on its own here: `reconcile` merges this against a
+    // sorted directory walk with two cursors, and two implementations that were
+    // wrong the same way would still agree. Pin the order itself, on both.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_ascending(observations, "all_objects");
+        assert_ascending(observations, "objects_under_prefix");
+    }
+
     assert_agree(&from_qdrant, &from_memory);
+}
+
+/// Assert one rendered `indexed_objects` observation is in ascending key order.
+///
+/// The order `VectorStore::indexed_objects` documents, and the one reconciliation's
+/// merge join silently depends on.
+fn assert_ascending(observations: &Observations, name: &str) {
+    let (_, rendered) = observations
+        .iter()
+        .find(|(observed, _)| *observed == name)
+        .unwrap_or_else(|| panic!("no observation named '{name}'"));
+    let keys: Vec<&str> = rendered
+        .split(',')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.split('=').next().unwrap_or(entry))
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        keys, sorted,
+        "'{name}': indexed_objects must return ascending object_key order — \
+         reconcile's two-cursor merge over unsorted input skips real differences \
+         rather than failing"
+    );
 }
 
 #[tokio::test]

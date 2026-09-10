@@ -174,6 +174,15 @@ pub trait VectorStore: Send + Sync {
     ///
     /// Reads payloads, never vectors or chunk text. Implementations may apply `prefix`
     /// client-side; `qdrant-client` 1.15 has no keyword prefix matcher (see issue #68).
+    ///
+    /// # Contract
+    ///
+    /// Returned in ascending `object_key` order, byte-lexicographic. Reconciliation walks
+    /// this against a sorted directory walk with two cursors and no lookup table, so an
+    /// implementation that returns them unordered does not merely cost extra work: the
+    /// merge reports keys as changed that are not, reports live keys as orphaned, and
+    /// skips real differences entirely — objects left wrong in search with nothing to
+    /// notice. The conformance suite pins this for both implementations.
     async fn indexed_objects(
         &self,
         kb: &KbSlug,
