@@ -10,6 +10,17 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/NotedThat/NotedThat/compare/v0.3.1...v0.3.2) - 2026-09-10
+
+### Other
+
+- *(storage-s3)* say where this crate's backend tests went
+- *(storage)* cover list_objects pagination, and stop over-promising the rest
+- *(storage)* run one integration suite against both real backends
+- *(storage)* stop the header contradicting put_returns_etag
+- *(storage)* state what the shared container actually guarantees
+- *(storage)* run the integration suite against the in-memory backend too
+
 ## [0.3.1](https://github.com/NotedThat/NotedThat/compare/v0.3.0...v0.3.1) - 2026-09-09
 
 ### Added
