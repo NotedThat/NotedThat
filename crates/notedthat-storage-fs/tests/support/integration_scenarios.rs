@@ -25,8 +25,11 @@
 //! scenario may assert an `ETag`'s *shape*, or that two of them are equal *within one
 //! backend*, but never a literal value.
 //!
-//! `ETag`s are read back through `head_object` when `PutOutcome` has none: `SeaweedFS`
-//! does not always return one on PUT, which is a backend artifact rather than a contract.
+//! A single-shot PUT *does* return one on every backend here, `SeaweedFS` included —
+//! [`put_returns_etag`] is what says so, and it is an absolute assertion like the rest.
+//! Scenarios that need an existing object's `ETag` still read it back through
+//! [`etag_of`], but only because the [`put`] helper they seed with discards its
+//! `PutOutcome`; it is not a hedge against a backend withholding one.
 
 #![allow(dead_code)]
 
@@ -107,7 +110,11 @@ fn assert_quoted_lower_hex_etag(etag: &str) {
     );
 }
 
-/// The `ETag` of an object, from the PUT if the backend returned one and from HEAD if not.
+/// The `ETag` of an object, read back through HEAD.
+///
+/// Not a fallback: [`put`] throws its `PutOutcome` away, so HEAD is where the `ETag` of
+/// an already-seeded object comes from. Whether PUT reports one is a separate question,
+/// and [`put_returns_etag`] is the scenario that answers it.
 async fn etag_of(store: &dyn Storage, kb: &KbSlug, key: &str) -> String {
     store
         .head_object(kb, &path(key), ConditionalHeaders::default())
