@@ -278,9 +278,21 @@ async fn open_storage_root(config: &Config) -> anyhow::Result<Option<RootLock>> 
 
 /// Start the HTTP server with the provided configuration and backends.
 ///
-/// Skips both `backends_from_config` and the storage-root claim, so no root is locked for a
-/// directory this server never touches. `config.storage` is still read for one thing: it is
-/// what says whether there is a filesystem tree to watch, and which one.
+/// Skips both `backends_from_config` and the storage-root claim: the caller supplies the
+/// backends, so it is the caller that knows which root, if any, this server will touch.
+///
+/// # The caller's obligation
+///
+/// `config.storage` is still read for one thing — it is what says whether there is a
+/// filesystem tree to watch, and which one — so a caller passing `StorageConfig::Fs` gets
+/// recursive watches over every declared knowledge base's directory and a second
+/// `FsStorage` over that root, which can write to it (a sidecar repair, never object
+/// content). **That caller must hold the [`RootLock`] itself**, exactly as [`run`] does on
+/// its own path, because the single-process guarantee the lock exists for is that two
+/// servers must not both be repairing sidecars in one tree. `tests/fs_backend_e2e.rs` is
+/// the worked example: it calls `open_root` and keeps the guard alive for the server's
+/// lifetime. A caller that does not want the obligation passes `StorageConfig::S3`, or
+/// sets `NOTEDTHAT_FS_WATCH=false`.
 ///
 /// Same startup sequence as [`run`], but over backends the caller supplies.
 /// Tests use this to exercise the real routers, indexer worker and shutdown

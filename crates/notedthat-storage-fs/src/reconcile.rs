@@ -98,8 +98,15 @@ pub async fn reconcile(
 ) -> Result<ReconcileReport, StorageError> {
     // `.notedthat/` is private (D48) and nothing indexes it, so comparing it would report
     // the manifest as needing work on every single pass — and, since the manifest is an
-    // ordinary file inside the knowledge base's directory, the walk does find it. Filtered
-    // on both sides, so a stray entry from an older release is still cleaned up.
+    // ordinary file inside the knowledge base's directory, the walk does find it.
+    //
+    // Filtered on the walk only. Leaving the index side unfiltered is deliberate and is
+    // what cleans up after an earlier release: a stray `.notedthat/*` entry then appears
+    // on one side and not the other, so it is reported as needing a look, the consumer
+    // re-reads it, and — the manifest being written as `application/json`, which
+    // `is_indexable` rejects — tombstones it. The next pass is clean. Filtering both sides
+    // would hide such an entry from the comparison entirely and leave it in the index
+    // forever, which is the outcome this is avoiding rather than the one it wants.
     let on_disk: Vec<(String, String)> = storage
         .walk_etags(kb, prefix)
         .await?

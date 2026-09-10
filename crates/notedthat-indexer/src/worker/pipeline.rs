@@ -161,10 +161,15 @@ impl IndexerWorker {
             .await
             .map_err(|err| format!("storage.get_object_stream failed: {err}"))?;
         if object_stream.meta.etag.as_deref() != Some(head_etag.as_str()) {
-            // Deliberately not retried. Losing this race means the object changed between
-            // the HEAD and the GET — and that change raises its own event, which re-enqueues
-            // this key. Retrying here would only race the same writer again, from further
-            // behind.
+            // Deliberately not retried: retrying would only race the same writer again,
+            // from further behind. Where the filesystem watcher is running, the change
+            // that lost us this race raises its own event and re-enqueues the key.
+            //
+            // That repair is configuration-dependent, and this error is terminal —
+            // `process_event` logs INDEXING_FAILED and drops it, with no backoff and no
+            // dead-letter queue. On S3, or on the filesystem with NOTEDTHAT_FS_WATCH=false,
+            // nothing re-enqueues it and the object stays stale in the index until it is
+            // next written.
             return Err("streamed snapshot ETag differs from preceding HEAD".to_owned());
         }
         let object_meta = object_stream.meta;

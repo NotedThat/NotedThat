@@ -149,7 +149,13 @@ pub struct FsWatcher {
 }
 
 impl FsWatcher {
-    /// Stop watching, and wait until nothing more can be reported.
+    /// Stop watching and cancel anything still pending; nothing more can be reported.
+    ///
+    /// Not a flush. Work already settled but not yet sent, and everything still inside its
+    /// debounce window, is discarded — deliberately, because draining here would keep the
+    /// producer alive exactly when the consumer is trying to close, which is the ordering
+    /// `run.rs` depends on. None of it is lost: the next startup compares each knowledge
+    /// base against the index, which is what finds a change nothing was listening for.
     ///
     /// Worth awaiting rather than dropping at shutdown: a consumer draining its queue
     /// should not be racing a producer still filling it.
