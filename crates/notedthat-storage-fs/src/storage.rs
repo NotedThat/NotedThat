@@ -70,6 +70,14 @@ impl FsStorage {
         bucket_name(&self.inner.tenant, kb)
     }
 
+    /// Directory holding one knowledge base's objects.
+    ///
+    /// The one place outside this module that needs a real path: watching a knowledge base
+    /// starts from its directory, and nothing else should be re-deriving that name.
+    pub(crate) fn bucket_dir(&self, kb: &KbSlug) -> PathBuf {
+        self.inner.layout.bucket_dir(&self.bucket(kb))
+    }
+
     /// Every object under `prefix`, with the `ETag` a read would report, in one pass.
     ///
     /// Keys come back in the byte-lexicographic order `list_objects` uses, so a caller
