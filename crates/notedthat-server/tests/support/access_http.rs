@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use super::{
     access_env::{API_TOKEN, INTERNAL_BODY, PRIVATE_BODY, PRIVATE_KB, PUBLIC_BODY, PUBLIC_KB},
     access_server::ServerInstance,
-    access_wire::{assert_http_401, method, search, wire},
+    access_wire::{assert_http_401, assert_http_concealed_404, method, search, wire},
 };
 
 pub async fn verify(client: &reqwest::Client, server: &ServerInstance) {
@@ -139,7 +139,11 @@ async fn verify_credentials_and_writes(client: &reqwest::Client, server: &Server
             server.http_url
         ),
     ] {
-        assert_http_401(
+        // An anonymous denial on a named knowledge base is concealed as an
+        // undeclared slug. The invalid-credential and anonymous-write probes
+        // above and below stay `401`: those are the authentication layer's
+        // answer and name no knowledge base.
+        assert_http_concealed_404(
             &wire(
                 "HTTP hidden/private",
                 client.get(path).send().await.expect("denied"),

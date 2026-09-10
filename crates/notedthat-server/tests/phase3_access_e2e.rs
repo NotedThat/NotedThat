@@ -16,7 +16,7 @@ use access_env::{
     stored_manifest,
 };
 use access_server::{ServerInstance, wait_ready};
-use access_wire::{assert_http_401, search, wait_indexed, wire};
+use access_wire::{assert_http_concealed_404, search, wait_indexed, wire};
 use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Principal, Storage, TenantSlug, Verb};
 use reqwest::StatusCode;
 use std::time::Duration;
@@ -115,7 +115,7 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
     .await;
     assert_eq!(content.status, StatusCode::OK);
     assert_eq!(content.text(), PUBLIC_BODY);
-    assert_http_401(&search(client, first, "public.md", None).await);
+    assert_http_concealed_404(&search(client, first, "public.md", None).await);
     for path in [
         format!("{}/api/v1/knowledgebases/{PUBLIC_KB}", first.http_url),
         format!(
@@ -123,7 +123,7 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
             first.http_url
         ),
     ] {
-        assert_http_401(
+        assert_http_concealed_404(
             &wire(
                 "HTTP anonymous denied before restart",
                 client.get(path).send().await.expect("denied response"),
@@ -179,7 +179,7 @@ async fn stored_access_rules_are_loaded_only_at_server_startup() {
     // `read` alone already made the knowledge base visible; what proves the edit
     // has not leaked is that listing and search are still refused below.
     assert_eq!(stale.status, StatusCode::OK);
-    assert_http_401(
+    assert_http_concealed_404(
         &wire(
             "HTTP stale listing after live manifest edit",
             client
@@ -193,7 +193,7 @@ async fn stored_access_rules_are_loaded_only_at_server_startup() {
         )
         .await,
     );
-    assert_http_401(&search(&client, &first, "public.md", None).await);
+    assert_http_concealed_404(&search(&client, &first, "public.md", None).await);
     first.stop();
 
     let second = ServerInstance::start(backends.config());

@@ -92,6 +92,27 @@ pub async fn wait_indexed(client: &reqwest::Client, server: &ServerInstance, key
     }
 }
 
+/// An anonymous caller the access rules refuse, on a route that names a
+/// knowledge base.
+///
+/// `404`, byte-identical to an undeclared slug, so the status cannot be used to
+/// discover which knowledge bases a deployment declares. Distinct from
+/// [`assert_http_401`], which is the authentication layer's answer: a credential
+/// missing where one is unconditionally required, or one that did not verify.
+pub fn assert_http_concealed_404(response: &WireResponse) {
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
+    let json = response.json();
+    assert_eq!(json["error"], "not_found");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("not found: KB '")
+                && message.ends_with("' not declared")),
+        "a denial must carry the undeclared-slug message, got {:?}",
+        json["message"]
+    );
+}
+
 pub fn assert_http_401(response: &WireResponse) {
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     let json = response.json();
