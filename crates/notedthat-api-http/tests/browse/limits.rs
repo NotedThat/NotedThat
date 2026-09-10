@@ -1,6 +1,6 @@
 use notedthat_core::{Principal, Verb};
 
-use super::fixture::{app_with_keys, grant, grant_under, page, policy};
+use super::fixture::{app_with_keys, get, grant, grant_under, page, policy};
 
 /// Matches `listing::BROWSE_MAX_KEYS`.
 const CAP: usize = 10_000;
@@ -74,4 +74,35 @@ async fn a_narrow_grant_is_reached_even_when_a_denied_prefix_would_fill_the_cap(
     assert!(html.contains("1 folder, 0 objects"), "{html}");
     assert!(html.contains("public/"), "{html}");
     assert!(!html.contains("Listing truncated"), "{html}");
+}
+
+#[tokio::test]
+async fn a_folder_whose_grant_lies_past_the_cap_renders_rather_than_404s() {
+    // Given — a grant deep inside a prefix whose earlier keys exceed the cap.
+    // The grant's own segment is `docs`, so the scan still has to walk `docs/a…`
+    // before it can reach anything permitted.
+    let mut keys: Vec<String> = (0..=CAP)
+        .map(|index| format!("docs/a{index:06}.md"))
+        .collect();
+    keys.push("docs/zz/note.md".to_string());
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let app = app_with_keys(
+        policy([grant_under(
+            Principal::Anyone,
+            [Verb::List, Verb::Read],
+            &["docs/zz/**"],
+        )]),
+        &refs,
+    )
+    .await;
+
+    // When
+    let response = get(&app, "/browse/notes/docs/", None).await;
+
+    // Then — the cap is spent on denied keys, so the rollup is empty. That is
+    // "presence unknown", not absence: answering 404 would deny a folder that
+    // exists and holds content this caller was granted.
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let html = super::fixture::body(response).await;
+    assert!(html.contains("Listing truncated"), "{html}");
 }

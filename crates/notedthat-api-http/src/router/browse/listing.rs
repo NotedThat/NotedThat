@@ -137,6 +137,13 @@ fn is_visible(key: &str, filter: &KeyFilter<'_>) -> bool {
 ///
 /// Used to tell "an empty folder" (which cannot exist — folders are synthesised
 /// from keys) from "a folder that is not yours".
+///
+/// A truncated read answers "unknown", not "no". The cap counts keys *scanned*,
+/// denied ones included, so a listing can come back empty purely because the
+/// budget ran out before the first permitted key — and reducing that to absence
+/// would answer `404` for a folder that exists and holds content the caller was
+/// granted. Treating it as present renders the page instead, with the
+/// truncation notice this listing already carries saying where the truth stops.
 pub(super) fn is_present(listing: &DirectoryListing) -> bool {
-    !listing.rollup.is_empty()
+    !listing.rollup.is_empty() || listing.truncated
 }
