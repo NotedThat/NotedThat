@@ -38,6 +38,7 @@ mod layout;
 mod listing;
 mod locks;
 mod meta;
+pub mod reconcile;
 mod root;
 mod storage;
 
@@ -45,5 +46,6 @@ pub use config::{
     FS_ALLOW_LOSSY_NAMES_ENV, FS_DIR_MODE_ENV, FS_ENV_VARS, FS_FILE_MODE_ENV, FS_METADATA_ENV,
     FS_ROOT_ENV, FsConfig, FsSettings, MetadataMode,
 };
+pub use reconcile::{FsChange, IndexedEtag, ReconcileReport, reconcile};
 pub use root::{RootLock, open_root};
 pub use storage::FsStorage;
