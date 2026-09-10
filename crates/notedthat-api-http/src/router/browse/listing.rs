@@ -12,7 +12,7 @@
 //! common-prefix rollup — and rules are per key, so a directory page reads every
 //! key under its prefix even when most are denied.
 
-use crate::authz::KbAccess;
+use crate::authz::{KbAccess, ScanScope, effective_prefix};
 use notedthat_core::{
     KbSlug, KeyFilter, ObjectMeta, ObjectPath, Rollup, Storage, StorageError, Verb,
     is_internal_path, roll_up,
@@ -48,7 +48,27 @@ pub(super) async fn read_directory(
     access: &KbAccess,
 ) -> Result<DirectoryListing, StorageError> {
     let filter = access.filter(Verb::List);
-    let scan_prefix = (!prefix.is_empty()).then(|| prefix.to_string());
+
+    // Narrow the scan to the grant, exactly as `/api/v1`'s object listing does.
+    // Without this the cap below is spent on keys the caller may not see: at a
+    // knowledge-base root the requested prefix is `None`, so a grant on
+    // `public/**` would scan from `archive/` and stop before reaching a single
+    // permitted row — the published area invisible on the surface whose whole
+    // purpose is publishing it.
+    let requested = (!prefix.is_empty()).then_some(prefix);
+    let scan_prefix = match effective_prefix(requested, filter.literal_prefix_hint()) {
+        ScanScope::From(scan) => scan,
+        // The caller's prefix and the grant cannot overlap, so no key can
+        // appear here and storage need not be asked. An empty, untruncated
+        // listing is the honest answer: the folder holds nothing for them.
+        ScanScope::Disjoint => {
+            return Ok(DirectoryListing {
+                rollup: roll_up(Vec::new(), prefix),
+                truncated: false,
+                last_key: None,
+            });
+        }
+    };
 
     let mut visible: Vec<ObjectMeta> = Vec::new();
     let mut cursor: Option<String> = None;
