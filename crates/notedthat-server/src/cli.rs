@@ -101,6 +101,31 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", value_name = "HOSTS")]
     pub mcp_http_allowed_hosts: Option<String>,
 
+    /// OIDC issuer URL, spelled exactly as the provider's `iss` claim. Enables
+    /// identity-provider bearer tokens.
+    #[arg(long, env = "NOTEDTHAT_OIDC_ISSUER", value_name = "URL")]
+    pub oidc_issuer: Option<String>,
+
+    /// Comma-separated audiences an identity token may carry (usually the client id).
+    #[arg(long, env = "NOTEDTHAT_OIDC_AUDIENCE", value_name = "AUDIENCES")]
+    pub oidc_audience: Option<String>,
+
+    /// The claim `user:` rules match against [default: preferred_username].
+    #[arg(long, env = "NOTEDTHAT_OIDC_USERNAME_CLAIM", value_name = "CLAIM")]
+    pub oidc_username_claim: Option<String>,
+
+    /// The claim `group:` rules match against [default: groups].
+    #[arg(long, env = "NOTEDTHAT_OIDC_GROUPS_CLAIM", value_name = "CLAIM")]
+    pub oidc_groups_claim: Option<String>,
+
+    /// Timeout for discovery and key-set requests to the issuer [default: 5000].
+    #[arg(long, env = "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", value_name = "MS")]
+    pub oidc_http_timeout_ms: Option<String>,
+
+    /// This deployment's public URL; publishes RFC 9728 metadata for MCP clients.
+    #[arg(long, env = "NOTEDTHAT_OIDC_RESOURCE", value_name = "URL")]
+    pub oidc_resource: Option<String>,
+
     /// Object store to run on: `s3` or `fs` [default: s3].
     #[arg(long, env = "NOTEDTHAT_STORAGE_BACKEND", value_name = "BACKEND")]
     pub storage_backend: Option<OsString>,

@@ -10,6 +10,7 @@ mod helpers;
 mod kbs;
 mod llms;
 mod objects;
+mod well_known;
 
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
@@ -31,6 +32,7 @@ use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
+use well_known::protected_resource_metadata;
 
 /// The API route table, declared once in two forms.
 ///
@@ -118,6 +120,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/llms.txt", get(llms_txt))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(protected_resource_metadata),
+        )
         .route(BROWSE_PREFIX, get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))

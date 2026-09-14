@@ -38,6 +38,12 @@ tower.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }
 thiserror.workspace = true
+# OIDC: discovery and JWKS fetches, token verification, settings.
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+url.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -48,8 +54,6 @@ notedthat-server = { path = ".", features = ["test-support"] }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.5.0", features = ["test-support"] }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.5.0", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
-serde_json.workspace = true
 bytes.workspace = true
 temp-env = "0.3"
 tempfile.workspace = true

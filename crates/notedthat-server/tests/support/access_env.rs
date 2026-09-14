@@ -122,6 +122,7 @@ impl Backends {
             mcp_http_allowed_hosts: vec!["127.0.0.1".to_string()],
             max_patchable_size: 10 * 1024 * 1024,
             staging: notedthat_core::StagingConfig::default(),
+            oidc: None,
         }
     }
 

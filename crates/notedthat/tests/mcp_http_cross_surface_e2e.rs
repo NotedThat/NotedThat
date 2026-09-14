@@ -79,6 +79,7 @@ fn test_config_with_mcp_http(
         ],
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 
@@ -128,6 +129,7 @@ fn test_config_with_kbs_and_mcp_http(
         ],
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 

@@ -84,6 +84,7 @@ fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_serve
         ],
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 

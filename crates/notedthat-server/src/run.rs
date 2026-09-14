@@ -1,13 +1,14 @@
 //! Server startup and lifecycle management.
 
 use crate::config::{Config, StorageConfig};
+use crate::oidc::OidcVerifier;
 use crate::provision::provision_kbs;
 use anyhow::Context;
 use notedthat_api_http::{
     router::{MAX_BODY_BYTES, build_router},
     state::AppState,
 };
-use notedthat_core::Authenticator;
+use notedthat_core::{Authenticator, ProtectedResource};
 use notedthat_indexer::{
     IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
@@ -172,10 +173,37 @@ async fn build_infrastructure(
 
     // One authenticator for every surface. The API, the browse pages and MCP
     // accept its bearer credentials; WebDAV additionally accepts the Basic pair.
-    let authenticator = Arc::new(Authenticator::new(config.api_token.clone()).with_basic(
+    let mut authenticator = Authenticator::new(config.api_token.clone()).with_basic(
         config.webdav_username.clone(),
         config.webdav_password.clone(),
-    ));
+    );
+    if let Some(oidc) = &config.oidc {
+        // Discovery is a startup step (D39): an issuer that cannot be reached
+        // would refuse every identity token, which is better reported now,
+        // naming the setting, than one 401 at a time later.
+        let verifier = OidcVerifier::discover(oidc.clone())
+            .await
+            .context("failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer)")?;
+        authenticator = authenticator.with_token_verifier(Arc::new(verifier));
+        if let Some(resource) = &oidc.resource {
+            authenticator = authenticator.with_protected_resource(ProtectedResource {
+                resource: resource.clone(),
+                authorization_servers: vec![oidc.issuer.clone()],
+                metadata_url: format!("{resource}/.well-known/oauth-protected-resource"),
+            });
+        }
+    } else {
+        for (slug, policy) in access_policies.iter() {
+            if policy.names_an_identity() {
+                // Not a refusal: manifests live in buckets that outlive one
+                // deployment's configuration. But such a rule can only ever
+                // match a caller an identity provider vouched for, and there
+                // is none, so the operator is told rather than left to wonder.
+                tracing::warn!(kb = %slug, "ACCESS_RULES_IDENTITY_WITHOUT_OIDC");
+            }
+        }
+    }
+    let authenticator = Arc::new(authenticator);
 
     let dav_state = WebDavState {
         authenticator: authenticator.clone(),

@@ -92,6 +92,9 @@ text-splitter = { version = "0.32", features = ["markdown"] }
 
 # Security & IDs
 subtle = "2.4"
+# OIDC bearer verification: RS*/ES* over a JWKS. Version 9 uses `ring`, which is
+# already in the tree through rustls, so no second crypto backend is compiled.
+jsonwebtoken = "9"
 sha2 = "0.10"
 uuid = { version = "1.6", default-features = false, features = ["v7"] }
 

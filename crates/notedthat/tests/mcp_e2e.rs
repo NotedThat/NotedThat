@@ -130,6 +130,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
         listen_addr: http_addr,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         staging: StagingConfig::default(),
+        oidc: None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),

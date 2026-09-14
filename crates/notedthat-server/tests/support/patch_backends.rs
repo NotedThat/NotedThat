@@ -102,6 +102,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         ],
         max_patchable_size,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 

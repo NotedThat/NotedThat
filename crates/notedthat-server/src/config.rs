@@ -6,6 +6,7 @@
 //! environment itself. See `docs/CONFIGURATION.md` for the full reference.
 
 use crate::cli::ServerCli;
+use crate::oidc::OidcSettings;
 use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
 use notedthat_storage_fs::FsSettings;
 use notedthat_storage_s3::S3Settings;
@@ -13,6 +14,7 @@ use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 /// Which storage backend the server runs on.
 ///
@@ -250,6 +252,8 @@ pub struct Config {
     pub max_patchable_size: u64,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
+    /// Identity-provider settings (`NOTEDTHAT_OIDC_*`); `None` when no issuer is set.
+    pub oidc: Option<OidcSettings>,
 }
 
 /// Settings removed when the API, `WebDAV`, and MCP surfaces moved onto one
@@ -327,6 +331,9 @@ impl Config {
                 });
             }
         }
+
+        // Borrows the whole CLI, so it runs before the field-by-field moves below.
+        let oidc = parse_oidc(&cli)?;
 
         let api_token = cli.api_token.take().ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_API_TOKEN")),
@@ -509,7 +516,137 @@ impl Config {
             mcp_http_allowed_hosts,
             max_patchable_size,
             staging,
+            oidc,
         })
+    }
+}
+
+/// The `NOTEDTHAT_OIDC_*` settings that only mean something once an issuer is set.
+fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 5] {
+    [
+        ("NOTEDTHAT_OIDC_AUDIENCE", cli.oidc_audience.is_some()),
+        (
+            "NOTEDTHAT_OIDC_USERNAME_CLAIM",
+            cli.oidc_username_claim.is_some(),
+        ),
+        (
+            "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+            cli.oidc_groups_claim.is_some(),
+        ),
+        (
+            "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
+            cli.oidc_http_timeout_ms.is_some(),
+        ),
+        ("NOTEDTHAT_OIDC_RESOURCE", cli.oidc_resource.is_some()),
+    ]
+}
+
+/// Parse the identity-provider settings.
+///
+/// `NOTEDTHAT_OIDC_ISSUER` is the switch. Without it, any other `NOTEDTHAT_OIDC_*`
+/// setting is refused rather than ignored, for the same reason a setting of
+/// the unselected storage backend is: a deployment that sets an audience and
+/// no issuer believed it had configured identity tokens, and silently running
+/// without them is the wrong way to find out.
+fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
+    let Some(issuer) = cli.oidc_issuer.as_deref().map(str::trim) else {
+        let offenders: Vec<String> = oidc_dependent_settings(cli)
+            .into_iter()
+            .filter(|(_, supplied)| *supplied)
+            .map(|(name, _)| setting(name))
+            .collect();
+        if offenders.is_empty() {
+            return Ok(None);
+        }
+        return Err(Error::Config {
+            message: format!(
+                "{} is unset, so identity tokens are not accepted, but {} {} set; set the \
+                 issuer or unset {}",
+                setting("NOTEDTHAT_OIDC_ISSUER"),
+                offenders.join(", "),
+                if offenders.len() == 1 { "is" } else { "are" },
+                if offenders.len() == 1 { "it" } else { "them" },
+            ),
+        });
+    };
+
+    let issuer_url = absolute_http_url("NOTEDTHAT_OIDC_ISSUER", issuer)?;
+    let audiences = comma_list(cli.oidc_audience.as_deref(), &[]);
+    if audiences.is_empty() {
+        return Err(Error::Config {
+            message: format!(
+                "{} is required when {} is set: name the audience the provider puts in \
+                 its tokens, usually the client id",
+                setting("NOTEDTHAT_OIDC_AUDIENCE"),
+                setting("NOTEDTHAT_OIDC_ISSUER"),
+            ),
+        });
+    }
+    let claim = |var: &str, supplied: Option<&str>, default: &str| -> Result<String, Error> {
+        match supplied.map(str::trim) {
+            None => Ok(default.to_string()),
+            Some("") => Err(Error::Config {
+                message: format!("{} must not be empty", setting(var)),
+            }),
+            Some(name) => Ok(name.to_string()),
+        }
+    };
+    let username_claim = claim(
+        "NOTEDTHAT_OIDC_USERNAME_CLAIM",
+        cli.oidc_username_claim.as_deref(),
+        OidcSettings::DEFAULT_USERNAME_CLAIM,
+    )?;
+    let groups_claim = claim(
+        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+        cli.oidc_groups_claim.as_deref(),
+        OidcSettings::DEFAULT_GROUPS_CLAIM,
+    )?;
+    let http_timeout = Duration::from_millis(parse_millis(
+        "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
+        cli.oidc_http_timeout_ms.as_deref(),
+        OidcSettings::DEFAULT_HTTP_TIMEOUT_MS,
+    )?);
+    let resource = cli
+        .oidc_resource
+        .as_deref()
+        .map(str::trim)
+        .map(|resource| absolute_http_url("NOTEDTHAT_OIDC_RESOURCE", resource))
+        .transpose()?
+        .map(|url| url.to_string().trim_end_matches('/').to_string());
+
+    Ok(Some(OidcSettings {
+        issuer: issuer_url.to_string(),
+        audiences,
+        username_claim,
+        groups_claim,
+        http_timeout,
+        resource,
+    }))
+}
+
+/// Parse an `http(s)` URL setting, keeping the operator's spelling.
+///
+/// Returns the parsed URL only to prove it parses; the `Display` of a parsed
+/// URL can differ from the input (a bare origin gains a trailing slash), and
+/// the issuer has to be compared byte-for-byte with the provider's `iss`.
+fn absolute_http_url(var: &str, raw: &str) -> Result<UrlSpelling, Error> {
+    let parsed = url::Url::parse(raw).map_err(|error| Error::Config {
+        message: format!("{} is not an absolute URL: {error}", setting(var)),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(Error::Config {
+            message: format!("{} must use http or https", setting(var)),
+        });
+    }
+    Ok(UrlSpelling(raw.to_string()))
+}
+
+/// A URL that parsed, kept in the operator's own spelling.
+struct UrlSpelling(String);
+
+impl std::fmt::Display for UrlSpelling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -685,7 +822,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 38] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 44] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -716,6 +853,12 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
+        "NOTEDTHAT_OIDC_ISSUER",
+        "NOTEDTHAT_OIDC_AUDIENCE",
+        "NOTEDTHAT_OIDC_USERNAME_CLAIM",
+        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+        "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
+        "NOTEDTHAT_OIDC_RESOURCE",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -766,6 +909,12 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
+            ("NOTEDTHAT_OIDC_ISSUER", None),
+            ("NOTEDTHAT_OIDC_AUDIENCE", None),
+            ("NOTEDTHAT_OIDC_USERNAME_CLAIM", None),
+            ("NOTEDTHAT_OIDC_GROUPS_CLAIM", None),
+            ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", None),
+            ("NOTEDTHAT_OIDC_RESOURCE", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -973,7 +1122,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 38);
+        assert_eq!(ALL_ENV_KEYS.len(), 44);
     }
 
     #[test]
@@ -1485,6 +1634,140 @@ pub(crate) mod tests {
                     .iter()
                     .all(|(_, _, supplied)| !supplied)
             );
+        }
+    }
+
+    mod oidc {
+        use super::*;
+
+        const ISSUER: &str = "https://auth.example.com/application/o/notedthat/";
+
+        #[test]
+        fn no_oidc_settings_means_no_verifier() {
+            let cfg = run_with_env(&[], Config::from_env).expect("valid config");
+            assert!(cfg.oidc.is_none());
+        }
+
+        #[test]
+        fn an_issuer_with_an_audience_enables_oidc_with_the_defaults() {
+            let cfg = run_with_env(
+                &[
+                    ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
+                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat, mcp-client")),
+                ],
+                Config::from_env,
+            )
+            .expect("valid config");
+            let oidc = cfg.oidc.expect("configured");
+            assert_eq!(oidc.issuer, ISSUER, "the operator's spelling is kept");
+            assert_eq!(oidc.audiences, vec!["notedthat", "mcp-client"]);
+            assert_eq!(oidc.username_claim, "preferred_username");
+            assert_eq!(oidc.groups_claim, "groups");
+            assert_eq!(oidc.http_timeout, Duration::from_millis(5000));
+            assert_eq!(oidc.resource, None);
+            assert_eq!(
+                oidc.discovery_url(),
+                "https://auth.example.com/application/o/notedthat/.well-known/openid-configuration"
+            );
+        }
+
+        #[test]
+        fn every_oidc_setting_is_read() {
+            let cfg = run_with_env(
+                &[
+                    ("NOTEDTHAT_OIDC_ISSUER", Some("https://auth.example.com")),
+                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                    ("NOTEDTHAT_OIDC_USERNAME_CLAIM", Some("email")),
+                    (
+                        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+                        Some("urn:zitadel:iam:org:project:roles"),
+                    ),
+                    ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", Some("250")),
+                    (
+                        "NOTEDTHAT_OIDC_RESOURCE",
+                        Some("https://notes.example.com/"),
+                    ),
+                ],
+                Config::from_env,
+            )
+            .expect("valid config");
+            let oidc = cfg.oidc.expect("configured");
+            assert_eq!(oidc.username_claim, "email");
+            assert_eq!(oidc.groups_claim, "urn:zitadel:iam:org:project:roles");
+            assert_eq!(oidc.http_timeout, Duration::from_millis(250));
+            assert_eq!(
+                oidc.resource.as_deref(),
+                Some("https://notes.example.com"),
+                "the resource is an origin, so its trailing slash is dropped"
+            );
+        }
+
+        #[test]
+        fn oidc_settings_without_an_issuer_are_rejected() {
+            let error = run_with_env(
+                &[
+                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                    ("NOTEDTHAT_OIDC_GROUPS_CLAIM", Some("roles")),
+                ],
+                Config::from_env,
+            )
+            .expect_err("refused");
+            let message = error.to_string();
+            assert!(
+                names_setting(&message, "NOTEDTHAT_OIDC_ISSUER", "unset"),
+                "{message}"
+            );
+            assert!(message.contains("NOTEDTHAT_OIDC_AUDIENCE"), "{message}");
+            assert!(message.contains("NOTEDTHAT_OIDC_GROUPS_CLAIM"), "{message}");
+        }
+
+        #[test]
+        fn an_issuer_without_an_audience_is_rejected() {
+            let error = run_with_env(&[("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER))], Config::from_env)
+                .expect_err("refused");
+            assert!(
+                names_setting(&error.to_string(), "NOTEDTHAT_OIDC_AUDIENCE", "required"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn an_issuer_that_is_not_an_http_url_is_rejected() {
+            for bad in ["auth.example.com", "ldap://auth.example.com", ""] {
+                let error = run_with_env(
+                    &[
+                        ("NOTEDTHAT_OIDC_ISSUER", Some(bad)),
+                        ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                    ],
+                    Config::from_env,
+                )
+                .expect_err("refused");
+                assert!(
+                    error.to_string().contains("NOTEDTHAT_OIDC_ISSUER"),
+                    "{bad}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_empty_claim_name_and_a_zero_timeout_are_rejected() {
+            for (var, value) in [
+                ("NOTEDTHAT_OIDC_USERNAME_CLAIM", " "),
+                ("NOTEDTHAT_OIDC_GROUPS_CLAIM", ""),
+                ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", "0"),
+                ("NOTEDTHAT_OIDC_RESOURCE", "notes.example.com"),
+            ] {
+                let error = run_with_env(
+                    &[
+                        ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
+                        ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                        (var, Some(value)),
+                    ],
+                    Config::from_env,
+                )
+                .expect_err("refused");
+                assert!(error.to_string().contains(var), "{var}: {error}");
+            }
         }
     }
 }

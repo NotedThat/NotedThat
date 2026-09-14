@@ -71,6 +71,7 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
         ],
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 

@@ -59,6 +59,7 @@ fn test_config() -> Config {
         ],
         max_patchable_size: 100 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 
