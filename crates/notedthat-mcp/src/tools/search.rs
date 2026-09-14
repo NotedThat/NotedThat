@@ -21,11 +21,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// The most slugs one call may name. Bounds the work a caller can request
-/// with a list of undeclared slugs, each of which is still one HTTP request
-/// before the `not_found` comes back.
-pub const MAX_KBS_PER_CALL: usize = 32;
-
 /// Searches in flight at once. Every knowledge base costs a Qdrant query and
 /// an embedding call on the server, so a wide fan-out is paced rather than
 /// fired all at once; request order is kept regardless.
@@ -34,8 +29,8 @@ const CONCURRENCY: usize = 8;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchArgs {
     /// Knowledge bases to search, by slug (discover them with
-    /// `list_knowledgebases`), at most 32 per call. Omit, or pass `[]`, to
-    /// search every knowledge base the caller may search.
+    /// `list_knowledgebases`). Omit, or pass `[]`, to search every knowledge
+    /// base the caller may search.
     #[serde(default)]
     pub kb: Vec<String>,
     pub query: String,
@@ -161,18 +156,10 @@ pub(super) async fn run(
 
 /// Resolve the `kb` argument: the caller's list, or every knowledge base the
 /// caller can see when the list is empty. Duplicates are refused rather than
-/// deduplicated so the answer has exactly one group per requested slug, and a
-/// list longer than [`MAX_KBS_PER_CALL`] is refused before any request.
+/// deduplicated so the answer has exactly one group per requested slug.
 async fn select(client: &NotedThatClient, kb: Vec<String>) -> Result<Selection, McpError> {
     if kb.is_empty() {
         return Ok(Selection::All(client.list_kbs().await?));
-    }
-    if kb.len() > MAX_KBS_PER_CALL {
-        return Err(McpToolError::InvalidRequest(format!(
-            "kb names {} knowledge bases; at most {MAX_KBS_PER_CALL} per call",
-            kb.len()
-        ))
-        .into());
     }
     let mut seen = HashSet::with_capacity(kb.len());
     if let Some(duplicate) = kb.iter().find(|slug| !seen.insert(slug.as_str())) {
@@ -507,32 +494,6 @@ mod tests {
         // Then: invalid_request naming the duplicate, no HTTP call made
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(error.message.contains("\"a\""), "{}", error.message);
-    }
-
-    #[tokio::test]
-    async fn a_list_longer_than_the_cap_is_refused_before_any_request() {
-        // Given: a server that must not be asked anything
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let slugs: Vec<String> = (0..=MAX_KBS_PER_CALL).map(|i| format!("kb{i}")).collect();
-        let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
-
-        // When: one more slug than the cap is named, none of them twice
-        let error = run(&client(&server.uri()), args(&refs, "q", None))
-            .await
-            .unwrap_err();
-
-        // Then: invalid_request naming the cap, no HTTP call made
-        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            error.message.contains(&MAX_KBS_PER_CALL.to_string()),
-            "{}",
-            error.message
-        );
     }
 
     #[tokio::test]
