@@ -2354,6 +2354,7 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "base64",
+ "futures",
  "notedthat-core",
  "percent-encoding",
  "reqwest",
