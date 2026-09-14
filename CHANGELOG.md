@@ -10,6 +10,25 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/NotedThat/NotedThat/compare/v0.5.0...v0.6.0) - 2026-09-14
+
+### Added
+
+- *(server)* OIDC verifier with discovery, a cached JWKS and settings
+- *(core)* [**breaking**] Authenticator with a pluggable bearer-token verifier
+- *(core)* [**breaking**] deny rules (`may_not`) with deny-overrides evaluation
+- *(core)* [**breaking**] identity-bearing principals and group/user rule subjects
+- *(mcp)* act as the calling identity on the API
+- *(server)* trust an internal CA for the issuer via NOTEDTHAT_OIDC_CA_CERT
+
+### Fixed
+
+- *(mcp)* refuse an HTTP call without a caller token instead of acting as the server
+
+### Other
+
+- *(server)* Authelia-backed OIDC e2e, Compose overlay and manual QA
+
 ## [0.5.0](https://github.com/NotedThat/NotedThat/compare/v0.4.0...v0.5.0) - 2026-09-10
 
 ### Added
