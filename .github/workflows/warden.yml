@@ -80,12 +80,18 @@ jobs:
       # Split analyze/report (the documented shape): analyze does all the model
       # work and writes a findings file without touching GitHub; report replays
       # that file into a PR review and check runs.
+      #
+      # `base-skill-root: .` because warden.toml is layered as the *base*
+      # config, and Warden insists on knowing where a base config's repo-local
+      # skills (.agents/skills/) live — the layering was built for org-wide
+      # base configs checked out from another repository. Here it is this one.
       - name: Analyze (${{ matrix.profile }})
         id: analyze
         uses: getsentry/warden@v0.48.0
         with:
           mode: analyze
           base-config-path: warden.toml
+          base-skill-root: .
           config-path: .github/warden/${{ matrix.profile }}.toml
 
       # With more than one profile, all jobs post the same hardcoded check-run
@@ -99,4 +105,5 @@ jobs:
           mode: report
           findings-file: ${{ steps.analyze.outputs.findings-file }}
           base-config-path: warden.toml
+          base-skill-root: .
           config-path: .github/warden/${{ matrix.profile }}.toml
