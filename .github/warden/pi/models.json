@@ -5,12 +5,12 @@
       "baseUrl": "https://example.invalid/v1",
       "api": "openai-completions",
       "apiKey": "$THIRDPARTY_API_KEY",
-      "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false },
+      "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": true },
       "models": [
         {
           "id": "openai/gpt-oss-120b",
           "name": "GPT-OSS 120B (third-party)",
-          "reasoning": false,
+          "reasoning": true,
           "input": ["text"],
           "contextWindow": 131072,
           "maxTokens": 16384,

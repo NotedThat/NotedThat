@@ -11,12 +11,26 @@
 # own default, which is Anthropic.
 version = 1
 
+# No plan quota on this endpoint, and 78 tool calls in 26 s at five in
+# flight showed no strain; eight is the next step, twelve if a large PR
+# passes without 429s.
+[runner]
+concurrency = 8
+
+# GPT-OSS is a reasoning model and was running with reasoning off: on PR
+# #133 and #130 it posted confident findings about GitHub Actions and Rust
+# syntax that a moment's thought refutes, and its verification pass (the
+# same model, same setting) let them through. `high` is the ceiling the
+# endpoint accepts (low|medium|high); the auxiliary lane gets it too, since
+# that is where false positives are supposed to die.
 [defaults.agent]
 model = "thirdparty/openai/gpt-oss-120b"
 maxTurns = 30
+effort = "high"
 
 [defaults.auxiliary]
 model = "thirdparty/openai/gpt-oss-120b"
+effort = "high"
 
 # --- Sentry's generalised review skills (getsentry/warden-skills, MIT) -------
 # Skill sources: remote pinned to a commit (`remote = "owner/repo@sha"`) —

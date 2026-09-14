@@ -12,15 +12,16 @@
 # has no plan quota. See the runner note below for why.
 version = 1
 
-# One hunk at a time. The MiniMax Token Plan is sized for one interactive
-# developer (~3-4 concurrent agents on Plus) and answers anything more with
-# 429 "Token Plan rate limit reached (2062)". Five in flight — the action's
-# default — tripped Warden's circuit breaker on PR #130 after 65 of ~350
-# hunks, and the aborted skills were posted as green "No issues" checks.
-# Slow is acceptable here; silently unreviewed is not. Must live in this
-# overlay: the action prefers the base file's value when both set one.
+# Two hunks at a time. The MiniMax Token Plan is sized for one interactive
+# developer (~3-4 concurrent agents on Plus) and answers anything busier
+# with 429 "Token Plan rate limit reached (2062)": five in flight — the
+# action's default — tripped Warden's circuit breaker on PR #130 after 65
+# of ~350 hunks, and the aborted skills were posted as green "No issues"
+# checks. One at a time never tripped it but needed hours on a large PR;
+# two keeps clear of the plan's guidance with half the wall time. Must live
+# in this overlay: the action prefers the base file's value when both set one.
 [runner]
-concurrency = 1
+concurrency = 2
 
 [defaults.agent]
 model = "minimax/MiniMax-M3"

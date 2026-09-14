@@ -18,6 +18,8 @@ endpoint that actually investigates: on a 15-hunk PR it made 78 tool calls
 returned empty responses to review prompts, never used tools, or produced a
 confident hallucinated finding in two seconds. Re-test before adding one.
 
-`compat.supportsDeveloperRole` / `supportsReasoningEffort` are off because
-the endpoint is a vLLM deployment that answers the system prompt as
-`system` and ignores `reasoning_effort`.
+`compat.supportsDeveloperRole` is off because the endpoint is a vLLM
+deployment that wants the system prompt as `system`. `supportsReasoningEffort`
+is on: GPT-OSS is a reasoning model and the endpoint accepts
+`reasoning_effort` low|medium|high (not xhigh/max); the profile overlay sets
+`effort = "high"` on both lanes.
