@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{
@@ -46,7 +46,7 @@ async fn a_listing_shows_every_key_the_credential_holder_may_see() {
 async fn a_prefix_scoped_list_grant_shows_only_keys_under_that_prefix() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -69,7 +69,7 @@ async fn a_prefix_scoped_list_grant_shows_only_keys_under_that_prefix() {
 #[tokio::test]
 async fn a_listing_drops_the_internal_namespace_for_an_anonymous_caller() {
     // Given
-    let app = app(notes([grant(Principal::Anyone, [Verb::List])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::List])])).await;
 
     // When
     let keys = keys_for(app, "/api/v1/knowledgebases/notes", None).await;
@@ -86,7 +86,7 @@ async fn a_listing_drops_the_internal_namespace_for_an_anonymous_caller() {
 async fn a_caller_prefix_outside_the_granted_scope_lists_nothing() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -116,7 +116,7 @@ async fn a_caller_prefix_outside_the_granted_scope_lists_nothing() {
 async fn a_caller_prefix_inside_the_granted_scope_narrows_further() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -137,7 +137,7 @@ async fn a_caller_prefix_inside_the_granted_scope_narrows_further() {
 #[tokio::test]
 async fn listing_is_refused_without_a_list_grant() {
     // Given — `read` alone does not let a caller enumerate.
-    let app = app(notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When
     let response = app

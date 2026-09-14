@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use notedthat_api_http::testing::MockSearcher;
 use notedthat_core::search::{ObjectKey, SearchHit, SearchResponse};
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{app_with_searcher, grant, grant_under, json, policy};
@@ -56,8 +56,8 @@ async fn hits_are_filtered_by_the_search_patterns_and_not_by_the_read_patterns()
     let searcher = searcher_returning(&["public/index.md", "internal/secret.md"]);
     let app = app_with_searcher(
         notes([
-            grant(Principal::Anyone, [Verb::Search]),
-            grant_under(Principal::Anyone, [Verb::Read], &["public/**"]),
+            grant(Who::Anyone, [Verb::Search]),
+            grant_under(Who::Anyone, [Verb::Read], &["public/**"]),
         ]),
         searcher as Arc<dyn notedthat_indexer::Searcher>,
     )
@@ -84,11 +84,7 @@ async fn a_prefix_scoped_search_grant_withholds_hits_outside_its_scope() {
     // Given
     let searcher = searcher_returning(&["public/index.md", "internal/secret.md"]);
     let app = app_with_searcher(
-        notes([grant_under(
-            Principal::Anyone,
-            [Verb::Search],
-            &["public/**"],
-        )]),
+        notes([grant_under(Who::Anyone, [Verb::Search], &["public/**"])]),
         searcher as Arc<dyn notedthat_indexer::Searcher>,
     )
     .await;
@@ -113,7 +109,7 @@ async fn a_denied_search_never_reaches_the_searcher() {
     // operationally: an unauthorized search must not cost an embedding call.
     let searcher = searcher_returning(&["public/index.md"]);
     let app = app_with_searcher(
-        notes([grant(Principal::Anyone, [Verb::Read])]),
+        notes([grant(Who::Anyone, [Verb::Read])]),
         Arc::clone(&searcher) as Arc<dyn notedthat_indexer::Searcher>,
     )
     .await;

@@ -13,8 +13,7 @@
 
 use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{
-    AccessRule, ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Principal, Storage, TenantSlug,
-    Verb,
+    AccessRule, ConditionalHeaders, KbManifest, KbSlug, ObjectPath, Storage, TenantSlug, Verb, Who,
 };
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
@@ -78,8 +77,8 @@ async fn seed(storage: &InMemoryStorage) {
         1_700_000_000,
     );
     manifest.access = [
-        AccessRule::new(Principal::SignedIn, Verb::ALL),
-        AccessRule::new(Principal::Anyone, [Verb::List, Verb::Read])
+        AccessRule::new(Who::SignedIn, Verb::ALL),
+        AccessRule::new(Who::Anyone, [Verb::List, Verb::Read])
             .under([notedthat_core::KeyPattern::parse("public/**").expect("valid pattern")]),
     ]
     .into_iter()

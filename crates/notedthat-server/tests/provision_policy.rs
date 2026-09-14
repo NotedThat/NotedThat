@@ -64,7 +64,7 @@ async fn provision_kbs_returns_policy_loaded_from_existing_manifest() {
         policies
             .get("notes")
             .expect("declared KB has a policy")
-            .allows(Principal::Anyone, Verb::Read, "public.md")
+            .allows(&Principal::Anyone, Verb::Read, "public.md")
     );
 }
 
@@ -163,13 +163,13 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
         first_snapshot
             .get("notes")
             .expect("first policy exists")
-            .allows(Principal::Anyone, Verb::Read, "public.md")
+            .allows(&Principal::Anyone, Verb::Read, "public.md")
     );
     assert!(
         !restarted_snapshot
             .get("notes")
             .expect("restarted policy exists")
-            .allows(Principal::Anyone, Verb::Read, "public.md"),
+            .allows(&Principal::Anyone, Verb::Read, "public.md"),
         "a restart is what picks up a manifest edit"
     );
 }
@@ -221,12 +221,12 @@ async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access()
     let policy = policies.get("notes").expect("declared KB has a policy");
     for verb in Verb::ALL {
         assert!(
-            !policy.allows(Principal::Anyone, verb, "public.md"),
+            !policy.allows(&Principal::Anyone, verb, "public.md"),
             "the removed field must grant nothing: {verb:?}"
         );
     }
     assert!(
-        policy.allows(Principal::SignedIn, Verb::Write, "public.md"),
+        policy.allows(&Principal::service_token(), Verb::Write, "public.md"),
         "credentialed access must survive the upgrade untouched"
     );
 }

@@ -1,11 +1,11 @@
 use axum::http::StatusCode;
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 
 use super::fixture::{app, app_with_keys, get, grant_under, hrefs, location, page, policy};
 
 fn public_tree() -> notedthat_core::AccessPolicy {
     policy([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read],
         &["public/**"],
     )])

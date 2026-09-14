@@ -7,8 +7,8 @@ use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
 use notedthat_core::{
-    AccessPolicy, AccessRule, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath, Principal,
-    Storage, Verb,
+    AccessPolicy, AccessRule, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath, Storage, Verb,
+    Who,
 };
 use notedthat_indexer::Searcher;
 
@@ -20,13 +20,13 @@ pub(super) fn policy(rules: impl IntoIterator<Item = AccessRule>) -> AccessPolic
 }
 
 /// Grant `verbs` to `who` across the whole knowledge base.
-pub(super) fn grant(who: Principal, verbs: impl IntoIterator<Item = Verb>) -> AccessRule {
+pub(super) fn grant(who: Who, verbs: impl IntoIterator<Item = Verb>) -> AccessRule {
     AccessRule::new(who, verbs)
 }
 
 /// Grant `verbs` to `who`, scoped to `patterns`.
 pub(super) fn grant_under(
-    who: Principal,
+    who: Who,
     verbs: impl IntoIterator<Item = Verb>,
     patterns: &[&str],
 ) -> AccessRule {
@@ -39,7 +39,7 @@ pub(super) fn grant_under(
 
 /// Every verb the credential holder needs to behave as it did before D51.
 pub(super) fn signed_in_everything() -> AccessRule {
-    AccessRule::new(Principal::SignedIn, Verb::ALL)
+    AccessRule::new(Who::SignedIn, Verb::ALL)
 }
 
 /// The seeded knowledge base `notes`, plus an entirely private `private`.

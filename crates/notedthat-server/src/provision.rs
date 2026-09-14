@@ -119,7 +119,7 @@ pub async fn provision_kbs(
         info!(
             kb = %kb.as_str(),
             rules = manifest.access.rules().len(),
-            anonymous = manifest.access.visible_in_listing(notedthat_core::Principal::Anyone),
+            anonymous = manifest.access.visible_in_listing(&notedthat_core::Principal::Anyone),
             "access policy loaded"
         );
         access_policies.insert(kb.as_str().to_string(), Arc::new(manifest.access.clone()));

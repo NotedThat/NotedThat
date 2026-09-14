@@ -5,7 +5,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use notedthat_api_http::middleware::principal;
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Principal, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{TOKEN, app, grant, policy};
@@ -29,7 +29,7 @@ async fn head_follows_get_including_for_a_percent_encoded_slug() {
     // Given / When / Then
     for slug in ["notes", "%6Eotes"] {
         for method in ["GET", "HEAD"] {
-            let app = app(notes([grant(Principal::Anyone, [Verb::List])])).await;
+            let app = app(notes([grant(Who::Anyone, [Verb::List])])).await;
             let response = app
                 .oneshot(
                     Request::builder()
@@ -53,9 +53,9 @@ async fn discovery_is_refused_when_no_declared_knowledge_base_grants_anything() 
         BTreeMap::new(),
         BTreeMap::from([(
             "undeclared".to_string(),
-            policy([grant(Principal::Anyone, [Verb::Read])]),
+            policy([grant(Who::Anyone, [Verb::Read])]),
         )]),
-        notes([grant(Principal::SignedIn, [Verb::Read])]),
+        notes([grant(Who::SignedIn, [Verb::Read])]),
     ];
 
     // When / Then
@@ -80,7 +80,7 @@ async fn discovery_is_refused_when_no_declared_knowledge_base_grants_anything() 
 #[tokio::test]
 async fn discovery_is_public_as_soon_as_one_knowledge_base_grants_anything() {
     // Given / When
-    let response = app(notes([grant(Principal::Anyone, [Verb::Search])]))
+    let response = app(notes([grant(Who::Anyone, [Verb::Search])]))
         .await
         .oneshot(
             Request::builder()
@@ -100,7 +100,7 @@ async fn discovery_is_public_as_soon_as_one_knowledge_base_grants_anything() {
 #[tokio::test]
 async fn absent_credentials_can_fall_back_but_supplied_bad_credentials_cannot() {
     // Given — the rule that stops a typo'd token from becoming a public view.
-    let app = app(notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When
     let absent = app

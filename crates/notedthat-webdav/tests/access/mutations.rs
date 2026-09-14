@@ -1,4 +1,4 @@
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ async fn anonymous_mutations_are_challenged_before_storage() {
         Arc::clone(&storage),
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::List, Verb::Read]),
+            policy(Who::Anyone, &[Verb::List, Verb::Read]),
         )]),
     ));
 
@@ -65,7 +65,7 @@ async fn real_router_manual_read_qa_scenario() {
         Arc::clone(&storage),
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::List, Verb::Read]),
+            policy(Who::Anyone, &[Verb::List, Verb::Read]),
         )]),
     ));
 
@@ -126,7 +126,7 @@ async fn real_router_manual_denial_qa_scenario() {
         Arc::clone(&storage),
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::List, Verb::Read]),
+            policy(Who::Anyone, &[Verb::List, Verb::Read]),
         )]),
     ));
 

@@ -37,7 +37,7 @@ const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
 /// Axum middleware that establishes the request's [`Principal`].
 ///
 /// This layer authenticates; it does not authorize. A valid Bearer token makes
-/// the request [`Principal::SignedIn`], an absent credential makes it
+/// the request [`Principal::SignedIn`] as the service token, an absent credential makes it
 /// [`Principal::Anyone`], and a supplied credential that does not verify is
 /// always `401` — never quietly downgraded to anonymous, which is the rule that
 /// stops a typo'd token from silently becoming a public view.
@@ -56,7 +56,7 @@ pub async fn auth_middleware(
     let principal = resolve_principal(req.headers(), &state.bearer_token)
         .map_err(|CredentialRefused| ApiErrorResponse::unauthorized(request_id.clone()))?;
 
-    if principal == Principal::Anyone && !anonymous_may_reach(&req) {
+    if principal.is_anonymous() && !anonymous_may_reach(&req) {
         return Err(ApiErrorResponse::unauthorized(request_id));
     }
     req.extensions_mut().insert(principal);
@@ -103,7 +103,7 @@ pub fn resolve_principal(
         .ok()
         .and_then(extract_bearer_from_header)
         .filter(|token| verify_bearer_token(token, expected_token))
-        .map(|_| Principal::SignedIn)
+        .map(|_| Principal::service_token())
         .ok_or(CredentialRefused)
 }
 
@@ -122,7 +122,7 @@ pub struct CredentialRefused;
 pub fn principal<B>(req: &Request<B>) -> Principal {
     req.extensions()
         .get::<Principal>()
-        .copied()
+        .cloned()
         .unwrap_or(Principal::Anyone)
 }
 

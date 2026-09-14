@@ -112,7 +112,7 @@ mod tests {
                 KB.to_string(),
                 Arc::new(
                     [notedthat_core::AccessRule::new(
-                        notedthat_core::Principal::Anyone,
+                        notedthat_core::Who::Anyone,
                         [Verb::Search],
                     )]
                     .into_iter()

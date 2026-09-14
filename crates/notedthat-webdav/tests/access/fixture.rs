@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
-use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Principal, Verb};
+use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Verb, Who};
 use notedthat_webdav::state::WebDavState;
 use tokio::sync::mpsc;
 
@@ -14,14 +14,14 @@ use super::storage::MemoryStorage;
 /// The old fixture took capability names; verbs replaced them, and the mapping
 /// is not one-to-one — `discover` is gone entirely, and `browse` split into
 /// `list` for enumeration and `read` for bytes.
-pub(super) fn policy(who: Principal, verbs: &[Verb]) -> AccessPolicy {
+pub(super) fn policy(who: Who, verbs: &[Verb]) -> AccessPolicy {
     [AccessRule::new(who, verbs.iter().copied())]
         .into_iter()
         .collect()
 }
 
 /// A policy granting `verbs` to `who`, scoped to `patterns`.
-pub(super) fn scoped_policy(who: Principal, verbs: &[Verb], patterns: &[&str]) -> AccessPolicy {
+pub(super) fn scoped_policy(who: Who, verbs: &[Verb], patterns: &[&str]) -> AccessPolicy {
     [AccessRule::new(who, verbs.iter().copied()).under(
         patterns
             .iter()

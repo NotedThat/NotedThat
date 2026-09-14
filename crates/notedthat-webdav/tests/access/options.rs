@@ -1,4 +1,4 @@
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -19,12 +19,9 @@ async fn anonymous_options_advertises_only_capability_methods() {
         BTreeMap::from([
             (
                 "discoverable".to_string(),
-                policy(Principal::Anyone, &[Verb::List]),
+                policy(Who::Anyone, &[Verb::List]),
             ),
-            (
-                "private".to_string(),
-                policy(Principal::Anyone, &[Verb::Read]),
-            ),
+            ("private".to_string(), policy(Who::Anyone, &[Verb::Read])),
         ]),
     ));
 
@@ -72,7 +69,7 @@ async fn anonymous_options_rejects_private_targets_and_private_root() {
         storage,
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::Search]),
+            policy(Who::Anyone, &[Verb::Search]),
         )]),
     ));
 
@@ -97,10 +94,7 @@ async fn anonymous_content_preserves_range_and_conditional_responses() {
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([(
-            "private".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
-        )]),
+        BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
     ));
 
     // When

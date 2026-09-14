@@ -28,7 +28,7 @@ impl PropfindListing {
 pub(crate) async fn prepare_propfind_listing(
     state: &WebDavState,
     target: &DavTarget,
-    principal: Principal,
+    principal: &Principal,
 ) -> FsResult<Option<PropfindListing>> {
     match target {
         DavTarget::Root | DavTarget::NonDeclaredKb => Ok(None),

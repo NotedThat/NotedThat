@@ -1,10 +1,10 @@
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 
 use super::fixture::{app, grant_under, page, policy};
 
 fn public_tree() -> notedthat_core::AccessPolicy {
     policy([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read],
         &["public/**"],
     )])

@@ -1,4 +1,4 @@
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ async fn anonymous_root_propfind_lists_only_discoverable_kbs() {
         BTreeMap::from([
             (
                 "discoverable".to_string(),
-                policy(Principal::Anyone, &[Verb::Search]),
+                policy(Who::Anyone, &[Verb::Search]),
             ),
             ("private".to_string(), AccessPolicy::empty()),
         ]),
@@ -53,12 +53,9 @@ async fn anonymous_capabilities_are_independent() {
     let policies = BTreeMap::from([
         (
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::List]),
+            policy(Who::Anyone, &[Verb::List]),
         ),
-        (
-            "private".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
-        ),
+        ("private".to_string(), policy(Who::Anyone, &[Verb::Read])),
     ]);
     let app = build_router(state_with_policies(storage, policies));
 
@@ -118,7 +115,7 @@ async fn anonymous_internal_paths_are_challenged_and_filtered_across_pages() {
         Arc::clone(&storage),
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::List, Verb::Read]),
+            policy(Who::Anyone, &[Verb::List, Verb::Read]),
         )]),
     ));
 
@@ -208,7 +205,7 @@ async fn a_prefix_scoped_grant_exposes_only_its_subtree_over_webdav() {
         storage,
         BTreeMap::from([(
             "discoverable".to_string(),
-            scoped_policy(Principal::Anyone, &[Verb::List, Verb::Read], &["public/**"]),
+            scoped_policy(Who::Anyone, &[Verb::List, Verb::Read], &["public/**"]),
         )]),
     ));
 

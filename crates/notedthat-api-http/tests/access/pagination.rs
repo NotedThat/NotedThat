@@ -7,9 +7,7 @@ use bytes::Bytes;
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
-use notedthat_core::{
-    AccessPolicy, ConditionalHeaders, KbSlug, ObjectPath, Principal, Storage, Verb,
-};
+use notedthat_core::{AccessPolicy, ConditionalHeaders, KbSlug, ObjectPath, Storage, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{grant_under, json, listed_keys, policy};
@@ -48,7 +46,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
 }
 
 fn public_list_grant() -> AccessPolicy {
-    policy([grant_under(Principal::Anyone, [Verb::List], &["public/**"])])
+    policy([grant_under(Who::Anyone, [Verb::List], &["public/**"])])
 }
 
 /// Page through a listing at `limit`, following `next_cursor` to the end.

@@ -1,12 +1,12 @@
 use axum::http::StatusCode;
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 
 use super::fixture::{app, get, grant, grant_under, hrefs, location, page, parent_link, policy};
 
 /// The everyday grant: anonymous callers may walk and read `public/`.
 fn public_tree() -> notedthat_core::AccessPolicy {
     policy([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read],
         &["public/**"],
     )])
@@ -33,7 +33,7 @@ async fn the_index_lists_a_knowledge_base_that_grants_something() {
 #[tokio::test]
 async fn the_index_says_so_plainly_when_nothing_is_published() {
     // Given — the credential holder's grant only.
-    let app = app(policy([grant(Principal::SignedIn, Verb::ALL)])).await;
+    let app = app(policy([grant(Who::SignedIn, Verb::ALL)])).await;
 
     // When
     let html = page(&app, "/browse/", None).await;

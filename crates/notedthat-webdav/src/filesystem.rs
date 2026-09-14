@@ -116,7 +116,7 @@ impl WebDavStorage {
         Self {
             state,
             propfind_listing: None,
-            principal: Principal::SignedIn,
+            principal: Principal::service_token(),
         }
     }
 
@@ -149,13 +149,13 @@ impl DavFileSystem for WebDavStorage {
         }
 
         let state = Arc::clone(&self.state);
-        let principal = self.principal;
+        let principal = self.principal.clone();
         let result = match parse_dav_path(path, state.declared_kbs.as_ref()) {
             Ok(DavTarget::Object(kb, path)) => {
                 // The auth middleware already authorized this target, but this
                 // adapter is reachable from every dav-server code path and an
                 // authorization boundary should not depend on which one ran.
-                if policy_for(&state, &kb).allows(principal, Verb::Read, path.as_str()) {
+                if policy_for(&state, &kb).allows(&principal, Verb::Read, path.as_str()) {
                     Ok(Box::new(StorageReadFile::new(state, kb, path)) as Box<dyn DavFile>)
                 } else {
                     Err(FsError::Forbidden)
@@ -179,14 +179,14 @@ impl DavFileSystem for WebDavStorage {
 
         Box::pin(async move {
             match parse_dav_path(path, state.declared_kbs.as_ref())? {
-                DavTarget::Root => Ok(stream_entries(root_entries(&state, self.principal))),
+                DavTarget::Root => Ok(stream_entries(root_entries(&state, &self.principal))),
                 DavTarget::KbRoot(kb) => {
                     list_entries(
                         state,
                         kb,
                         None,
                         self.propfind_listing.as_ref(),
-                        self.principal,
+                        &self.principal,
                     )
                     .await
                 }
@@ -197,7 +197,7 @@ impl DavFileSystem for WebDavStorage {
                         kb,
                         Some(prefix),
                         self.propfind_listing.as_ref(),
-                        self.principal,
+                        &self.principal,
                     )
                     .await
                 }
@@ -225,7 +225,7 @@ impl DavFileSystem for WebDavStorage {
                     let policy = policy_for(&state, &kb);
                     let visible = [Verb::List, Verb::Read]
                         .iter()
-                        .any(|verb| policy.allows(self.principal, *verb, path.as_str()));
+                        .any(|verb| policy.allows(&self.principal, *verb, path.as_str()));
                     if visible {
                         metadata_for_object_or_prefix(state, kb, path).await
                     } else {
@@ -274,7 +274,7 @@ async fn list_entries(
     kb: KbSlug,
     prefix: Option<String>,
     propfind_listing: Option<&PropfindListing>,
-    principal: Principal,
+    principal: &Principal,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
     let policy = policy_for(&state, &kb);
     let filter = policy.key_filter(principal, Verb::List);
@@ -309,7 +309,7 @@ pub(crate) async fn collect_propfind_objects(
     state: &WebDavState,
     kb: &KbSlug,
     prefix: Option<&str>,
-    principal: Principal,
+    principal: &Principal,
 ) -> FsResult<Vec<ObjectMeta>> {
     let policy = policy_for(state, kb);
     let filter = policy.key_filter(principal, Verb::List);
@@ -396,7 +396,7 @@ async fn metadata_for_object_or_prefix(
     }
 }
 
-fn root_entries(state: &WebDavState, principal: Principal) -> Vec<Box<dyn DavDirEntry>> {
+fn root_entries(state: &WebDavState, principal: &Principal) -> Vec<Box<dyn DavDirEntry>> {
     state
         .declared_kbs
         .iter()

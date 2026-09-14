@@ -124,7 +124,7 @@ pub async fn intercept_propfind_too_large(
     };
 
     let principal = principal_of(&req);
-    match prepare_propfind_listing(&state, &target, principal).await {
+    match prepare_propfind_listing(&state, &target, &principal).await {
         Err(dav_server::fs::FsError::InsufficientStorage) => (
             StatusCode::INSUFFICIENT_STORAGE,
             [(
@@ -1975,6 +1975,6 @@ mod intercept_write_methods {
 pub(crate) fn principal_of<B>(req: &axum::http::Request<B>) -> notedthat_core::Principal {
     req.extensions()
         .get::<notedthat_core::Principal>()
-        .copied()
+        .cloned()
         .unwrap_or(notedthat_core::Principal::Anyone)
 }

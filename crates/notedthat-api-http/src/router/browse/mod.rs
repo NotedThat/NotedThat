@@ -49,12 +49,12 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
     let Ok(principal) = resolve_principal(req.headers(), &state.bearer_token) else {
         return unauthorized(&request_id);
     };
-    req.extensions_mut().insert(principal);
+    req.extensions_mut().insert(principal.clone());
 
     let visible: Vec<&String> = state
         .declared_kbs
         .keys()
-        .filter(|slug| crate::authz::visible_in_listing(&state, slug, principal))
+        .filter(|slug| crate::authz::visible_in_listing(&state, slug, &principal))
         .collect();
 
     let rows: Vec<RowView> = visible
@@ -66,7 +66,7 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
             let listable = state
                 .access_policies
                 .get(slug.as_str())
-                .is_some_and(|policy| policy.grants_any(principal, Verb::List));
+                .is_some_and(|policy| policy.grants_any(&principal, Verb::List));
             RowView {
                 label: format!("{}/", display_text(slug)),
                 href: listable.then(|| escape_html(&links::directory_href(slug, ""))),
@@ -129,7 +129,7 @@ pub(super) async fn browse_path(
     // `auth_middleware` — so it has to record the answer in the same place, or
     // `KbAccess` would fall back to anonymous and every credential would be
     // ignored here.
-    req.extensions_mut().insert(principal);
+    req.extensions_mut().insert(principal.clone());
 
     // Read the trailing slash from the raw URI rather than the capture, so the
     // decision does not depend on how the router treats a catch-all.
@@ -143,8 +143,8 @@ pub(super) async fn browse_path(
     let Ok(access) = KbAccess::resolve(&state, kb_slug, &req) else {
         return not_found(&request_id);
     };
-    if !crate::authz::visible_in_listing(&state, kb_slug, principal) {
-        return denied(principal, &request_id);
+    if !crate::authz::visible_in_listing(&state, kb_slug, &principal) {
+        return denied(&principal, &request_id);
     }
 
     if !has_trailing_slash && !remainder.is_empty() {
@@ -172,10 +172,10 @@ pub(super) async fn browse_path(
         }
     }
     if !access.policy_grants_any(Verb::List) {
-        return denied(principal, &request_id);
+        return denied(&principal, &request_id);
     }
 
-    render_directory(&state, &access, kb_slug, prefix, principal, &request_id).await
+    render_directory(&state, &access, kb_slug, prefix, &principal, &request_id).await
 }
 
 /// `/browse/{kb}/{path}` with no trailing slash: an object, a folder, or neither.
@@ -235,7 +235,7 @@ async fn render_directory(
     access: &KbAccess,
     kb_slug: &str,
     prefix: &str,
-    principal: Principal,
+    principal: &Principal,
     request_id: &str,
 ) -> Response {
     let Ok(listing) = read_directory(state.storage.as_ref(), access.kb(), prefix, access).await
@@ -438,10 +438,10 @@ fn server_error(request_id: &str) -> Response {
 }
 
 /// The answer for a caller who may not see something.
-fn denied(principal: Principal, request_id: &str) -> Response {
+fn denied(principal: &Principal, request_id: &str) -> Response {
     match principal {
         Principal::Anyone => not_found(request_id),
-        Principal::SignedIn => html_error(
+        Principal::SignedIn(_) => html_error(
             StatusCode::FORBIDDEN,
             "Forbidden",
             "This knowledge base's access rules do not grant you this listing.",
