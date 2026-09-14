@@ -10,6 +10,22 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/NotedThat/NotedThat/compare/v0.6.0...v0.7.0) - 2026-09-14
+
+### Added
+
+- *(mcp)* [**breaking**] search a list of knowledge bases in one call
+
+### Fixed
+
+- *(mcp)* drop the cap on the number of knowledge bases per search
+- *(mcp)* cap and pace the multi-KB search fan-out
+
+### Other
+
+- Merge pull request #138 from NotedThat/feat/mcp-search-multi-kb
+- *(mcp)* share the knowledge-base listing on the client
+
 ## [0.6.0](https://github.com/NotedThat/NotedThat/compare/v0.5.0...v0.6.0) - 2026-09-14
 
 ### Added
