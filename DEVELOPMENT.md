@@ -150,6 +150,14 @@ under `--include-ignored`:
   whole suite, not one per test. Run it after any change to either adapter's
   `storage.rs`, or to `notedthat-core`'s `preconditions.rs`.
 
+- `crates/notedthat-server/tests/oidc_authelia_e2e.rs` — the real server against a real
+  Authelia (`docker/authelia/`), discovered over TLS through an internal CA, with tokens
+  Authelia mints. Its containerless sibling `oidc_e2e.rs` does the same against a wiremock
+  issuer and self-minted tokens in the ordinary pass; this one proves the provider
+  configuration the Compose overlay and `docs/manual-qa/oidc-mcp.sh` rely on. Authelia
+  derives the issuer from the request host, so the container binds host port `9091`
+  — stop the Compose overlay before running it.
+
 Its containerless sibling, `crates/notedthat-storage-fs/tests/storage_conformance_local.rs`,
 runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinary
 `cargo test` pass. That makes `FsStorage` a pivot: agreement in both directions means the

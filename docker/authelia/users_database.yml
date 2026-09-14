@@ -1,0 +1,18 @@
+# Users for docker-compose.auth.yml. Passwords are argon2id hashes generated with
+# `authelia crypto hash generate argon2`; the plaintexts are in the comments and
+# in docs/manual-qa/oidc-mcp.sh. Development only.
+users:
+  alice:
+    displayname: 'Alice Editor'
+    # alice-password
+    password: '$argon2id$v=19$m=65536,t=3,p=4$KYWMKMwIhv8jlGsXQC++Bw$yurfsmE/ODlmhgWct6jiqb9Sw9hZk2e//OBBwRAokt0'
+    email: 'alice@example.com'
+    groups:
+      - 'editors'
+  ivan:
+    displayname: 'Ivan Intern'
+    # ivan-password
+    password: '$argon2id$v=19$m=65536,t=3,p=4$fSsyKPD6jvU4hP/PeBRb5w$d5wETKXPsGuzhZPmaUZQ2O2G6sposu+mMF7nvwy2tPE'
+    email: 'ivan@example.com'
+    groups:
+      - 'interns'

@@ -121,6 +121,19 @@ service is deliberately unauthenticated, so it does not accept a Qdrant API key.
 custom `NOTEDTHAT_UPLOAD_TMP_DIR` also needs an explicit writable mount at that exact
 path in a custom Compose deployment.
 
+### Compose with an identity provider
+
+Adds Authelia with two users (`alice` in `editors`, `ivan` in `interns`) and points the server
+at it, so identity tokens, `group:` rules and MCP's OAuth discovery can be tried end to end:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build -d
+docs/manual-qa/oidc-mcp.sh          # phase 1, then restart the server and PHASE=2
+```
+
+Everything under `docker/authelia/` is a throwaway development value. See
+[OIDC authentication](docs/CONFIGURATION.md#oidc-authentication) for Authentik and Zitadel.
+
 ### Compose with an S3-compatible store
 
 Adds SeaweedFS and points the server at it, which is the shape of the reference
