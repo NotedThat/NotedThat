@@ -57,7 +57,15 @@ out. `.notedthat` is the exception that makes that recoverable: reachable only f
 `NOTEDTHAT_API_TOKEN`, always, and for nobody else.
 
 Granting `write` or `delete` to `anyone` refuses startup. The server reads policies once at
-startup; restart it after editing a manifest. There is no application rate limiter — configure
+startup; restart it after editing a manifest.
+
+## Who is signed in
+
+`NOTEDTHAT_API_TOKEN` is the deployment's own credential. Point the server at an OpenID Connect
+issuer — Authentik, Authelia and Zitadel are documented — and it also accepts that issuer's JWT
+access tokens on every surface, MCP included; the token's groups are what `group:` rules match.
+NotedThat mints no tokens and keeps no sessions. See
+[OIDC authentication](docs/CONFIGURATION.md#oidc-authentication). There is no application rate limiter — configure
 reverse-proxy rate and burst limits before exposing anonymous search. See
 [Configuration](docs/CONFIGURATION.md#manifest-access-rules) for the full model and the upgrade
 path from the removed `public_read` field.

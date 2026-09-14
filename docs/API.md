@@ -78,16 +78,23 @@ land in a search index by default.
 
 ## Authentication
 
-Authenticated callers use a Bearer token. A valid token has full access to every declared knowledge
-base. Pass it in the `Authorization` header:
+Authenticated callers use a Bearer token, passed in the `Authorization` header:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The token is compared against `NOTEDTHAT_API_TOKEN` using a constant-time comparison. There is no
-token rotation and no per-token scopes or per-KB access control in v1. Either you have the token or
-you don't.
+Two kinds of bearer verify. The **service token** is `NOTEDTHAT_API_TOKEN`, compared in constant
+time; it is the deployment's own credential and the only one that reaches `.notedthat`. An
+**identity token** is a signed JWT access token from the OIDC issuer the deployment is configured
+with — Authentik, Authelia or Zitadel, say — and makes the caller a user with a subject and groups.
+Either kind is bound by the knowledge base's access rules below; there is no token that bypasses
+them. A deployment without an issuer accepts only the service token. See
+[OIDC authentication](CONFIGURATION.md#oidc-authentication) for what a token must carry.
+
+When the deployment publishes RFC 9728 metadata (`NOTEDTHAT_OIDC_RESOURCE`), every `401` carries
+`WWW-Authenticate: Bearer resource_metadata="<url>/.well-known/oauth-protected-resource"`, and that
+document names the authorization server a client can obtain a token from.
 
 Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
 public. An installation may additionally expose a per-knowledge-base anonymous read capability
@@ -169,8 +176,8 @@ up private to anonymous callers, with credentialed access unchanged.
 | Situation | Status |
 | --- | --- |
 | No credential supplied, and the rules do not grant it | `404 not_found` — see below |
-| A credential supplied that does not verify | `401 unauthorized` — never downgraded to anonymous |
-| A valid credential the rules do not grant | `403 forbidden` |
+| A credential supplied that does not verify — wrong service token, expired or foreign identity token | `401 unauthorized` — never downgraded to anonymous |
+| A valid credential the rules do not grant — service token or identity token alike | `403 forbidden` |
 | The knowledge base is not declared | `404 not_found` — not an authorization answer |
 
 **An anonymous denial is `404`, and deliberately indistinguishable from an undeclared knowledge
@@ -1209,6 +1216,7 @@ curl -sSf -X POST \
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
+| GET | `/.well-known/oauth-protected-resource` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
@@ -1471,11 +1479,19 @@ the API and WebDAV.
 
 **Endpoint:** `POST /mcp`
 
-**Authentication:** Bearer token, same credential as the HTTP API:
+**Authentication:** Bearer token, same credentials as the HTTP API — the service token or an
+identity token:
 
 ```
-Authorization: Bearer <NOTEDTHAT_API_TOKEN>
+Authorization: Bearer <NOTEDTHAT_API_TOKEN or identity token>
 ```
+
+MCP acts as its caller: the bearer presented to `/mcp` is the bearer the server's own API calls
+carry, so a tool call is bound by exactly the rules a direct request would be, and a refusal
+surfaces as a `forbidden` tool error. A missing or unverifiable bearer is `401` with a JSON body,
+plus a `WWW-Authenticate: Bearer resource_metadata="…"` challenge when the deployment publishes
+RFC 9728 metadata — which is how an OAuth-capable MCP client finds the authorization server and
+runs the authorization-code flow against it.
 
 The server operates in **stateless JSON-response mode**: each `POST /mcp` request is a complete, self-contained JSON-RPC exchange. No session state is retained between requests.
 

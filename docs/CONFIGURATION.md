@@ -58,8 +58,8 @@ are missing or invalid.
 
 | Variable | Flag | Type | Description | Example |
 |----------|------|------|-------------|---------|
-| `NOTEDTHAT_API_TOKEN` | `--api-token` | string (non-empty) | Static Bearer token for authenticated API access and every HTTP write. A request may omit it only where the knowledge base's manifest `access` rules grant `anyone` that verb. | `s3cr3t-token` |
-| `NOTEDTHAT_WEBDAV_USERNAME` | `--webdav-username` | string (non-empty) | HTTP Basic auth username for the WebDAV listener. Required and must not be empty. | `webdav-user` |
+| `NOTEDTHAT_API_TOKEN` | `--api-token` | string (non-empty) | The deployment's own Bearer token — the *service token*. Accepted on every surface, bound by the manifest's rules like any credential, and the only principal that reaches `.notedthat`. Identity-provider users authenticate with their own tokens instead (see [OIDC authentication](#oidc-authentication)). | `s3cr3t-token` |
+| `NOTEDTHAT_WEBDAV_USERNAME` | `--webdav-username` | string (non-empty) | HTTP Basic auth username the WebDAV surface accepts. Resolves to the same service-token principal as `NOTEDTHAT_API_TOKEN`; WebDAV also accepts `Bearer`. Required and must not be empty. | `webdav-user` |
 | `NOTEDTHAT_WEBDAV_PASSWORD` | `--webdav-password` | string (non-empty) | HTTP Basic auth password for the WebDAV listener. Required and must not be empty. | (use a strong random value) |
 | `NOTEDTHAT_KBS` | `--kbs` | comma-separated slugs | One or more knowledge base slugs to declare. Each slug must match `[a-z0-9-]{1,40}`. Duplicates are rejected. At least one slug is required. | `notes,scratch,work` |
 
@@ -339,14 +339,157 @@ missing where one is unconditionally required or that failed to verify; the one 
 `GET /api/v1/knowledgebases`, which names no knowledge base and so has no existence to conceal. See
 *Authorization failures* in `docs/API.md` for the trade-off this accepts.
 
-MCP holds `NOTEDTHAT_API_TOKEN`, so it resolves as `signed-in` and inherits that principal's rules,
-including any restriction placed on them.
+MCP acts as whoever called it: the bearer presented to `/mcp` — the service token or an identity
+token — is the one its API calls carry, so a tool call inherits that principal's rules, including
+any restriction placed on them.
 
 There are no built-in rate or burst settings. Before enabling anonymous `search`, set rate and burst
 controls at the reverse proxy for that route, tuned to the capacity of the embedding and search
 backends. Do not add an application configuration variable for this control.
 
 `/healthz`, `/readyz` and `/llms.txt` are globally public.
+
+## OIDC authentication
+
+NotedThat mints no tokens of its own. Point it at an OpenID Connect issuer and it accepts that
+issuer's signed JWT access tokens as bearers, on every surface: the HTTP API, WebDAV, the browse
+pages and `/mcp`. The token's username claim becomes the caller's subject and its groups claim
+becomes the caller's groups, which is what `user:` and `group:` rules in a manifest match. Supported
+and documented providers: [Authentik](#authentik), [Authelia](#authelia) and [Zitadel](#zitadel).
+Any issuer that publishes discovery and a JWKS and can mint JWT access tokens works the same way.
+
+| Variable | Flag | Type | Default | Description |
+|----------|------|------|---------|-------------|
+| `NOTEDTHAT_OIDC_ISSUER` | `--oidc-issuer` | `http(s)` URL | *(unset — identity tokens refused)* | The issuer, spelled **exactly** as the provider spells its `iss` claim, trailing slash included. Setting it turns identity tokens on; discovery runs at `{issuer}/.well-known/openid-configuration` during startup. |
+| `NOTEDTHAT_OIDC_AUDIENCE` | `--oidc-audience` | comma-separated strings | *(required with the issuer)* | The audiences a token may carry; one of them must match its `aud`. Usually the client id the provider registered for NotedThat, plus the id of any MCP client that obtains tokens with `resource` set to this server. |
+| `NOTEDTHAT_OIDC_USERNAME_CLAIM` | `--oidc-username-claim` | claim name | `preferred_username` | The claim `user:<name>` rules match, and what logs identify a caller by. Falls back to `sub` when the claim is absent. |
+| `NOTEDTHAT_OIDC_GROUPS_CLAIM` | `--oidc-groups-claim` | claim name | `groups` | The claim `group:<name>` rules match. Its value may be an array of strings, a single string, or an object whose keys are the group names (Zitadel's roles shape). Absent or unreadable means "in no group". |
+| `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` | `--oidc-http-timeout-ms` | positive integer | `5000` | Timeout for the discovery and key-set requests to the issuer. |
+| `NOTEDTHAT_OIDC_RESOURCE` | `--oidc-resource` | `http(s)` URL | *(unset — nothing published)* | This deployment's public URL. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` and names it in a `WWW-Authenticate: Bearer resource_metadata="…"` challenge on every `401` from `/api/v1` and `/mcp`, which is how an MCP client finds the authorization server. |
+
+Any `NOTEDTHAT_OIDC_*` setting other than the issuer, with the issuer unset, refuses startup rather
+than being ignored: a deployment that set an audience believed it had configured identity tokens.
+
+### How a token is checked
+
+The bearer is compared with `NOTEDTHAT_API_TOKEN` first, in constant time; only something that is
+not the service token is treated as an identity token. It must be a JWT signed with `RS256`,
+`RS384`, `RS512`, `ES256` or `ES384` by a key the issuer publishes — never `HS*`, since the server
+shares no secret with the issuer. `iss` must equal the configured issuer, `aud` must contain one of
+the configured audiences, `exp` is required and `nbf` honoured, both with 60 seconds of leeway. A
+token that fails any of this is `401`, never anonymous, and the reason — never the token — is
+logged at `debug`.
+
+Keys are fetched at startup and cached by `kid`. A token with an unknown `kid` triggers a refetch,
+at most once every 30 seconds, so a key rotation is picked up without a restart and a flood of
+bogus tokens is not a flood of requests to the issuer. A cached set older than an hour is refreshed
+before the next use. A refetch that fails keeps the previous keys and logs a warning.
+
+**Only JWT access tokens are accepted.** There is no introspection call, so a provider that mints
+opaque access tokens by default has to be told to mint JWTs — the per-provider notes below say how.
+ID tokens are JWTs everywhere, but they are meant for the client, not the API; configure the access
+token.
+
+### What an identity can and cannot do
+
+An identity-provider user is `signed-in`, so every `signed-in` rule applies to them, plus every
+`group:` rule naming one of their groups and every `user:` rule naming their subject; a `may_not`
+rule removes what the others gave. What no rule can give them is `.notedthat`: the manifest carries
+the policy, group names included, and only `NOTEDTHAT_API_TOKEN` reads or writes it.
+
+MCP acts as the caller. The bearer presented to `/mcp` is the bearer the server's own API call
+carries, so a tool call is bound by exactly the rules a direct request would be. The stdio adapter
+presents whatever `NOTEDTHAT_TOKEN` holds, service token or identity token.
+
+### MCP clients
+
+An MCP client that supports OAuth (Claude Code, Cursor, VS Code, the MCP Inspector) discovers the
+authorization server from the `401` challenge and the metadata document, then runs the
+authorization-code flow with PKCE against it. None of the supported providers offers dynamic
+client registration, so register a public client for the MCP client on the provider, allow its
+redirect URI (the client documents it — `http://127.0.0.1:<port>/callback` or similar), and give
+the client that id. Add the id to `NOTEDTHAT_OIDC_AUDIENCE` if the provider puts the client id in
+`aud` (Authentik and Authelia do). Set `NOTEDTHAT_OIDC_RESOURCE` to the URL the client connects to,
+scheme and host exactly as it will use them.
+
+### Authentik
+
+1. **Provider** → *OAuth2/OpenID Provider*. Client type *Confidential* for a server-side client, or
+   *Public* for an MCP client. Note the client id. Signing key: the RS256 certificate (the default
+   *authentik Self-signed Certificate* is fine). Access tokens are JWTs by default.
+2. **Scopes**: the built-in `openid`, `profile` and `email` mappings. `profile` carries
+   `preferred_username` and `groups` (the user's group names), so the defaults for both claim
+   settings work.
+3. **Application** bound to the provider; the slug decides the issuer.
+4. Settings:
+
+```sh
+NOTEDTHAT_OIDC_ISSUER=https://auth.example.com/application/o/notedthat/   # note the trailing slash
+NOTEDTHAT_OIDC_AUDIENCE=<client id>
+```
+
+Verify by decoding an access token (`jwt.io` or `cut -d. -f2 | base64 -d`): `iss` must equal the
+setting byte for byte, `groups` must be present.
+
+### Authelia
+
+Authelia mints opaque access tokens unless the client is told otherwise, and copies `groups` into
+the access token only through a claims policy. In `configuration.yml`:
+
+```yaml
+identity_providers:
+  oidc:
+    claims_policies:
+      notedthat:
+        access_token:
+          - groups
+          - preferred_username
+    clients:
+      - client_id: notedthat
+        client_secret: '<pbkdf2 hash>'
+        claims_policy: notedthat
+        access_token_signed_response_alg: RS256   # a JWT rather than an opaque token
+        scopes: [openid, profile, groups]
+        redirect_uris: [...]
+        authorization_policy: two_factor
+```
+
+Settings:
+
+```sh
+NOTEDTHAT_OIDC_ISSUER=https://auth.example.com      # Authelia's issuer has no trailing slash
+NOTEDTHAT_OIDC_AUDIENCE=notedthat
+```
+
+`docker-compose.auth.yml` runs this exact shape against Authelia's file user backend; see the
+[manual QA script](manual-qa/oidc-mcp.sh).
+
+### Zitadel
+
+1. **Project** → *Settings*: enable *Assert Roles on Authentication*, and *Check authorization on
+   authentication* if only users holding a role may sign in. Define the roles you will name in
+   manifests.
+2. **Application** in the project: type *API* or *Web*, **Auth Token Type: JWT** — the default is
+   opaque. Note the client id.
+3. Zitadel carries roles, not groups, under a claim named
+   `urn:zitadel:iam:org:project:roles` whose value is an object keyed by role name. The client must
+   request the scope of the same name. Settings:
+
+```sh
+NOTEDTHAT_OIDC_ISSUER=https://example.zitadel.cloud
+NOTEDTHAT_OIDC_AUDIENCE=<project id>,<client id>     # Zitadel lists both in aud
+NOTEDTHAT_OIDC_GROUPS_CLAIM=urn:zitadel:iam:org:project:roles
+```
+
+Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
+
+### Startup log lines
+
+- `OIDC issuer discovered` — with the issuer, the JWKS URL and the number of keys, at `info`.
+- `OIDC key set refreshed` / `OIDC key set refresh failed; keeping the previous keys`.
+- `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` — a manifest names a `group:` or `user:` rule and no
+  issuer is configured; the rule can never match, and the base is named. Not a refusal, because
+  manifests live in buckets that outlive one deployment's configuration.
 
 ## Upload and index staging directory
 
@@ -527,6 +670,19 @@ WebDAV credentials (`NOTEDTHAT_WEBDAV_USERNAME` and `NOTEDTHAT_WEBDAV_PASSWORD`)
 must not be empty strings. Setting either to an empty string is treated the same as leaving it unset
 and causes a non-zero exit before any listener binds.
 
+The OIDC settings are checked in the same pass, and the issuer is contacted before any listener
+binds:
+
+```
+Error: NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is unset, so identity tokens are not accepted, but NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is set; set the issuer or unset it
+Error: NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is required when NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is set: name the audience the provider puts in its tokens, usually the client id
+Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer): GET https://auth.example.com/.well-known/openid-configuration: error sending request
+Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer): https://auth.example.com/.well-known/openid-configuration reports issuer `https://auth.example.com/` but NOTEDTHAT_OIDC_ISSUER is `https://auth.example.com`; they must match exactly, trailing slash included
+```
+
+A manifest access rule scoped to `.notedthat`, naming both `may` and `may_not`, or naming neither
+also refuses startup, with a message naming the rule's subject.
+
 ### Removed variables
 
 Three settings from the era of separate listeners no longer exist. The server refuses to start
@@ -558,8 +714,11 @@ exposure change is not. See the upgrade notes in [API.md](API.md).
 - **Rate limits:** No built-in per-client or global rate limiter. Operators exposing anonymous
   search must configure rate and burst controls at their reverse proxy.
 - **TLS:** The server speaks plain HTTP. Terminate TLS at a reverse proxy (Traefik, nginx, Caddy).
-- **Multiple tokens:** Only one API token is supported. Per-KB tokens and scopes are planned for
-  a later release.
+- **Multiple service tokens:** There is one `NOTEDTHAT_API_TOKEN`. Per-person credentials come
+  from an OIDC provider (see [OIDC authentication](#oidc-authentication)), not from a second token.
+- **Token introspection and browser login:** Only signed JWT bearers are accepted; there is no
+  introspection call for opaque tokens and no session cookie for `/browse`. Put a forward-auth
+  proxy in front of `/browse` if people need to sign in with a browser.
 - **Multiple processes over one filesystem root:** The `fs` backend supports exactly one server
   process per `NOTEDTHAT_FS_ROOT`, enforced by a lock at startup. See
   [Filesystem storage backend](#filesystem-storage-backend).
