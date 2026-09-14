@@ -9,7 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.4.0" }
+notedthat-core = { path = "../notedthat-core", version = "0.5.0" }
 async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
@@ -23,8 +23,8 @@ tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 
 [dev-dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.4.0", features = ["test-support"] }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.4.0" }
+notedthat-core = { path = "../notedthat-core", version = "0.5.0", features = ["test-support"] }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.5.0" }
 temp-env = "0.3"
 httpdate.workspace = true
 testcontainers.workspace = true

@@ -10,6 +10,34 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/NotedThat/NotedThat/compare/v0.4.0...v0.5.0) - 2026-09-10
+
+### Added
+
+- *(core)* [**breaking**] replace manifest public_read with path-scoped access rules
+- *(core)* add the manifest access policy model
+- *(core)* add glob key patterns for access rules
+- *(api-http)* serve an HTML browse surface at /browse
+
+### Fixed
+
+- *(core)* drop the manual counter from the glob literal matcher
+- *(api-http)* [**breaking**] answer an anonymous denial with the undeclared-slug 404
+- *(api-http)* render a truncated browse folder instead of denying it
+- *(api-http)* scan a browse page from the grant rather than the root
+- *(api-http)* compare a listing prefix against the grant on a segment boundary
+- *(mcp)* map HTTP 403 to a forbidden tool error
+
+### Other
+
+- renumber this branch's decisions around main's D50
+- *(core)* share the directory rollup between surfaces
+- *(api-http)* make the route backstop cover the credentialed principal
+- *(api-http)* mark the browse page title raw, and sanitise it
+- describe access rules and the browse surface
+- *(server)* assert the concealed 404 on the cross-surface access suite
+- *(server)* browse a knowledge base end to end
+
 ## [0.4.0](https://github.com/NotedThat/NotedThat/compare/v0.3.1...v0.4.0) - 2026-09-10
 
 ### Added
