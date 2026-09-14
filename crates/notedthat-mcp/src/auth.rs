@@ -30,6 +30,13 @@ impl CallerToken {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A token the middleware did not vouch for, for tests of what the tools
+    /// do with one.
+    #[cfg(test)]
+    pub(crate) fn unverified(token: &str) -> Self {
+        Self(token.to_string())
+    }
 }
 
 impl std::fmt::Debug for CallerToken {

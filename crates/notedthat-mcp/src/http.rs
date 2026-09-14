@@ -82,7 +82,7 @@ impl McpHttpService {
     /// Create a stateless JSON-response Streamable HTTP service.
     pub fn new(client: NotedThatClient, config: &McpHttpServiceConfig) -> Self {
         let streamable_config = config.streamable_http_config();
-        let service_factory = move || Ok(NotedThatMcp::new(client.clone()));
+        let service_factory = move || Ok(NotedThatMcp::for_http(client.clone()));
         let inner = StreamableHttpService::new(
             service_factory,
             Arc::new(NeverSessionManager::default()),

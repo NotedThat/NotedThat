@@ -13,45 +13,74 @@ mod write;
 
 use crate::auth::CallerToken;
 use crate::client::NotedThatClient;
+use crate::error::McpToolError;
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
     model::{
-        CallToolResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        CallToolResult, Extensions, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
         ReadResourceRequestParams, ReadResourceResult, ServerInfo,
     },
     service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
 };
 
+/// What a call runs as when its request carries no [`CallerToken`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fallback {
+    /// The configured token. Stdio has no request, so there is no bearer to
+    /// forward: the process's own credential is the caller.
+    ConfiguredToken,
+    /// Nothing: the call is refused. Over HTTP a missing token means the auth
+    /// middleware did not see this request, and acting as the configured
+    /// token instead would be exactly the escalation forwarding the caller's
+    /// credential closes.
+    Refuse,
+}
+
 /// MCP tool handler backed by the `NotedThat` HTTP API.
 #[derive(Clone)]
 pub struct NotedThatMcp {
     client: NotedThatClient,
+    fallback: Fallback,
 }
 
 impl NotedThatMcp {
-    /// Create a new tool handler with the given HTTP client.
-    pub fn new(client: NotedThatClient) -> Self {
-        Self { client }
+    /// A handler for the stdio transport: `client`'s token is the caller.
+    pub fn for_stdio(client: NotedThatClient) -> Self {
+        Self {
+            client,
+            fallback: Fallback::ConfiguredToken,
+        }
     }
 
-    /// The API client for one call: the caller's own credential when the call
-    /// arrived over HTTP, the configured one otherwise.
+    /// A handler for the HTTP transport: every call acts as the bearer the
+    /// auth middleware accepted, and a call that carries none is refused
+    /// rather than run as `client`'s token.
+    pub fn for_http(client: NotedThatClient) -> Self {
+        Self {
+            client,
+            fallback: Fallback::Refuse,
+        }
+    }
+
+    /// The API client for one call: the caller's own credential when the
+    /// request carries one, otherwise whatever the transport's [`Fallback`]
+    /// allows.
     ///
     /// Over the streamable HTTP transport rmcp places the request's
-    /// [`axum::http::request::Parts`] — axum extensions included — into the call's
-    /// extensions, and the auth middleware left a [`CallerToken`] there. Over
-    /// stdio there are no parts, and the configured token is the caller.
-    fn client_for(&self, context: &RequestContext<RoleServer>) -> NotedThatClient {
-        context
-            .extensions
+    /// [`axum::http::request::Parts`] — axum extensions included — into the
+    /// call's extensions, and the auth middleware left a [`CallerToken`] there.
+    /// Over stdio there are no parts.
+    fn client_for(&self, extensions: &Extensions) -> Result<NotedThatClient, McpError> {
+        let caller = extensions
             .get::<axum::http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<CallerToken>())
-            .map_or_else(
-                || self.client.clone(),
-                |token| self.client.with_token(token.as_str()),
-            )
+            .and_then(|parts| parts.extensions.get::<CallerToken>());
+        match (caller, self.fallback) {
+            (Some(token), _) => Ok(self.client.with_token(token.as_str())),
+            (None, Fallback::ConfiguredToken) => Ok(self.client.clone()),
+            (None, Fallback::Refuse) => Err(McpToolError::Forbidden.into()),
+        }
     }
 }
 
@@ -63,7 +92,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         _args: Parameters<list_kbs::ListKbsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        list_kbs::run(&self.client_for(&context)).await
+        list_kbs::run(&self.client_for(&context.extensions)?).await
     }
 
     #[tool(description = "Hybrid search across a knowledge base")]
@@ -72,7 +101,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<search::SearchArgs>,
     ) -> Result<CallToolResult, McpError> {
-        search::run(&self.client_for(&context), args.0).await
+        search::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(
@@ -83,7 +112,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<read::ReadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        read::run(&self.client_for(&context), args.0).await
+        read::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(description = "Create or update an object; content is UTF-8 text in v1")]
@@ -92,7 +121,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<write::WriteArgs>,
     ) -> Result<CallToolResult, McpError> {
-        write::run(&self.client_for(&context), args.0).await
+        write::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(
@@ -103,7 +132,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<edit::EditArgs>,
     ) -> Result<CallToolResult, McpError> {
-        edit::run(&self.client_for(&context), args.0).await
+        edit::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(description = "Append UTF-8 content to an object")]
@@ -112,7 +141,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<append::AppendArgs>,
     ) -> Result<CallToolResult, McpError> {
-        append::run(&self.client_for(&context), args.0).await
+        append::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(
@@ -123,7 +152,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<replace::ReplaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        replace::run(&self.client_for(&context), args.0).await
+        replace::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(description = "List objects in a knowledge base under an optional prefix")]
@@ -132,7 +161,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<list::ListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        list::run(&self.client_for(&context), args.0).await
+        list::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(description = "Delete an object (idempotent)")]
@@ -141,7 +170,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<delete::DeleteArgs>,
     ) -> Result<CallToolResult, McpError> {
-        delete::run(&self.client_for(&context), args.0).await
+        delete::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(
@@ -153,7 +182,7 @@ impl NotedThatMcp {
         context: RequestContext<RoleServer>,
         args: Parameters<mv::MoveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        mv::run(&self.client_for(&context), args.0).await
+        mv::run(&self.client_for(&context.extensions)?, args.0).await
     }
 }
 
@@ -177,7 +206,7 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         crate::resources_list::list_resources(
-            &self.client_for(&context),
+            &self.client_for(&context.extensions)?,
             request.and_then(|params| params.cursor),
         )
         .await
@@ -188,7 +217,8 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        crate::resources_read::read_resource(&self.client_for(&context), &request.uri).await
+        crate::resources_read::read_resource(&self.client_for(&context.extensions)?, &request.uri)
+            .await
     }
 
     /// Override `get_info` to advertise both tools and resources capabilities.
@@ -204,6 +234,87 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
                 .enable_resources()
                 .build(),
         )
+    }
+}
+
+#[cfg(test)]
+mod client_for {
+    use super::*;
+    use axum::http::request::Parts;
+
+    fn client() -> NotedThatClient {
+        NotedThatClient::new("http://localhost:8080", "configured").unwrap()
+    }
+
+    /// The extensions of a call that arrived over HTTP: rmcp's `Parts`, with
+    /// the `CallerToken` the auth middleware leaves when it ran.
+    fn http_call(caller: Option<&str>) -> Extensions {
+        let (mut parts, ()) = axum::http::Request::builder()
+            .body(())
+            .unwrap()
+            .into_parts();
+        if let Some(token) = caller {
+            parts.extensions.insert(CallerToken::unverified(token));
+        }
+        let mut extensions = Extensions::new();
+        extensions.insert::<Parts>(parts);
+        extensions
+    }
+
+    fn forbidden(error: &McpError) -> bool {
+        error.code == rmcp::model::ErrorCode::INVALID_PARAMS && error.message == "forbidden"
+    }
+
+    #[test]
+    fn http_call_acts_as_its_caller() {
+        // Given: an HTTP handler and a call the middleware accepted
+        let handler = NotedThatMcp::for_http(client());
+
+        // When: the client for that call is picked
+        let picked = handler.client_for(&http_call(Some("caller"))).unwrap();
+
+        // Then: it presents the caller's bearer, not the configured one
+        assert_eq!(picked.token, "caller");
+    }
+
+    #[test]
+    fn http_call_without_a_caller_token_is_refused() {
+        // Given: an HTTP handler and a call whose request the middleware
+        // never saw, so no CallerToken was left in it
+        let handler = NotedThatMcp::for_http(client());
+
+        // When: the client for that call is picked
+        let refused = handler.client_for(&http_call(None)).unwrap_err();
+
+        // Then: the call is refused as forbidden rather than run as the
+        // configured token, which would be the escalation this closes
+        assert!(forbidden(&refused), "{refused:?}");
+    }
+
+    #[test]
+    fn http_call_without_request_parts_is_refused() {
+        // Given: an HTTP handler and a call with no HTTP request at all
+        let handler = NotedThatMcp::for_http(client());
+
+        // When: the client for that call is picked
+        let refused = handler.client_for(&Extensions::new()).unwrap_err();
+
+        // Then: it is refused, since the configured token is never the
+        // fallback over HTTP
+        assert!(forbidden(&refused), "{refused:?}");
+    }
+
+    #[test]
+    fn stdio_call_acts_as_the_configured_token() {
+        // Given: a stdio handler and a call without a request, which is
+        // every stdio call
+        let handler = NotedThatMcp::for_stdio(client());
+
+        // When: the client for that call is picked
+        let picked = handler.client_for(&Extensions::new()).unwrap();
+
+        // Then: the configured token is the caller
+        assert_eq!(picked.token, "configured");
     }
 }
 
@@ -230,7 +341,7 @@ mod resources_shared {
     }
 
     fn handler(url: &str) -> NotedThatMcp {
-        NotedThatMcp::new(client(url))
+        NotedThatMcp::for_stdio(client(url))
     }
 
     // ── Capability advertisement ─────────────────────────────────────────────

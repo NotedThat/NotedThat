@@ -386,10 +386,13 @@ at most once every 30 seconds, so a key rotation is picked up without a restart 
 bogus tokens is not a flood of requests to the issuer. A cached set older than an hour is refreshed
 before the next use. A refetch that fails keeps the previous keys and logs a warning.
 
-**Only JWT access tokens are accepted.** There is no introspection call, so a provider that mints
-opaque access tokens by default has to be told to mint JWTs — the per-provider notes below say how.
-ID tokens are JWTs everywhere, but they are meant for the client, not the API; configure the access
-token.
+**Only JWTs are accepted.** There is no introspection call, so a provider that mints opaque access
+tokens by default has to be told to mint JWTs — the per-provider notes below say how. Configure the
+access token, which is what a client is meant to present to an API. The check above is all the
+verifier does, though: it does not look at the `typ` header, so an ID token minted for the
+configured audience — the client id, in the setups below — verifies exactly like an access token.
+Treat an ID token for that audience as a bearer credential for this API, not only as proof of
+login for the client that received it.
 
 ### What an identity can and cannot do
 

@@ -411,7 +411,10 @@ async fn fetch_jwks(http: &reqwest::Client, jwks_uri: &str) -> anyhow::Result<Jw
 }
 
 /// The usable keys in a set. Keys of a kind this verifier cannot sign-check
-/// with (symmetric, unknown) are skipped rather than failing the whole set.
+/// with (symmetric, unknown) are skipped rather than failing the whole set,
+/// and so is a key of a usable kind whose parameters do not decode — with a
+/// warning naming its `kid`, since a token it signed will then be refused as
+/// signed with a key the issuer does not publish.
 fn cache_keys(jwks: &JwkSet) -> Vec<CachedKey> {
     jwks.keys
         .iter()
@@ -422,12 +425,18 @@ fn cache_keys(jwks: &JwkSet) -> Vec<CachedKey> {
             )
         })
         .filter_map(|jwk: &Jwk| {
-            DecodingKey::from_jwk(jwk)
-                .map(|key| CachedKey {
-                    kid: jwk.common.key_id.clone(),
-                    key,
-                })
-                .ok()
+            let kid = jwk.common.key_id.clone();
+            match DecodingKey::from_jwk(jwk) {
+                Ok(key) => Some(CachedKey { kid, key }),
+                Err(error) => {
+                    tracing::warn!(
+                        kid = kid.as_deref().unwrap_or("<none>"),
+                        error = %error,
+                        "OIDC key set publishes a key this server cannot use; skipping it"
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }
@@ -622,6 +631,42 @@ mod tests {
             .verify(&mint(&claims(ISSUER, "alice", &[])))
             .await
             .expect_err("no key");
+        assert!(
+            rejected.reason.contains("does not publish"),
+            "{}",
+            rejected.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_that_does_not_decode_is_skipped_not_fatal() {
+        // Given — a key set publishing, before the fixture key, an RSA key
+        // whose modulus is not base64url and so cannot become a DecodingKey.
+        let mut published: JwkSet = serde_json::from_str(JWKS_JSON).expect("fixture");
+        let mut broken: Jwk = published.keys[0].clone();
+        broken.common.key_id = Some("broken".into());
+        if let AlgorithmParameters::RSA(params) = &mut broken.algorithm {
+            params.n = "not base64url!".into();
+        }
+        published.keys.insert(0, broken);
+        let verifier = OidcVerifier::from_jwks(settings(ISSUER), &published, None);
+
+        // When / Then — the fixture key is still usable, and a token naming
+        // the broken kid is refused as unpublished rather than panicking.
+        assert!(
+            verifier
+                .verify(&mint(&claims(ISSUER, "alice", &[])))
+                .await
+                .is_ok()
+        );
+        let rejected = verifier
+            .verify(&mint_with(
+                Algorithm::RS256,
+                Some("broken"),
+                &claims(ISSUER, "alice", &[]),
+            ))
+            .await
+            .expect_err("broken kid");
         assert!(
             rejected.reason.contains("does not publish"),
             "{}",

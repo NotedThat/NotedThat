@@ -83,7 +83,7 @@ pub async fn run() -> Result<()> {
         client.base_url_display()
     );
 
-    let service = NotedThatMcp::new(client)
+    let service = NotedThatMcp::for_stdio(client)
         .serve(stdio())
         .await
         .context("stdio transport failed")?;
