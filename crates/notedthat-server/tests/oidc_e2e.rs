@@ -3,7 +3,7 @@
 //! The subject is a real server booted against a wiremock issuer: discovery
 //! at startup, a token minted with the checked-in test key, and the group and
 //! user rules a manifest actually carries, enforced on the HTTP API, `WebDAV`,
-//! the browse pages and — once step 5 lands — MCP. Only storage, the vector
+//! the browse pages and MCP. Only storage, the vector
 //! store and the embedder are substituted, so nothing here depends on Docker.
 //!
 //! Run with: `cargo test -p notedthat-server --test oidc_e2e`
@@ -453,4 +453,88 @@ async fn an_unreachable_issuer_refuses_startup() {
     let message = format!("{error:#}");
     assert!(message.contains("NOTEDTHAT_OIDC_ISSUER"), "{message}");
     assert!(message.contains("openid-configuration"), "{message}");
+}
+
+/// One JSON-RPC call over the streamable HTTP transport, as `token`.
+async fn mcp_call(
+    server: &Server,
+    token: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments },
+    });
+    let response = server
+        .client
+        .post(format!("{}/mcp", server.base))
+        .bearer_auth(token)
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .expect("mcp request");
+    assert_eq!(response.status(), 200, "MCP {tool}");
+    response.json().await.expect("json-rpc response")
+}
+
+#[tokio::test]
+async fn an_mcp_tool_call_with_an_oidc_token_sees_only_that_identitys_grants() {
+    // Given
+    let server = Server::start().await;
+    let intern = server.token("ivan", &["interns"]);
+    let alice = server.token("alice", &["editors"]);
+
+    // When — the intern reads what the denial spares, then what it covers.
+    let handbook = mcp_call(
+        &server,
+        &intern,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "handbook.md" }),
+    )
+    .await;
+    let salaries = mcp_call(
+        &server,
+        &intern,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "hr/salaries.md" }),
+    )
+    .await;
+    // And alice writes, which the intern may not.
+    let alice_writes = mcp_call(
+        &server,
+        &alice,
+        "write",
+        serde_json::json!({ "kb": "notes", "path": "handbook.md", "content": "via mcp" }),
+    )
+    .await;
+    let intern_writes = mcp_call(
+        &server,
+        &intern,
+        "write",
+        serde_json::json!({ "kb": "notes", "path": "handbook.md", "content": "via mcp" }),
+    )
+    .await;
+
+    // Then — MCP acts as the caller, so the manifest binds the tool call
+    // exactly as it binds a direct request. A refusal is a tool error, not a
+    // transport error.
+    assert_eq!(handbook["result"]["isError"], false, "{handbook}");
+    assert!(
+        salaries["result"]["isError"] == true || salaries.get("error").is_some(),
+        "the intern's read of hr/ must be refused: {salaries}"
+    );
+    assert!(
+        salaries.to_string().contains("forbidden"),
+        "the refusal is the API's 403, mapped: {salaries}"
+    );
+    assert_eq!(alice_writes["result"]["isError"], false, "{alice_writes}");
+    assert!(
+        intern_writes.to_string().contains("forbidden"),
+        "{intern_writes}"
+    );
 }

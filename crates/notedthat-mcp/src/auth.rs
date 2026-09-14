@@ -11,9 +11,32 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
-use notedthat_core::{Authenticator, Schemes};
+use notedthat_core::{Authenticator, Schemes, extract_bearer_from_header};
 use serde::Serialize;
 use std::sync::Arc;
+
+/// The bearer the MCP caller presented, verbatim, for the tools to act with.
+///
+/// The MCP service is an HTTP client of this server's own API. Forwarding the
+/// caller's credential rather than the server's is what makes MCP act as the
+/// calling identity, so a `group:` rule binds a tool call exactly as it binds
+/// a direct request. Stored in the request extensions by
+/// [`require_bearer_auth`]; rmcp carries those into every tool call.
+#[derive(Clone)]
+pub struct CallerToken(String);
+
+impl CallerToken {
+    /// The bearer value, for `Authorization: Bearer …` on the loopback call.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for CallerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CallerToken(<redacted>)")
+    }
+}
 
 /// JSON body returned with every 401 Unauthorized response.
 #[derive(Debug, Serialize)]
@@ -37,8 +60,9 @@ struct UnauthorizedBody {
 /// protected-resource metadata when the deployment publishes it, which is how
 /// an MCP client discovers where to obtain a token.
 ///
-/// On success the resolved [`notedthat_core::Principal`] is stored in the
-/// request extensions and the request is forwarded to the next handler.
+/// On success the resolved [`notedthat_core::Principal`] and the caller's
+/// [`CallerToken`] are stored in the request extensions and the request is
+/// forwarded to the next handler.
 ///
 /// # Usage
 ///
@@ -61,6 +85,16 @@ pub async fn require_bearer_auth(
         .await
     {
         Ok(principal) if principal.is_signed_in() => {
+            // `resolve` accepted exactly one Bearer header, so this is it.
+            let token = request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(extract_bearer_from_header)
+                .map(|token| CallerToken(token.to_string()));
+            if let Some(token) = token {
+                request.extensions_mut().insert(token);
+            }
             request.extensions_mut().insert(principal);
             next.run(request).await
         }

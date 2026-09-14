@@ -11,6 +11,7 @@ mod replace;
 mod search;
 mod write;
 
+use crate::auth::CallerToken;
 use crate::client::NotedThatClient;
 use rmcp::{
     ErrorData as McpError,
@@ -34,6 +35,24 @@ impl NotedThatMcp {
     pub fn new(client: NotedThatClient) -> Self {
         Self { client }
     }
+
+    /// The API client for one call: the caller's own credential when the call
+    /// arrived over HTTP, the configured one otherwise.
+    ///
+    /// Over the streamable HTTP transport rmcp places the request's
+    /// [`axum::http::request::Parts`] — axum extensions included — into the call's
+    /// extensions, and the auth middleware left a [`CallerToken`] there. Over
+    /// stdio there are no parts, and the configured token is the caller.
+    fn client_for(&self, context: &RequestContext<RoleServer>) -> NotedThatClient {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<CallerToken>())
+            .map_or_else(
+                || self.client.clone(),
+                |token| self.client.with_token(token.as_str()),
+            )
+    }
 }
 
 #[tool_router]
@@ -41,44 +60,59 @@ impl NotedThatMcp {
     #[tool(description = "List all knowledge bases declared on the server")]
     async fn list_knowledgebases(
         &self,
+        context: RequestContext<RoleServer>,
         _args: Parameters<list_kbs::ListKbsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        list_kbs::run(&self.client).await
+        list_kbs::run(&self.client_for(&context)).await
     }
 
     #[tool(description = "Hybrid search across a knowledge base")]
     async fn search(
         &self,
+        context: RequestContext<RoleServer>,
         args: Parameters<search::SearchArgs>,
     ) -> Result<CallToolResult, McpError> {
-        search::run(&self.client, args.0).await
+        search::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(
         description = "Read an object by optional range. Accepts byte_start/byte_end for byte ranges or line_start/line_end for line ranges (mutually exclusive). byte_end is exclusive."
     )]
-    async fn read(&self, args: Parameters<read::ReadArgs>) -> Result<CallToolResult, McpError> {
-        read::run(&self.client, args.0).await
+    async fn read(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<read::ReadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        read::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(description = "Create or update an object; content is UTF-8 text in v1")]
-    async fn write(&self, args: Parameters<write::WriteArgs>) -> Result<CallToolResult, McpError> {
-        write::run(&self.client, args.0).await
+    async fn write(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<write::WriteArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        write::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(
         description = "Edit an object by replacing lines or bytes. Accepts (line_start, line_end) for line mode (1-based, insert-at-N via line_end = line_start - 1) OR (byte_start, byte_end) for byte mode (0-based, byte_end EXCLUSIVE, requires byte_start < byte_end — byte-mode insert not supported in v1). Mutually exclusive. if_match is required."
     )]
-    async fn edit(&self, args: Parameters<edit::EditArgs>) -> Result<CallToolResult, McpError> {
-        edit::run(&self.client, args.0).await
+    async fn edit(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<edit::EditArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        edit::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(description = "Append UTF-8 content to an object")]
     async fn append(
         &self,
+        context: RequestContext<RoleServer>,
         args: Parameters<append::AppendArgs>,
     ) -> Result<CallToolResult, McpError> {
-        append::run(&self.client, args.0).await
+        append::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(
@@ -86,30 +120,40 @@ impl NotedThatMcp {
     )]
     async fn replace(
         &self,
+        context: RequestContext<RoleServer>,
         args: Parameters<replace::ReplaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        replace::run(&self.client, args.0).await
+        replace::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(description = "List objects in a knowledge base under an optional prefix")]
-    async fn list(&self, args: Parameters<list::ListArgs>) -> Result<CallToolResult, McpError> {
-        list::run(&self.client, args.0).await
+    async fn list(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<list::ListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        list::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(description = "Delete an object (idempotent)")]
     async fn delete(
         &self,
+        context: RequestContext<RoleServer>,
         args: Parameters<delete::DeleteArgs>,
     ) -> Result<CallToolResult, McpError> {
-        delete::run(&self.client, args.0).await
+        delete::run(&self.client_for(&context), args.0).await
     }
 
     #[tool(
         name = "move",
         description = "Move/rename an object (non-atomic: GET -> PUT -> DELETE)"
     )]
-    async fn mv(&self, args: Parameters<mv::MoveArgs>) -> Result<CallToolResult, McpError> {
-        mv::run(&self.client, args.0).await
+    async fn mv(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<mv::MoveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        mv::run(&self.client_for(&context), args.0).await
     }
 }
 
@@ -130,10 +174,10 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         crate::resources_list::list_resources(
-            &self.client,
+            &self.client_for(&context),
             request.and_then(|params| params.cursor),
         )
         .await
@@ -142,9 +186,9 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        crate::resources_read::read_resource(&self.client, &request.uri).await
+        crate::resources_read::read_resource(&self.client_for(&context), &request.uri).await
     }
 
     /// Override `get_info` to advertise both tools and resources capabilities.
@@ -260,6 +304,20 @@ mod resources_shared {
             assert!(
                 h.get_tool(name).is_none(),
                 "deferred tool {name:?} must not be registered (would make count > 10)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_schemas_are_unchanged_by_the_context_extractor() {
+        // The `RequestContext` each tool takes is an extractor, not an
+        // argument: nothing about it may leak into what a client is told.
+        for tool in NotedThatMcp::tool_router().list_all() {
+            let schema = serde_json::to_string(&tool.input_schema).expect("schema");
+            assert!(
+                !schema.contains("context") && !schema.contains("RequestContext"),
+                "{}: {schema}",
+                tool.name
             );
         }
     }
