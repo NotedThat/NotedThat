@@ -454,6 +454,7 @@ Env vars:
 - `NOTEDTHAT_OIDC_USERNAME_CLAIM`, `NOTEDTHAT_OIDC_GROUPS_CLAIM` — defaults above
 - `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` — discovery and key fetches; default 5000
 - `NOTEDTHAT_OIDC_RESOURCE` — optional public URL
+- `NOTEDTHAT_OIDC_CA_CERT` — optional PEM bundle to trust for the issuer; the server does not read the OS trust store
 
 Any of the others without the issuer refuses startup rather than being ignored.
 

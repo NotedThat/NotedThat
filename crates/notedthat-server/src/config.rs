@@ -522,7 +522,7 @@ impl Config {
 }
 
 /// The `NOTEDTHAT_OIDC_*` settings that only mean something once an issuer is set.
-fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 5] {
+fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 6] {
     [
         ("NOTEDTHAT_OIDC_AUDIENCE", cli.oidc_audience.is_some()),
         (
@@ -538,6 +538,7 @@ fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 5] {
             cli.oidc_http_timeout_ms.is_some(),
         ),
         ("NOTEDTHAT_OIDC_RESOURCE", cli.oidc_resource.is_some()),
+        ("NOTEDTHAT_OIDC_CA_CERT", cli.oidc_ca_cert.is_some()),
     ]
 }
 
@@ -614,6 +615,28 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         .transpose()?
         .map(|url| url.to_string().trim_end_matches('/').to_string());
 
+    let ca_cert = match cli.oidc_ca_cert.as_deref() {
+        None => None,
+        Some(path) if path.is_empty() => {
+            return Err(Error::Config {
+                message: format!("{} must not be empty", setting("NOTEDTHAT_OIDC_CA_CERT")),
+            });
+        }
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            if !path.is_file() {
+                return Err(Error::Config {
+                    message: format!(
+                        "{} is not a readable file: {}",
+                        setting("NOTEDTHAT_OIDC_CA_CERT"),
+                        path.display()
+                    ),
+                });
+            }
+            Some(path)
+        }
+    };
+
     Ok(Some(OidcSettings {
         issuer: issuer_url.to_string(),
         audiences,
@@ -621,6 +644,7 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         groups_claim,
         http_timeout,
         resource,
+        ca_cert,
     }))
 }
 
@@ -822,7 +846,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 44] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 45] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -859,6 +883,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_OIDC_GROUPS_CLAIM",
         "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
         "NOTEDTHAT_OIDC_RESOURCE",
+        "NOTEDTHAT_OIDC_CA_CERT",
         "EMBEDDING_ENDPOINT_URL",
         "EMBEDDING_MODEL",
         "EMBEDDING_API_KEY",
@@ -915,6 +940,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_OIDC_GROUPS_CLAIM", None),
             ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", None),
             ("NOTEDTHAT_OIDC_RESOURCE", None),
+            ("NOTEDTHAT_OIDC_CA_CERT", None),
             ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
             ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
             ("EMBEDDING_API_KEY", Some("sk-test")),
@@ -1122,7 +1148,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 44);
+        assert_eq!(ALL_ENV_KEYS.len(), 45);
     }
 
     #[test]
@@ -1665,6 +1691,7 @@ pub(crate) mod tests {
             assert_eq!(oidc.groups_claim, "groups");
             assert_eq!(oidc.http_timeout, Duration::from_millis(5000));
             assert_eq!(oidc.resource, None);
+            assert_eq!(oidc.ca_cert, None);
             assert_eq!(
                 oidc.discovery_url(),
                 "https://auth.example.com/application/o/notedthat/.well-known/openid-configuration"
@@ -1756,6 +1783,7 @@ pub(crate) mod tests {
                 ("NOTEDTHAT_OIDC_GROUPS_CLAIM", ""),
                 ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", "0"),
                 ("NOTEDTHAT_OIDC_RESOURCE", "notes.example.com"),
+                ("NOTEDTHAT_OIDC_CA_CERT", "/nonexistent/ca.pem"),
             ] {
                 let error = run_with_env(
                     &[

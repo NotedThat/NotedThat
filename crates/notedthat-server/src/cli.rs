@@ -126,6 +126,11 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_OIDC_RESOURCE", value_name = "URL")]
     pub oidc_resource: Option<String>,
 
+    /// PEM bundle of extra CA certificates to trust when reaching the issuer —
+    /// for an internal or self-signed CA.
+    #[arg(long, env = "NOTEDTHAT_OIDC_CA_CERT", value_name = "FILE")]
+    pub oidc_ca_cert: Option<OsString>,
+
     /// Object store to run on: `s3` or `fs` [default: s3].
     #[arg(long, env = "NOTEDTHAT_STORAGE_BACKEND", value_name = "BACKEND")]
     pub storage_backend: Option<OsString>,

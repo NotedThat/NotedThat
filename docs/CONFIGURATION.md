@@ -366,6 +366,7 @@ Any issuer that publishes discovery and a JWKS and can mint JWT access tokens wo
 | `NOTEDTHAT_OIDC_GROUPS_CLAIM` | `--oidc-groups-claim` | claim name | `groups` | The claim `group:<name>` rules match. Its value may be an array of strings, a single string, or an object whose keys are the group names (Zitadel's roles shape). Absent or unreadable means "in no group". |
 | `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` | `--oidc-http-timeout-ms` | positive integer | `5000` | Timeout for the discovery and key-set requests to the issuer. |
 | `NOTEDTHAT_OIDC_RESOURCE` | `--oidc-resource` | `http(s)` URL | *(unset — nothing published)* | This deployment's public URL. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` and names it in a `WWW-Authenticate: Bearer resource_metadata="…"` challenge on every `401` from `/api/v1` and `/mcp`, which is how an MCP client finds the authorization server. |
+| `NOTEDTHAT_OIDC_CA_CERT` | `--oidc-ca-cert` | path to a PEM bundle | *(unset — public roots only)* | Extra CA certificates to trust when reaching the issuer, on top of the built-in Mozilla roots. A self-hosted provider is usually behind an internal or self-signed CA, and the server does not read the operating system's trust store. The file must exist at startup; a bundle that is not PEM, or holds no certificate, refuses startup. |
 
 Any `NOTEDTHAT_OIDC_*` setting other than the issuer, with the issuer unset, refuses startup rather
 than being ignored: a deployment that set an audience believed it had configured identity tokens.
@@ -433,8 +434,19 @@ setting byte for byte, `groups` must be present.
 
 ### Authelia
 
-Authelia mints opaque access tokens unless the client is told otherwise, and copies `groups` into
-the access token only through a claims policy. In `configuration.yml`:
+Three things about Authelia (4.39) matter here, and each was found by running it rather than
+reading about it:
+
+- It serves OIDC **only over https** — a plain-http discovery request is refused outright — so a
+  local or internal deployment needs `NOTEDTHAT_OIDC_CA_CERT` pointing at whatever signed its
+  certificate.
+- Access tokens are **opaque unless the client sets `access_token_signed_response_alg`**, and
+  `groups` reaches the access token **only through a claims policy**.
+- A JWT access token carries **no `aud` unless the client is allowed an audience and requests
+  it**; `requested_audience_mode: implicit` requests it on every call. Without this the token is
+  refused for a missing `aud`.
+
+In `configuration.yml`:
 
 ```yaml
 identity_providers:
@@ -447,8 +459,10 @@ identity_providers:
     clients:
       - client_id: notedthat
         client_secret: '<pbkdf2 hash>'
-        claims_policy: notedthat
         access_token_signed_response_alg: RS256   # a JWT rather than an opaque token
+        audience: [notedthat]                     # what `aud` may carry …
+        requested_audience_mode: implicit         # … and ask for it every time
+        claims_policy: notedthat
         scopes: [openid, profile, groups]
         redirect_uris: [...]
         authorization_policy: two_factor
@@ -459,10 +473,14 @@ Settings:
 ```sh
 NOTEDTHAT_OIDC_ISSUER=https://auth.example.com      # Authelia's issuer has no trailing slash
 NOTEDTHAT_OIDC_AUDIENCE=notedthat
+NOTEDTHAT_OIDC_CA_CERT=/etc/notedthat/internal-ca.pem   # if the certificate is not publicly trusted
 ```
 
-`docker-compose.auth.yml` runs this exact shape against Authelia's file user backend; see the
-[manual QA script](manual-qa/oidc-mcp.sh).
+The issuer Authelia writes into a token is derived from the request's host, so the server and
+every client must reach it by the same name and port. `docker-compose.auth.yml` runs this exact
+shape against Authelia's file user backend; `docker/authelia/configuration.yml` is the working
+configuration and the [manual QA script](manual-qa/oidc-mcp.sh) walks it. The in-repo
+`oidc_authelia_e2e` test (Docker, `--ignored`) runs the same flow.
 
 ### Zitadel
 

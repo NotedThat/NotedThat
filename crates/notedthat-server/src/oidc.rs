@@ -58,6 +58,9 @@ pub struct OidcSettings {
     pub http_timeout: Duration,
     /// This deployment's public URL, when it publishes RFC 9728 metadata.
     pub resource: Option<String>,
+    /// A PEM bundle of CA certificates to trust for the issuer, on top of the
+    /// built-in roots — a self-hosted provider is usually behind an internal CA.
+    pub ca_cert: Option<std::path::PathBuf>,
 }
 
 impl OidcSettings {
@@ -127,8 +130,28 @@ impl OidcVerifier {
     /// When the discovery document or the JWKS cannot be fetched or parsed, or
     /// when the document's `issuer` is not the configured one.
     pub async fn discover(settings: OidcSettings) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(settings.http_timeout)
+        let mut builder = reqwest::Client::builder().timeout(settings.http_timeout);
+        if let Some(path) = &settings.ca_cert {
+            let bundle = std::fs::read(path).map_err(|error| {
+                anyhow::anyhow!("NOTEDTHAT_OIDC_CA_CERT {}: {error}", path.display())
+            })?;
+            let certificates = reqwest::Certificate::from_pem_bundle(&bundle).map_err(|error| {
+                anyhow::anyhow!(
+                    "NOTEDTHAT_OIDC_CA_CERT {} is not a PEM certificate bundle: {error}",
+                    path.display()
+                )
+            })?;
+            if certificates.is_empty() {
+                anyhow::bail!(
+                    "NOTEDTHAT_OIDC_CA_CERT {} contains no certificates",
+                    path.display()
+                );
+            }
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+        let http = builder
             .build()
             .map_err(|error| anyhow::anyhow!("could not build the OIDC HTTP client: {error}"))?;
 
@@ -138,11 +161,12 @@ impl OidcVerifier {
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .map_err(|error| anyhow::anyhow!("GET {discovery_url}: {error}"))?
+            .map_err(|error| anyhow::Error::new(error).context(format!("GET {discovery_url}")))?
             .json()
             .await
             .map_err(|error| {
-                anyhow::anyhow!("{discovery_url} is not a discovery document: {error}")
+                anyhow::Error::new(error)
+                    .context(format!("{discovery_url} is not a discovery document"))
             })?;
 
         // The document's own issuer is what every token's `iss` will carry.
@@ -273,7 +297,7 @@ impl OidcVerifier {
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .fetched_at = Some(Instant::now());
-                tracing::warn!(error = %error, "OIDC key set refresh failed; keeping the previous keys");
+                tracing::warn!(error = %format!("{error:#}"), "OIDC key set refresh failed; keeping the previous keys");
             }
         }
     }
@@ -380,10 +404,10 @@ async fn fetch_jwks(http: &reqwest::Client, jwks_uri: &str) -> anyhow::Result<Jw
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| anyhow::anyhow!("GET {jwks_uri}: {error}"))?
+        .map_err(|error| anyhow::Error::new(error).context(format!("GET {jwks_uri}")))?
         .json()
         .await
-        .map_err(|error| anyhow::anyhow!("{jwks_uri} is not a JWK set: {error}"))
+        .map_err(|error| anyhow::Error::new(error).context(format!("{jwks_uri} is not a JWK set")))
 }
 
 /// The usable keys in a set. Keys of a kind this verifier cannot sign-check
@@ -435,6 +459,7 @@ pub mod test_support {
             groups_claim: OidcSettings::DEFAULT_GROUPS_CLAIM.to_string(),
             http_timeout: Duration::from_millis(OidcSettings::DEFAULT_HTTP_TIMEOUT_MS),
             resource: None,
+            ca_cert: None,
         }
     }
 
@@ -713,6 +738,27 @@ mod tests {
 
         // Then
         assert!(error.to_string().contains("trailing slash"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_ca_bundle_that_is_not_pem_refuses_startup_before_any_request() {
+        // Given — a file that is not a certificate bundle, and one that is empty.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let garbage = dir.path().join("ca.pem");
+        std::fs::write(&garbage, b"not a certificate").expect("write");
+        let mut settings = settings("https://auth.example.com");
+        settings.ca_cert = Some(garbage.clone());
+
+        // When
+        let error = OidcVerifier::discover(settings).await.expect_err("refused");
+
+        // Then — named, and no discovery request was attempted.
+        let message = error.to_string();
+        assert!(message.contains("NOTEDTHAT_OIDC_CA_CERT"), "{message}");
+        assert!(
+            message.contains(&garbage.display().to_string()),
+            "{message}"
+        );
     }
 
     #[tokio::test]
