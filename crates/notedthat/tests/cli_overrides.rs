@@ -140,6 +140,24 @@ fn a_flag_supplied_setting_reaches_the_cross_backend_rule() {
     assert!(stderr.contains("NOTEDTHAT_FS_ROOT"), "{stderr}");
 }
 
+/// An OIDC setting without the issuer that gives it meaning is refused at
+/// startup, naming both the missing switch and the setting that needs it.
+#[test]
+fn an_oidc_setting_without_an_issuer_refuses_startup() {
+    let output = clean(SERVER_BIN)
+        .args(minimal_server_args())
+        .env("NOTEDTHAT_OIDC_AUDIENCE", "notedthat")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("NOTEDTHAT_OIDC_ISSUER"), "{stderr}");
+    assert!(stderr.contains("--oidc-issuer"), "{stderr}");
+    assert!(stderr.contains("NOTEDTHAT_OIDC_AUDIENCE"), "{stderr}");
+    assert!(output.stdout.is_empty());
+}
+
 /// The removed settings are hidden from `--help` but still parsed, so that
 /// reaching for one as a flag gets the replacement rather than clap's bare
 /// "unexpected argument".

@@ -44,8 +44,10 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
     let password = "test-pass".to_string();
 
     let state = WebDavState {
-        username: Arc::new(username.clone()),
-        password: Arc::new(password.clone()),
+        authenticator: Arc::new(
+            notedthat_core::Authenticator::new("test-service-token")
+                .with_basic(username.clone(), password.clone()),
+        ),
         storage: storage as Arc<dyn notedthat_core::Storage>,
         staging_config: notedthat_core::StagingConfig::default(),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),

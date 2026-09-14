@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
-use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Principal, Verb};
+use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Verb, Who};
 use notedthat_webdav::state::WebDavState;
 use tokio::sync::mpsc;
 
@@ -14,14 +14,14 @@ use super::storage::MemoryStorage;
 /// The old fixture took capability names; verbs replaced them, and the mapping
 /// is not one-to-one — `discover` is gone entirely, and `browse` split into
 /// `list` for enumeration and `read` for bytes.
-pub(super) fn policy(who: Principal, verbs: &[Verb]) -> AccessPolicy {
+pub(super) fn policy(who: Who, verbs: &[Verb]) -> AccessPolicy {
     [AccessRule::new(who, verbs.iter().copied())]
         .into_iter()
         .collect()
 }
 
 /// A policy granting `verbs` to `who`, scoped to `patterns`.
-pub(super) fn scoped_policy(who: Principal, verbs: &[Verb], patterns: &[&str]) -> AccessPolicy {
+pub(super) fn scoped_policy(who: Who, verbs: &[Verb], patterns: &[&str]) -> AccessPolicy {
     [AccessRule::new(who, verbs.iter().copied()).under(
         patterns
             .iter()
@@ -31,14 +31,28 @@ pub(super) fn scoped_policy(who: Principal, verbs: &[Verb], patterns: &[&str]) -
     .collect()
 }
 
+/// The service token the fixture's authenticator accepts as a bearer.
+pub(super) const SERVICE_TOKEN: &str = "test-service-token";
+/// A bearer the stub verifier resolves to `alice`, a member of `editors`.
+pub(super) const ALICE_TOKEN: &str = "jwt-alice";
+
 pub(super) fn state_with_policies(
     storage: Arc<MemoryStorage>,
     policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
     let (indexer_tx, _indexer_rx) = mpsc::channel(8);
     WebDavState {
-        username: Arc::new("user".to_string()),
-        password: Arc::new("pass".to_string()),
+        authenticator: Arc::new(
+            notedthat_core::Authenticator::new(SERVICE_TOKEN)
+                .with_basic("user".to_string(), "pass".to_string())
+                .with_token_verifier(Arc::new(
+                    notedthat_core::testing::StubTokenVerifier::default().accepting(
+                        ALICE_TOKEN,
+                        "alice",
+                        ["editors"],
+                    ),
+                )),
+        ),
         storage,
         declared_kbs: Arc::new(BTreeMap::from([
             (

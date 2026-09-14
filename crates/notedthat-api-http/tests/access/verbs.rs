@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{TOKEN, app, grant, grant_under, json, policy, signed_in_everything};
@@ -16,7 +16,7 @@ fn only_notes(
 #[tokio::test]
 async fn a_knowledge_base_is_listed_when_the_caller_holds_any_grant_in_it() {
     // Given — `notes` grants anonymous reads; `private` has no policy at all.
-    let app = app(only_notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(only_notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When
     let anonymous = app
@@ -58,7 +58,7 @@ async fn a_knowledge_base_is_listed_when_the_caller_holds_any_grant_in_it() {
 #[tokio::test]
 async fn a_read_grant_serves_get_and_head_but_never_the_internal_namespace() {
     // Given
-    let app = app(only_notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(only_notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When
     let get = app
@@ -104,7 +104,7 @@ async fn a_read_grant_serves_get_and_head_but_never_the_internal_namespace() {
 async fn a_prefix_scoped_read_grant_serves_only_keys_under_that_prefix() {
     // Given — the capability model could not express this at all.
     let app = app(only_notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::Read],
         &["public/**"],
     )]))
@@ -139,7 +139,7 @@ async fn a_prefix_scoped_read_grant_serves_only_keys_under_that_prefix() {
 #[tokio::test]
 async fn a_list_grant_does_not_imply_a_read_grant() {
     // Given
-    let app = app(only_notes([grant(Principal::Anyone, [Verb::List])])).await;
+    let app = app(only_notes([grant(Who::Anyone, [Verb::List])])).await;
 
     // When
     let listing = app
@@ -173,7 +173,7 @@ async fn a_restricted_credential_is_refused_with_forbidden_rather_than_unauthori
     // has to differ from the anonymous case, because a 401 would invite the
     // caller to retry with credentials they already sent.
     let app = app(only_notes([grant_under(
-        Principal::SignedIn,
+        Who::SignedIn,
         [Verb::Read],
         &["public/**"],
     )]))
@@ -267,7 +267,7 @@ async fn the_credential_holder_can_always_rewrite_the_manifest_that_locked_it_ou
 async fn an_anonymous_caller_never_reaches_the_internal_namespace_under_any_grant() {
     // Given — every anonymous verb validation permits, across the whole base.
     let app = app(only_notes([
-        grant(Principal::Anyone, [Verb::List, Verb::Read, Verb::Search]),
+        grant(Who::Anyone, [Verb::List, Verb::Read, Verb::Search]),
         signed_in_everything(),
     ]))
     .await;

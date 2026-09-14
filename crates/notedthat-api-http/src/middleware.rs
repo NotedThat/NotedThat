@@ -1,14 +1,14 @@
-//! Static-Bearer authentication middleware for the `NotedThat` API.
+//! Authentication middleware for the `NotedThat` API.
 
 use crate::error::ApiErrorResponse;
 use crate::router::{MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{MatchedPath, State};
-use axum::http::{Method, Request, header::AUTHORIZATION};
+use axum::http::{Method, Request, StatusCode, header::WWW_AUTHENTICATE};
 use axum::middleware::Next;
-use axum::response::Response;
-use notedthat_core::{Principal, extract_bearer_from_header, verify_bearer_token};
+use axum::response::{IntoResponse, Response};
+use notedthat_core::{Principal, Schemes};
 use tower_http::request_id::RequestId;
 
 /// The `(method, route)` pairs an anonymous request is allowed to reach.
@@ -36,31 +36,53 @@ const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
 
 /// Axum middleware that establishes the request's [`Principal`].
 ///
-/// This layer authenticates; it does not authorize. A valid Bearer token makes
-/// the request [`Principal::SignedIn`], an absent credential makes it
-/// [`Principal::Anyone`], and a supplied credential that does not verify is
-/// always `401` — never quietly downgraded to anonymous, which is the rule that
-/// stops a typo'd token from silently becoming a public view.
+/// This layer authenticates; it does not authorize. A credential the
+/// [`notedthat_core::Authenticator`] accepts makes the request
+/// [`Principal::SignedIn`], an absent credential makes it [`Principal::Anyone`],
+/// and a supplied credential that does not verify is always `401` — never
+/// quietly downgraded to anonymous, which is the rule that stops a typo'd token
+/// from silently becoming a public view.
+///
+/// Every `401` that leaves this layer — its own, or one a handler answered —
+/// carries the bearer challenge when the deployment publishes protected-
+/// resource metadata, so an MCP client can find the authorization server.
 ///
 /// It is mounted on the `/api/v1` routes only. The unauthenticated root routes
 /// (`/healthz`, `/readyz`, `/llms.txt`) never reach it, and `/browse` resolves
-/// its own principal with the same rules because it is mounted outside this
-/// layer (see [`crate::router::browse`]).
+/// its own principal through the same authenticator because it is mounted
+/// outside this layer (see [`crate::router::browse`]).
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request<Body>,
     next: Next,
-) -> Result<Response, ApiErrorResponse> {
+) -> Response {
     let request_id = extract_request_id(&req);
 
-    let principal = resolve_principal(req.headers(), &state.bearer_token)
-        .map_err(|CredentialRefused| ApiErrorResponse::unauthorized(request_id.clone()))?;
+    let response = match state
+        .authenticator
+        .resolve(req.headers(), Schemes::Bearer)
+        .await
+    {
+        Err(CredentialRefused) => ApiErrorResponse::unauthorized(request_id).into_response(),
+        Ok(principal) if principal.is_anonymous() && !anonymous_may_reach(&req) => {
+            ApiErrorResponse::unauthorized(request_id).into_response()
+        }
+        Ok(principal) => {
+            req.extensions_mut().insert(principal);
+            next.run(req).await
+        }
+    };
+    with_bearer_challenge(&state, response)
+}
 
-    if principal == Principal::Anyone && !anonymous_may_reach(&req) {
-        return Err(ApiErrorResponse::unauthorized(request_id));
+/// Add the `WWW-Authenticate` challenge to a `401`, when there is one to add.
+pub(crate) fn with_bearer_challenge(state: &AppState, mut response: Response) -> Response {
+    if response.status() == StatusCode::UNAUTHORIZED
+        && let Some(challenge) = state.authenticator.bearer_challenge()
+    {
+        response.headers_mut().insert(WWW_AUTHENTICATE, challenge);
     }
-    req.extensions_mut().insert(principal);
-    Ok(next.run(req).await)
+    response
 }
 
 /// Whether this request's route lets an anonymous caller through to a handler
@@ -75,45 +97,7 @@ fn anonymous_may_reach<B>(req: &Request<B>) -> bool {
         .any(|(method, route)| *method == req.method() && *route == matched)
 }
 
-/// Resolve a principal from a request's `Authorization` headers.
-///
-/// The single definition of the credential rules, so `/browse` — which is
-/// mounted outside this layer and has to resolve its own principal — cannot
-/// drift from `/api/v1`. [`CredentialRefused`] means a credential was supplied
-/// and did not verify, which is always a refusal and never a downgrade to
-/// anonymous.
-///
-/// # Errors
-///
-/// [`CredentialRefused`] when an `Authorization` header is present and does not
-/// carry exactly one valid Bearer token.
-pub fn resolve_principal(
-    headers: &axum::http::HeaderMap,
-    expected_token: &str,
-) -> Result<Principal, CredentialRefused> {
-    let mut values = headers.get_all(AUTHORIZATION).iter();
-    let Some(header) = values.next() else {
-        return Ok(Principal::Anyone);
-    };
-    if values.next().is_some() {
-        return Err(CredentialRefused);
-    }
-    header
-        .to_str()
-        .ok()
-        .and_then(extract_bearer_from_header)
-        .filter(|token| verify_bearer_token(token, expected_token))
-        .map(|_| Principal::SignedIn)
-        .ok_or(CredentialRefused)
-}
-
-/// A credential was supplied and did not verify.
-///
-/// Distinct from "no credential", which is [`Principal::Anyone`] and may still
-/// be granted access — the whole point of the distinction is that a supplied
-/// credential never silently downgrades.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CredentialRefused;
+pub use notedthat_core::CredentialRefused;
 
 /// The principal established at the HTTP boundary.
 ///
@@ -122,7 +106,7 @@ pub struct CredentialRefused;
 pub fn principal<B>(req: &Request<B>) -> Principal {
     req.extensions()
         .get::<Principal>()
-        .copied()
+        .cloned()
         .unwrap_or(Principal::Anyone)
 }
 
@@ -161,7 +145,7 @@ mod tests {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),
             access_policies: Arc::new(BTreeMap::new()),
-            bearer_token: Arc::new(token.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(token)),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size: 16 * 1024 * 1024,
             indexer_tx,

@@ -64,7 +64,7 @@ impl KbAccess {
     /// As [`Self::denial`]: [`ApiError::NotFound`] for an anonymous caller,
     /// [`ApiError::Forbidden`] for a credentialed one.
     pub(crate) fn require(&self, verb: Verb, key: &str) -> Result<(), ApiError> {
-        if self.policy.allows(self.principal, verb, key) {
+        if self.policy.allows(&self.principal, verb, key) {
             return Ok(());
         }
         Err(self.denial())
@@ -80,7 +80,7 @@ impl KbAccess {
     ///
     /// As [`Self::require`].
     pub(crate) fn require_any(&self, verb: Verb) -> Result<(), ApiError> {
-        if self.policy.grants_any(self.principal, verb) {
+        if self.policy.grants_any(&self.principal, verb) {
             return Ok(());
         }
         Err(self.denial())
@@ -92,7 +92,7 @@ impl KbAccess {
     /// [`Self::require_any`] because it answers with a rendered page rather than
     /// an [`ApiError`].
     pub(crate) fn policy_grants_any(&self, verb: Verb) -> bool {
-        self.policy.grants_any(self.principal, verb)
+        self.policy.grants_any(&self.principal, verb)
     }
 
     /// Whether this principal may apply `verb` to `key`.
@@ -100,12 +100,12 @@ impl KbAccess {
     /// The predicate behind [`Self::require`], for callers that want the answer
     /// rather than an error — a row that renders unlinked instead of failing.
     pub(crate) fn allows(&self, verb: Verb, key: &str) -> bool {
-        self.policy.allows(self.principal, verb, key)
+        self.policy.allows(&self.principal, verb, key)
     }
 
     /// A predicate over keys for this principal and verb, compiled once.
     pub(crate) fn filter(&self, verb: Verb) -> KeyFilter<'_> {
-        self.policy.key_filter(self.principal, verb)
+        self.policy.key_filter(&self.principal, verb)
     }
 
     /// The answer for a caller the rules do not grant.
@@ -134,7 +134,7 @@ impl KbAccess {
             // closes. The knowledge base is therefore described to this caller
             // as undeclared, which is the fiction concealment consists of.
             Principal::Anyone => crate::router::kb_not_found(self.kb.as_str()),
-            Principal::SignedIn => ApiError::Forbidden,
+            Principal::SignedIn(_) => ApiError::Forbidden,
         }
     }
 }
@@ -190,7 +190,7 @@ pub(crate) fn effective_prefix(requested: Option<&str>, hint: Option<&str>) -> S
 /// A declared knowledge base with no policy entry reads as "grants nothing",
 /// the same fallback [`KbAccess::resolve`] uses — the two must agree, or a
 /// knowledge base could be invisible in the listing yet reachable by name.
-pub(crate) fn visible_in_listing(state: &AppState, slug: &str, principal: Principal) -> bool {
+pub(crate) fn visible_in_listing(state: &AppState, slug: &str, principal: &Principal) -> bool {
     match state.access_policies.get(slug) {
         Some(policy) => policy.visible_in_listing(principal),
         None => AccessPolicy::empty().visible_in_listing(principal),

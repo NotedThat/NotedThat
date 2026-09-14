@@ -1,0 +1,131 @@
+# Authelia for manual QA of NotedThat's OIDC support — docker-compose.auth.yml.
+#
+# Everything in here is a throwaway development value: the secrets are
+# public, the user passwords are in users_database.yml, and the signing key in
+# jwks-private.pem is checked into the repository. Never reuse any of it.
+#
+# The parts that matter for NotedThat are marked ## NOTEDTHAT. Everything else
+# is the minimum Authelia needs to boot with its file user backend.
+
+theme: 'light'
+
+server:
+  address: 'tcp://0.0.0.0:9091'
+  ## NOTEDTHAT: Authelia serves OIDC only over https — a plain-http discovery
+  ## request is refused outright — so it terminates TLS itself with the leaf
+  ## beside this file, signed by the throwaway ca.crt. NotedThat trusts that CA
+  ## through NOTEDTHAT_OIDC_CA_CERT; the QA script passes it to curl --cacert.
+  tls:
+    certificate: '/config/tls.crt'
+    key: '/config/tls.key'
+
+log:
+  level: 'info'
+
+identity_validation:
+  reset_password:
+    jwt_secret: 'dev-only-reset-password-jwt-secret-please-change'
+
+authentication_backend:
+  file:
+    path: '/config/users_database.yml'
+
+access_control:
+  default_policy: 'one_factor'
+
+session:
+  secret: 'dev-only-session-secret-please-change'
+  cookies:
+    # `auth.localhost` is the one name both sides use: the Compose network
+    # aliases the container to it, and the QA script resolves it to 127.0.0.1.
+    # The issuer Authelia writes into every token is derived from the request
+    # host, so both sides must ask for the same name or `iss` never matches.
+    - domain: 'auth.localhost'
+      authelia_url: 'https://auth.localhost:9091'
+    # The same instance reached by IP, for the in-repo Docker test, which has
+    # no Compose network to alias a name in.
+    - domain: '127.0.0.1'
+      authelia_url: 'https://127.0.0.1:9091'
+
+storage:
+  encryption_key: 'dev-only-storage-encryption-key-please-change'
+  local:
+    path: '/config/db.sqlite3'
+
+notifier:
+  filesystem:
+    filename: '/config/notification.txt'
+
+identity_providers:
+  oidc:
+    hmac_secret: 'dev-only-oidc-hmac-secret-please-change'
+    jwks:
+      - key_id: 'notedthat-dev'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: |
+          -----BEGIN PRIVATE KEY-----
+          MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC41DCHLjbAJbwF
+          UXErLVWTrwpw/L/APZ82CGaFyKEocWThBcESTgViVywcFxR1SwA2bZOy7MulG8Lm
+          HHpgJ27Q3oRNEF1Um8Dt4MAwCEXurWpoiBsb5aAc/iW/JLjpEPm7lwecWt9TBfsm
+          DA2AvGuKl1z0x7SeimiH4NsS4p5sTmGZVVKh4auXcDVu3I/0Lr5Nn+6bLZ5tWONy
+          ia7k1XpdyI7ozBQzAhds7YZTqs4NqU57JoCvXQCliwr04vv7gx4Myaiir2b8PAu5
+          bDFKorIDfuZpEvx5qH/7FNx62TYPTa0UPlvSe3SY5sSKAoRpVY/AXRHCuSuLTzG9
+          A/uuMNRFAgMBAAECggEAGQoSCvY9T5mtF7FZWgaZvdisWvM6zQHsJEdOEFjGUHLQ
+          PlXnuqGcRB7YKHQN/vfqrvT4WfiPfC4/IKqB/63H6v8CQGhzpGc3Y2Kb1sYAJ14R
+          +Nhbh9N7dgIOPg9tB5IXqwzCaLG86IP6asSePa8JCK0J2FWHyCSrFaFmPHA8EyLt
+          /Rbkiy+R++iYRtwTFEudJjgYN0fxKJ8ctbL7YV6b0SgUxqODIFDLyIrsrUfYH/0o
+          xz8affO7XRpKnpSYk8GkUJMmjUSOqm1n2Vn/xuTzgvv+sQYQN/SkT/fctDjBQ1cZ
+          sIXinCRZX5IIrXKFe4vk02ySfDmxLOJXuhCzrZ1v0QKBgQDxr0l2gcDuTdlCcpRe
+          BhUhfdyYc3OqCeH5UHE3lGWxFpFq4J09qWk74HMH2laeMSfCHGc48eszrYRwciiQ
+          VcofYIyg4gaYUWUMw73an+9krVoLCGehHQQwJgRwEMGkxQ542L+w3nGMrx/4v/SW
+          Ys/YFXnIiREeNA9/baNTUroj2QKBgQDDxslAC+Ii9KhfsJkL5vVInzqYN35t4KNh
+          ifpVItnUyiNDCUjlZE2OOK6IVEM05cv13GS4m6FswWy54qqHUUqPSC+7+t8aYpSc
+          39u4FaNUuEPOCp9MIxu0V+gNJT0F4Fg7F10wIqZI+ED1ELSl9CT4Oz8nHuwpASpQ
+          Ka3322jsTQKBgQCBNUIkHhhkDrCRKqqRXdUcM6qkwkxa4q+x10S//xEizLrvlafa
+          2GBPR56X2y2lowfrab3xnrwsw55jc1SmXYcSoU5tkIkQE6vfWCJ+6DRW8aqK7XJh
+          mx6rExgaRYsRKNyk1NQenb29Bb8lAJKld6xAjLKv+D9zk0eZy6aenEKxeQKBgQC9
+          Kaasro66jcDebIkEWg1oNQntp7kOO75BcYsilcD5/LHjhOYdVzQklhn1ec1SIDNZ
+          hLEBOsbXiXEfjqaMhvxOw0X0EOte2B+WECqBjM66/ivtuo++hjGvqDx77x4uPl2i
+          Auo0p1YaLVy+LX0O2H6cJsrXZuZynEChIhSI50RTBQKBgQCnTi7rJou0rRujHEYh
+          0Zk9YK7K3MVn1jnhFgWneyGthEEHlFrD3ddN3JUzHfb5kMpdDOH39nsGC/w5u3mA
+          RK/Y/w3piAYyqEL5G6XNpSpDgmM2pWPJztI/7SVtAVyXNLbe70UkfIm/G4VrDDNU
+          ExuBX1teQxHFBOiIy0RrgE2uxw==
+          -----END PRIVATE KEY-----
+    ## NOTEDTHAT: Authelia copies claims into the *access* token only through a
+    ## claims policy. Without this, `groups` lives in the ID token alone and
+    ## every `group:` rule stays unmatched.
+    claims_policies:
+      notedthat:
+        access_token:
+          - 'groups'
+          - 'preferred_username'
+    clients:
+      - client_id: 'notedthat'
+        client_name: 'NotedThat (manual QA)'
+        # pbkdf2 of `notedthat-client-secret`
+        client_secret: '$pbkdf2-sha512$310000$L6aXpwtg6RttxX.JQrBe9g$CYCwjsE/6CmKH3qNiU3VtrRDUT0.yhYMlCBzxP7zLMJVjftm7caqLguDwyFpQDCCl/j9VgfuYNUN5DBwKg9iCg'
+        public: false
+        authorization_policy: 'one_factor'
+        consent_mode: 'implicit'
+        ## NOTEDTHAT: a JWT access token rather than Authelia's default opaque one.
+        access_token_signed_response_alg: 'RS256'
+        ## NOTEDTHAT: RFC 9068 requires `aud` in a JWT access token and NotedThat
+        ## checks it, but Authelia only emits one when the client is allowed an
+        ## audience *and* asks for it. `implicit` asks for it on every request.
+        audience:
+          - 'notedthat'
+        requested_audience_mode: 'implicit'
+        claims_policy: 'notedthat'
+        scopes:
+          - 'openid'
+          - 'profile'
+          - 'groups'
+          - 'email'
+        redirect_uris:
+          - 'http://127.0.0.1:1/callback'
+        grant_types:
+          - 'authorization_code'
+        response_types:
+          - 'code'
+        token_endpoint_auth_method: 'client_secret_post'

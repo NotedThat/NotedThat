@@ -7,7 +7,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::response::IntoResponse;
-use notedthat_core::{KbSlug, KeyFilter, ListResponse, Principal, Storage, StorageError, Verb};
+use notedthat_core::{KbSlug, KeyFilter, ListResponse, Storage, StorageError, Verb};
 use serde::Deserialize;
 
 /// Backend rows examined per storage call while refilling a filtered page.
@@ -41,7 +41,7 @@ pub(super) async fn list_kbs(
     let slugs: Vec<&str> = state
         .declared_kbs
         .keys()
-        .filter(|slug| visible_in_listing(&state, slug, principal))
+        .filter(|slug| visible_in_listing(&state, slug, &principal))
         .map(String::as_str)
         .collect();
 
@@ -49,7 +49,7 @@ pub(super) async fn list_kbs(
     // empty array. Both leak the same amount — nothing — but `401` is the
     // truthful answer to "may I look at this deployment": credentials would
     // change it. This preserves the pre-D51 contract for the discovery route.
-    if slugs.is_empty() && principal == Principal::Anyone {
+    if slugs.is_empty() && principal.is_anonymous() {
         return Err(ApiErrorResponse {
             error: ApiError::Unauthorized,
             request_id: extract_request_id(&req),

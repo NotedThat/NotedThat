@@ -1,4 +1,4 @@
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 
 use super::fixture::{app_with_keys, get, grant, grant_under, page, policy};
 
@@ -6,7 +6,7 @@ use super::fixture::{app_with_keys, get, grant, grant_under, page, policy};
 const CAP: usize = 10_000;
 
 fn everything() -> notedthat_core::AccessPolicy {
-    policy([grant(Principal::Anyone, [Verb::List, Verb::Read])])
+    policy([grant(Who::Anyone, [Verb::List, Verb::Read])])
 }
 
 #[tokio::test]
@@ -55,7 +55,7 @@ async fn a_narrow_grant_is_reached_even_when_a_denied_prefix_would_fill_the_cap(
     let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
     let app = app_with_keys(
         policy([grant_under(
-            Principal::Anyone,
+            Who::Anyone,
             [Verb::List, Verb::Read],
             &["public/**"],
         )]),
@@ -88,7 +88,7 @@ async fn a_folder_whose_grant_lies_past_the_cap_renders_rather_than_404s() {
     let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
     let app = app_with_keys(
         policy([grant_under(
-            Principal::Anyone,
+            Who::Anyone,
             [Verb::List, Verb::Read],
             &["docs/zz/**"],
         )]),

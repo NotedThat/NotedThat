@@ -58,6 +58,46 @@ struct InMemoryInner {
 
 pub use crate::etag::compute_etag;
 
+/// A [`crate::TokenVerifier`] over a fixed map, for surface tests that need
+/// an identity-provider user without an identity provider.
+///
+/// Any token not in the map is rejected, which is what makes it usable as a
+/// stand-in for the real thing in refusal tests too.
+#[derive(Debug, Default, Clone)]
+pub struct StubTokenVerifier {
+    identities: std::collections::BTreeMap<String, crate::UserIdentity>,
+}
+
+impl StubTokenVerifier {
+    /// Accept `token` as `subject`, a member of `groups`.
+    #[must_use]
+    pub fn accepting(
+        mut self,
+        token: &str,
+        subject: &str,
+        groups: impl IntoIterator<Item = &'static str>,
+    ) -> Self {
+        self.identities.insert(
+            token.to_string(),
+            crate::UserIdentity {
+                subject: subject.to_string(),
+                groups: groups.into_iter().map(str::to_string).collect(),
+            },
+        );
+        self
+    }
+}
+
+#[async_trait]
+impl crate::TokenVerifier for StubTokenVerifier {
+    async fn verify(&self, token: &str) -> Result<crate::UserIdentity, crate::TokenRejected> {
+        self.identities
+            .get(token)
+            .cloned()
+            .ok_or_else(|| crate::TokenRejected::new("not a token the stub knows"))
+    }
+}
+
 fn to_slice_index(value: u64) -> Result<usize, StorageError> {
     usize::try_from(value).map_err(|e| StorageError::Other {
         source: Box::new(std::io::Error::new(

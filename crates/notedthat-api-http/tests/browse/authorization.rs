@@ -1,17 +1,17 @@
 use axum::http::StatusCode;
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 
 use super::fixture::{TOKEN, app, get, grant, grant_under, hrefs, page, policy};
 
 fn list_only() -> AccessPolicy {
-    policy([grant_under(Principal::Anyone, [Verb::List], &["public/**"])])
+    policy([grant_under(Who::Anyone, [Verb::List], &["public/**"])])
 }
 
 #[tokio::test]
 async fn a_glob_scoped_grant_shows_its_subtree_and_hides_the_rest() {
     // Given / When
     let app = app(policy([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read],
         &["public/drafts/**"],
     )]))
@@ -40,8 +40,8 @@ async fn a_row_is_hyperlinked_only_where_read_is_granted_for_that_key() {
     // scoping a single directory can genuinely be part-readable, so this has to
     // be decided per row.
     let app = app(policy([
-        grant_under(Principal::Anyone, [Verb::List], &["public/**"]),
-        grant_under(Principal::Anyone, [Verb::Read], &["public/drafts/**"]),
+        grant_under(Who::Anyone, [Verb::List], &["public/**"]),
+        grant_under(Who::Anyone, [Verb::Read], &["public/drafts/**"]),
     ]))
     .await;
 
@@ -94,7 +94,7 @@ async fn an_object_url_is_not_found_when_read_is_denied_for_that_key() {
 async fn a_private_knowledge_base_is_not_found_rather_than_forbidden() {
     // Given / When — telling an anonymous caller `403` would turn the status
     // into an oracle for enumerating what exists.
-    let app = app(policy([grant(Principal::SignedIn, Verb::ALL)])).await;
+    let app = app(policy([grant(Who::SignedIn, Verb::ALL)])).await;
     let index = page(&app, "/browse/", None).await;
     let directory = get(&app, "/browse/notes/", None).await;
 
@@ -106,7 +106,7 @@ async fn a_private_knowledge_base_is_not_found_rather_than_forbidden() {
 #[tokio::test]
 async fn a_bearer_token_browses_as_the_credential_holder() {
     // Given
-    let app = app(policy([grant(Principal::SignedIn, Verb::ALL)])).await;
+    let app = app(policy([grant(Who::SignedIn, Verb::ALL)])).await;
 
     // When
     let anonymous = get(&app, "/browse/notes/", None).await;
@@ -125,7 +125,7 @@ async fn a_restricted_credential_is_told_it_is_forbidden_rather_than_shown_a_404
     // Given — a credentialed caller has already proved they exist, so `403`
     // reveals nothing they could not enumerate and is far easier to debug.
     let app = app(policy([grant_under(
-        Principal::SignedIn,
+        Who::SignedIn,
         [Verb::List, Verb::Read],
         &["public/**"],
     )]))
@@ -145,7 +145,7 @@ async fn an_invalid_credential_is_refused_rather_than_downgraded_to_anonymous() 
     // Given — the rule that stops a typo'd token from silently becoming a
     // public view, applied on this surface too.
     let app = app(policy([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -164,11 +164,11 @@ async fn an_invalid_credential_is_refused_rather_than_downgraded_to_anonymous() 
 async fn the_internal_namespace_never_appears_for_any_principal() {
     // Given — the broadest grant each principal can hold.
     let anonymous_app = app(policy([grant(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read, Verb::Search],
     )]))
     .await;
-    let signed_in_app = app(policy([grant(Principal::SignedIn, Verb::ALL)])).await;
+    let signed_in_app = app(policy([grant(Who::SignedIn, Verb::ALL)])).await;
 
     // When
     let anonymous = page(&anonymous_app, "/browse/notes/", None).await;

@@ -109,7 +109,7 @@ impl Default for MockSearcher {
 pub fn test_app_state_with_default_channel(
     storage: Arc<dyn Storage>,
     declared_kbs: Arc<BTreeMap<String, KbSlug>>,
-    bearer_token: Arc<String>,
+    authenticator: Arc<notedthat_core::Authenticator>,
     max_body_size: u64,
 ) -> crate::state::AppState {
     let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
@@ -117,7 +117,7 @@ pub fn test_app_state_with_default_channel(
         storage,
         declared_kbs,
         access_policies: Arc::new(BTreeMap::new()),
-        bearer_token,
+        authenticator,
         max_body_size,
         max_patchable_size: max_body_size,
         indexer_tx,
@@ -129,7 +129,7 @@ pub fn test_app_state_with_default_channel(
 pub fn test_app_state_with_channel(
     storage: Arc<dyn Storage>,
     declared_kbs: Arc<BTreeMap<String, KbSlug>>,
-    bearer_token: Arc<String>,
+    authenticator: Arc<notedthat_core::Authenticator>,
     max_body_size: u64,
 ) -> (
     crate::state::AppState,
@@ -141,7 +141,7 @@ pub fn test_app_state_with_channel(
             storage,
             declared_kbs,
             access_policies: Arc::new(BTreeMap::new()),
-            bearer_token,
+            authenticator,
             max_body_size,
             max_patchable_size: max_body_size,
             indexer_tx,

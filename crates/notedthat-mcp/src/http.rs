@@ -82,7 +82,7 @@ impl McpHttpService {
     /// Create a stateless JSON-response Streamable HTTP service.
     pub fn new(client: NotedThatClient, config: &McpHttpServiceConfig) -> Self {
         let streamable_config = config.streamable_http_config();
-        let service_factory = move || Ok(NotedThatMcp::new(client.clone()));
+        let service_factory = move || Ok(NotedThatMcp::for_http(client.clone()));
         let inner = StreamableHttpService::new(
             service_factory,
             Arc::new(NeverSessionManager::default()),
@@ -205,5 +205,118 @@ mod mcp_http_service {
         // Then: it preserves the required stateless JSON rmcp config.
         assert!(!inner.config.stateful_mode);
         assert!(inner.config.json_response);
+    }
+}
+
+#[cfg(test)]
+mod caller_identity {
+    //! The MCP service acts as its caller: the bearer presented to `/mcp` is
+    //! the bearer the loopback API call carries.
+
+    use super::*;
+    use crate::auth::require_bearer_auth;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post_service;
+    use axum::{Router, middleware};
+    use notedthat_core::Authenticator;
+    use notedthat_core::testing::StubTokenVerifier;
+    use std::sync::Arc;
+    use tower::ServiceExt as _;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const SERVICE_TOKEN: &str = "service-token";
+    const ALICE_TOKEN: &str = "jwt-alice";
+
+    /// A fake API that answers the knowledge-base index only for `bearer`.
+    async fn api_expecting(bearer: &str) -> MockServer {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases"))
+            .and(header("authorization", format!("Bearer {bearer}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"knowledgebases": ["notes"]})),
+            )
+            .expect(1)
+            .mount(&api)
+            .await;
+        api
+    }
+
+    fn app(api_url: &str) -> Router {
+        let client = NotedThatClient::new(api_url, SERVICE_TOKEN).expect("client");
+        let config = McpHttpServiceConfig::new(
+            ["127.0.0.1", "localhost"],
+            ["http://127.0.0.1:8080"],
+            CancellationToken::new(),
+        )
+        .expect("config");
+        let service = McpHttpService::new(client, &config);
+        let authenticator = Arc::new(Authenticator::new(SERVICE_TOKEN).with_token_verifier(
+            Arc::new(StubTokenVerifier::default().accepting(ALICE_TOKEN, "alice", [])),
+        ));
+        Router::new().route(
+            "/mcp",
+            post_service(service.into_service()).route_layer(middleware::from_fn_with_state(
+                authenticator,
+                require_bearer_auth,
+            )),
+        )
+    }
+
+    async fn list_knowledgebases(app: Router, bearer: &str) -> StatusCode {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "list_knowledgebases", "arguments": {} },
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "127.0.0.1")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        app.oneshot(request).await.expect("response").status()
+    }
+
+    #[tokio::test]
+    async fn a_caller_token_in_the_http_parts_is_forwarded_to_the_api() {
+        // Given — the API will only answer alice's own token.
+        let api = api_expecting(ALICE_TOKEN).await;
+
+        // When
+        let status = list_knowledgebases(app(&api.uri()), ALICE_TOKEN).await;
+
+        // Then — `expect(1)` on the mock is the assertion; a call carrying the
+        // service token would have found no matching mock.
+        assert_eq!(status, StatusCode::OK);
+        api.verify().await;
+    }
+
+    #[tokio::test]
+    async fn the_service_token_is_forwarded_as_itself() {
+        let api = api_expecting(SERVICE_TOKEN).await;
+        let status = list_knowledgebases(app(&api.uri()), SERVICE_TOKEN).await;
+        assert_eq!(status, StatusCode::OK);
+        api.verify().await;
+    }
+
+    #[test]
+    fn without_http_parts_the_configured_token_is_used() {
+        // Given — a handler built with the service token and no request context
+        // extensions to draw on, which is the stdio transport's situation.
+        let client = NotedThatClient::new("http://127.0.0.1:1", SERVICE_TOKEN).expect("client");
+        let with_caller = client.with_token(ALICE_TOKEN);
+
+        // When / Then — `with_token` swaps only the credential.
+        assert_eq!(with_caller.base_url_display(), client.base_url_display());
+        assert_eq!(with_caller.token, ALICE_TOKEN);
+        assert_eq!(client.token, SERVICE_TOKEN);
     }
 }

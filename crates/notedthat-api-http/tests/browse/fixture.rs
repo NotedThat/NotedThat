@@ -8,8 +8,8 @@ use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
 use notedthat_core::{
-    AccessPolicy, AccessRule, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath, Principal,
-    Storage, Verb,
+    AccessPolicy, AccessRule, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath, Storage, Verb,
+    Who,
 };
 use tower::ServiceExt;
 
@@ -40,12 +40,12 @@ pub(super) fn policy(rules: impl IntoIterator<Item = AccessRule>) -> AccessPolic
     rules.into_iter().collect()
 }
 
-pub(super) fn grant(who: Principal, verbs: impl IntoIterator<Item = Verb>) -> AccessRule {
+pub(super) fn grant(who: Who, verbs: impl IntoIterator<Item = Verb>) -> AccessRule {
     AccessRule::new(who, verbs)
 }
 
 pub(super) fn grant_under(
-    who: Principal,
+    who: Who,
     verbs: impl IntoIterator<Item = Verb>,
     patterns: &[&str],
 ) -> AccessRule {
@@ -87,7 +87,7 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
             ("private".to_string(), private),
         ])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
-        bearer_token: Arc::new(TOKEN.to_string()),
+        authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,

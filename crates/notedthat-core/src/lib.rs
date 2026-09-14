@@ -23,9 +23,11 @@ pub mod storage;
 pub mod testing;
 
 pub use access::{
-    AccessPolicy, AccessRule, KeyFilter, KeyPattern, Principal, Verb, signed_in_policies,
+    AccessPolicy, AccessRule, Effect, Identity, KeyFilter, KeyPattern, Principal, UserIdentity,
+    Verb, Who, signed_in_policies,
 };
 pub use auth::{
+    Authenticator, CredentialRefused, ProtectedResource, Schemes, TokenRejected, TokenVerifier,
     extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
     verify_bearer_token,
 };

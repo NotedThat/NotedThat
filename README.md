@@ -35,25 +35,37 @@ All 11 crates share a single version via ecosystem-level Semantic Versioning. Se
 ## Access rules
 
 Each knowledge base has its own S3 bucket, and that bucket is the policy boundary. Its
-`.notedthat/manifest.json` carries an `access` array of allow-only rules, each naming a principal
-(`anyone` for callers with no credential, `signed-in` for the token holder), the verbs it grants
-(`list`, `read`, `write`, `delete`, `search`), and optionally the object-key globs it applies
-`under`:
+`.notedthat/manifest.json` carries an `access` array of rules, each naming a subject (`anyone` for
+callers with no credential, `signed-in` for any verified credential, `group:<name>` or
+`user:<name>` for callers an OIDC provider vouched for), the verbs it grants with `may` or revokes
+with `may_not` (`list`, `read`, `write`, `delete`, `search`), and optionally the object-key globs it
+applies `under`:
 
 ```json
 "access": [
-  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+  { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "signed-in",     "may": ["list", "read", "search"] },
+  { "who": "group:editors", "may": ["write", "delete"] },
+  { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 ]
 ```
 
-Private by default. The rules govern the HTTP API, WebDAV, MCP and the browse pages from one
-evaluator, and they bind the token holder as well as anonymous callers — so a read-only deployment
-is expressible, and so is a mistake that locks you out. `.notedthat` is the exception that makes
-that recoverable: unreachable for `anyone`, always reachable for `signed-in`.
+Private by default; deny overrides allow, and rule order never matters. The rules govern the HTTP
+API, WebDAV, MCP and the browse pages from one evaluator, and they bind the token holder as well as
+anonymous callers — so a read-only deployment is expressible, and so is a mistake that locks you
+out. `.notedthat` is the exception that makes that recoverable: reachable only for
+`NOTEDTHAT_API_TOKEN`, always, and for nobody else.
 
 Granting `write` or `delete` to `anyone` refuses startup. The server reads policies once at
-startup; restart it after editing a manifest. There is no application rate limiter — configure
+startup; restart it after editing a manifest.
+
+## Who is signed in
+
+`NOTEDTHAT_API_TOKEN` is the deployment's own credential. Point the server at an OpenID Connect
+issuer — Authentik, Authelia and Zitadel are documented — and it also accepts that issuer's JWT
+access tokens on every surface, MCP included; the token's groups are what `group:` rules match.
+NotedThat mints no tokens and keeps no sessions. See
+[OIDC authentication](docs/CONFIGURATION.md#oidc-authentication). There is no application rate limiter — configure
 reverse-proxy rate and burst limits before exposing anonymous search. See
 [Configuration](docs/CONFIGURATION.md#manifest-access-rules) for the full model and the upgrade
 path from the removed `public_read` field.
@@ -108,6 +120,19 @@ size, Qdrant-timeout, and embedding-tuning settings from `.env`. The bundled Qdr
 service is deliberately unauthenticated, so it does not accept a Qdrant API key. A
 custom `NOTEDTHAT_UPLOAD_TMP_DIR` also needs an explicit writable mount at that exact
 path in a custom Compose deployment.
+
+### Compose with an identity provider
+
+Adds Authelia with two users (`alice` in `editors`, `ivan` in `interns`) and points the server
+at it, so identity tokens, `group:` rules and MCP's OAuth discovery can be tried end to end:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build -d
+docs/manual-qa/oidc-mcp.sh          # phase 1, then restart the server and PHASE=2
+```
+
+Everything under `docker/authelia/` is a throwaway development value. See
+[OIDC authentication](docs/CONFIGURATION.md#oidc-authentication) for Authentik and Zitadel.
 
 ### Compose with an S3-compatible store
 

@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use notedthat_core::{Principal, Verb, extract_basic_from_header, verify_basic_credentials};
+use notedthat_core::{Principal, Schemes, Verb};
 use tower_http::request_id::RequestId;
 
 use crate::access::{policy_for, verbs_for_method};
@@ -52,7 +52,7 @@ fn forbidden(request_id: &str) -> Response {
 }
 
 /// Whether `principal` may apply `verb` at `target`.
-fn allows(state: &WebDavState, target: &DavTarget, principal: Principal, verb: Verb) -> bool {
+fn allows(state: &WebDavState, target: &DavTarget, principal: &Principal, verb: Verb) -> bool {
     match target {
         // The root collection belongs to no knowledge base, so no rule can name
         // it. A principal may act on it when at least one declared base is
@@ -60,12 +60,12 @@ fn allows(state: &WebDavState, target: &DavTarget, principal: Principal, verb: V
         // no key to scope a grant to. The PROPFIND interceptor rejects recursive
         // walks, so listing the root never implies entering anything.
         //
-        // The credential holder always reaches it, even when nothing is
+        // Any credentialed caller reaches it, even when nothing is
         // declared: an empty collection is the truthful answer to "what is
         // here", and refusing it would mean a deployment with no knowledge
         // bases rejected its own operator.
         DavTarget::Root => {
-            principal == Principal::SignedIn
+            principal.is_signed_in()
                 || state
                     .declared_kbs
                     .values()
@@ -101,32 +101,12 @@ pub async fn basic_auth_middleware(
 ) -> Response {
     let request_id = extract_request_id(&req);
 
-    let mut auth_headers = req.headers().get_all("authorization").iter();
-    let auth_header = auth_headers.next();
-    if auth_headers.next().is_some() {
+    let Ok(principal) = state
+        .authenticator
+        .resolve(req.headers(), Schemes::BasicOrBearer)
+        .await
+    else {
         return challenge(&request_id);
-    }
-
-    let principal = match auth_header {
-        Some(header) => {
-            let authorized = header
-                .to_str()
-                .ok()
-                .and_then(extract_basic_from_header)
-                .is_some_and(|(username, password)| {
-                    verify_basic_credentials(
-                        &username,
-                        &password,
-                        state.username.as_str(),
-                        state.password.as_str(),
-                    )
-                });
-            if !authorized {
-                return challenge(&request_id);
-            }
-            Principal::SignedIn
-        }
-        None => Principal::Anyone,
     };
 
     let verbs = verbs_for_method(req.method().as_str());
@@ -135,7 +115,7 @@ pub async fn basic_auth_middleware(
     // decide it before the URI is parsed. Otherwise a malformed path on an
     // unauthenticated write answers `400` and tells an unauthenticated caller
     // something about the path they sent.
-    if principal == Principal::Anyone && verbs.iter().any(|verb| verb.is_mutating()) {
+    if principal.is_anonymous() && verbs.iter().any(|verb| verb.is_mutating()) {
         return challenge(&request_id);
     }
 
@@ -157,8 +137,8 @@ pub async fn basic_auth_middleware(
         // authorization: the root is a collection with no bytes, so advertising
         // GET there would be a lie even for a caller entitled to reach it.
         content: !matches!(target, DavTarget::Root)
-            && allows(&state, &target, principal, Verb::Read),
-        propfind: allows(&state, &target, principal, Verb::List),
+            && allows(&state, &target, &principal, Verb::Read),
+        propfind: allows(&state, &target, &principal, Verb::List),
     };
 
     let authorized = if verbs.is_empty() {
@@ -169,7 +149,7 @@ pub async fn basic_auth_middleware(
     } else {
         verbs
             .iter()
-            .all(|verb| allows(&state, &target, principal, *verb))
+            .all(|verb| allows(&state, &target, &principal, *verb))
     };
 
     if !authorized {
@@ -178,7 +158,7 @@ pub async fn basic_auth_middleware(
         // will not — and a second prompt would just be a lie (D43).
         return match principal {
             Principal::Anyone => challenge(&request_id),
-            Principal::SignedIn => forbidden(&request_id),
+            Principal::SignedIn(_) => forbidden(&request_id),
         };
     }
 

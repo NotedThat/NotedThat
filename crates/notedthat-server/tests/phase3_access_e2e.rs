@@ -17,16 +17,16 @@ use access_env::{
 };
 use access_server::{ServerInstance, wait_ready};
 use access_wire::{assert_http_concealed_404, search, wait_indexed, wire};
-use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Principal, Storage, TenantSlug, Verb};
+use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Storage, TenantSlug, Verb, Who};
 use reqwest::StatusCode;
 use std::time::Duration;
 
 /// A policy granting `anonymous_verbs` to anyone, alongside the credential
 /// holder's usual full reach.
 fn access_policy(anonymous_verbs: Vec<Verb>) -> AccessPolicy {
-    let mut rules = vec![AccessRule::new(Principal::SignedIn, Verb::ALL)];
+    let mut rules = vec![AccessRule::new(Who::SignedIn, Verb::ALL)];
     if !anonymous_verbs.is_empty() {
-        rules.push(AccessRule::new(Principal::Anyone, anonymous_verbs));
+        rules.push(AccessRule::new(Who::Anyone, anonymous_verbs));
     }
     rules.into_iter().collect()
 }

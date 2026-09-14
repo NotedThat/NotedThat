@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{
@@ -46,7 +46,7 @@ async fn a_listing_shows_every_key_the_credential_holder_may_see() {
 async fn a_prefix_scoped_list_grant_shows_only_keys_under_that_prefix() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -69,7 +69,7 @@ async fn a_prefix_scoped_list_grant_shows_only_keys_under_that_prefix() {
 #[tokio::test]
 async fn a_listing_drops_the_internal_namespace_for_an_anonymous_caller() {
     // Given
-    let app = app(notes([grant(Principal::Anyone, [Verb::List])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::List])])).await;
 
     // When
     let keys = keys_for(app, "/api/v1/knowledgebases/notes", None).await;
@@ -86,7 +86,7 @@ async fn a_listing_drops_the_internal_namespace_for_an_anonymous_caller() {
 async fn a_caller_prefix_outside_the_granted_scope_lists_nothing() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -116,7 +116,7 @@ async fn a_caller_prefix_outside_the_granted_scope_lists_nothing() {
 async fn a_caller_prefix_inside_the_granted_scope_narrows_further() {
     // Given
     let app = app(notes([grant_under(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List],
         &["public/**"],
     )]))
@@ -137,7 +137,7 @@ async fn a_caller_prefix_inside_the_granted_scope_narrows_further() {
 #[tokio::test]
 async fn listing_is_refused_without_a_list_grant() {
     // Given — `read` alone does not let a caller enumerate.
-    let app = app(notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When
     let response = app
@@ -222,4 +222,49 @@ async fn listing_an_undeclared_knowledge_base_is_not_found_rather_than_unauthori
 
     // Then
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_deny_under_a_prefix_hides_those_keys_from_a_whole_kb_listing() {
+    // Given — the credential holder may see everything except `internal/`.
+    let app = app(notes([
+        signed_in_everything(),
+        notedthat_core::AccessRule::deny(Who::SignedIn, [Verb::List]).under(
+            notedthat_core::KeyPattern::parse("internal/**")
+                .map(|p| vec![p])
+                .expect("pattern"),
+        ),
+    ]))
+    .await;
+
+    // When — the allow-all shortcut is closed by the denial, so every key is
+    // filtered; the internal namespace still comes through for the service token.
+    let keys = keys_for(app, "/api/v1/knowledgebases/notes", Some(TOKEN)).await;
+
+    // Then
+    assert!(!keys.contains(&"internal/secret.md".to_string()));
+    assert!(keys.contains(&"public/index.md".to_string()));
+    assert!(keys.contains(&".notedthat/manifest.json".to_string()));
+}
+
+#[tokio::test]
+async fn a_user_identity_never_sees_the_internal_namespace_in_a_listing() {
+    // Given — the widest grant, which for the service token is the allow-all
+    // shortcut; for a user it must not be.
+    let app = app(notes([signed_in_everything()])).await;
+
+    // When
+    let keys = keys_for(
+        app,
+        "/api/v1/knowledgebases/notes",
+        Some(super::fixture::ALICE_TOKEN),
+    )
+    .await;
+
+    // Then
+    assert!(
+        !keys.iter().any(|key| key.starts_with(".notedthat")),
+        "{keys:?}"
+    );
+    assert!(keys.contains(&"internal/secret.md".to_string()));
 }

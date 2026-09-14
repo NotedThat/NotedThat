@@ -78,16 +78,23 @@ land in a search index by default.
 
 ## Authentication
 
-Authenticated callers use a Bearer token. A valid token has full access to every declared knowledge
-base. Pass it in the `Authorization` header:
+Authenticated callers use a Bearer token, passed in the `Authorization` header:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The token is compared against `NOTEDTHAT_API_TOKEN` using a constant-time comparison. There is no
-token rotation and no per-token scopes or per-KB access control in v1. Either you have the token or
-you don't.
+Two kinds of bearer verify. The **service token** is `NOTEDTHAT_API_TOKEN`, compared in constant
+time; it is the deployment's own credential and the only one that reaches `.notedthat`. An
+**identity token** is a signed JWT access token from the OIDC issuer the deployment is configured
+with — Authentik, Authelia or Zitadel, say — and makes the caller a user with a subject and groups.
+Either kind is bound by the knowledge base's access rules below; there is no token that bypasses
+them. A deployment without an issuer accepts only the service token. See
+[OIDC authentication](CONFIGURATION.md#oidc-authentication) for what a token must carry.
+
+When the deployment publishes RFC 9728 metadata (`NOTEDTHAT_OIDC_RESOURCE`), every `401` carries
+`WWW-Authenticate: Bearer resource_metadata="<url>/.well-known/oauth-protected-resource"`, and that
+document names the authorization server a client can obtain a token from.
 
 Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
 public. An installation may additionally expose a per-knowledge-base anonymous read capability
@@ -98,20 +105,28 @@ unauthorized` and never falls back to anonymous access.
 ### Manifest access rules
 
 Each knowledge base's `.notedthat/manifest.json` carries an `access` array. Each rule names a
-principal, the verbs it grants, and the object-key patterns it applies to:
+subject, the verbs it grants (`may`) or revokes (`may_not`), and the object-key patterns it
+applies to:
 
 ```json
 "access": [
-  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-  { "who": "anyone",    "may": ["search"] },
-  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+  { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "anyone",        "may": ["search"] },
+  { "who": "signed-in",     "may": ["list", "read", "search"] },
+  { "who": "group:editors", "may": ["write", "delete"] },
+  { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 ]
 ```
 
-| Principal | Who it is |
+| Subject | Who it is |
 | --- | --- |
 | `anyone` | A caller supplying no `Authorization` header |
-| `signed-in` | A caller holding the configured Bearer token (or WebDAV Basic credential) |
+| `signed-in` | Any caller whose credential verified: the configured token (or WebDAV Basic credential) and every identity-provider user |
+| `group:<name>` | An identity-provider user whose token places them in `<name>` |
+| `user:<name>` | An identity-provider user whose username claim is exactly `<name>` |
+
+`group:` and `user:` rules can only match a caller authenticated through OIDC; the configured token
+is in no group and has no username, so such rules never match it.
 
 | Verb | What it allows |
 | --- | --- |
@@ -121,8 +136,10 @@ principal, the verbs it grants, and the object-key patterns it applies to:
 | `delete` | `DELETE` |
 | `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` |
 
-Rules are **allow-only**: private by default, and the answer is the union of every matching rule, so
-their order never changes a decision. Omitting `under` grants the whole knowledge base.
+A rule carries exactly one of `may` and `may_not`. Private by default; a verb is allowed on a key
+when some matching `may` rule covers the key and no matching `may_not` rule does. Both sides are
+unions, so rule order never changes a decision. Omitting `under` scopes the rule to the whole
+knowledge base.
 
 Pattern syntax: `*` matches within one path segment and never `/`; `**` matches whole segments and
 must be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. `public/**`
@@ -138,12 +155,14 @@ the caller cannot fetch. Previews are content. An operator choosing that combina
 excerpts.
 
 **The rules bind the credential holder too.** A manifest can narrow what the configured token may
-do, and MCP holds that token, so a read-only MCP deployment is expressible — and a manifest mistake
-can lock an operator out of their own knowledge base. One thing is never revocable: `.notedthat` is
-unreachable for `anyone` and always reachable for `signed-in`, so a bad policy can be repaired by
-`PUT`ting a corrected manifest and restarting.
+do, so a read-only deployment is expressible — and a manifest mistake can lock an operator out of
+their own knowledge base. One thing is never revocable: `.notedthat` is reachable only for the
+configured token, always, and never for `anyone` or for an identity-provider user, whatever the
+rules say. So a bad policy can be repaired by `PUT`ting a corrected manifest with that token and
+restarting, and the manifest — which carries the policy, group names included — is not readable by
+a user with a broad `read` grant. A rule that names `.notedthat` in `under` refuses startup.
 
-Granting `write` or `delete` to `anyone` refuses startup rather than being honoured.
+Granting or revoking `write` or `delete` for `anyone` refuses startup rather than being honoured.
 
 Policies load once at startup and need a restart after a manifest edit — no hot reload — and there
 is no built-in rate limit. Operators enabling anonymous `search` must configure reverse-proxy rate
@@ -157,8 +176,8 @@ up private to anonymous callers, with credentialed access unchanged.
 | Situation | Status |
 | --- | --- |
 | No credential supplied, and the rules do not grant it | `404 not_found` — see below |
-| A credential supplied that does not verify | `401 unauthorized` — never downgraded to anonymous |
-| A valid credential the rules do not grant | `403 forbidden` |
+| A credential supplied that does not verify — wrong service token, expired or foreign identity token | `401 unauthorized` — never downgraded to anonymous |
+| A valid credential the rules do not grant — service token or identity token alike | `403 forbidden` |
 | The knowledge base is not declared | `404 not_found` — not an authorization answer |
 
 **An anonymous denial is `404`, and deliberately indistinguishable from an undeclared knowledge
@@ -1197,6 +1216,7 @@ curl -sSf -X POST \
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
+| GET | `/.well-known/oauth-protected-resource` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
@@ -1459,11 +1479,19 @@ the API and WebDAV.
 
 **Endpoint:** `POST /mcp`
 
-**Authentication:** Bearer token, same credential as the HTTP API:
+**Authentication:** Bearer token, same credentials as the HTTP API — the service token or an
+identity token:
 
 ```
-Authorization: Bearer <NOTEDTHAT_API_TOKEN>
+Authorization: Bearer <NOTEDTHAT_API_TOKEN or identity token>
 ```
+
+MCP acts as its caller: the bearer presented to `/mcp` is the bearer the server's own API calls
+carry, so a tool call is bound by exactly the rules a direct request would be, and a refusal
+surfaces as a `forbidden` tool error. A missing or unverifiable bearer is `401` with a JSON body,
+plus a `WWW-Authenticate: Bearer resource_metadata="…"` challenge when the deployment publishes
+RFC 9728 metadata — which is how an OAuth-capable MCP client finds the authorization server and
+runs the authorization-code flow against it.
 
 The server operates in **stateless JSON-response mode**: each `POST /mcp` request is a complete, self-contained JSON-RPC exchange. No session state is retained between requests.
 

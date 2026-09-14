@@ -10,6 +10,7 @@ mod helpers;
 mod kbs;
 mod llms;
 mod objects;
+mod well_known;
 
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
@@ -31,6 +32,7 @@ use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
+use well_known::protected_resource_metadata;
 
 /// The API route table, declared once in two forms.
 ///
@@ -118,6 +120,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/llms.txt", get(llms_txt))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(protected_resource_metadata),
+        )
         .route(BROWSE_PREFIX, get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))
@@ -133,7 +139,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // `/browse` is stateful and sits on the outer router, outside
         // `auth_middleware` — it resolves its own principal with the same rules
-        // (see `middleware::resolve_principal`), because nesting it under
+        // (see `notedthat_core::Authenticator`), because nesting it under
         // `/api/v1` would move the mount point.
         .with_state(state)
 }
@@ -208,7 +214,7 @@ mod patch_route {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
             indexer_tx,
@@ -249,7 +255,7 @@ mod patch_route {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
             indexer_tx,
@@ -770,7 +776,7 @@ mod line_range_get {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -929,7 +935,7 @@ mod tests {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -1142,7 +1148,7 @@ mod tests {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -1232,7 +1238,7 @@ mod tests {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,

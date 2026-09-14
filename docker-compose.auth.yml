@@ -1,0 +1,67 @@
+# OIDC overlay for the Compose stack: Authelia as the identity provider.
+#
+# Adds an Authelia container with a file user backend (docker/authelia/) and points
+# the server at it, so identity tokens, `group:`/`user:` rules and MCP's OAuth
+# discovery can be exercised end to end:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build -d
+#   docs/manual-qa/oidc-mcp.sh
+#
+# Pass both files to every command in that stack, `down` included. Combine with
+# docker-compose.s3.yml by listing all three.
+#
+# Everything under docker/authelia/ is a throwaway development value — public
+# secrets, checked-in keys, a self-signed certificate. Never reuse any of it.
+#
+# The one name both sides must agree on is `auth.localhost`: Authelia derives the
+# issuer it writes into every token from the request host, and the server compares
+# that with NOTEDTHAT_OIDC_ISSUER byte for byte. Inside the Compose network the
+# alias below resolves it; on the host the QA script passes
+# `--resolve auth.localhost:9091:127.0.0.1` to curl.
+
+services:
+  authelia:
+    image: authelia/authelia:4.39
+    container_name: notedthat-authelia
+    networks:
+      default:
+        aliases:
+          - auth.localhost
+    ports:
+      - "127.0.0.1:9091:9091"
+    volumes:
+      - ./docker/authelia/configuration.yml:/config/configuration.yml:ro
+      - ./docker/authelia/users_database.yml:/config/users_database.yml:ro
+      - ./docker/authelia/tls.crt:/config/tls.crt:ro
+      - ./docker/authelia/tls.key:/config/tls.key:ro
+      # Authelia's SQLite state lands in the image's writable /config; it is
+      # throwaway, and mounting the whole directory read-only would break it.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1:9091/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  notedthat-server:
+    environment:
+      # Exactly the issuer Authelia reports: https, the alias, the port.
+      NOTEDTHAT_OIDC_ISSUER: https://auth.localhost:9091
+      # The client id — Authelia puts it in `aud` because the client is allowed
+      # that audience and requests it implicitly (see configuration.yml).
+      NOTEDTHAT_OIDC_AUDIENCE: notedthat
+      # Authelia serves OIDC only over TLS; this is the throwaway CA that signed
+      # its certificate — the shape of a self-hosted provider behind an internal CA.
+      NOTEDTHAT_OIDC_CA_CERT: /etc/notedthat/authelia-ca.crt
+      # What MCP clients on the host connect to; published as RFC 9728 metadata.
+      NOTEDTHAT_OIDC_RESOURCE: http://127.0.0.1:${NOTEDTHAT_HTTP_PORT:-8080}
+      # MCP over HTTP validates Host; the QA script connects through the
+      # published port on loopback, which the default list already allows.
+    volumes:
+      - ./docker/authelia/ca.crt:/etc/notedthat/authelia-ca.crt:ro
+    depends_on:
+      authelia:
+        condition: service_healthy
+      qdrant:
+        condition: service_started

@@ -27,7 +27,7 @@ pub enum ConfigError {
 pub struct NotedThatClient {
     pub(crate) http: reqwest::Client,
     base_url: Url,
-    token: String,
+    pub(crate) token: String,
 }
 
 impl NotedThatClient {
@@ -63,6 +63,21 @@ impl NotedThatClient {
             base_url: parsed,
             token: token_trimmed.to_string(),
         })
+    }
+
+    /// The same client — same connection pool, same base URL — presenting
+    /// `token` instead.
+    ///
+    /// How the MCP service acts as its caller: the service is built once with
+    /// the server's own token, and each tool call swaps in the credential the
+    /// caller presented. Not validated here; the API validates it on arrival.
+    #[must_use]
+    pub fn with_token(&self, token: &str) -> Self {
+        Self {
+            http: self.http.clone(),
+            base_url: self.base_url.clone(),
+            token: token.to_string(),
+        }
     }
 
     /// Returns the base URL as a display string (for logging — safe, no token).

@@ -59,6 +59,7 @@ fn test_config() -> Config {
         ],
         max_patchable_size: 100 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
+        oidc: None,
     }
 }
 
@@ -131,6 +132,7 @@ async fn initialize_mcp(addr: SocketAddr) {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
     let config = test_config();
     let api_started = Arc::new(Notify::new());
@@ -171,8 +173,13 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
         .route("/api/v1/probe", get(|| async { "api" }))
         .route("/webdav", get(|| async { "webdav" }))
         .merge(
-            build_router(&config, &internal_http_api_url(backend_addr), mcp_shutdown)
-                .expect("MCP router should build"),
+            build_router(
+                &config,
+                std::sync::Arc::new(notedthat_core::Authenticator::new(config.api_token.clone())),
+                &internal_http_api_url(backend_addr),
+                mcp_shutdown,
+            )
+            .expect("MCP router should build"),
         );
     let server = tokio::spawn(async move {
         axum::serve(listener, app)

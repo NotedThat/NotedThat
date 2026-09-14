@@ -1,4 +1,4 @@
-use notedthat_core::{Principal, Verb};
+use notedthat_core::{Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -16,10 +16,7 @@ async fn supplied_invalid_basic_never_falls_back_to_content_access() {
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([(
-            "private".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
-        )]),
+        BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
     ));
 
     for authorization in ["Basic !!!", "Basic dXNlcjpiYWQ=", "Bearer token"] {
@@ -51,10 +48,7 @@ async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets(
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([(
-            "private".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
-        )]),
+        BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
     ));
 
     // When
@@ -99,10 +93,7 @@ async fn duplicate_authorization_headers_are_rejected_even_when_first_is_valid()
     let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
     let app = build_router(state_with_policies(
         storage,
-        BTreeMap::from([(
-            "private".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
-        )]),
+        BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
     ));
 
     // When
@@ -131,7 +122,7 @@ async fn malformed_path_is_rejected_but_malformed_basic_takes_precedence() {
         storage,
         BTreeMap::from([(
             "discoverable".to_string(),
-            policy(Principal::Anyone, &[Verb::Read]),
+            policy(Who::Anyone, &[Verb::Read]),
         )]),
     ));
 
@@ -156,4 +147,71 @@ async fn malformed_path_is_rejected_but_malformed_basic_takes_precedence() {
     assert_eq!(absent.status(), StatusCode::BAD_REQUEST);
     assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED);
     assert!(malformed.headers().contains_key("www-authenticate"));
+}
+
+async fn bearer_get(app: axum::Router, uri: &str, token: &str) -> axum::response::Response {
+    app.oneshot(
+        Request::builder()
+            .uri(format!("/webdav{uri}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("valid request"),
+    )
+    .await
+    .expect("router response")
+}
+
+#[tokio::test]
+async fn a_bearer_service_token_is_accepted_on_webdav() {
+    // Given — a private base only the credential holder may read.
+    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let app = build_router(state_with_policies(
+        storage,
+        BTreeMap::from([("private".to_string(), policy(Who::SignedIn, &[Verb::Read]))]),
+    ));
+
+    // When / Then — a client that can set a header need not speak Basic.
+    assert_eq!(
+        bearer_get(app, "/private/private.md", super::fixture::SERVICE_TOKEN)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_bearer_identity_token_is_bound_by_group_rules_on_webdav() {
+    // Given — editors may read; everyone else signed in may only list.
+    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let policy: notedthat_core::AccessPolicy = [
+        notedthat_core::AccessRule::new(Who::SignedIn, [Verb::List]),
+        notedthat_core::AccessRule::new(Who::Group("editors".into()), [Verb::Read]),
+    ]
+    .into_iter()
+    .collect();
+    let app = build_router(state_with_policies(
+        storage,
+        BTreeMap::from([("private".to_string(), policy)]),
+    ));
+
+    // When
+    let alice = bearer_get(
+        app.clone(),
+        "/private/private.md",
+        super::fixture::ALICE_TOKEN,
+    )
+    .await;
+    let service = bearer_get(
+        app.clone(),
+        "/private/private.md",
+        super::fixture::SERVICE_TOKEN,
+    )
+    .await;
+    let unknown = bearer_get(app, "/private/private.md", "jwt-nobody").await;
+
+    // Then — a verified but ungranted credential is 403, an unverifiable one
+    // is the Basic challenge, because credentials might still change the answer.
+    assert_eq!(alice.status(), StatusCode::OK);
+    assert_eq!(service.status(), StatusCode::FORBIDDEN);
+    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
 }

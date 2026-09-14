@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod oidc;
 pub mod provision;
 pub mod run;
 pub mod tracing_init;

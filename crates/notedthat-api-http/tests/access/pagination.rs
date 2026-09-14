@@ -7,9 +7,7 @@ use bytes::Bytes;
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
-use notedthat_core::{
-    AccessPolicy, ConditionalHeaders, KbSlug, ObjectPath, Principal, Storage, Verb,
-};
+use notedthat_core::{AccessPolicy, ConditionalHeaders, KbSlug, ObjectPath, Storage, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{grant_under, json, listed_keys, policy};
@@ -39,7 +37,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
-        bearer_token: Arc::new("token".to_string()),
+        authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
@@ -48,7 +46,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
 }
 
 fn public_list_grant() -> AccessPolicy {
-    policy([grant_under(Principal::Anyone, [Verb::List], &["public/**"])])
+    policy([grant_under(Who::Anyone, [Verb::List], &["public/**"])])
 }
 
 /// Page through a listing at `limit`, following `next_cursor` to the end.
@@ -218,7 +216,7 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
-        bearer_token: Arc::new("token".to_string()),
+        authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,

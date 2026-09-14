@@ -1,6 +1,6 @@
 //! Shared state for the `WebDAV` surface.
 
-use notedthat_core::{AccessPolicy, KbSlug, StagingConfig, Storage};
+use notedthat_core::{AccessPolicy, Authenticator, KbSlug, StagingConfig, Storage};
 use notedthat_indexer::IndexEvent;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,10 +9,11 @@ use tokio::sync::mpsc::Sender;
 /// Application state shared by `WebDAV` router, middleware, and filesystem handlers.
 #[derive(Clone)]
 pub struct WebDavState {
-    /// Static HTTP Basic authentication username.
-    pub username: Arc<String>,
-    /// Static HTTP Basic authentication password.
-    pub password: Arc<String>,
+    /// The credential rules every request's principal is resolved through.
+    ///
+    /// The same authenticator the HTTP API holds; this surface additionally
+    /// accepts its `Basic` pair, because `WebDAV` clients prompt for one.
+    pub authenticator: Arc<Authenticator>,
     /// Object storage backend shared across handlers.
     pub storage: Arc<dyn Storage>,
     /// Declared knowledge bases keyed by display name/path segment.

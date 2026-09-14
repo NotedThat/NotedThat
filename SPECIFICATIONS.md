@@ -32,7 +32,7 @@ Three logical layers:
 | D8 | Language / runtime | **Rust.** `rmcp` is production-ready per user veto — no blocker to picking Rust over TypeScript. |
 | D9 | Concurrency model | **Optimistic concurrency via pass-through of conditional PUT headers.** NotedThat forwards `If-Match` / `If-None-Match` / `If-*-Since` from the client to the S3 backend and returns whatever the backend returns. We do not validate, gate, or compensate. If the operator picks a backend that doesn't enforce the header correctly, that is a property of the deployment — see §8.1 for the informational compatibility matrix. |
 | D10 | Distribution | **Single static binary + Docker.** Configuration via environment variables only. No config files. |
-| D11 | Tenancy hierarchy | **Tenant → many KBs.** v1 has one tenant and static credentials with access to all declared KBs. v2 JWT scopes tokens to KB + path-prefix (ACL granularity = KB + prefix). |
+| D11 | Tenancy hierarchy | **Tenant → many KBs.** v1 has one tenant. Access granularity is KB + object-key glob, declared in each manifest (D51) and matched against the caller's identity-provider groups (D53) rather than carried in a token. |
 | D12 | Chunking strategy | **Heading-aware.** Split at markdown H1/H2/H3 boundaries with a soft size cap; every chunk carries `byte_start`/`byte_end`. |
 | D13 | Search shape | **Hybrid BM25 + dense vector,** fused. Qdrant is the vector store. |
 | D14 | Qdrant hybrid impl | **Server-side BM25 via `qdrant/bm25` inference model** (no client tokenizer). Named vectors: `dense` + `sparse_bm25` (with `Modifier::Idf`). Query API with `prefetch` + `fusion: RRF` (default) or `DBSF`. `qdrant-client` Rust crate ≥ 1.15.2 (minimum for server-side `qdrant/bm25` inference). |
@@ -42,13 +42,13 @@ Three logical layers:
 | D18 | Embeddings | **External endpoints only.** No local embedding models. Pluggable adapter over an OpenAI-compatible HTTP interface (works with OpenAI, Voyage, Cohere, self-hosted vLLM/Ollama/TEI). Config via env vars per D10. Same endpoint used at index time and query time. |
 | D19 | S3 backend config | **Standard S3 client config only — no capability flags, no profiles.** Applies to the `s3` backend; D49 adds the `fs` backend and its own variables. Env vars are just what the AWS S3 SDK needs: endpoint URL, region, access key, secret, path-style flag. Everything else the backend does or doesn't support surfaces via the backend's HTTP responses. §8.1 exists only as **guidance for operators choosing a backend**. |
 | D20 | Bucket naming | **Slug-based, no UUID.** Deterministic: `nt-{tenant_slug}-{kb_slug}`. Idempotent from `(tenant_slug, kb_slug)` alone — no persisted id, no state lookup. DNS-safe, ≤ 63 chars (validated at KB creation per D39). See §6.6. |
-| D21 | API auth (v1) | **`[TEMPORARY]` Static Bearer token** from `NOTEDTHAT_API_TOKEN` env var. Single value, single tenant. No claims, no expiry, no rotation surface. Comparison-only auth check on every request. Replaced by JWT (D27) in v2. |
-| D22 | WebDAV auth (v1) | **`[TEMPORARY]` Static HTTP Basic credentials** from `NOTEDTHAT_WEBDAV_USERNAME` + `NOTEDTHAT_WEBDAV_PASSWORD`. Same user/pass for every WebDAV connection. Replaced by JWT-over-Basic (D27) in v2. |
+| D21 | API auth (v1) | **Static Bearer token** from `NOTEDTHAT_API_TOKEN` env var. Single value, single tenant. No claims, no expiry, no rotation surface. Comparison-only auth check on every request. **Amended by D53:** it stays as the deployment's *service token* — the operator's own credential and the `.notedthat` recovery path — beside identity-provider tokens, rather than being replaced by them. |
+| D22 | WebDAV auth (v1) | **Static HTTP Basic credentials** from `NOTEDTHAT_WEBDAV_USERNAME` + `NOTEDTHAT_WEBDAV_PASSWORD`. Same user/pass for every WebDAV connection. **Amended by D53:** the pair resolves to the same service-token principal as D21's Bearer, `Basic` stays WebDAV-only, and WebDAV additionally accepts `Bearer` — a client that can set a header need not speak Basic, and an identity-provider token only exists as a bearer. |
 | D23 | WebDAV URL scheme | **Unified path-based root.** WebDAV is mounted at `https://host/webdav/` on the same listener as the API and MCP. In v1, root `PROPFIND` returns every KB declared in `NOTEDTHAT_KBS`, listed by KB `slug` (no per-token filtering until JWT v2). Nested paths route to `/webdav/<kb_slug>/<object_path>`. No subdomain sharding, no per-KB URLs. |
 | D24 | KB identity | Every KB has a stable `slug` (`[a-z0-9-]{1,40}`, immutable in v1) **and** a mutable `display_name` (Unicode-friendly, shown as WebDAV `DAV:displayname`). The `slug` is the internal identifier — used directly for the S3 bucket name (D20) and Qdrant collection name. No separate UUID identifier in v1; single-tenant, and slugs are unique per tenant (§6.8). |
 | D25 | MCP tool surface | Each MCP tool takes a `kb` (slug) argument. In v1, one static token can address every KB declared in `NOTEDTHAT_KBS`. A **`list_knowledgebases()`** discovery tool returns that declared KB list (matching WebDAV root PROPFIND). JWT-filtered visibility is v2. Full list in §6.10. |
 | D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 carries the knowledge base's `access` rules (D51). Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
-| D27 | JWT model (v2, deferred) | **`[POST-v1]`** When we outgrow D21/D22's static tokens: HS256 self-signed, self-contained claims, no denylist DB. See §6.9 for the design. v1 ships with the static-token flow instead. |
+| D27 | JWT model (v2, deferred) | **Superseded by D53.** The plan was HS256 self-signed tokens carrying their own ACL. D51 moved the policy into the manifest and D53 delegates identity to an external OIDC issuer, so NotedThat mints nothing and the self-contained-claims design is not needed. |
 | D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
 | D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other S3-compatible backends (§8.1) are supported at deployer-choice; NotedThat makes no runtime distinction between them. The one runtime distinction it does make is D49's choice between the S3 and filesystem adapters. |
@@ -74,6 +74,7 @@ Three logical layers:
 | D50 | Filesystem change detection `fs` | **The `fs` backend keeps the search index in step with its own tree.** With `NOTEDTHAT_FS_WATCH` on (the default), each declared KB's directory is watched via `notify` (inotify on Linux, FSEvents on macOS, kqueue on the BSDs) and every knowledge base is compared against the index once at startup. **The watcher never enqueues a tombstone**: a deletion is an `IndexEvent::Refresh` whose re-read reports the object missing, which the worker already converts — so a debounced report can never outrace a re-create and delete points that are live again, the one failure here nothing would repair. `Refresh` is **skipped when the indexed chunks already carry the object's current `ETag`**, and that skip is what makes the startup pass, a rescan and a self-write echo all cheap; `IndexEvent::Upsert` is never skipped, because re-writing an object is v1's only reindex mechanism (D42). Directory operations are resolved by comparing a **prefix** rather than replaying events, since the kernel reports a directory and not its contents — that is what makes a folder rename correct on both sides, and what lets a deletion during downtime be found at all, as an indexed key with no file under it. Watcher work **coalesces by containment and blocks rather than dropping**, deliberately unlike D38's `try_send`: D38 is sound only because a 503 makes the client the retry mechanism, and a filesystem change has no client. Read events are discarded (`notify`'s inotify mask always includes `IN_OPEN`, so serving a `GET` would otherwise re-index the corpus), as are `.git`/`.svn`/`.hg` paths, our own temp prefix, symlinks and anything `.notedthat` (D48). A watch that cannot be established **refuses startup** per D39, naming `fs.inotify.max_user_watches` and the off switch; a watch lost at runtime logs `FS_WATCH_LOST` and asks for a rescan rather than failing `/readyz`. Depends on D49's one-process-per-root guarantee. The `s3` backend is unchanged — issue #96 covers its equivalent. |
 | D51 | Manifest access rules | **Two principals, five verbs, allow-only, path-scoped.** Manifest `access` is an array of rules, each naming `who` (`anyone` — no credential — or `signed-in` — the Bearer/Basic holder), the verbs it `may` use (`list`, `read`, `write`, `delete`, `search`), and the glob patterns it applies `under` (§6.7). Private by default; the answer for a `(principal, verb, key)` triple is the union of matching rules, so **order never changes a decision**. There is no `discover` verb: a knowledge base is visible in a listing when the principal holds any grant in it. Rules bind **both** principals, so a manifest can restrict the credential holder — reversing D48's "valid credentials retain full access" — which makes `403` reachable per D43. Two invariants live in the evaluator rather than only in validation: anonymous callers never reach `.notedthat`, and the credential holder always does, so a manifest that revokes everything is repairable through the API rather than only through the bucket. Anonymous `write`/`delete` grants refuse startup and are inert if they reach the evaluator anyway. Absent `access` means the credential holder may do everything and anonymous callers nothing, so upgrading leaves credentialed reach untouched. Policies load once at startup and need a restart to change. Because filtering is per key, a listing page may be shorter than `limit` while still reporting `truncated`: clients page off `next_cursor`, never off page length. MCP inherits the credential holder's rules by way of the API. |
 | D52 | Browse surface | **Server-rendered read-only HTML at `/browse`, over the same rules as every other surface.** `GET /browse/` lists knowledge bases the caller can see; `/browse/{kb}/{prefix}/` renders one directory level, synthesised from keys (D40). `list` gates a page and `read` gates each row's link, decided per key because a glob-scoped grant can make a directory listable but only partly readable. Object links point at the existing `/api/v1` representation — no second download path, no Markdown rendering. Anonymous denials answer `404` so the status cannot be used to enumerate private prefixes; a credentialed denial answers `403`. `.notedthat` is rendered for nobody. At a 10 000-key cap the page renders what it read with a visible notice rather than failing, unlike WebDAV's `507`, whose consumer would mistake a partial listing for a complete one. No JavaScript, no accounts, no editing, no search. |
+| D53 | OIDC identities, group and user subjects, deny rules | **Identity is delegated to an OIDC issuer; the manifest names its groups; a rule can deny.** With `NOTEDTHAT_OIDC_ISSUER` + `NOTEDTHAT_OIDC_AUDIENCE` set, any bearer that is not the service token is verified as a signed JWT (`RS*`/`ES*`, never `HS*`) against the issuer's JWKS — discovered at startup and refused on failure per D39, cached by `kid`, refetched at most once per 30 s and refreshed after an hour — and becomes a *user* principal: subject from the configurable username claim (`preferred_username`, falling back to `sub`), groups from the configurable groups claim (`groups`; array, string, or Zitadel's role-keyed object). NotedThat mints nothing and holds no session: an opaque access token is refused, so Authelia and Zitadel are configured to issue JWTs. A rule's `who` is now `anyone`, `signed-in` (the service token *and* every user), `group:<name>` or `user:<name>`, and a rule carries `may` **or** `may_not`: a verb is allowed on a key when some matching `may` rule covers it and no matching `may_not` rule does — both unions, so D51's order-independence holds. `.notedthat` is reachable only by the service token, never by a user however broad their grants, because the manifest carries the policy, group names included; scoping any subject to it fails validation. One `Authenticator` serves every surface; `Bearer` is accepted everywhere, `Basic` on WebDAV only. MCP acts as its caller by forwarding the presented bearer on its loopback call, and with `NOTEDTHAT_OIDC_RESOURCE` set the server publishes RFC 9728 metadata and names it in `WWW-Authenticate` on every `401`, which is how an MCP client finds the authorization server. Amends D21, D22 and D51; supersedes D27. |
 
 ---
 
@@ -317,26 +318,30 @@ nt-{tenant_slug}-{kb_slug}
   },
   "qdrant_collection": "kb_my-notes_v1",
   "access": [
-    { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-    { "who": "anyone",    "may": ["search"] },
-    { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+    { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+    { "who": "anyone",        "may": ["search"] },
+    { "who": "signed-in",     "may": ["list", "read", "search"] },
+    { "who": "group:editors", "may": ["write", "delete"] },
+    { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
   ]
 }
 ```
 
 The `(tenant_slug, kb_slug)` pair *is* the identifier — no separate UUID field. Manifest is a sanity-check record, not the source of truth for identity (D20, D24).
 
-`access` carries the knowledge base's access rules (D51). Each rule names:
+`access` carries the knowledge base's access rules (D51, extended by D53). Each rule names:
 
 | Field | Meaning |
 |---|---|
-| `who` | `anyone` (a caller supplying no credential) or `signed-in` (the Bearer/Basic holder) |
-| `may` | any of `list`, `read`, `write`, `delete`, `search` |
+| `who` | `anyone` (no credential), `signed-in` (any verified credential: the service token and every identity-provider user), `group:<name>` or `user:<name>` (an identity-provider user by group or by username claim) |
+| `may` *or* `may_not` | any of `list`, `read`, `write`, `delete`, `search` — exactly one of the two |
 | `under` | glob patterns over object keys; omit for the whole knowledge base |
 
-Rules are **allow-only** and the answer is the union of every matching rule, so their order in the
-array never changes a decision. Unknown verbs, unknown principals and malformed patterns fail
-startup validation, so a typo cannot quietly become a weaker policy.
+A verb is allowed on a key when some matching `may` rule covers the key **and no matching `may_not`
+rule does**. Both sides are unions, so the order of the rules never changes a decision. Unknown
+verbs, unknown subjects, malformed patterns, a rule naming both `may` and `may_not` or neither, and
+a rule scoping any subject to `.notedthat` all fail startup validation, so a typo cannot quietly
+become a weaker policy.
 
 Pattern syntax: `*` matches within one segment and never `/`; `**` matches whole segments and must
 be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. `public/**` matches the
@@ -347,26 +352,26 @@ An **absent** `access` field means the credential holder may do everything and a
 nothing — what every manifest written before D51 already meant. An **empty** array grants nobody
 anything; the knowledge base is inert but still repairable, and startup logs `ACCESS_RULES_EMPTY`.
 
-`.notedthat` is not addressable by a rule in either direction: anonymous callers can never reach it,
-and the credential holder always can. That asymmetry is what keeps a manifest that revokes the
-operator's own access repairable through the API — the repair takes effect on the next restart,
-since policies are a startup snapshot.
+`.notedthat` is not addressable by a rule in either direction: only the service token reaches it,
+always; anonymous callers and identity-provider users never do, whatever the rules say. The
+manifest carries the policy — group names included — so that is the right default for users, and
+the asymmetry is what keeps a manifest that revokes the operator's own access repairable through
+the API with `NOTEDTHAT_API_TOKEN`. The repair takes effect on the next restart, since policies are
+a startup snapshot.
 
 The removed `public_read` field is ignored if still present. A knowledge base whose manifest was
 never updated therefore comes up private to anonymous callers, with credentialed access unchanged.
 
-Each KB has one bucket, and one bucket is one policy boundary: there are no namespace or
-path-prefix public grants. Capabilities are independent: `discover` lists the KB, `browse` lists
-objects, `content` reads object bytes/metadata, and `search` searches the KB. Thus search may expose
-paths and snippets without browse or content. `.notedthat` and descendants are never exposed to
-anonymous callers.
+Each KB has one bucket, and one bucket is one policy boundary. Verbs are independent: `search` may
+expose paths and snippets under its own patterns without `read`. `.notedthat` and descendants are
+never exposed to anonymous callers.
 
 Policies are validated and loaded once during startup provisioning, then retained as a process
-snapshot. Editing a manifest requires restarting the server; there is no hot reload. Valid static
-credentials retain full access, while supplied invalid credentials return `401` rather than falling
-back to anonymous access. All writes remain authenticated. The policy does not change MCP
-authentication, and it provides no application-level rate setting; operators enable reverse-proxy
-rate and burst controls before exposing anonymous search.
+snapshot. Editing a manifest requires restarting the server; there is no hot reload. The rules bind
+every credential, the service token included; a supplied credential that does not verify returns
+`401` rather than falling back to anonymous access. Anonymous writes are never honoured. The policy
+provides no application-level rate setting; operators enable reverse-proxy rate and burst controls
+before exposing anonymous search.
 
 The manifest is read during startup to sanity-check config versus deployment environment. It is not
 on the request hot path and is rebuildable if lost.
@@ -384,17 +389,21 @@ Slug user-supplied at create (auto-derived from `display_name` if omitted). Uniq
 
 ### 6.9 Auth
 
-#### 6.9.1 v1 — static tokens `[DECIDED — D21, D22, D32]`
+#### 6.9.1 The service token `[DECIDED — D21, D22, D32, D53]`
 
-All auth in v1 is via static env-var-configured secrets. Single tenant. No user model, no ACL granularity, no expiry.
+Every deployment has one static credential of its own, configured from the environment. Single
+tenant.
 
 Env vars:
-- `NOTEDTHAT_API_TOKEN` — the Bearer token for the HTTP API. `notedthat-mcp-stdio` uses this value via its own `NOTEDTHAT_TOKEN` env var when calling the API. String comparison, constant-time.
-- `NOTEDTHAT_WEBDAV_USERNAME` — HTTP Basic username the server accepts
-- `NOTEDTHAT_WEBDAV_PASSWORD` — HTTP Basic password the server accepts
+- `NOTEDTHAT_API_TOKEN` — the Bearer token every surface accepts. `notedthat-mcp-stdio` uses this value via its own `NOTEDTHAT_TOKEN` env var when calling the API. String comparison, constant-time.
+- `NOTEDTHAT_WEBDAV_USERNAME` — HTTP Basic username the `WebDAV` surface accepts
+- `NOTEDTHAT_WEBDAV_PASSWORD` — HTTP Basic password the `WebDAV` surface accepts
 - `NOTEDTHAT_KBS` — comma-separated `slug:Display Name` pairs; the server ensures these KBs exist at startup (bucket + Qdrant collection created idempotently)
 
-The static-token holder has full access to every declared KB. No per-KB / per-prefix scoping until v2.
+Both credentials resolve to the same principal: the **service token**, `signed-in` with no subject
+and no groups. It is bound by the manifest's rules like everyone else (D51), with one exception that
+exists for recovery: it always reaches `.notedthat`, and nobody else ever does. `Bearer` is accepted
+on every surface, `WebDAV` included; `Basic` only on `WebDAV`, whose clients prompt for it.
 
 Example:
 ```
@@ -404,39 +413,50 @@ NOTEDTHAT_WEBDAV_PASSWORD=change-me
 NOTEDTHAT_KBS=my-notes:My Notes,work-kb:Work KB
 ```
 
-This is `[TEMPORARY]` — replaced by D27 (JWT) in v2.
+#### 6.9.2 OIDC identities `[DECIDED — D53]`
 
-#### 6.9.2 v2 — JWT `[POST-v1 — D27]`
+NotedThat mints no tokens of its own. With `NOTEDTHAT_OIDC_ISSUER` set, any bearer that is not the
+service token is verified as a signed JWT against the issuer's published keys, and the caller
+becomes a **user** principal with a subject and a set of groups. Supported and documented
+providers: Authentik, Authelia, Zitadel — any OIDC issuer that publishes discovery and a JWKS and
+can mint JWT access tokens works.
 
-**Signer**: internal (we mint). No OIDC in v2 initial ship — hook OIDC later if needed.
+**Verification.** Discovery (`{issuer}/.well-known/openid-configuration`) runs at startup and
+refuses to start if the issuer is unreachable or spells its `issuer` differently from the setting
+(D39). Keys are cached by `kid`; an unknown `kid` refetches at most once per 30 s, and a set older
+than an hour is refreshed before use. Accepted algorithms: `RS256`, `RS384`, `RS512`, `ES256`,
+`ES384` — never `HS*`. Required claims: `iss` (exact), `aud` (any configured audience), `exp`;
+`nbf` is honoured; 60 s leeway. There is no introspection and no session: an opaque access token
+is refused, so Authelia and Zitadel must be configured to issue JWTs (`docs/CONFIGURATION.md`).
 
-**Algorithm**: `HS256` with a single signing key.
+**Identity.** The subject is the configurable username claim (`preferred_username`), falling back
+to `sub`; `user:<name>` rules match it. Groups come from the configurable groups claim (`groups`),
+which may be an array of strings, a single string, or — Zitadel's roles shape — an object keyed by
+role name; `group:<name>` rules match them. A user never reaches `.notedthat`, however broad their
+grants: the manifest carries the policy, group names included, and the recovery path belongs to the
+operator.
 
-**Claims** — self-contained (ACL travels in the token):
+**Surfaces.** One `Authenticator` resolves every request's principal; the HTTP API, the browse
+pages, `WebDAV` and `/mcp` all accept identity tokens as bearers. MCP acts as its caller: the bearer
+presented to `/mcp` is the bearer the loopback API call carries, so a `group:` rule binds a tool
+call exactly as it binds a direct request. `notedthat-mcp-stdio` is unchanged — whatever
+`NOTEDTHAT_TOKEN` holds, service token or identity token, is what it presents.
 
-```json
-{
-  "iss": "notedthat",
-  "sub": "user@example.com",
-  "aud": "notedthat",
-  "iat": 1719936000,
-  "exp": 1722528000,
-  "tenant": "default",
-  "kbs": [
-    { "slug": "my-notes",       "prefix": "",         "perms": "rws" },
-    { "slug": "work-kb",        "prefix": "shared/",  "perms": "rs"  }
-  ]
-}
-```
+**MCP client discovery.** With `NOTEDTHAT_OIDC_RESOURCE` set to the deployment's public URL, the
+server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` and every `401` from
+`/api/v1` and `/mcp` carries `WWW-Authenticate: Bearer resource_metadata="…"`, which is how an MCP
+client finds the authorization server. The supported providers offer no dynamic client
+registration, so the client id is pre-registered on the provider.
 
-Perm chars: `r` read, `w` write, `s` search, `a` admin.
-`prefix`: literal string applied as an object-key prefix filter inside the KB.
-Revocation: rotate the signing key (nuclear) or wait for `exp` (default lifetime 30 days).
+Env vars:
+- `NOTEDTHAT_OIDC_ISSUER` — the switch; exactly as the provider spells `iss`
+- `NOTEDTHAT_OIDC_AUDIENCE` — comma-separated; required with the issuer
+- `NOTEDTHAT_OIDC_USERNAME_CLAIM`, `NOTEDTHAT_OIDC_GROUPS_CLAIM` — defaults above
+- `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` — discovery and key fetches; default 5000
+- `NOTEDTHAT_OIDC_RESOURCE` — optional public URL
+- `NOTEDTHAT_OIDC_CA_CERT` — optional PEM bundle to trust for the issuer; the server does not read the OS trust store
 
-Env vars (v2 additions):
-- `NOTEDTHAT_JWT_SIGNING_KEY` — base64, ≥ 256 bits
-- `NOTEDTHAT_JWT_ISSUER`, `NOTEDTHAT_JWT_AUDIENCE`
-- `NOTEDTHAT_JWT_DEFAULT_LIFETIME_DAYS`
+Any of the others without the issuer refuses startup rather than being ignored.
 
 ### 6.10 MCP tool surface `[DECIDED — D25]`
 
@@ -574,7 +594,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 |---|---:|---|---:|
 | Invalid input/path/range syntax | `400` | `invalid_request` | `400` |
 | Missing/invalid auth | `401` | `unauthorized` | `401` |
-| Forbidden by ACL (v2+) | `403` | `forbidden` | `403` |
+| Forbidden by the access rules | `403` | `forbidden` | `403` |
 | Missing KB/object | `404` | `not_found` | `404` |
 | Upload too large | `413` | `payload_too_large` | `413` |
 | S3 precondition failed (`If-Match`, `If-None-Match`) | `412` | `precondition_failed` | `412` |
@@ -594,6 +614,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
 | `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
 | `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
+| `GET` | `/.well-known/oauth-protected-resource` | RFC 9728 protected-resource metadata (D53) — unauthenticated; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | `GET`, `HEAD` | `/browse/`, `/browse/{*path}` | Server-rendered HTML directory listings (D52). Anonymous or Bearer; other methods return `405` |
 | `GET` | `/api/v1/knowledgebases` | List declared KBs — matches MCP `list_knowledgebases()` (§6.10) and WebDAV root PROPFIND (D23) |
 | `GET` | `/api/v1/knowledgebases/{kb_slug}` | List objects in a KB. Query params: `prefix`, `limit` (default 100, max 1000), `cursor` (opaque continuation token per §6.12) |
@@ -617,11 +638,14 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 `/healthz`, `/readyz` and `/llms.txt` are globally unauthenticated. Every other route
 authenticates at the boundary and authorizes per key.
 
-**Authentication** establishes a principal: a valid Bearer token is `signed-in`, an omitted
-`Authorization` header is `anyone`, and a supplied credential that does not verify is always `401` —
-never quietly downgraded to anonymous. More than one `Authorization` header is also `401`.
+**Authentication** establishes a principal: the service token, or a bearer an OIDC issuer vouches
+for (D53), is `signed-in` — the former with no identity, the latter with a subject and groups; an
+omitted `Authorization` header is `anyone`; and a supplied credential that does not verify is
+always `401` — never quietly downgraded to anonymous. More than one `Authorization` header is also
+`401`. When the deployment publishes RFC 9728 metadata, every `401` names it in a
+`WWW-Authenticate: Bearer resource_metadata="…"` challenge.
 
-**Authorization** is the manifest's access rules (D51), evaluated against the concrete object key.
+**Authorization** is the manifest's access rules (D51, D53), evaluated against the concrete object key.
 A route pattern cannot answer this — `read` on `{*object_path}` has no answer until the key is
 known — so the check lives beside the key rather than in the middleware. The middleware keeps one
 coarse backstop: an anonymous request whose `(method, route)` pair is not on the reachable list is
@@ -650,10 +674,9 @@ not an authorization answer. `/browse` differs on one point: an anonymous denial
 the status cannot be used to enumerate private prefixes, and a browser prompt would be useless
 against a Bearer token anyway.
 
-MCP authentication is unchanged and always requires its Bearer token; it therefore resolves as
-`signed-in` and inherits that principal's rules, including any restriction placed on them.
-Anonymous search rate and burst control belongs at a reverse proxy rather than in application
-configuration.
+MCP always requires a bearer and acts as the caller who presented it: the loopback API call carries
+that same bearer, so a tool call is bound by exactly the rules a direct request would be. Anonymous
+search rate and burst control belongs at a reverse proxy rather than in application configuration.
 
 #### Browse surface `[DECIDED — D52]`
 
@@ -695,7 +718,7 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - Availability target? — SLA depends on deployment shape; not a v1 concern.
 
 ### 7.4 v2+ deferred items
-- **Auth**: JWT (D27), per-KB + per-prefix ACL, HTTP admin endpoints for KB create / token mint.
+- **Auth**: token introspection for providers that only mint opaque access tokens; a browser login flow for `/browse` (today: forward-auth at the proxy, or a bearer); HTTP admin endpoints for KB create.
 - **WebDAV**: `FakeLs` for save-workflow clients (D34).
 - **KB lifecycle**: delete + rename (D32).
 - **Content**: additional frontmatter conventions beyond OKF metadata extraction (D33).

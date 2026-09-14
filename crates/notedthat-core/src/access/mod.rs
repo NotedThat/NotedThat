@@ -5,16 +5,23 @@
 //! # The model
 //!
 //! A knowledge base's manifest carries an ordered array of rules. Each names a
-//! [`Principal`], the [`Verb`]s it grants, and the [`KeyPattern`]s it is scoped
-//! to. Rules are **allow-only** and the answer for a `(principal, verb, key)`
-//! triple is the union of every matching rule, so **rule order never changes a
-//! decision** — the array is ordered only because JSON arrays are.
+//! subject ([`Who`]), the [`Verb`]s it grants, and the [`KeyPattern`]s it is
+//! scoped to. A subject is `anyone`, `signed-in`, or — for callers an identity
+//! provider vouched for — `group:<name>` or `user:<name>`; a request's
+//! [`Principal`] is matched against it by [`Who::matches`]. A rule either
+//! grants its verbs (`may`) or revokes them (`may_not`). The answer for a
+//! `(principal, verb, key)` triple is: some matching `may` rule covers the key
+//! and no matching `may_not` rule does. Both sides are unions, so **rule order
+//! never changes a decision** — the array is ordered only because JSON arrays
+//! are.
 //!
 //! ```json
 //! "access": [
-//!   { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-//!   { "who": "anyone",    "may": ["search"] },
-//!   { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+//!   { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+//!   { "who": "anyone",        "may": ["search"] },
+//!   { "who": "signed-in",     "may": ["list", "read", "search"] },
+//!   { "who": "group:editors", "may": ["write", "delete"] },
+//!   { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 //! ]
 //! ```
 //!
@@ -34,17 +41,183 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use pattern::KeyPattern;
 
-/// Who a rule grants to.
+/// The caller a request was authenticated as.
 ///
-/// There are exactly two principals in v1 and no way to mint more; per-identity
-/// grants remain deferred (D27).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// Established once at the HTTP boundary and carried through every surface. It
+/// is never stored in a manifest — a rule names a [`Who`], and [`Who::matches`]
+/// is the only place the two meet.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     /// A caller supplying no credential at all.
     Anyone,
-    /// A caller holding the configured Bearer token or `WebDAV` Basic credential.
+    /// A caller whose credential verified.
+    SignedIn(Identity),
+}
+
+/// What a verified credential says about its holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// The deployment's own credential: `NOTEDTHAT_API_TOKEN` or the `WebDAV`
+    /// Basic pair. It has no subject and no groups, so no `user:` or `group:`
+    /// rule can ever match it by accident, and it alone reaches `.notedthat`.
+    ServiceToken,
+    /// A person or agent an identity provider vouched for.
+    User(UserIdentity),
+}
+
+/// The identity-provider view of a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserIdentity {
+    /// What `user:` rules are matched against — the provider's username claim.
+    pub subject: String,
+    /// What `group:` rules are matched against.
+    pub groups: BTreeSet<String>,
+}
+
+impl Principal {
+    /// The principal behind the deployment's own credential.
+    pub fn service_token() -> Self {
+        Self::SignedIn(Identity::ServiceToken)
+    }
+
+    /// A principal an identity provider vouched for.
+    pub fn user(subject: impl Into<String>, groups: impl IntoIterator<Item = String>) -> Self {
+        Self::SignedIn(Identity::User(UserIdentity {
+            subject: subject.into(),
+            groups: groups.into_iter().collect(),
+        }))
+    }
+
+    /// Whether no credential was supplied.
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self, Self::Anyone)
+    }
+
+    /// Whether a credential verified, whoever it belongs to.
+    pub fn is_signed_in(&self) -> bool {
+        matches!(self, Self::SignedIn(_))
+    }
+
+    /// Whether this is the deployment's own credential.
+    pub fn is_service_token(&self) -> bool {
+        matches!(self, Self::SignedIn(Identity::ServiceToken))
+    }
+
+    /// How far this principal reaches outside the rules.
+    fn reach(&self) -> Reach {
+        match self {
+            Self::Anyone => Reach::Anonymous,
+            Self::SignedIn(Identity::User(_)) => Reach::User,
+            Self::SignedIn(Identity::ServiceToken) => Reach::ServiceToken,
+        }
+    }
+}
+
+/// The part of a principal a compiled filter needs to keep.
+///
+/// A [`KeyFilter`] borrows its patterns from the policy and is built per
+/// request; carrying the whole principal would drag a clone of every group
+/// name along with it, and the two decisions the filter makes outside the rules
+/// — the internal namespace and the allow-all shortcut — need only this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    Anonymous,
+    User,
+    ServiceToken,
+}
+
+/// Who a rule applies to.
+///
+/// Spelled as one string in the manifest: `anyone`, `signed-in`,
+/// `group:<name>` or `user:<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Who {
+    /// A caller supplying no credential at all.
+    Anyone,
+    /// Any caller whose credential verified: the service token and every user.
     SignedIn,
+    /// A user whose identity provider places them in this group.
+    Group(String),
+    /// A user with exactly this subject.
+    User(String),
+}
+
+impl Who {
+    /// Whether a rule naming this subject applies to `principal`.
+    pub fn matches(&self, principal: &Principal) -> bool {
+        match (self, principal) {
+            (Self::Anyone, Principal::Anyone) | (Self::SignedIn, Principal::SignedIn(_)) => true,
+            (Self::Group(group), Principal::SignedIn(Identity::User(user))) => {
+                user.groups.contains(group)
+            }
+            (Self::User(subject), Principal::SignedIn(Identity::User(user))) => {
+                user.subject == *subject
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this subject can only ever match an identity-provider user.
+    pub fn needs_identity(&self) -> bool {
+        matches!(self, Self::Group(_) | Self::User(_))
+    }
+}
+
+impl std::str::FromStr for Who {
+    type Err = Error;
+
+    fn from_str(source: &str) -> Result<Self, Self::Err> {
+        match source {
+            "anyone" => return Ok(Self::Anyone),
+            "signed-in" => return Ok(Self::SignedIn),
+            _ => {}
+        }
+        let named = |prefix: &str, build: fn(String) -> Self| {
+            source.strip_prefix(prefix).map(|name| {
+                if name.is_empty() {
+                    Err(config(format!(
+                        "`{source}` names nobody; write `{prefix}<name>`"
+                    )))
+                } else {
+                    Ok(build(name.to_string()))
+                }
+            })
+        };
+        named("group:", Self::Group)
+            .or_else(|| named("user:", Self::User))
+            .unwrap_or_else(|| {
+                Err(config(format!(
+                    "unknown principal `{source}`; expected `anyone`, `signed-in`, \
+                     `group:<name>` or `user:<name>`"
+                )))
+            })
+    }
+}
+
+impl std::fmt::Display for Who {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anyone => f.write_str("anyone"),
+            Self::SignedIn => f.write_str("signed-in"),
+            Self::Group(name) => write!(f, "group:{name}"),
+            Self::User(name) => write!(f, "user:{name}"),
+        }
+    }
+}
+
+impl TryFrom<String> for Who {
+    type Error = Error;
+
+    fn try_from(source: String) -> Result<Self, Self::Error> {
+        source.parse()
+    }
+}
+
+impl From<Who> for String {
+    fn from(who: Who) -> Self {
+        who.to_string()
+    }
 }
 
 /// What a rule grants.
@@ -86,22 +259,100 @@ impl Verb {
     }
 }
 
-/// One grant: a principal, the verbs it may use, and the keys it may use them on.
+/// Whether a rule grants its verbs or takes them away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// `may`: the subject gains these verbs on the matching keys.
+    Allow,
+    /// `may_not`: the subject loses these verbs on the matching keys, whatever
+    /// any other rule says.
+    Deny,
+}
+
+/// One rule: a subject, the verbs it may (or may not) use, and the keys the
+/// rule is scoped to.
+///
+/// In the manifest a rule carries exactly one of `may` and `may_not`. Deny
+/// overrides allow, and the union of each kind is taken first, so rule order
+/// still never changes a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RuleRepr", into = "RuleRepr")]
 pub struct AccessRule {
-    /// Who this rule grants to.
-    pub who: Principal,
-    /// The verbs granted. Never empty; an empty grant fails validation.
-    pub may: BTreeSet<Verb>,
-    /// The key patterns this grant is scoped to.
+    /// Who this rule applies to.
+    pub who: Who,
+    /// Whether `verbs` are granted or revoked.
+    pub effect: Effect,
+    /// The verbs this rule speaks about. Never empty; an empty set fails validation.
+    pub verbs: BTreeSet<Verb>,
+    /// The key patterns this rule is scoped to.
     ///
     /// Omitted in the manifest means the whole knowledge base, stored here as
     /// the literal `**` pattern so the evaluator has no special case to forget.
+    pub under: Vec<KeyPattern>,
+}
+
+/// The manifest spelling of a rule.
+///
+/// A plain struct rather than a flattened enum so that a rule naming both
+/// `may` and `may_not` is refused: `serde(flatten)` would take the first key
+/// it recognises and leave the other silently unread.
+#[derive(Serialize, Deserialize)]
+struct RuleRepr {
+    who: Who,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    may: Option<BTreeSet<Verb>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    may_not: Option<BTreeSet<Verb>>,
     #[serde(
         default = "whole_kb_patterns",
         skip_serializing_if = "is_whole_kb_patterns"
     )]
-    pub under: Vec<KeyPattern>,
+    under: Vec<KeyPattern>,
+}
+
+impl TryFrom<RuleRepr> for AccessRule {
+    type Error = Error;
+
+    fn try_from(repr: RuleRepr) -> Result<Self, Self::Error> {
+        let (effect, verbs) = match (repr.may, repr.may_not) {
+            (Some(verbs), None) => (Effect::Allow, verbs),
+            (None, Some(verbs)) => (Effect::Deny, verbs),
+            (Some(_), Some(_)) => {
+                return Err(config(format!(
+                    "an access rule for `{}` names both `may` and `may_not`; split it into two \
+                     rules",
+                    repr.who
+                )));
+            }
+            (None, None) => {
+                return Err(config(format!(
+                    "an access rule for `{}` names neither `may` nor `may_not`",
+                    repr.who
+                )));
+            }
+        };
+        Ok(Self {
+            who: repr.who,
+            effect,
+            verbs,
+            under: repr.under,
+        })
+    }
+}
+
+impl From<AccessRule> for RuleRepr {
+    fn from(rule: AccessRule) -> Self {
+        let (may, may_not) = match rule.effect {
+            Effect::Allow => (Some(rule.verbs), None),
+            Effect::Deny => (None, Some(rule.verbs)),
+        };
+        Self {
+            who: rule.who,
+            may,
+            may_not,
+            under: rule.under,
+        }
+    }
 }
 
 fn whole_kb_patterns() -> Vec<KeyPattern> {
@@ -114,10 +365,21 @@ fn is_whole_kb_patterns(patterns: &[KeyPattern]) -> bool {
 
 impl AccessRule {
     /// Build a rule granting `verbs` to `who` across the whole knowledge base.
-    pub fn new(who: Principal, verbs: impl IntoIterator<Item = Verb>) -> Self {
+    pub fn new(who: Who, verbs: impl IntoIterator<Item = Verb>) -> Self {
         Self {
             who,
-            may: verbs.into_iter().collect(),
+            effect: Effect::Allow,
+            verbs: verbs.into_iter().collect(),
+            under: whole_kb_patterns(),
+        }
+    }
+
+    /// Build a rule taking `verbs` away from `who` across the whole knowledge base.
+    pub fn deny(who: Who, verbs: impl IntoIterator<Item = Verb>) -> Self {
+        Self {
+            who,
+            effect: Effect::Deny,
+            verbs: verbs.into_iter().collect(),
             under: whole_kb_patterns(),
         }
     }
@@ -127,6 +389,16 @@ impl AccessRule {
     pub fn under(mut self, patterns: impl IntoIterator<Item = KeyPattern>) -> Self {
         self.under = patterns.into_iter().collect();
         self
+    }
+
+    /// Whether this rule applies to `principal` and speaks about `verb`.
+    fn covers(&self, principal: &Principal, verb: Verb) -> bool {
+        self.who.matches(principal) && self.verbs.contains(&verb)
+    }
+
+    /// Whether this rule's scope is the whole knowledge base.
+    fn is_whole_kb(&self) -> bool {
+        self.under.iter().any(KeyPattern::is_whole_kb)
     }
 }
 
@@ -154,7 +426,7 @@ impl AccessPolicy {
     /// the token keeps exactly the reach it had, and only anonymous grants —
     /// which lived in the removed `public_read` field — disappear.
     pub fn signed_in_full() -> Self {
-        Self(vec![AccessRule::new(Principal::SignedIn, Verb::ALL)])
+        Self(vec![AccessRule::new(Who::SignedIn, Verb::ALL)])
     }
 
     /// Returns whether no rule grants anything at all.
@@ -167,6 +439,14 @@ impl AccessPolicy {
         &self.0
     }
 
+    /// Whether any rule names a `group:` or `user:` subject.
+    ///
+    /// Such rules can only ever match a caller an identity provider vouched
+    /// for, so a deployment without one is asked to notice at startup.
+    pub fn names_an_identity(&self) -> bool {
+        self.0.iter().any(|rule| rule.who.needs_identity())
+    }
+
     /// Validate the policy at startup.
     ///
     /// # Errors
@@ -174,10 +454,11 @@ impl AccessPolicy {
     /// Returns [`Error::Config`] naming the first problem found.
     pub fn validate(&self) -> Result<(), Error> {
         for rule in &self.0 {
-            if rule.may.is_empty() {
-                return Err(config(
-                    "an access rule grants no verbs; remove it or name a verb",
-                ));
+            if rule.verbs.is_empty() {
+                return Err(config(format!(
+                    "an access rule for `{}` names no verbs; remove it or name a verb",
+                    rule.who
+                )));
             }
             if rule.under.is_empty() {
                 return Err(config(
@@ -185,24 +466,30 @@ impl AccessPolicy {
                      knowledge base, or name a pattern",
                 ));
             }
-            if rule.who == Principal::Anyone {
-                if let Some(verb) = rule.may.iter().copied().find(|verb| verb.is_mutating()) {
-                    return Err(config(format!(
-                        "an access rule grants `{}` to `anyone`; anonymous writes are never \
-                         honoured, so this rule cannot mean what it says",
-                        serde_verb(verb),
-                    )));
-                }
-                if let Some(pattern) = rule
-                    .under
-                    .iter()
-                    .find(|pattern| pattern.literal_prefix() == Some(".notedthat"))
-                {
-                    return Err(config(format!(
-                        "an access rule grants `anyone` access to `{pattern}`; the `.notedthat` \
-                         namespace is never reachable anonymously"
-                    )));
-                }
+            if rule.who == Who::Anyone
+                && let Some(verb) = rule.verbs.iter().copied().find(|verb| verb.is_mutating())
+            {
+                let spelling = match rule.effect {
+                    Effect::Allow => "grants",
+                    Effect::Deny => "revokes",
+                };
+                return Err(config(format!(
+                    "an access rule {spelling} `{}` for `anyone`; anonymous writes are never \
+                     honoured, so this rule cannot mean what it says",
+                    serde_verb(verb),
+                )));
+            }
+            if let Some(pattern) = rule
+                .under
+                .iter()
+                .find(|pattern| pattern.literal_prefix() == Some(".notedthat"))
+            {
+                return Err(config(format!(
+                    "an access rule scopes `{}` to `{pattern}`; the `.notedthat` namespace is \
+                     not addressable by a rule — the service token always reaches it and \
+                     nobody else ever does",
+                    rule.who,
+                )));
             }
         }
         Ok(())
@@ -213,7 +500,7 @@ impl AccessPolicy {
     /// This is the decision function. Everything else in this module is either a
     /// way of reaching it or a cheaper approximation used to avoid work before
     /// a key is known.
-    pub fn allows(&self, principal: Principal, verb: Verb, key: &str) -> bool {
+    pub fn allows(&self, principal: &Principal, verb: Verb, key: &str) -> bool {
         self.key_filter(principal, verb).allows(key)
     }
 
@@ -224,20 +511,28 @@ impl AccessPolicy {
     /// [`Self::allows`] on a concrete key.
     ///
     /// Deliberately blind to the implicit `.notedthat` grant that
-    /// [`KeyFilter::allows`] gives [`Principal::SignedIn`]: that grant exists so
-    /// a locked-out operator can rewrite a manifest, and a *keyed* request does
+    /// [`KeyFilter::allows`] gives the service token: that grant exists so a
+    /// locked-out operator can rewrite a manifest, and a *keyed* request does
     /// reach it. Reporting it here would make this function answer `true` for
-    /// every verb of every credentialed caller, which would make it useless for
-    /// the two things it is for. So only use it where there is genuinely no key
-    /// — never as a route-level gate on an object route, or the recovery path
+    /// every verb of the service token, which would make it useless for the
+    /// two things it is for. So only use it where there is genuinely no key —
+    /// never as a route-level gate on an object route, or the recovery path
     /// closes.
-    pub fn grants_any(&self, principal: Principal, verb: Verb) -> bool {
-        if principal == Principal::Anyone && verb.is_mutating() {
+    pub fn grants_any(&self, principal: &Principal, verb: Verb) -> bool {
+        if principal.is_anonymous() && verb.is_mutating() {
             return false;
         }
-        self.0
-            .iter()
-            .any(|rule| rule.who == principal && rule.may.contains(&verb))
+        let mut granted = false;
+        for rule in self.0.iter().filter(|rule| rule.covers(principal, verb)) {
+            match rule.effect {
+                Effect::Allow => granted = true,
+                // A whole-knowledge-base denial leaves no key an allow could
+                // reach, so the path-independent answer is "no" as well.
+                Effect::Deny if rule.is_whole_kb() => return false,
+                Effect::Deny => {}
+            }
+        }
+        granted
     }
 
     /// Whether this knowledge base appears in a listing for `principal`.
@@ -245,16 +540,17 @@ impl AccessPolicy {
     /// Replaces the old `discover` capability: visibility is derived from
     /// holding some grant rather than declared separately.
     ///
-    /// Always true for [`Principal::SignedIn`]. That is not an oversight — the
+    /// Always true for the service token. That is not an oversight — the
     /// knowledge-base list is how an operator finds the knowledge base whose
     /// manifest they need to repair, and the internal namespace is always
-    /// reachable with a credential (see [`KeyFilter::allows`]), so a
-    /// credentialed caller always has something to do in every declared base.
-    pub fn visible_in_listing(&self, principal: Principal) -> bool {
-        principal == Principal::SignedIn
-            || self.0.iter().any(|rule| {
-                rule.who == principal && rule.may.iter().copied().any(|verb| !verb.is_mutating())
-            })
+    /// reachable with that credential (see [`KeyFilter::allows`]), so it always
+    /// has something to do in every declared base. Everyone else is visible
+    /// exactly when some verb is granted to them.
+    pub fn visible_in_listing(&self, principal: &Principal) -> bool {
+        principal.is_service_token()
+            || Verb::ALL
+                .iter()
+                .any(|verb| self.grants_any(principal, *verb))
     }
 
     /// A reusable per-key predicate, compiled once per request.
@@ -262,37 +558,38 @@ impl AccessPolicy {
     /// Listing a knowledge base asks the same `(principal, verb)` question of
     /// thousands of keys, so the rule scan happens once here rather than inside
     /// the loop.
-    pub fn key_filter(&self, principal: Principal, verb: Verb) -> KeyFilter<'_> {
+    pub fn key_filter(&self, principal: &Principal, verb: Verb) -> KeyFilter<'_> {
+        let reach = principal.reach();
         // Anonymous mutation is never honoured, whatever the manifest says.
         // `validate` also refuses such a rule at startup, but a policy can reach
         // this function from a test, from a manifest written by a future server,
         // or from a hot reload that does not exist yet — so the guarantee lives
         // where the decision is made, not only where the file is read.
-        if principal == Principal::Anyone && verb.is_mutating() {
+        if reach == Reach::Anonymous && verb.is_mutating() {
             return KeyFilter {
-                principal,
-                patterns: Vec::new(),
+                reach,
+                allow: Vec::new(),
+                deny: Vec::new(),
             };
         }
 
-        let patterns = self
-            .0
-            .iter()
-            .filter(|rule| rule.who == principal && rule.may.contains(&verb))
-            .flat_map(|rule| rule.under.iter())
-            .collect();
-        KeyFilter {
-            principal,
-            patterns,
+        let (mut allow, mut deny) = (Vec::new(), Vec::new());
+        for rule in self.0.iter().filter(|rule| rule.covers(principal, verb)) {
+            match rule.effect {
+                Effect::Allow => allow.extend(rule.under.iter()),
+                Effect::Deny => deny.extend(rule.under.iter()),
+            }
         }
+        KeyFilter { reach, allow, deny }
     }
 }
 
 /// A compiled `(principal, verb)` predicate over object keys.
 #[derive(Debug, Clone)]
 pub struct KeyFilter<'a> {
-    principal: Principal,
-    patterns: Vec<&'a KeyPattern>,
+    reach: Reach,
+    allow: Vec<&'a KeyPattern>,
+    deny: Vec<&'a KeyPattern>,
 }
 
 impl KeyFilter<'_> {
@@ -301,33 +598,39 @@ impl KeyFilter<'_> {
         // The `.notedthat` namespace is not addressable by an access rule in
         // either direction.
         //
-        // Anonymous callers can never reach it, so a `**` grant cannot leak the
-        // manifest or anything else the server keeps there. The signed-in
-        // principal always can, which is the recovery path for the lockout that
-        // becomes possible once rules bind the credential holder too: a manifest
-        // that revokes everything else is still repairable by PUTting a
-        // corrected one through the API, rather than requiring bucket access an
-        // operator on managed storage may not have. (The repair takes effect on
-        // the next restart — policies are a startup snapshot.)
+        // Anonymous callers and identity-provider users can never reach it, so
+        // a `**` grant cannot leak the manifest — which carries the policy,
+        // group names included — or anything else the server keeps there. The
+        // service token always can, which is the recovery path for the lockout
+        // that becomes possible once rules bind the credential holder too: a
+        // manifest that revokes everything else is still repairable by PUTting
+        // a corrected one through the API, rather than requiring bucket access
+        // an operator on managed storage may not have. (The repair takes effect
+        // on the next restart — policies are a startup snapshot.)
         if is_internal_path(key) {
-            return self.principal == Principal::SignedIn;
+            return self.reach == Reach::ServiceToken;
         }
-        self.patterns.iter().any(|pattern| pattern.matches(key))
+        // Deny overrides: a key is allowed when some allow pattern matches it
+        // and no deny pattern does. Both are unions, so order is irrelevant.
+        self.allow.iter().any(|pattern| pattern.matches(key))
+            && !self.deny.iter().any(|pattern| pattern.matches(key))
     }
 
     /// Whether every key is allowed, so a caller can skip per-key filtering.
     ///
-    /// Never true for [`Principal::Anyone`], which must always have the internal
-    /// namespace filtered out of its listings.
+    /// Only ever true for the service token: everyone else must always have
+    /// the internal namespace filtered out of their listings.
     pub fn is_allow_all(&self) -> bool {
-        self.principal == Principal::SignedIn
-            && self.patterns.iter().any(|pattern| pattern.is_whole_kb())
+        self.reach == Reach::ServiceToken
+            && self.deny.is_empty()
+            && self.allow.iter().any(|pattern| pattern.is_whole_kb())
     }
 
     /// Whether no key can ever be allowed, so a caller can return an empty page
     /// without touching storage.
     pub fn is_deny_all(&self) -> bool {
-        self.patterns.is_empty() && self.principal == Principal::Anyone
+        self.reach != Reach::ServiceToken
+            && (self.allow.is_empty() || self.deny.iter().any(|pattern| pattern.is_whole_kb()))
     }
 
     /// The key prefix every grant in this filter shares, if there is one.
@@ -335,9 +638,12 @@ impl KeyFilter<'_> {
     /// Lets a listing push a grant's narrowing down into the storage backend
     /// instead of scanning a whole knowledge base only to discard most of it.
     /// `None` means no useful bound — scan from the caller's own prefix.
+    ///
+    /// Only the allow patterns count: a denial can only narrow what the
+    /// grants reach, never widen it, so it cannot move the bound.
     pub fn literal_prefix_hint(&self) -> Option<&str> {
         let mut shared: Option<&str> = None;
-        for pattern in &self.patterns {
+        for pattern in &self.allow {
             let prefix = pattern.literal_prefix()?;
             match shared {
                 None => shared = Some(prefix),
@@ -348,7 +654,6 @@ impl KeyFilter<'_> {
         shared
     }
 }
-
 /// The policy set a deployment gets when no manifest declares access rules.
 ///
 /// [`crate::kb::KbManifest`] defaults `access` to [`AccessPolicy::signed_in_full`],

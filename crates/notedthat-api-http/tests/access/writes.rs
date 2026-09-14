@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use notedthat_core::{AccessPolicy, Principal, Verb};
+use notedthat_core::{AccessPolicy, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{TOKEN, app, grant, grant_under, json, policy, signed_in_everything};
@@ -25,7 +25,7 @@ const MUTATIONS: &[(&str, &str)] = &[
 #[tokio::test]
 async fn a_supplied_credential_that_does_not_verify_is_never_treated_as_anonymous() {
     // Given
-    let app = app(notes([grant(Principal::Anyone, [Verb::Read])])).await;
+    let app = app(notes([grant(Who::Anyone, [Verb::Read])])).await;
 
     // When / Then
     for authorization in ["Basic abc", "Bearer wrong", "Bearer "] {
@@ -78,7 +78,7 @@ async fn a_supplied_credential_that_does_not_verify_is_never_treated_as_anonymou
 async fn anonymous_mutation_is_refused_under_the_broadest_grant_and_changes_nothing() {
     // Given — every verb an anonymous rule may legally carry.
     let app = app(notes([
-        grant(Principal::Anyone, [Verb::List, Verb::Read, Verb::Search]),
+        grant(Who::Anyone, [Verb::List, Verb::Read, Verb::Search]),
         signed_in_everything(),
     ]))
     .await;
@@ -118,7 +118,7 @@ async fn a_write_grant_does_not_carry_a_delete_grant() {
     // Given — expressible for the first time: the credential holder may create
     // and amend, but not remove.
     let app = app(notes([grant(
-        Principal::SignedIn,
+        Who::SignedIn,
         [Verb::List, Verb::Read, Verb::Write],
     )]))
     .await;
@@ -157,7 +157,7 @@ async fn a_write_grant_does_not_carry_a_delete_grant() {
 async fn a_prefix_scoped_write_grant_stops_at_its_prefix() {
     // Given
     let app = app(notes([grant_under(
-        Principal::SignedIn,
+        Who::SignedIn,
         [Verb::Write],
         &["public/**"],
     )]))

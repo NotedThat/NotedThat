@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use notedthat_core::{AccessPolicy, AccessRule, KeyPattern, Principal, Verb};
+use notedthat_core::{AccessPolicy, AccessRule, KeyPattern, Principal, Verb, Who};
 
 const INTERNAL: &str = ".notedthat/manifest.json";
 
@@ -18,9 +18,8 @@ fn policy(rules: impl IntoIterator<Item = AccessRule>) -> AccessPolicy {
 /// `anyone` may list and read under `public/`; nothing else is granted.
 fn public_prefix_policy() -> AccessPolicy {
     policy([
-        AccessRule::new(Principal::Anyone, [Verb::List, Verb::Read])
-            .under(patterns(&["public/**"])),
-        AccessRule::new(Principal::SignedIn, Verb::ALL),
+        AccessRule::new(Who::Anyone, [Verb::List, Verb::Read]).under(patterns(&["public/**"])),
+        AccessRule::new(Who::SignedIn, Verb::ALL),
     ])
 }
 
@@ -30,10 +29,10 @@ fn a_prefix_scoped_grant_stops_at_its_prefix() {
     let policy = public_prefix_policy();
 
     // When / Then
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "public/index.md"));
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "public/deep/note.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Read, "private/secret.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Read, "publicity/near-miss.md"));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "public/index.md"));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "public/deep/note.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, "private/secret.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, "publicity/near-miss.md"));
 }
 
 #[test]
@@ -42,10 +41,10 @@ fn a_verb_not_named_by_any_rule_is_denied_even_within_the_granted_prefix() {
     let policy = public_prefix_policy();
 
     // When / Then
-    assert!(policy.allows(Principal::Anyone, Verb::List, "public/index.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Search, "public/index.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Write, "public/index.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Delete, "public/index.md"));
+    assert!(policy.allows(&Principal::Anyone, Verb::List, "public/index.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Search, "public/index.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Write, "public/index.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Delete, "public/index.md"));
 }
 
 #[test]
@@ -54,10 +53,10 @@ fn an_empty_policy_grants_nobody_anything_outside_the_internal_namespace() {
     let policy = AccessPolicy::empty();
 
     // When / Then
-    for principal in [Principal::Anyone, Principal::SignedIn] {
+    for principal in [Principal::Anyone, Principal::service_token()] {
         for verb in Verb::ALL {
             assert!(
-                !policy.allows(principal, verb, "notes.md"),
+                !policy.allows(&principal, verb, "notes.md"),
                 "{principal:?} should not hold {verb:?} under an empty policy"
             );
         }
@@ -71,8 +70,8 @@ fn the_default_policy_gives_the_credential_holder_everything_and_anonymous_nothi
 
     // When / Then
     for verb in Verb::ALL {
-        assert!(policy.allows(Principal::SignedIn, verb, "notes.md"));
-        assert!(!policy.allows(Principal::Anyone, verb, "notes.md"));
+        assert!(policy.allows(&Principal::service_token(), verb, "notes.md"));
+        assert!(!policy.allows(&Principal::Anyone, verb, "notes.md"));
     }
 }
 
@@ -80,14 +79,14 @@ fn the_default_policy_gives_the_credential_holder_everything_and_anonymous_nothi
 fn anonymous_callers_never_reach_the_internal_namespace_even_under_a_whole_kb_grant() {
     // Given — the broadest anonymous grant that validation permits.
     let policy = policy([AccessRule::new(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::List, Verb::Read, Verb::Search],
     )]);
 
     // When / Then
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "notes.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Read, INTERNAL));
-    assert!(!policy.allows(Principal::Anyone, Verb::List, ".notedthat"));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "notes.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, INTERNAL));
+    assert!(!policy.allows(&Principal::Anyone, Verb::List, ".notedthat"));
 }
 
 #[test]
@@ -98,7 +97,7 @@ fn the_credential_holder_reaches_the_internal_namespace_with_no_rule_granting_it
     // When / Then — the repair path stays open.
     for verb in Verb::ALL {
         assert!(
-            policy.allows(Principal::SignedIn, verb, INTERNAL),
+            policy.allows(&Principal::service_token(), verb, INTERNAL),
             "{verb:?} on the manifest must survive a policy that grants nothing"
         );
     }
@@ -108,20 +107,20 @@ fn the_credential_holder_reaches_the_internal_namespace_with_no_rule_granting_it
 fn rule_order_does_not_change_any_decision() {
     // Given — the same rules, written in both orders.
     let rules = [
-        AccessRule::new(Principal::Anyone, [Verb::Read]).under(patterns(&["public/**"])),
-        AccessRule::new(Principal::Anyone, [Verb::List]).under(patterns(&["docs/**"])),
-        AccessRule::new(Principal::SignedIn, [Verb::Read, Verb::Write]),
+        AccessRule::new(Who::Anyone, [Verb::Read]).under(patterns(&["public/**"])),
+        AccessRule::new(Who::Anyone, [Verb::List]).under(patterns(&["docs/**"])),
+        AccessRule::new(Who::SignedIn, [Verb::Read, Verb::Write]),
     ];
     let forward = policy(rules.clone());
     let reversed = policy(rules.into_iter().rev());
 
     // When / Then
-    for principal in [Principal::Anyone, Principal::SignedIn] {
+    for principal in [Principal::Anyone, Principal::service_token()] {
         for verb in Verb::ALL {
             for key in ["public/a.md", "docs/a.md", "other/a.md", INTERNAL] {
                 assert_eq!(
-                    forward.allows(principal, verb, key),
-                    reversed.allows(principal, verb, key),
+                    forward.allows(&principal, verb, key),
+                    reversed.allows(&principal, verb, key),
                     "order changed the answer for {principal:?}/{verb:?} on {key}"
                 );
             }
@@ -132,38 +131,35 @@ fn rule_order_does_not_change_any_decision() {
 #[test]
 fn search_is_grantable_without_read_and_read_without_search() {
     // Given — the independence the capability model had, kept.
-    let search_only = policy([AccessRule::new(Principal::Anyone, [Verb::Search])]);
-    let read_only = policy([AccessRule::new(Principal::Anyone, [Verb::Read])]);
+    let search_only = policy([AccessRule::new(Who::Anyone, [Verb::Search])]);
+    let read_only = policy([AccessRule::new(Who::Anyone, [Verb::Read])]);
 
     // When / Then
-    assert!(search_only.allows(Principal::Anyone, Verb::Search, "a.md"));
-    assert!(!search_only.allows(Principal::Anyone, Verb::Read, "a.md"));
-    assert!(read_only.allows(Principal::Anyone, Verb::Read, "a.md"));
-    assert!(!read_only.allows(Principal::Anyone, Verb::Search, "a.md"));
+    assert!(search_only.allows(&Principal::Anyone, Verb::Search, "a.md"));
+    assert!(!search_only.allows(&Principal::Anyone, Verb::Read, "a.md"));
+    assert!(read_only.allows(&Principal::Anyone, Verb::Read, "a.md"));
+    assert!(!read_only.allows(&Principal::Anyone, Verb::Search, "a.md"));
 }
 
 #[test]
 fn an_anonymous_mutating_grant_is_inert_even_if_it_reaches_the_evaluator() {
     // Given — validation refuses this, so construct it directly.
     let policy = policy([AccessRule::new(
-        Principal::Anyone,
+        Who::Anyone,
         [Verb::Read, Verb::Write, Verb::Delete],
     )]);
 
     // When / Then
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "a.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Write, "a.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Delete, "a.md"));
-    assert!(!policy.grants_any(Principal::Anyone, Verb::Write));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Write, "a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Delete, "a.md"));
+    assert!(!policy.grants_any(&Principal::Anyone, Verb::Write));
 }
 
 #[test]
 fn an_anonymous_mutating_grant_fails_validation() {
     // Given
-    let policy = policy([AccessRule::new(
-        Principal::Anyone,
-        [Verb::Read, Verb::Write],
-    )]);
+    let policy = policy([AccessRule::new(Who::Anyone, [Verb::Read, Verb::Write])]);
 
     // When
     let error = policy.validate().expect_err("anonymous write is refused");
@@ -178,9 +174,8 @@ fn an_anonymous_mutating_grant_fails_validation() {
 #[test]
 fn an_anonymous_grant_naming_the_internal_namespace_fails_validation() {
     // Given
-    let policy = policy([
-        AccessRule::new(Principal::Anyone, [Verb::Read]).under(patterns(&[".notedthat/**"]))
-    ]);
+    let policy =
+        policy([AccessRule::new(Who::Anyone, [Verb::Read]).under(patterns(&[".notedthat/**"]))]);
 
     // When
     let error = policy
@@ -197,7 +192,7 @@ fn an_anonymous_grant_naming_the_internal_namespace_fails_validation() {
 #[test]
 fn a_rule_granting_nothing_fails_validation() {
     // Given
-    let policy = policy([AccessRule::new(Principal::Anyone, [])]);
+    let policy = policy([AccessRule::new(Who::Anyone, [])]);
 
     // When / Then
     assert!(
@@ -209,7 +204,7 @@ fn a_rule_granting_nothing_fails_validation() {
 #[test]
 fn an_explicitly_empty_under_fails_validation() {
     // Given — ambiguous between "nothing" and "everything", so refuse it.
-    let policy = policy([AccessRule::new(Principal::Anyone, [Verb::Read]).under([])]);
+    let policy = policy([AccessRule::new(Who::Anyone, [Verb::Read]).under([])]);
 
     // When / Then
     assert!(policy.validate().is_err());
@@ -230,14 +225,14 @@ fn a_valid_policy_passes_validation() {
 #[test]
 fn a_knowledge_base_is_visible_when_the_principal_holds_any_read_shaped_grant() {
     // Given
-    let public = policy([AccessRule::new(Principal::Anyone, [Verb::Search])]);
+    let public = policy([AccessRule::new(Who::Anyone, [Verb::Search])]);
     let private = AccessPolicy::signed_in_full();
 
     // When / Then
-    assert!(public.visible_in_listing(Principal::Anyone));
-    assert!(!private.visible_in_listing(Principal::Anyone));
+    assert!(public.visible_in_listing(&Principal::Anyone));
+    assert!(!private.visible_in_listing(&Principal::Anyone));
     assert!(
-        AccessPolicy::empty().visible_in_listing(Principal::SignedIn),
+        AccessPolicy::empty().visible_in_listing(&Principal::service_token()),
         "a credentialed caller must be able to find the base whose manifest they need to fix"
     );
 }
@@ -246,24 +241,24 @@ fn a_knowledge_base_is_visible_when_the_principal_holds_any_read_shaped_grant() 
 fn a_filter_reports_allow_all_only_when_no_per_key_work_is_needed() {
     // Given
     let signed_in_everything = AccessPolicy::signed_in_full();
-    let anonymous_everything = policy([AccessRule::new(Principal::Anyone, [Verb::Read])]);
+    let anonymous_everything = policy([AccessRule::new(Who::Anyone, [Verb::Read])]);
     let scoped = public_prefix_policy();
 
     // When / Then
     assert!(
         signed_in_everything
-            .key_filter(Principal::SignedIn, Verb::Read)
+            .key_filter(&Principal::service_token(), Verb::Read)
             .is_allow_all()
     );
     assert!(
         !anonymous_everything
-            .key_filter(Principal::Anyone, Verb::Read)
+            .key_filter(&Principal::Anyone, Verb::Read)
             .is_allow_all(),
         "anonymous listings must still drop the internal namespace"
     );
     assert!(
         !scoped
-            .key_filter(Principal::Anyone, Verb::Read)
+            .key_filter(&Principal::Anyone, Verb::Read)
             .is_allow_all()
     );
 }
@@ -276,17 +271,17 @@ fn a_filter_reports_deny_all_so_a_listing_can_skip_storage_entirely() {
     // When / Then
     assert!(
         policy
-            .key_filter(Principal::Anyone, Verb::Delete)
+            .key_filter(&Principal::Anyone, Verb::Delete)
             .is_deny_all()
     );
     assert!(
         !policy
-            .key_filter(Principal::Anyone, Verb::Read)
+            .key_filter(&Principal::Anyone, Verb::Read)
             .is_deny_all()
     );
     assert!(
         !policy
-            .key_filter(Principal::SignedIn, Verb::Read)
+            .key_filter(&Principal::service_token(), Verb::Read)
             .is_deny_all(),
         "the credential holder always has the internal namespace, so never deny-all"
     );
@@ -296,29 +291,29 @@ fn a_filter_reports_deny_all_so_a_listing_can_skip_storage_entirely() {
 fn a_filter_reports_the_prefix_its_grants_share() {
     // Given
     let one_prefix =
-        policy([AccessRule::new(Principal::Anyone, [Verb::List]).under(patterns(&["public/**"]))]);
-    let two_prefixes =
-        policy([AccessRule::new(Principal::Anyone, [Verb::List])
-            .under(patterns(&["public/**", "docs/**"]))]);
+        policy([AccessRule::new(Who::Anyone, [Verb::List]).under(patterns(&["public/**"]))]);
+    let two_prefixes = policy([
+        AccessRule::new(Who::Anyone, [Verb::List]).under(patterns(&["public/**", "docs/**"]))
+    ]);
 
     // When / Then
     assert_eq!(
         one_prefix
-            .key_filter(Principal::Anyone, Verb::List)
+            .key_filter(&Principal::Anyone, Verb::List)
             .literal_prefix_hint(),
         Some("public"),
         "a single-prefix grant should narrow the backend scan"
     );
     assert_eq!(
         two_prefixes
-            .key_filter(Principal::Anyone, Verb::List)
+            .key_filter(&Principal::Anyone, Verb::List)
             .literal_prefix_hint(),
         None,
         "two disjoint prefixes give no single usable bound"
     );
     assert_eq!(
         AccessPolicy::signed_in_full()
-            .key_filter(Principal::SignedIn, Verb::List)
+            .key_filter(&Principal::service_token(), Verb::List)
             .literal_prefix_hint(),
         None
     );
@@ -340,9 +335,9 @@ fn a_policy_round_trips_through_json_in_the_documented_manifest_shape() {
 
     // Then
     assert_eq!(policy.rules().len(), 3);
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "public/a.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Read, "private/a.md"));
-    assert!(policy.allows(Principal::Anyone, Verb::Search, "private/a.md"));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "public/a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, "private/a.md"));
+    assert!(policy.allows(&Principal::Anyone, Verb::Search, "private/a.md"));
     assert_eq!(round_tripped, policy);
     assert_eq!(
         reencoded.matches("\"under\"").count(),
@@ -359,8 +354,8 @@ fn an_omitted_under_grants_the_whole_knowledge_base() {
         serde_json::from_str(r#"[{ "who": "anyone", "may": ["read"] }]"#).expect("parse");
 
     // When / Then
-    assert!(policy.allows(Principal::Anyone, Verb::Read, "anywhere/at/all.md"));
-    assert!(!policy.allows(Principal::Anyone, Verb::Read, INTERNAL));
+    assert!(policy.allows(&Principal::Anyone, Verb::Read, "anywhere/at/all.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, INTERNAL));
 }
 
 #[test]
@@ -380,4 +375,423 @@ fn an_unknown_verb_or_principal_is_refused_rather_than_ignored() {
             .is_err(),
         "the principal is spelled `signed-in`"
     );
+}
+
+fn alice_in(groups: &[&str]) -> Principal {
+    Principal::user("alice", groups.iter().map(ToString::to_string))
+}
+
+#[test]
+fn a_group_rule_matches_only_identities_carrying_that_group() {
+    // Given
+    let policy = policy([AccessRule::new(Who::Group("editors".into()), [Verb::Write])]);
+
+    // When / Then
+    assert!(policy.allows(&alice_in(&["editors"]), Verb::Write, "a.md"));
+    assert!(policy.allows(&alice_in(&["staff", "editors"]), Verb::Write, "a.md"));
+    assert!(!policy.allows(&alice_in(&["staff"]), Verb::Write, "a.md"));
+    assert!(!policy.allows(&alice_in(&[]), Verb::Write, "a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Write, "a.md"));
+    assert!(
+        !policy.allows(&Principal::service_token(), Verb::Write, "a.md"),
+        "the service token is in no group"
+    );
+}
+
+#[test]
+fn a_user_rule_matches_only_that_subject_and_never_the_service_token() {
+    // Given
+    let policy = policy([AccessRule::new(Who::User("alice".into()), [Verb::Read])]);
+
+    // When / Then
+    assert!(policy.allows(&alice_in(&[]), Verb::Read, "a.md"));
+    assert!(!policy.allows(&Principal::user("bob", []), Verb::Read, "a.md"));
+    assert!(!policy.allows(&Principal::service_token(), Verb::Read, "a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, "a.md"));
+}
+
+#[test]
+fn signed_in_matches_the_service_token_and_every_user() {
+    // Given
+    let policy = AccessPolicy::signed_in_full();
+
+    // When / Then
+    assert!(policy.allows(&Principal::service_token(), Verb::Read, "a.md"));
+    assert!(policy.allows(&alice_in(&[]), Verb::Read, "a.md"));
+    assert!(policy.allows(&alice_in(&["anything"]), Verb::Delete, "a.md"));
+    assert!(!policy.allows(&Principal::Anyone, Verb::Read, "a.md"));
+}
+
+#[test]
+fn a_user_identity_never_reaches_the_internal_namespace_even_under_a_whole_kb_grant() {
+    // Given — the broadest grant there is, to a user in every group named.
+    let policy = policy([
+        AccessRule::new(Who::SignedIn, Verb::ALL),
+        AccessRule::new(Who::Group("admins".into()), Verb::ALL),
+        AccessRule::new(Who::User("alice".into()), Verb::ALL),
+    ]);
+    let alice = alice_in(&["admins"]);
+
+    // When / Then — the manifest carries the policy; only the operator reads it.
+    assert!(policy.allows(&alice, Verb::Read, "notes.md"));
+    for verb in Verb::ALL {
+        assert!(
+            !policy.allows(&alice, verb, INTERNAL),
+            "{verb:?} on the manifest must be refused to an identity-provider user"
+        );
+    }
+    assert!(!policy.allows(&alice, Verb::List, ".notedthat"));
+    assert!(policy.allows(&Principal::service_token(), Verb::Read, INTERNAL));
+}
+
+#[test]
+fn a_filter_is_never_allow_all_for_a_user_identity() {
+    // Given
+    let policy = AccessPolicy::signed_in_full();
+
+    // When / Then — a user's listing must still drop the internal namespace.
+    assert!(!policy.key_filter(&alice_in(&[]), Verb::List).is_allow_all());
+    assert!(
+        policy
+            .key_filter(&Principal::service_token(), Verb::List)
+            .is_allow_all()
+    );
+}
+
+#[test]
+fn a_user_with_no_grant_is_deny_all_and_invisible() {
+    // Given
+    let policy = policy([AccessRule::new(Who::Group("editors".into()), [Verb::Read])]);
+    let outsider = alice_in(&["readers"]);
+
+    // When / Then
+    assert!(policy.key_filter(&outsider, Verb::Read).is_deny_all());
+    assert!(!policy.visible_in_listing(&outsider));
+    assert!(policy.visible_in_listing(&alice_in(&["editors"])));
+    assert!(
+        policy.visible_in_listing(&Principal::service_token()),
+        "the service token always finds the base it may need to repair"
+    );
+}
+
+#[test]
+fn a_user_is_visible_when_holding_only_a_mutating_grant() {
+    // Given — anonymous callers are not, because anonymous mutation is inert.
+    let policy = policy([AccessRule::new(Who::Group("writers".into()), [Verb::Write])]);
+
+    // When / Then
+    assert!(policy.visible_in_listing(&alice_in(&["writers"])));
+}
+
+#[test]
+fn who_round_trips_through_its_string_form() {
+    // Given
+    let spellings = [
+        ("anyone", Who::Anyone),
+        ("signed-in", Who::SignedIn),
+        ("group:editors", Who::Group("editors".into())),
+        (
+            "user:alice@example.com",
+            Who::User("alice@example.com".into()),
+        ),
+        ("group:with:colons", Who::Group("with:colons".into())),
+    ];
+
+    // When / Then
+    for (spelling, who) in spellings {
+        assert_eq!(spelling.parse::<Who>().expect("parses"), who);
+        assert_eq!(who.to_string(), spelling);
+        let json = serde_json::to_string(&who).expect("serialize");
+        assert_eq!(json, format!("\"{spelling}\""));
+        assert_eq!(serde_json::from_str::<Who>(&json).expect("parse"), who);
+    }
+}
+
+#[test]
+fn an_empty_group_or_user_name_is_refused() {
+    // Given / When / Then
+    for spelling in [
+        "group:",
+        "user:",
+        "group",
+        "user",
+        "Group:editors",
+        "anyone ",
+    ] {
+        assert!(
+            spelling.parse::<Who>().is_err(),
+            "`{spelling}` should not parse as a principal"
+        );
+    }
+    assert!(
+        serde_json::from_str::<AccessPolicy>(r#"[{ "who": "group:", "may": ["read"] }]"#).is_err()
+    );
+}
+
+#[test]
+fn a_signed_in_rule_naming_the_internal_namespace_fails_validation() {
+    // Given — inert for users, redundant for the service token: it cannot mean
+    // what it says, whoever it names.
+    for who in [
+        Who::SignedIn,
+        Who::Group("admins".into()),
+        Who::User("alice".into()),
+    ] {
+        let policy =
+            policy(
+                [AccessRule::new(who.clone(), [Verb::Read]).under(patterns(&[".notedthat/**"]))],
+            );
+
+        // When
+        let error = policy
+            .validate()
+            .expect_err("`.notedthat` is not addressable");
+
+        // Then
+        assert!(
+            error.to_string().contains(".notedthat")
+                && error.to_string().contains(&who.to_string()),
+            "the error should name the namespace and the subject: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_policy_reports_whether_it_names_an_identity() {
+    // Given / When / Then
+    assert!(!public_prefix_policy().names_an_identity());
+    assert!(policy([AccessRule::new(Who::Group("x".into()), [Verb::Read])]).names_an_identity());
+    assert!(policy([AccessRule::new(Who::User("x".into()), [Verb::Read])]).names_an_identity());
+}
+
+// ---- deny rules ----
+
+/// Everyone signed in may read everything; interns lose `hr/`.
+fn interns_barred_from_hr() -> AccessPolicy {
+    policy([
+        AccessRule::new(Who::SignedIn, [Verb::List, Verb::Read, Verb::Search]),
+        AccessRule::deny(Who::Group("interns".into()), [Verb::Read, Verb::Search])
+            .under(patterns(&["hr/**"])),
+    ])
+}
+
+#[test]
+fn a_deny_rule_removes_keys_an_allow_rule_would_grant() {
+    // Given
+    let policy = interns_barred_from_hr();
+    let intern = alice_in(&["interns"]);
+    let staff = Principal::user("bob", ["staff".to_string()]);
+
+    // When / Then
+    assert!(policy.allows(&intern, Verb::Read, "handbook.md"));
+    assert!(!policy.allows(&intern, Verb::Read, "hr/salaries.md"));
+    assert!(!policy.allows(&intern, Verb::Search, "hr/salaries.md"));
+    assert!(
+        policy.allows(&intern, Verb::List, "hr/salaries.md"),
+        "the denial names read and search, not list"
+    );
+    assert!(policy.allows(&staff, Verb::Read, "hr/salaries.md"));
+    assert!(policy.allows(&Principal::service_token(), Verb::Read, "hr/salaries.md"));
+}
+
+#[test]
+fn deny_overrides_regardless_of_rule_order() {
+    // Given — the same rules, written in both orders.
+    let rules = [
+        AccessRule::new(Who::SignedIn, Verb::ALL),
+        AccessRule::deny(Who::Group("interns".into()), [Verb::Write]).under(patterns(&["hr/**"])),
+        AccessRule::new(Who::Group("interns".into()), [Verb::Write]).under(patterns(&["hr/**"])),
+    ];
+    let forward = policy(rules.clone());
+    let reversed = policy(rules.into_iter().rev());
+    let intern = alice_in(&["interns"]);
+
+    // When / Then — a later allow does not reopen an earlier deny, or vice versa.
+    assert!(!forward.allows(&intern, Verb::Write, "hr/a.md"));
+    assert!(!reversed.allows(&intern, Verb::Write, "hr/a.md"));
+    for key in ["hr/a.md", "a.md", INTERNAL] {
+        for verb in Verb::ALL {
+            assert_eq!(
+                forward.allows(&intern, verb, key),
+                reversed.allows(&intern, verb, key)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_deny_scoped_to_a_prefix_leaves_sibling_prefixes_granted() {
+    // Given
+    let policy = interns_barred_from_hr();
+    let intern = alice_in(&["interns"]);
+
+    // When / Then
+    assert!(policy.allows(&intern, Verb::Read, "hrm/not-hr.md"));
+    assert!(policy.allows(&intern, Verb::Read, "engineering/hr/policy.md"));
+    assert!(!policy.allows(&intern, Verb::Read, "hr/deep/nested.md"));
+}
+
+#[test]
+fn a_whole_kb_deny_makes_grants_any_false_and_the_base_invisible() {
+    // Given — a group is shut out of a base entirely, whatever else grants them.
+    let policy = policy([
+        AccessRule::new(Who::SignedIn, Verb::ALL),
+        AccessRule::deny(Who::Group("contractors".into()), Verb::ALL),
+    ]);
+    let contractor = alice_in(&["contractors"]);
+
+    // When / Then
+    for verb in Verb::ALL {
+        assert!(!policy.grants_any(&contractor, verb));
+        assert!(!policy.allows(&contractor, verb, "a.md"));
+    }
+    assert!(!policy.visible_in_listing(&contractor));
+    assert!(policy.visible_in_listing(&Principal::user("bob", [])));
+    assert!(policy.key_filter(&contractor, Verb::List).is_deny_all());
+}
+
+#[test]
+fn a_prefix_deny_leaves_grants_any_true() {
+    // Given — a keyed request may still find something the denial spares.
+    let policy = interns_barred_from_hr();
+
+    // When / Then
+    assert!(policy.grants_any(&alice_in(&["interns"]), Verb::Read));
+    assert!(policy.visible_in_listing(&alice_in(&["interns"])));
+}
+
+#[test]
+fn a_deny_never_touches_the_internal_namespace_for_the_service_token() {
+    // Given — the broadest denial there is, aimed at everyone signed in.
+    let policy = policy([AccessRule::deny(Who::SignedIn, Verb::ALL)]);
+
+    // When / Then — the recovery path survives any manifest.
+    for verb in Verb::ALL {
+        assert!(policy.allows(&Principal::service_token(), verb, INTERNAL));
+        assert!(!policy.allows(&Principal::service_token(), verb, "a.md"));
+    }
+}
+
+#[test]
+fn a_filter_is_not_allow_all_when_any_deny_applies() {
+    // Given
+    let policy = policy([
+        AccessRule::new(Who::SignedIn, Verb::ALL),
+        AccessRule::deny(Who::SignedIn, [Verb::List]).under(patterns(&["drafts/**"])),
+    ]);
+    let filter = policy.key_filter(&Principal::service_token(), Verb::List);
+
+    // When / Then — the listing has to look at each key now.
+    assert!(!filter.is_allow_all());
+    assert!(!filter.is_deny_all());
+    assert!(filter.allows("notes.md"));
+    assert!(!filter.allows("drafts/wip.md"));
+    assert!(
+        policy
+            .key_filter(&Principal::service_token(), Verb::Read)
+            .is_allow_all(),
+        "the denial names list only, so read keeps its shortcut"
+    );
+}
+
+#[test]
+fn the_prefix_hint_ignores_deny_patterns() {
+    // Given
+    let policy = policy([
+        AccessRule::new(Who::Anyone, [Verb::List]).under(patterns(&["public/**"])),
+        AccessRule::deny(Who::Anyone, [Verb::List]).under(patterns(&["public/drafts/**"])),
+    ]);
+
+    // When / Then
+    let filter = policy.key_filter(&Principal::Anyone, Verb::List);
+    assert_eq!(filter.literal_prefix_hint(), Some("public"));
+    assert!(filter.allows("public/index.md"));
+    assert!(!filter.allows("public/drafts/wip.md"));
+}
+
+#[test]
+fn a_rule_naming_both_may_and_may_not_is_refused_at_parse_time() {
+    // Given / When
+    let result = serde_json::from_str::<AccessPolicy>(
+        r#"[{ "who": "signed-in", "may": ["read"], "may_not": ["write"] }]"#,
+    );
+
+    // Then
+    let error = result.expect_err("both keys is a contradiction, not a merge");
+    assert!(error.to_string().contains("may_not"), "{error}");
+}
+
+#[test]
+fn a_rule_naming_neither_may_nor_may_not_is_refused() {
+    // Given / When / Then
+    assert!(serde_json::from_str::<AccessPolicy>(r#"[{ "who": "signed-in" }]"#).is_err());
+}
+
+#[test]
+fn an_allow_rule_serialises_exactly_as_before() {
+    // Given — the documented shape, byte for byte.
+    let json = r#"[{"who":"anyone","may":["list","read"],"under":["public/**"]},{"who":"signed-in","may":["list","read","write","delete","search"]}]"#;
+
+    // When
+    let policy: AccessPolicy = serde_json::from_str(json).expect("parses");
+    let reencoded = serde_json::to_string(&policy).expect("serialize");
+
+    // Then — no `may_not: null`, no `effect`, field order unchanged.
+    assert_eq!(reencoded, json);
+}
+
+#[test]
+fn a_deny_rule_round_trips_through_json() {
+    // Given
+    let json = r#"[{"who":"group:interns","may_not":["read","search"],"under":["hr/**"]}]"#;
+
+    // When
+    let policy: AccessPolicy = serde_json::from_str(json).expect("parses");
+    let reencoded = serde_json::to_string(&policy).expect("serialize");
+
+    // Then
+    assert_eq!(reencoded, json);
+    assert_eq!(policy.rules()[0].effect, notedthat_core::Effect::Deny);
+}
+
+#[test]
+fn an_anonymous_may_not_with_a_mutating_verb_fails_validation() {
+    // Given — inert, for the same reason an anonymous write grant is.
+    let policy = policy([AccessRule::deny(Who::Anyone, [Verb::Write])]);
+
+    // When
+    let error = policy.validate().expect_err("refused");
+
+    // Then
+    assert!(
+        error.to_string().contains("write") && error.to_string().contains("anyone"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_empty_may_not_fails_validation() {
+    // Given / When / Then
+    assert!(
+        policy([AccessRule::deny(Who::SignedIn, [])])
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn a_deny_rule_scoped_to_the_internal_namespace_fails_validation() {
+    // Given — it could only ever be inert: the service token ignores it and
+    // nobody else reaches the namespace anyway.
+    let policy =
+        policy([AccessRule::deny(Who::SignedIn, [Verb::Read]).under(patterns(&[".notedthat/**"]))]);
+
+    // When / Then
+    assert!(policy.validate().is_err());
+}
+
+#[test]
+fn a_valid_policy_with_deny_rules_passes_validation() {
+    // Given / When / Then
+    interns_barred_from_hr().validate().expect("valid");
 }
