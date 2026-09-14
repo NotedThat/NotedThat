@@ -11,6 +11,7 @@
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
+use futures::StreamExt;
 use notedthat_core::search::{SearchHit, SearchResponse};
 use rmcp::{
     ErrorData as McpError,
@@ -20,11 +21,21 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+/// The most slugs one call may name. Bounds the work a caller can request
+/// with a list of undeclared slugs, each of which is still one HTTP request
+/// before the `not_found` comes back.
+pub const MAX_KBS_PER_CALL: usize = 32;
+
+/// Searches in flight at once. Every knowledge base costs a Qdrant query and
+/// an embedding call on the server, so a wide fan-out is paced rather than
+/// fired all at once; request order is kept regardless.
+const CONCURRENCY: usize = 8;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchArgs {
     /// Knowledge bases to search, by slug (discover them with
-    /// `list_knowledgebases`). Omit to search every knowledge base the caller
-    /// may search.
+    /// `list_knowledgebases`), at most 32 per call. Omit, or pass `[]`, to
+    /// search every knowledge base the caller may search.
     #[serde(default)]
     pub kb: Vec<String>,
     pub query: String,
@@ -109,13 +120,17 @@ pub(super) async fn run(
         limit: args.limit,
     };
 
-    let answers = futures::future::join_all(
-        selection
-            .slugs()
-            .iter()
-            .map(|slug| search_one(client, slug, &body)),
-    )
-    .await;
+    // Built up front (a future does nothing until polled) so the stream holds
+    // plain futures rather than a closure over `body`'s borrow.
+    let searches: Vec<_> = selection
+        .slugs()
+        .iter()
+        .map(|slug| search_one(client, slug, &body))
+        .collect();
+    let answers: Vec<_> = futures::stream::iter(searches)
+        .buffered(CONCURRENCY)
+        .collect()
+        .await;
 
     let mut results = Vec::with_capacity(answers.len());
     let mut skipped = Vec::new();
@@ -146,10 +161,18 @@ pub(super) async fn run(
 
 /// Resolve the `kb` argument: the caller's list, or every knowledge base the
 /// caller can see when the list is empty. Duplicates are refused rather than
-/// deduplicated so the answer has exactly one group per requested slug.
+/// deduplicated so the answer has exactly one group per requested slug, and a
+/// list longer than [`MAX_KBS_PER_CALL`] is refused before any request.
 async fn select(client: &NotedThatClient, kb: Vec<String>) -> Result<Selection, McpError> {
     if kb.is_empty() {
         return Ok(Selection::All(client.list_kbs().await?));
+    }
+    if kb.len() > MAX_KBS_PER_CALL {
+        return Err(McpToolError::InvalidRequest(format!(
+            "kb names {} knowledge bases; at most {MAX_KBS_PER_CALL} per call",
+            kb.len()
+        ))
+        .into());
     }
     let mut seen = HashSet::with_capacity(kb.len());
     if let Some(duplicate) = kb.iter().find(|slug| !seen.insert(slug.as_str())) {
@@ -484,6 +507,71 @@ mod tests {
         // Then: invalid_request naming the duplicate, no HTTP call made
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert!(error.message.contains("\"a\""), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn a_list_longer_than_the_cap_is_refused_before_any_request() {
+        // Given: a server that must not be asked anything
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let slugs: Vec<String> = (0..=MAX_KBS_PER_CALL).map(|i| format!("kb{i}")).collect();
+        let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
+
+        // When: one more slug than the cap is named, none of them twice
+        let error = run(&client(&server.uri()), args(&refs, "q", None))
+            .await
+            .unwrap_err();
+
+        // Then: invalid_request naming the cap, no HTTP call made
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.contains(&MAX_KBS_PER_CALL.to_string()),
+            "{}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wide_fan_out_is_paced_and_still_answers_in_request_order() {
+        // Given: more knowledge bases than run at once, each answering after
+        // a short delay so that pacing is observable in the total time
+        let server = MockServer::start().await;
+        let n = CONCURRENCY * 2;
+        let slugs: Vec<String> = (0..n).map(|i| format!("kb{i}")).collect();
+        for slug in &slugs {
+            Mock::given(method("POST"))
+                .and(path(format!("/api/v1/knowledgebases/{slug}/search")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"hits": [hit("x.md", 0.5)]}))
+                        .set_delay(Duration::from_millis(100)),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
+
+        // When: all of them are named in one call
+        let started = std::time::Instant::now();
+        let result = run(&client(&server.uri()), args(&refs, "q", None))
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        // Then: two waves ran (not one, not n), and the groups come back in
+        // request order with every hit naming its knowledge base
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "two waves of {CONCURRENCY} should take two delays: {elapsed:?}"
+        );
+        let out = output(result);
+        assert_eq!(kb_order(&out), refs);
+        assert_eq!(out["results"][n - 1]["hits"][0]["kb"], slugs[n - 1]);
     }
 
     #[test]

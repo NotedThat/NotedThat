@@ -1533,11 +1533,11 @@ Hybrid semantic + keyword search across one or more knowledge bases in a single 
 
 **Arguments**: `kb?` (array of slugs), `query` (string), `filters?` (object with optional `mime`, `concept_type`, and `tags`), `limit?` (u32). Type matching is exact; tags match any supplied value; different fields are AND-composed.
 
-- `kb` is always a list, even for one knowledge base: `["whatwg"]`. A bare string is rejected. Slugs come from `list_knowledgebases`; listing a slug twice is `invalid_request`.
+- `kb` is always a list, even for one knowledge base: `["whatwg"]`. A bare string is rejected. Slugs come from `list_knowledgebases`; listing a slug twice, or more than 32 slugs, is `invalid_request`.
 - Omit `kb` (or pass `[]`) to search every knowledge base the caller can see — the same set `list_knowledgebases` returns.
 - `limit` is **per knowledge base** (default 10, maximum 50), not a cap on the whole request.
 
-The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, concurrently, as the calling identity; the HTTP route itself stays single-slug.
+The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, at most 8 in flight at once, as the calling identity; the HTTP route itself stays single-slug.
 
 **Response**: one group per knowledge base, in request order (or the listing's order when `kb` was omitted), each keeping that knowledge base's own ranking. Every hit names its knowledge base so a flattened list stays unambiguous.
 
