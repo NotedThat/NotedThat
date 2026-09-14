@@ -48,10 +48,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
-    # Generous on purpose: DeepSeek V4.1 Flash took 12 min on a 200-line PR in
-    # the bake-off and Warden analyses hunks 4 at a time, so a large feature PR
-    # runs well past 30 min. Hitting this is a cancelled review, not a red X.
-    timeout-minutes: 60
+    # Per profile: the MiniMax lane runs two hunks at a time by design and a
+    # large feature PR (~350 hunks, PR #130) needs hours; the wide lane is
+    # fast. Hitting the limit is a cancelled review, not a red X.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One subscription being down must not cancel the other profile's review.
       fail-fast: false
@@ -76,11 +76,13 @@ jobs:
           - profile: minimax
             provider: MINIMAX
             app: MINIMAX
+            timeout: 300
           # The provider is declared in .github/warden/pi.
           - profile: thirdparty-gpt-oss
             provider: THIRDPARTY
             app: GPT_OSS
             needs-base-url: true
+            timeout: 90
     steps:
       - uses: actions/checkout@v7
         with:
