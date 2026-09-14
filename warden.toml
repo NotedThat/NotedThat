@@ -1,0 +1,150 @@
+# Sentry Warden — shared review configuration (skills, triggers, thresholds).
+#
+# This file deliberately sets NO models. The model for each run comes from a
+# per-profile overlay under .github/warden/ (currently only minimax.toml),
+# layered on top of this file by the workflow via `base-config-path` +
+# `config-path`. That way the two subscriptions we review with share one
+# definition of *what* gets reviewed and differ only in *which model* does it.
+#
+# Locally: `warden <ref> -m provider/model` (see DEVELOPMENT.md) picks up this
+# file automatically and takes the model from the flag.
+#
+# Skill sources, in three flavours:
+#   - built-in (`security-review`, `code-review`): ship with Warden itself;
+#   - remote, pinned to a commit (`remote = "owner/repo@sha"`): Sentry's
+#     generalised review skills — bump the sha deliberately, never float;
+#   - repo-local under .agents/skills/: a vendored community skill Warden's
+#     remote loader cannot reach, with its origin and licence in the header.
+# Every skill is one more pass over every matching hunk, so each one is
+# scoped with `paths` to the files it can say something about.
+
+version = 1
+
+[defaults]
+runtime = "pi"
+# Severity that counts as "would fail" for the summary. It has no teeth while
+# failCheck and requestChanges are off: Warden is advisory only until we have
+# seen enough of its findings to trust it as a gate (#131 acceptance criteria).
+failOn = "high"
+reportOn = "low"
+failCheck = false
+requestChanges = false
+# Not source: build output, hand-run QA notes, and the local code graph cache.
+ignorePaths = ["target/**", "docs/manual-qa/**", ".codegraph/**"]
+
+[defaults.verification]
+# Second read-only pass that re-checks each candidate finding before it is
+# reported. Costs extra calls, but it is what keeps the noise down with the
+# cheaper models we run this on.
+enabled = true
+
+# Generated files that would otherwise be chunked and sent to the model.
+[defaults.chunking]
+
+[[defaults.chunking.filePatterns]]
+pattern = "Cargo.lock"
+mode = "skip"
+
+[[defaults.chunking.filePatterns]]
+pattern = "**/CHANGELOG.md"
+mode = "skip"
+
+[[skills]]
+name = "security-review"
+# Server code plus everything that decides what runs with secrets in CI or
+# ends up in the shipped image.
+paths = ["crates/**/*.rs", ".github/workflows/*.yml", "Dockerfile", "docker/**"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "code-review"
+paths = ["crates/**/*.rs", ".github/workflows/*.yml"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+# --- Sentry's generalised review skills (getsentry/warden-skills, MIT) -------
+# Pinned to one commit; update all four together.
+
+[[skills]]
+name = "wrdn-authz"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Everything that decides who may do what: manifest rules, principals, the
+# per-surface gates, and the MCP wrapper that inherits them.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-dos-review"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Unbounded work reachable from a request: Range/lines parsing, listing caps,
+# patch size caps, JWKS refetch, watcher queues.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-data-exfil"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Untrusted input reaching a sink that leaks beyond its scope: object keys
+# as paths, the browse surface, OIDC discovery fetches, error bodies.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-gha-workflows"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Workflows publish crates and signed images; pwn-requests, expression
+# injection and unpinned actions are the failure modes that matter here.
+paths = [".github/workflows/*.yml", ".github/actions/**"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+# --- Community skills -------------------------------------------------------
+
+[[skills]]
+name = "mattpocock-code-review"
+# Two axes the bug-only skills deliberately leave out: documented standards
+# (DEVELOPMENT.md, CONFIGURATION.md, design principles) and conformance to the
+# spec (SPECIFICATIONS.md decisions, the PR description).
+paths = ["crates/**/*.rs", "docs/**/*.md", "SPECIFICATIONS.md"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "caveman-review"
+remote = "JuliusBrussee/caveman@15581d14007fd01fb3f132016741962f34936ca2"
+# General review in one line per finding: bug / risk / nit / question.
+# (JuliusBrussee/caveman, MIT for the skills/ tree.) Remote rather than
+# vendored because Warden finds it in the repo's flat skills/ directory —
+# unlike mattpocock/skills, whose nested skills/engineering/ layout it does
+# not search, hence the vendored copy above.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false

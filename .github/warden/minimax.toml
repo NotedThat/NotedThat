@@ -1,0 +1,16 @@
+# Warden model profile: MiniMax M3 on the MiniMax subscription, via MiniMax's
+# own Anthropic-compatible endpoint (pi provider `minimax`). Never route MiniMax
+# through OpenCode Go — that plan is reserved for the other open models.
+#
+# Overlay only: skills and triggers live in /warden.toml. Key: WARDEN_MINIMAX_API_KEY.
+#
+# The auxiliary lane (JSON repair, verification, consolidation) MUST be set
+# explicitly: left unset it falls back to pi's own default, which is Anthropic.
+version = 1
+
+[defaults.agent]
+model = "minimax/MiniMax-M3"
+maxTurns = 30
+
+[defaults.auxiliary]
+model = "minimax/MiniMax-M3"
