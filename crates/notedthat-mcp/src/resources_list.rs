@@ -18,11 +18,6 @@ struct M8Cursor {
 }
 
 #[derive(Debug, Deserialize)]
-struct ListKbsResponse {
-    knowledgebases: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct ListObjectsResponse {
     objects: Vec<ObjectMeta>,
     next_cursor: Option<String>,
@@ -32,7 +27,7 @@ pub async fn list_resources(
     client: &NotedThatClient,
     cursor: Option<String>,
 ) -> Result<ListResourcesResult, McpError> {
-    let kbs = list_kbs(client).await?;
+    let kbs = client.list_kbs().await?;
     let Some(position) = start_position(&kbs, cursor)? else {
         return Ok(ListResourcesResult::default());
     };
@@ -68,18 +63,6 @@ pub async fn list_resources(
         next_cursor,
         resources,
     })
-}
-
-async fn list_kbs(client: &NotedThatClient) -> Result<Vec<String>, McpError> {
-    let url = client.api_v1_url(&["knowledgebases"]);
-    let resp = client
-        .authorized(client.http.get(url))
-        .send()
-        .await
-        .map_err(McpToolError::Transport)?;
-    let resp = map_response(resp).await?;
-    let body: ListKbsResponse = resp.json().await.map_err(McpToolError::Transport)?;
-    Ok(body.knowledgebases)
 }
 
 async fn list_objects(

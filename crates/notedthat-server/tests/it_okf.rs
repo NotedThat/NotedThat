@@ -126,7 +126,7 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
             id,
             "search",
             json!({
-                "kb": server.kb, "query": "revenue", "filters": filters
+                "kb": [server.kb.as_str()], "query": "revenue", "filters": filters
             }),
         )
         .await;
@@ -134,7 +134,7 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
             .as_str()
             .expect("MCP search content");
         let result: Value = serde_json::from_str(text).expect("MCP search JSON");
-        let hits = result["hits"].as_array().expect("MCP hits");
+        let hits = result["results"][0]["hits"].as_array().expect("MCP hits");
         assert_eq!(hits.len(), expected);
         if let Some(hit) = hits.first() {
             assert_eq!(hit["okf"], metadata);

@@ -1,5 +1,4 @@
 use crate::client::NotedThatClient;
-use crate::error::{McpToolError, map_response};
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -15,26 +14,10 @@ pub struct KbEntry {
     pub kb_slug: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct ListKbsResponse {
-    knowledgebases: Vec<String>,
-}
-
 pub(super) async fn run(client: &NotedThatClient) -> Result<CallToolResult, McpError> {
-    let url = client.api_v1_url(&["knowledgebases"]);
-    let resp = client
-        .authorized(client.http.get(url))
-        .send()
-        .await
-        .map_err(McpToolError::Transport)?;
-    let resp = map_response(resp).await.map_err(McpError::from)?;
-    let body: ListKbsResponse = resp
-        .json()
-        .await
-        .map_err(McpToolError::Transport)
-        .map_err(McpError::from)?;
-    let entries: Vec<KbEntry> = body
-        .knowledgebases
+    let entries: Vec<KbEntry> = client
+        .list_kbs()
+        .await?
         .into_iter()
         .map(|kb_slug| KbEntry { kb_slug })
         .collect();
