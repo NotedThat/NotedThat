@@ -259,3 +259,24 @@ upsert can exceed under load.
 
 The `Wait for crates.io to index` step in `ci.yml` needs no edit — it derives the crate
 list from `cargo metadata`.
+
+## Running Warden (LLM review) locally
+
+CI runs [Sentry Warden](https://github.com/getsentry/warden) on every PR with the
+skills in `warden.toml`, once per model profile in `.github/warden/`. The same
+review can be run locally against any git range, with the model picked on the
+command line (the profile overlays are only layered in by the workflow):
+
+```sh
+# MiniMax is always used through its own plan/API (pi provider `minimax`),
+# never through another gateway.
+export WARDEN_MINIMAX_API_KEY=...    # for  -m minimax/MiniMax-M3
+
+# Review everything changed since origin/main
+npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3
+
+# Machine-readable output (findings, usage, cost), e.g. for comparing models
+npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3 --json -o bakeoff/minimax.json
+```
+
+`warden-findings.json` and `bakeoff/` are git-ignored. Node 20+ is required.

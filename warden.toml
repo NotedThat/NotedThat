@@ -1,0 +1,61 @@
+# Sentry Warden — shared review configuration (skills, triggers, thresholds).
+#
+# This file deliberately sets NO models. The model for each run comes from a
+# per-profile overlay under .github/warden/ (currently only minimax.toml),
+# layered on top of this file by the workflow via `base-config-path` +
+# `config-path`. That way the two subscriptions we review with share one
+# definition of *what* gets reviewed and differ only in *which model* does it.
+#
+# Locally: `warden <ref> -m provider/model` (see DEVELOPMENT.md) picks up this
+# file automatically and takes the model from the flag.
+
+version = 1
+
+[defaults]
+runtime = "pi"
+# Severity that counts as "would fail" for the summary. It has no teeth while
+# failCheck and requestChanges are off: Warden is advisory only until we have
+# seen enough of its findings to trust it as a gate (#131 acceptance criteria).
+failOn = "high"
+reportOn = "medium"
+failCheck = false
+requestChanges = false
+# Not source: build output, hand-run QA notes, and the local code graph cache.
+ignorePaths = ["target/**", "docs/manual-qa/**", ".codegraph/**"]
+
+[defaults.verification]
+# Second read-only pass that re-checks each candidate finding before it is
+# reported. Costs extra calls, but it is what keeps the noise down with the
+# cheaper models we run this on.
+enabled = true
+
+# Generated files that would otherwise be chunked and sent to the model.
+[defaults.chunking]
+
+[[defaults.chunking.filePatterns]]
+pattern = "Cargo.lock"
+mode = "skip"
+
+[[defaults.chunking.filePatterns]]
+pattern = "**/CHANGELOG.md"
+mode = "skip"
+
+[[skills]]
+name = "security-review"
+# Server code plus everything that decides what runs with secrets in CI or
+# ends up in the shipped image.
+paths = ["crates/**/*.rs", ".github/workflows/*.yml", "Dockerfile", "docker/**"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "code-review"
+paths = ["crates/**/*.rs", ".github/workflows/*.yml"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
