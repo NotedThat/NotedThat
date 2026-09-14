@@ -21,7 +21,7 @@ mod listing;
 mod render;
 
 use crate::authz::KbAccess;
-use crate::middleware::{extract_request_id, resolve_principal};
+use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, Request, State};
@@ -46,7 +46,11 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
     }
 
     let request_id = extract_request_id(&req);
-    let Ok(principal) = resolve_principal(req.headers(), &state.bearer_token) else {
+    let Ok(principal) = state
+        .authenticator
+        .resolve(req.headers(), notedthat_core::Schemes::Bearer)
+        .await
+    else {
         return unauthorized(&request_id);
     };
     req.extensions_mut().insert(principal.clone());
@@ -121,7 +125,11 @@ pub(super) async fn browse_path(
         // be axum's own plain-text 400 rather than a page.
         return not_found(&request_id);
     };
-    let Ok(principal) = resolve_principal(req.headers(), &state.bearer_token) else {
+    let Ok(principal) = state
+        .authenticator
+        .resolve(req.headers(), notedthat_core::Schemes::Bearer)
+        .await
+    else {
         return unauthorized(&request_id);
     };
     // `KbAccess` reads the principal from the request, as it does for every

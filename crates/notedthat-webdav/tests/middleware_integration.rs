@@ -174,8 +174,10 @@ fn make_state() -> WebDavState {
         ),
     ]);
     WebDavState {
-        username: Arc::new("testuser".to_string()),
-        password: Arc::new("testpass".to_string()),
+        authenticator: Arc::new(
+            notedthat_core::Authenticator::new("test-service-token")
+                .with_basic("testuser".to_string(), "testpass".to_string()),
+        ),
         storage: Arc::new(MockStorage),
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared.clone()),

@@ -314,8 +314,10 @@ mod tests {
     fn test_state(storage: Arc<dyn Storage>) -> Arc<WebDavState> {
         let (indexer_tx, _rx) = mpsc::channel(16);
         Arc::new(WebDavState {
-            username: Arc::new("user".to_string()),
-            password: Arc::new("pass".to_string()),
+            authenticator: Arc::new(
+                notedthat_core::Authenticator::new("test-service-token")
+                    .with_basic("user".to_string(), "pass".to_string()),
+            ),
             storage,
             staging_config: notedthat_core::StagingConfig::default(),
             declared_kbs: Arc::new(BTreeMap::new()),

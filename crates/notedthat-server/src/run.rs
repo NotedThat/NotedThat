@@ -7,6 +7,7 @@ use notedthat_api_http::{
     router::{MAX_BODY_BYTES, build_router},
     state::AppState,
 };
+use notedthat_core::Authenticator;
 use notedthat_indexer::{
     IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
@@ -169,9 +170,15 @@ async fn build_infrastructure(
         .await?,
     );
 
+    // One authenticator for every surface. The API, the browse pages and MCP
+    // accept its bearer credentials; WebDAV additionally accepts the Basic pair.
+    let authenticator = Arc::new(Authenticator::new(config.api_token.clone()).with_basic(
+        config.webdav_username.clone(),
+        config.webdav_password.clone(),
+    ));
+
     let dav_state = WebDavState {
-        username: Arc::new(config.webdav_username.clone()),
-        password: Arc::new(config.webdav_password.clone()),
+        authenticator: authenticator.clone(),
         storage: storage.clone(),
         declared_kbs: declared_kbs.clone(),
         access_policies: access_policies.clone(),
@@ -189,7 +196,7 @@ async fn build_infrastructure(
         storage: storage.clone(),
         declared_kbs,
         access_policies,
-        bearer_token: Arc::new(config.api_token.clone()),
+        authenticator: authenticator.clone(),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,
         indexer_tx,
@@ -330,10 +337,11 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
 
         info!(http = %bound_addr, "notedthat-server listening");
 
-        let app = build_router(state)
+        let app = build_router(state.clone())
             .merge(build_dav_router(dav_state))
             .merge(mcp_http::build_router(
                 &config,
+                state.authenticator.clone(),
                 &internal_api_url,
                 shutdown_token.child_token(),
             )?);

@@ -246,3 +246,25 @@ async fn a_deny_under_a_prefix_hides_those_keys_from_a_whole_kb_listing() {
     assert!(keys.contains(&"public/index.md".to_string()));
     assert!(keys.contains(&".notedthat/manifest.json".to_string()));
 }
+
+#[tokio::test]
+async fn a_user_identity_never_sees_the_internal_namespace_in_a_listing() {
+    // Given — the widest grant, which for the service token is the allow-all
+    // shortcut; for a user it must not be.
+    let app = app(notes([signed_in_everything()])).await;
+
+    // When
+    let keys = keys_for(
+        app,
+        "/api/v1/knowledgebases/notes",
+        Some(super::fixture::ALICE_TOKEN),
+    )
+    .await;
+
+    // Then
+    assert!(
+        !keys.iter().any(|key| key.starts_with(".notedthat")),
+        "{keys:?}"
+    );
+    assert!(keys.contains(&"internal/secret.md".to_string()));
+}

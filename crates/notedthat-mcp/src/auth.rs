@@ -1,18 +1,19 @@
 //! Bearer token authentication middleware for the MCP HTTP endpoint.
 //!
-//! Provides [`require_bearer_auth`], an axum middleware function that enforces
-//! constant-time Bearer token verification using [`notedthat_core::auth`]
-//! primitives per RFC 6750 and SPEC D21.
+//! Provides [`require_bearer_auth`], an axum middleware function that resolves
+//! the caller through the shared [`Authenticator`] and refuses anything that
+//! is not a verified bearer credential.
 
 use axum::{
     body::Body,
     extract::State,
-    http::{Request, StatusCode, header::AUTHORIZATION},
+    http::{Request, StatusCode, header::WWW_AUTHENTICATE},
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
-use notedthat_core::auth::{extract_bearer_from_header, verify_bearer_token};
+use notedthat_core::{Authenticator, Schemes};
 use serde::Serialize;
+use std::sync::Arc;
 
 /// JSON body returned with every 401 Unauthorized response.
 #[derive(Debug, Serialize)]
@@ -23,17 +24,21 @@ struct UnauthorizedBody {
 
 /// Axum middleware that enforces Bearer token authentication on the MCP HTTP endpoint.
 ///
-/// Reads the `Authorization` header from the incoming request, extracts the
-/// Bearer scheme token via [`notedthat_core::auth::extract_bearer_from_header`],
-/// and verifies it against the configured `expected_token` in constant time via
-/// [`notedthat_core::auth::verify_bearer_token`].
+/// Reads the `Authorization` header from the incoming request and resolves it
+/// through the [`Authenticator`]: the service token or a bearer token an
+/// identity provider vouches for.
 ///
 /// Returns **HTTP 401** with a JSON error body for any of:
-/// - missing `Authorization` header
+/// - missing `Authorization` header — MCP has no anonymous mode
 /// - wrong authentication scheme (e.g. Basic, not Bearer)
-/// - non-matching token value
+/// - a token that is neither the service token nor verifiable
 ///
-/// On success the request is forwarded unchanged to the next handler.
+/// The `401` carries a `WWW-Authenticate` bearer challenge naming the
+/// protected-resource metadata when the deployment publishes it, which is how
+/// an MCP client discovers where to obtain a token.
+///
+/// On success the resolved [`notedthat_core::Principal`] is stored in the
+/// request extensions and the request is forwarded to the next handler.
 ///
 /// # Usage
 ///
@@ -41,40 +46,38 @@ struct UnauthorizedBody {
 /// use axum::{Router, middleware};
 /// use notedthat_mcp::auth::require_bearer_auth;
 ///
-/// let token = "super-secret".to_string();
+/// let authenticator = Arc::new(Authenticator::new("super-secret"));
 /// let router = Router::new()
 ///     .route("/mcp", /* mcp service */)
-///     .layer(middleware::from_fn_with_state(token, require_bearer_auth));
+///     .layer(middleware::from_fn_with_state(authenticator, require_bearer_auth));
 /// ```
 pub async fn require_bearer_auth(
-    State(expected_token): State<String>,
-    request: Request<Body>,
+    State(authenticator): State<Arc<Authenticator>>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let auth_header = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-
-    let authorized = match auth_header {
-        Some(value) => match extract_bearer_from_header(value) {
-            Some(provided) => verify_bearer_token(provided, &expected_token),
-            None => false,
-        },
-        None => false,
-    };
-
-    if authorized {
-        next.run(request).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(UnauthorizedBody {
-                error: "unauthorized",
-                message: "missing or invalid Authorization header",
-            }),
-        )
-            .into_response()
+    match authenticator
+        .resolve(request.headers(), Schemes::Bearer)
+        .await
+    {
+        Ok(principal) if principal.is_signed_in() => {
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
+        _ => {
+            let mut response = (
+                StatusCode::UNAUTHORIZED,
+                Json(UnauthorizedBody {
+                    error: "unauthorized",
+                    message: "missing or invalid Authorization header",
+                }),
+            )
+                .into_response();
+            if let Some(challenge) = authenticator.bearer_challenge() {
+                response.headers_mut().insert(WWW_AUTHENTICATE, challenge);
+            }
+            response
+        }
     }
 }
 
@@ -88,7 +91,7 @@ mod mcp_http_auth {
         Router::new()
             .route("/", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(
-                token.to_string(),
+                Arc::new(Authenticator::new(token)),
                 require_bearer_auth,
             ))
     }
@@ -136,5 +139,68 @@ mod mcp_http_auth {
 
         // Then: 200 OK — the request reached the inner handler.
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_verified_identity_token_passes_through() {
+        // Given: an authenticator with a verifier vouching for one token.
+        let authenticator = Arc::new(Authenticator::new("secret").with_token_verifier(Arc::new(
+            notedthat_core::testing::StubTokenVerifier::default().accepting(
+                "jwt-alice",
+                "alice",
+                [],
+            ),
+        )));
+        let app =
+            Router::new()
+                .route("/", get(|| async { "ok" }))
+                .layer(middleware::from_fn_with_state(
+                    authenticator,
+                    require_bearer_auth,
+                ));
+        let req = Request::builder()
+            .uri("/")
+            .header("Authorization", "Bearer jwt-alice")
+            .body(Body::empty())
+            .unwrap();
+
+        // When / Then
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_401_keeps_its_json_body_and_adds_the_challenge_when_published() {
+        // Given
+        let metadata_url = "https://notes.example.com/.well-known/oauth-protected-resource";
+        let authenticator = Arc::new(Authenticator::new("secret").with_protected_resource(
+            notedthat_core::ProtectedResource {
+                resource: "https://notes.example.com".into(),
+                authorization_servers: vec!["https://auth.example.com".into()],
+                metadata_url: metadata_url.into(),
+            },
+        ));
+        let app =
+            Router::new()
+                .route("/", get(|| async { "ok" }))
+                .layer(middleware::from_fn_with_state(
+                    authenticator,
+                    require_bearer_auth,
+                ));
+
+        // When
+        let res = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            res.headers().get("www-authenticate").unwrap(),
+            &format!("Bearer resource_metadata=\"{metadata_url}\"")
+        );
+        let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unauthorized");
     }
 }

@@ -754,10 +754,13 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
         .send()
         .await
         .expect("OPTIONS WebDAV with Bearer credentials failed");
+    // Bearer is accepted everywhere: a WebDAV client that can set a header need
+    // not speak Basic, and an identity-provider token only exists as a bearer.
+    // The asymmetry is deliberate — Basic is a WebDAV-only convenience.
     assert_eq!(
         resp.status().as_u16(),
-        401,
-        "API Bearer credentials must not authorize WebDAV requests"
+        204,
+        "the API Bearer credential authorizes WebDAV requests too"
     );
 
     let resp = client

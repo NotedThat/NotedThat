@@ -31,14 +31,28 @@ pub(super) fn scoped_policy(who: Who, verbs: &[Verb], patterns: &[&str]) -> Acce
     .collect()
 }
 
+/// The service token the fixture's authenticator accepts as a bearer.
+pub(super) const SERVICE_TOKEN: &str = "test-service-token";
+/// A bearer the stub verifier resolves to `alice`, a member of `editors`.
+pub(super) const ALICE_TOKEN: &str = "jwt-alice";
+
 pub(super) fn state_with_policies(
     storage: Arc<MemoryStorage>,
     policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
     let (indexer_tx, _indexer_rx) = mpsc::channel(8);
     WebDavState {
-        username: Arc::new("user".to_string()),
-        password: Arc::new("pass".to_string()),
+        authenticator: Arc::new(
+            notedthat_core::Authenticator::new(SERVICE_TOKEN)
+                .with_basic("user".to_string(), "pass".to_string())
+                .with_token_verifier(Arc::new(
+                    notedthat_core::testing::StubTokenVerifier::default().accepting(
+                        ALICE_TOKEN,
+                        "alice",
+                        ["editors"],
+                    ),
+                )),
+        ),
         storage,
         declared_kbs: Arc::new(BTreeMap::from([
             (

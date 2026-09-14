@@ -985,8 +985,10 @@ mod tests {
     ) -> Arc<WebDavState> {
         let (indexer_tx, _rx) = mpsc::channel(16);
         Arc::new(WebDavState {
-            username: Arc::new("user".to_string()),
-            password: Arc::new("pass".to_string()),
+            authenticator: Arc::new(
+                notedthat_core::Authenticator::new("test-service-token")
+                    .with_basic("user".to_string(), "pass".to_string()),
+            ),
             storage,
             staging_config: notedthat_core::StagingConfig::default(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),

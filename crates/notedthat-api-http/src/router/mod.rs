@@ -133,7 +133,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // `/browse` is stateful and sits on the outer router, outside
         // `auth_middleware` — it resolves its own principal with the same rules
-        // (see `middleware::resolve_principal`), because nesting it under
+        // (see `notedthat_core::Authenticator`), because nesting it under
         // `/api/v1` would move the mount point.
         .with_state(state)
 }
@@ -208,7 +208,7 @@ mod patch_route {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
             indexer_tx,
@@ -249,7 +249,7 @@ mod patch_route {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
             indexer_tx,
@@ -770,7 +770,7 @@ mod line_range_get {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -929,7 +929,7 @@ mod tests {
             storage: Arc::new(crate::testing::InMemoryStorage::default()),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -1142,7 +1142,7 @@ mod tests {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
@@ -1232,7 +1232,7 @@ mod tests {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
-            bearer_token: Arc::new(TOKEN.to_string()),
+            authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,

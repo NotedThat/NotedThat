@@ -313,8 +313,10 @@ mod basic_auth {
         fn test_state() -> WebDavState {
             let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
             WebDavState {
-                username: Arc::new("testuser".to_string()),
-                password: Arc::new("testpass".to_string()),
+                authenticator: Arc::new(
+                    notedthat_core::Authenticator::new("test-service-token")
+                        .with_basic("testuser".to_string(), "testpass".to_string()),
+                ),
                 storage: Arc::new(MockStorage),
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(BTreeMap::new()),
@@ -1032,8 +1034,10 @@ mod intercept_write_methods {
         ) -> WebDavState {
             let storage: Arc<dyn Storage> = storage;
             WebDavState {
-                username: Arc::new("user".to_string()),
-                password: Arc::new("pass".to_string()),
+                authenticator: Arc::new(
+                    notedthat_core::Authenticator::new("test-service-token")
+                        .with_basic("user".to_string(), "pass".to_string()),
+                ),
                 storage,
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),

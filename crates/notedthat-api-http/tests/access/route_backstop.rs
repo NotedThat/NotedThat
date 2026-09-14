@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use super::fixture::{TOKEN, app};
+use super::fixture::{BOB_TOKEN, TOKEN, app};
 
 /// Every route, and the method that reaches it.
 ///
@@ -88,6 +88,37 @@ async fn every_route_refuses_a_credentialed_principal_holding_no_grant() {
             response.status(),
             StatusCode::FORBIDDEN,
             "{method} {uri} let an ungranted credentialed caller through — \
+             the handler is missing its `KbAccess` check"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_route_refuses_an_identity_holding_no_grant() {
+    // Given — the same grantless policy, asked by a user an identity provider
+    // vouched for. Unlike the service token, a user has no implicit reach into
+    // `.notedthat`, so even the index has nothing to show them.
+    let policies = BTreeMap::from([("notes".to_string(), notedthat_core::AccessPolicy::empty())]);
+
+    // When / Then
+    for (method, uri) in EVERY_ROUTE {
+        let response = request(&policies, method, uri, Some(BOB_TOKEN)).await;
+
+        if INDEX_ROUTES.contains(&(method, uri)) {
+            // A credential verified, so `401` would be a lie; the index is
+            // simply empty for someone granted nothing anywhere.
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{method} {uri} refused a verified identity its (empty) index"
+            );
+            continue;
+        }
+
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {uri} let an ungranted identity through — \
              the handler is missing its `KbAccess` check"
         );
     }

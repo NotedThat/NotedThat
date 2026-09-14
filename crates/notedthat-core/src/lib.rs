@@ -27,6 +27,7 @@ pub use access::{
     Verb, Who, signed_in_policies,
 };
 pub use auth::{
+    Authenticator, CredentialRefused, ProtectedResource, Schemes, TokenRejected, TokenVerifier,
     extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
     verify_bearer_token,
 };

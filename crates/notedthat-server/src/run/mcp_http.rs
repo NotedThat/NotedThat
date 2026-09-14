@@ -7,15 +7,18 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post_service},
 };
+use notedthat_core::Authenticator;
 use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig, auth::require_bearer_auth, client::NotedThatClient,
     sse_refusal::refusal_body,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) fn build_router(
     config: &Config,
+    authenticator: Arc<Authenticator>,
     internal_api_url: &str,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<axum::Router> {
@@ -28,9 +31,9 @@ pub(crate) fn build_router(
     )
     .context("failed to build MCP HTTP service config")?;
     let mcp_service = McpHttpService::new(client, &mcp_config);
-    let token = config.api_token.clone();
-    let authenticated_mcp = post_service(mcp_service.into_service())
-        .route_layer(middleware::from_fn_with_state(token, require_bearer_auth));
+    let authenticated_mcp = post_service(mcp_service.into_service()).route_layer(
+        middleware::from_fn_with_state(authenticator, require_bearer_auth),
+    );
     Ok(axum::Router::new()
         .route(
             "/mcp",

@@ -87,7 +87,7 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
             ("private".to_string(), private),
         ])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
-        bearer_token: Arc::new(TOKEN.to_string()),
+        authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,

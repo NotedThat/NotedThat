@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use notedthat_core::{Principal, Verb, extract_basic_from_header, verify_basic_credentials};
+use notedthat_core::{Principal, Schemes, Verb};
 use tower_http::request_id::RequestId;
 
 use crate::access::{policy_for, verbs_for_method};
@@ -101,32 +101,12 @@ pub async fn basic_auth_middleware(
 ) -> Response {
     let request_id = extract_request_id(&req);
 
-    let mut auth_headers = req.headers().get_all("authorization").iter();
-    let auth_header = auth_headers.next();
-    if auth_headers.next().is_some() {
+    let Ok(principal) = state
+        .authenticator
+        .resolve(req.headers(), Schemes::BasicOrBearer)
+        .await
+    else {
         return challenge(&request_id);
-    }
-
-    let principal = match auth_header {
-        Some(header) => {
-            let authorized = header
-                .to_str()
-                .ok()
-                .and_then(extract_basic_from_header)
-                .is_some_and(|(username, password)| {
-                    verify_basic_credentials(
-                        &username,
-                        &password,
-                        state.username.as_str(),
-                        state.password.as_str(),
-                    )
-                });
-            if !authorized {
-                return challenge(&request_id);
-            }
-            Principal::service_token()
-        }
-        None => Principal::Anyone,
     };
 
     let verbs = verbs_for_method(req.method().as_str());
