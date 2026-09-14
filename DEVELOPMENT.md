@@ -279,4 +279,14 @@ npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3
 npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3 --json -o bakeoff/minimax.json
 ```
 
+To run the third-party profile locally, give pi the repo's provider
+catalogue and the endpoint (ask a maintainer for the values; they are not in
+the repository on purpose):
+
+```sh
+export WARDEN_THIRDPARTY_API_KEY=...
+export WARDEN_THIRDPARTY_BASE_URL=...
+PI_CODING_AGENT_DIR=.github/warden/pi npx @sentry/warden@0.48.0 origin/main -m thirdparty/openai/gpt-oss-120b
+```
+
 `warden-findings.json` and `bakeoff/` are git-ignored. Node 20+ is required.
