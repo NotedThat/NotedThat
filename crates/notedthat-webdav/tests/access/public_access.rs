@@ -239,3 +239,47 @@ async fn a_prefix_scoped_grant_exposes_only_its_subtree_over_webdav() {
         "a key outside the grant must not appear in a listing: {body}"
     );
 }
+
+#[tokio::test]
+async fn propfind_omits_denied_keys_and_refuses_their_get() {
+    // Given — anyone may list and read the base, except `internal/`.
+    let storage = Arc::new(MemoryStorage::with_objects([
+        ("discoverable", "public/open.md"),
+        ("discoverable", "internal/closed.md"),
+    ]));
+    let policy: AccessPolicy = [
+        notedthat_core::AccessRule::new(Who::Anyone, [Verb::List, Verb::Read]),
+        notedthat_core::AccessRule::deny(Who::Anyone, [Verb::List, Verb::Read])
+            .under([notedthat_core::KeyPattern::parse("internal/**").expect("valid pattern")]),
+    ]
+    .into_iter()
+    .collect();
+    let app = build_router(state_with_policies(
+        storage,
+        BTreeMap::from([("discoverable".to_string(), policy)]),
+    ));
+
+    // When
+    let denied = app
+        .clone()
+        .oneshot(request("GET", "/discoverable/internal/closed.md"))
+        .await
+        .expect("denied read");
+    let listing = app
+        .oneshot(request("PROPFIND", "/discoverable"))
+        .await
+        .expect("listing");
+
+    // Then
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(listing.status(), StatusCode::MULTI_STATUS);
+    let body = response_body(listing).await;
+    assert!(
+        body.contains("/public/"),
+        "the granted subtree is listed: {body}"
+    );
+    assert!(
+        !body.contains("internal"),
+        "a folder synthesised only from denied keys must not be listed: {body}"
+    );
+}

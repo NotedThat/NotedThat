@@ -229,18 +229,28 @@ variable. One knowledge base is one bucket, and that bucket is the policy bounda
 
 ```json
 "access": [
-  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-  { "who": "anyone",    "may": ["search"] },
-  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+  { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "anyone",        "may": ["search"] },
+  { "who": "signed-in",     "may": ["list", "read", "search"] },
+  { "who": "group:editors", "may": ["write", "delete"] },
+  { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 ]
 ```
 
-Each rule names **who** it grants to, **what** verbs, and **where**:
+Each rule names **who** it applies to, **what** verbs it grants (`may`) or revokes (`may_not`), and
+**where**:
 
-| Principal | Who it is |
+| Subject | Who it is |
 | --- | --- |
 | `anyone` | A caller supplying no credential |
-| `signed-in` | A caller holding `NOTEDTHAT_API_TOKEN`, or the WebDAV Basic credential |
+| `signed-in` | Any caller whose credential verified: `NOTEDTHAT_API_TOKEN`, the WebDAV Basic credential, and every identity-provider user |
+| `group:<name>` | An identity-provider user whose token places them in group `<name>` |
+| `user:<name>` | An identity-provider user whose username claim is exactly `<name>` |
+
+`group:` and `user:` rules match only callers authenticated through an OIDC provider (see
+[OIDC authentication](#oidc-authentication)). The configured token is in no group and has no
+username, so it is never matched by them; a manifest naming such a rule on a deployment without an
+OIDC issuer starts, and logs `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` naming the knowledge base.
 
 | Verb | HTTP | WebDAV |
 | --- | --- | --- |
@@ -250,8 +260,11 @@ Each rule names **who** it grants to, **what** verbs, and **where**:
 | `delete` | `DELETE` | `DELETE`, `MOVE` source |
 | `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` | Not applicable |
 
-Rules are **allow-only** and the answer is the union of every matching rule, so their order does not
-matter. Omit `under` to grant the whole knowledge base.
+A rule carries exactly one of `may` and `may_not`. Private by default; a verb is allowed on a key
+when some matching `may` rule covers the key **and no matching `may_not` rule does** — deny
+overrides, and both sides are unions, so the order of the rules never changes a decision. Omit
+`under` to scope a rule to the whole knowledge base. A `may_not` scoped to the whole knowledge base
+also removes the base from the caller's listings for that verb.
 
 Pattern syntax: `*` matches within one segment and never `/`; `**` matches whole segments and must
 be an entire segment; `?` matches one non-`/` character; `{a,b}` alternates. So `public/*` grants
@@ -272,9 +285,10 @@ publishing excerpts.
 do. That is useful — `{"who": "signed-in", "may": ["list", "read", "search"]}` gives you a read-only
 deployment, MCP included — and it means a mistake can lock you out of your own knowledge base.
 
-**The way back in.** `.notedthat` is not addressable by any rule: `anyone` can never reach it, and
-`signed-in` always can, whatever the rules say. So a manifest that revokes everything else is still
-repairable:
+**The way back in.** `.notedthat` is not addressable by any rule — naming it in `under` refuses
+startup. `NOTEDTHAT_API_TOKEN` always reaches it, and nobody else ever does: not `anyone`, and not
+an identity-provider user however broad their grants, because the manifest carries the policy, group
+names included. So a manifest that revokes everything else is still repairable with that token:
 
 ```sh
 curl -X PUT -H "Authorization: Bearer $TOKEN" \
@@ -283,8 +297,9 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" \
 # then restart the server — policies are a startup snapshot
 ```
 
-**Anonymous writes are refused at startup, not silently ignored.** A rule granting `write` or
-`delete` to `anyone` stops the server booting with a message naming the rule.
+**Anonymous writes are refused at startup, not silently ignored.** A rule granting — or revoking —
+`write` or `delete` for `anyone` stops the server booting with a message naming the rule. So does a
+rule with an empty `may`/`may_not`, one naming both, or one naming neither.
 
 **An empty `access: []` grants nobody anything.** The knowledge base becomes inert — reachable only
 through the `.notedthat` repair path above — and startup logs `ACCESS_RULES_EMPTY` naming it.

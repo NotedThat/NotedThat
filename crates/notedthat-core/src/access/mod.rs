@@ -8,17 +8,20 @@
 //! subject ([`Who`]), the [`Verb`]s it grants, and the [`KeyPattern`]s it is
 //! scoped to. A subject is `anyone`, `signed-in`, or — for callers an identity
 //! provider vouched for — `group:<name>` or `user:<name>`; a request's
-//! [`Principal`] is matched against it by [`Who::matches`]. Rules are
-//! **allow-only** and the answer for a `(principal, verb, key)` triple is the
-//! union of every matching rule, so **rule order never changes a decision** —
-//! the array is ordered only because JSON arrays are.
+//! [`Principal`] is matched against it by [`Who::matches`]. A rule either
+//! grants its verbs (`may`) or revokes them (`may_not`). The answer for a
+//! `(principal, verb, key)` triple is: some matching `may` rule covers the key
+//! and no matching `may_not` rule does. Both sides are unions, so **rule order
+//! never changes a decision** — the array is ordered only because JSON arrays
+//! are.
 //!
 //! ```json
 //! "access": [
 //!   { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
 //!   { "who": "anyone",        "may": ["search"] },
 //!   { "who": "signed-in",     "may": ["list", "read", "search"] },
-//!   { "who": "group:editors", "may": ["write", "delete"] }
+//!   { "who": "group:editors", "may": ["write", "delete"] },
+//!   { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 //! ]
 //! ```
 //!
@@ -256,22 +259,100 @@ impl Verb {
     }
 }
 
-/// One grant: a subject, the verbs it may use, and the keys it may use them on.
+/// Whether a rule grants its verbs or takes them away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// `may`: the subject gains these verbs on the matching keys.
+    Allow,
+    /// `may_not`: the subject loses these verbs on the matching keys, whatever
+    /// any other rule says.
+    Deny,
+}
+
+/// One rule: a subject, the verbs it may (or may not) use, and the keys the
+/// rule is scoped to.
+///
+/// In the manifest a rule carries exactly one of `may` and `may_not`. Deny
+/// overrides allow, and the union of each kind is taken first, so rule order
+/// still never changes a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RuleRepr", into = "RuleRepr")]
 pub struct AccessRule {
     /// Who this rule applies to.
     pub who: Who,
-    /// The verbs granted. Never empty; an empty grant fails validation.
-    pub may: BTreeSet<Verb>,
-    /// The key patterns this grant is scoped to.
+    /// Whether `verbs` are granted or revoked.
+    pub effect: Effect,
+    /// The verbs this rule speaks about. Never empty; an empty set fails validation.
+    pub verbs: BTreeSet<Verb>,
+    /// The key patterns this rule is scoped to.
     ///
     /// Omitted in the manifest means the whole knowledge base, stored here as
     /// the literal `**` pattern so the evaluator has no special case to forget.
+    pub under: Vec<KeyPattern>,
+}
+
+/// The manifest spelling of a rule.
+///
+/// A plain struct rather than a flattened enum so that a rule naming both
+/// `may` and `may_not` is refused: `serde(flatten)` would take the first key
+/// it recognises and leave the other silently unread.
+#[derive(Serialize, Deserialize)]
+struct RuleRepr {
+    who: Who,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    may: Option<BTreeSet<Verb>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    may_not: Option<BTreeSet<Verb>>,
     #[serde(
         default = "whole_kb_patterns",
         skip_serializing_if = "is_whole_kb_patterns"
     )]
-    pub under: Vec<KeyPattern>,
+    under: Vec<KeyPattern>,
+}
+
+impl TryFrom<RuleRepr> for AccessRule {
+    type Error = Error;
+
+    fn try_from(repr: RuleRepr) -> Result<Self, Self::Error> {
+        let (effect, verbs) = match (repr.may, repr.may_not) {
+            (Some(verbs), None) => (Effect::Allow, verbs),
+            (None, Some(verbs)) => (Effect::Deny, verbs),
+            (Some(_), Some(_)) => {
+                return Err(config(format!(
+                    "an access rule for `{}` names both `may` and `may_not`; split it into two \
+                     rules",
+                    repr.who
+                )));
+            }
+            (None, None) => {
+                return Err(config(format!(
+                    "an access rule for `{}` names neither `may` nor `may_not`",
+                    repr.who
+                )));
+            }
+        };
+        Ok(Self {
+            who: repr.who,
+            effect,
+            verbs,
+            under: repr.under,
+        })
+    }
+}
+
+impl From<AccessRule> for RuleRepr {
+    fn from(rule: AccessRule) -> Self {
+        let (may, may_not) = match rule.effect {
+            Effect::Allow => (Some(rule.verbs), None),
+            Effect::Deny => (None, Some(rule.verbs)),
+        };
+        Self {
+            who: rule.who,
+            may,
+            may_not,
+            under: rule.under,
+        }
+    }
 }
 
 fn whole_kb_patterns() -> Vec<KeyPattern> {
@@ -287,7 +368,18 @@ impl AccessRule {
     pub fn new(who: Who, verbs: impl IntoIterator<Item = Verb>) -> Self {
         Self {
             who,
-            may: verbs.into_iter().collect(),
+            effect: Effect::Allow,
+            verbs: verbs.into_iter().collect(),
+            under: whole_kb_patterns(),
+        }
+    }
+
+    /// Build a rule taking `verbs` away from `who` across the whole knowledge base.
+    pub fn deny(who: Who, verbs: impl IntoIterator<Item = Verb>) -> Self {
+        Self {
+            who,
+            effect: Effect::Deny,
+            verbs: verbs.into_iter().collect(),
             under: whole_kb_patterns(),
         }
     }
@@ -297,6 +389,16 @@ impl AccessRule {
     pub fn under(mut self, patterns: impl IntoIterator<Item = KeyPattern>) -> Self {
         self.under = patterns.into_iter().collect();
         self
+    }
+
+    /// Whether this rule applies to `principal` and speaks about `verb`.
+    fn covers(&self, principal: &Principal, verb: Verb) -> bool {
+        self.who.matches(principal) && self.verbs.contains(&verb)
+    }
+
+    /// Whether this rule's scope is the whole knowledge base.
+    fn is_whole_kb(&self) -> bool {
+        self.under.iter().any(KeyPattern::is_whole_kb)
     }
 }
 
@@ -352,10 +454,11 @@ impl AccessPolicy {
     /// Returns [`Error::Config`] naming the first problem found.
     pub fn validate(&self) -> Result<(), Error> {
         for rule in &self.0 {
-            if rule.may.is_empty() {
-                return Err(config(
-                    "an access rule grants no verbs; remove it or name a verb",
-                ));
+            if rule.verbs.is_empty() {
+                return Err(config(format!(
+                    "an access rule for `{}` names no verbs; remove it or name a verb",
+                    rule.who
+                )));
             }
             if rule.under.is_empty() {
                 return Err(config(
@@ -364,10 +467,14 @@ impl AccessPolicy {
                 ));
             }
             if rule.who == Who::Anyone
-                && let Some(verb) = rule.may.iter().copied().find(|verb| verb.is_mutating())
+                && let Some(verb) = rule.verbs.iter().copied().find(|verb| verb.is_mutating())
             {
+                let spelling = match rule.effect {
+                    Effect::Allow => "grants",
+                    Effect::Deny => "revokes",
+                };
                 return Err(config(format!(
-                    "an access rule grants `{}` to `anyone`; anonymous writes are never \
+                    "an access rule {spelling} `{}` for `anyone`; anonymous writes are never \
                      honoured, so this rule cannot mean what it says",
                     serde_verb(verb),
                 )));
@@ -415,9 +522,17 @@ impl AccessPolicy {
         if principal.is_anonymous() && verb.is_mutating() {
             return false;
         }
-        self.0
-            .iter()
-            .any(|rule| rule.who.matches(principal) && rule.may.contains(&verb))
+        let mut granted = false;
+        for rule in self.0.iter().filter(|rule| rule.covers(principal, verb)) {
+            match rule.effect {
+                Effect::Allow => granted = true,
+                // A whole-knowledge-base denial leaves no key an allow could
+                // reach, so the path-independent answer is "no" as well.
+                Effect::Deny if rule.is_whole_kb() => return false,
+                Effect::Deny => {}
+            }
+        }
+        granted
     }
 
     /// Whether this knowledge base appears in a listing for `principal`.
@@ -453,17 +568,19 @@ impl AccessPolicy {
         if reach == Reach::Anonymous && verb.is_mutating() {
             return KeyFilter {
                 reach,
-                patterns: Vec::new(),
+                allow: Vec::new(),
+                deny: Vec::new(),
             };
         }
 
-        let patterns = self
-            .0
-            .iter()
-            .filter(|rule| rule.who.matches(principal) && rule.may.contains(&verb))
-            .flat_map(|rule| rule.under.iter())
-            .collect();
-        KeyFilter { reach, patterns }
+        let (mut allow, mut deny) = (Vec::new(), Vec::new());
+        for rule in self.0.iter().filter(|rule| rule.covers(principal, verb)) {
+            match rule.effect {
+                Effect::Allow => allow.extend(rule.under.iter()),
+                Effect::Deny => deny.extend(rule.under.iter()),
+            }
+        }
+        KeyFilter { reach, allow, deny }
     }
 }
 
@@ -471,7 +588,8 @@ impl AccessPolicy {
 #[derive(Debug, Clone)]
 pub struct KeyFilter<'a> {
     reach: Reach,
-    patterns: Vec<&'a KeyPattern>,
+    allow: Vec<&'a KeyPattern>,
+    deny: Vec<&'a KeyPattern>,
 }
 
 impl KeyFilter<'_> {
@@ -492,7 +610,10 @@ impl KeyFilter<'_> {
         if is_internal_path(key) {
             return self.reach == Reach::ServiceToken;
         }
-        self.patterns.iter().any(|pattern| pattern.matches(key))
+        // Deny overrides: a key is allowed when some allow pattern matches it
+        // and no deny pattern does. Both are unions, so order is irrelevant.
+        self.allow.iter().any(|pattern| pattern.matches(key))
+            && !self.deny.iter().any(|pattern| pattern.matches(key))
     }
 
     /// Whether every key is allowed, so a caller can skip per-key filtering.
@@ -501,13 +622,15 @@ impl KeyFilter<'_> {
     /// the internal namespace filtered out of their listings.
     pub fn is_allow_all(&self) -> bool {
         self.reach == Reach::ServiceToken
-            && self.patterns.iter().any(|pattern| pattern.is_whole_kb())
+            && self.deny.is_empty()
+            && self.allow.iter().any(|pattern| pattern.is_whole_kb())
     }
 
     /// Whether no key can ever be allowed, so a caller can return an empty page
     /// without touching storage.
     pub fn is_deny_all(&self) -> bool {
-        self.patterns.is_empty() && self.reach != Reach::ServiceToken
+        self.reach != Reach::ServiceToken
+            && (self.allow.is_empty() || self.deny.iter().any(|pattern| pattern.is_whole_kb()))
     }
 
     /// The key prefix every grant in this filter shares, if there is one.
@@ -515,9 +638,12 @@ impl KeyFilter<'_> {
     /// Lets a listing push a grant's narrowing down into the storage backend
     /// instead of scanning a whole knowledge base only to discard most of it.
     /// `None` means no useful bound — scan from the caller's own prefix.
+    ///
+    /// Only the allow patterns count: a denial can only narrow what the
+    /// grants reach, never widen it, so it cannot move the bound.
     pub fn literal_prefix_hint(&self) -> Option<&str> {
         let mut shared: Option<&str> = None;
-        for pattern in &self.patterns {
+        for pattern in &self.allow {
             let prefix = pattern.literal_prefix()?;
             match shared {
                 None => shared = Some(prefix),

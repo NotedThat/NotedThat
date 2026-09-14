@@ -35,22 +35,26 @@ All 11 crates share a single version via ecosystem-level Semantic Versioning. Se
 ## Access rules
 
 Each knowledge base has its own S3 bucket, and that bucket is the policy boundary. Its
-`.notedthat/manifest.json` carries an `access` array of allow-only rules, each naming a principal
-(`anyone` for callers with no credential, `signed-in` for the token holder), the verbs it grants
-(`list`, `read`, `write`, `delete`, `search`), and optionally the object-key globs it applies
-`under`:
+`.notedthat/manifest.json` carries an `access` array of rules, each naming a subject (`anyone` for
+callers with no credential, `signed-in` for any verified credential, `group:<name>` or
+`user:<name>` for callers an OIDC provider vouched for), the verbs it grants with `may` or revokes
+with `may_not` (`list`, `read`, `write`, `delete`, `search`), and optionally the object-key globs it
+applies `under`:
 
 ```json
 "access": [
-  { "who": "anyone",    "may": ["list", "read"], "under": ["public/**"] },
-  { "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }
+  { "who": "anyone",        "may": ["list", "read"], "under": ["public/**"] },
+  { "who": "signed-in",     "may": ["list", "read", "search"] },
+  { "who": "group:editors", "may": ["write", "delete"] },
+  { "who": "group:interns", "may_not": ["read", "search"], "under": ["hr/**"] }
 ]
 ```
 
-Private by default. The rules govern the HTTP API, WebDAV, MCP and the browse pages from one
-evaluator, and they bind the token holder as well as anonymous callers — so a read-only deployment
-is expressible, and so is a mistake that locks you out. `.notedthat` is the exception that makes
-that recoverable: unreachable for `anyone`, always reachable for `signed-in`.
+Private by default; deny overrides allow, and rule order never matters. The rules govern the HTTP
+API, WebDAV, MCP and the browse pages from one evaluator, and they bind the token holder as well as
+anonymous callers — so a read-only deployment is expressible, and so is a mistake that locks you
+out. `.notedthat` is the exception that makes that recoverable: reachable only for
+`NOTEDTHAT_API_TOKEN`, always, and for nobody else.
 
 Granting `write` or `delete` to `anyone` refuses startup. The server reads policies once at
 startup; restart it after editing a manifest. There is no application rate limiter — configure

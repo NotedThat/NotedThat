@@ -223,3 +223,26 @@ async fn listing_an_undeclared_knowledge_base_is_not_found_rather_than_unauthori
     // Then
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_deny_under_a_prefix_hides_those_keys_from_a_whole_kb_listing() {
+    // Given — the credential holder may see everything except `internal/`.
+    let app = app(notes([
+        signed_in_everything(),
+        notedthat_core::AccessRule::deny(Who::SignedIn, [Verb::List]).under(
+            notedthat_core::KeyPattern::parse("internal/**")
+                .map(|p| vec![p])
+                .expect("pattern"),
+        ),
+    ]))
+    .await;
+
+    // When — the allow-all shortcut is closed by the denial, so every key is
+    // filtered; the internal namespace still comes through for the service token.
+    let keys = keys_for(app, "/api/v1/knowledgebases/notes", Some(TOKEN)).await;
+
+    // Then
+    assert!(!keys.contains(&"internal/secret.md".to_string()));
+    assert!(keys.contains(&"public/index.md".to_string()));
+    assert!(keys.contains(&".notedthat/manifest.json".to_string()));
+}
