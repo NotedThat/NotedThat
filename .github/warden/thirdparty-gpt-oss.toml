@@ -1,0 +1,102 @@
+# Warden model profile: GPT-OSS 120B on a third-party OpenAI-compatible
+# endpoint (pi provider `thirdparty`, declared in pi/models.json; endpoint
+# and key come from the WARDEN_THIRDPARTY_* secrets).
+#
+# The wide lane. /warden.toml carries the two built-in skills; this overlay
+# adds six more — Sentry's generalised review skills and two community ones —
+# because this endpoint has no plan quota, so eight passes per hunk cost
+# nothing, and a second model family next to MiniMax M3 is the point.
+#
+# The auxiliary lane MUST be set explicitly: left unset it falls back to pi's
+# own default, which is Anthropic.
+version = 1
+
+[defaults.agent]
+model = "thirdparty/openai/gpt-oss-120b"
+maxTurns = 30
+
+[defaults.auxiliary]
+model = "thirdparty/openai/gpt-oss-120b"
+
+# --- Sentry's generalised review skills (getsentry/warden-skills, MIT) -------
+# Skill sources: remote pinned to a commit (`remote = "owner/repo@sha"`) —
+# bump the sha deliberately, never float — or repo-local under
+# .agents/skills/ for a vendored skill Warden's remote loader cannot reach.
+# Pinned to one commit; update all four together.
+
+[[skills]]
+name = "wrdn-authz"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Everything that decides who may do what: manifest rules, principals, the
+# per-surface gates, and the MCP wrapper that inherits them.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-dos-review"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Unbounded work reachable from a request: Range/lines parsing, listing caps,
+# patch size caps, JWKS refetch, watcher queues.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-data-exfil"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Untrusted input reaching a sink that leaks beyond its scope: object keys
+# as paths, the browse surface, OIDC discovery fetches, error bodies.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "wrdn-gha-workflows"
+remote = "getsentry/warden-skills@daf01f970a28450627a8d2d61d9915a742a735e2"
+# Workflows publish crates and signed images; pwn-requests, expression
+# injection and unpinned actions are the failure modes that matter here.
+paths = [".github/workflows/*.yml", ".github/actions/**"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+# --- Community skills -------------------------------------------------------
+
+[[skills]]
+name = "mattpocock-code-review"
+# Two axes the bug-only skills deliberately leave out: documented standards
+# (DEVELOPMENT.md, CONFIGURATION.md, design principles) and conformance to the
+# spec (SPECIFICATIONS.md decisions, the PR description).
+paths = ["crates/**/*.rs", "docs/**/*.md", "SPECIFICATIONS.md"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "caveman-review"
+remote = "JuliusBrussee/caveman@15581d14007fd01fb3f132016741962f34936ca2"
+# General review in one line per finding: bug / risk / nit / question.
+# (JuliusBrussee/caveman, MIT for the skills/ tree.) Remote rather than
+# vendored because Warden finds it in the repo's flat skills/ directory —
+# unlike mattpocock/skills, whose nested skills/engineering/ layout it does
+# not search, hence the vendored copy above.
+paths = ["crates/**/*.rs"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false

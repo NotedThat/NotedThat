@@ -6,7 +6,21 @@
 #
 # The auxiliary lane (JSON repair, verification, consolidation) MUST be set
 # explicitly: left unset it falls back to pi's own default, which is Anthropic.
+#
+# This is the cheap lane: it runs only the two built-in skills from
+# /warden.toml. The wide lane (every skill) is the third-party profile, which
+# has no plan quota. See the runner note below for why.
 version = 1
+
+# One hunk at a time. The MiniMax Token Plan is sized for one interactive
+# developer (~3-4 concurrent agents on Plus) and answers anything more with
+# 429 "Token Plan rate limit reached (2062)". Five in flight — the action's
+# default — tripped Warden's circuit breaker on PR #130 after 65 of ~350
+# hunks, and the aborted skills were posted as green "No issues" checks.
+# Slow is acceptable here; silently unreviewed is not. Must live in this
+# overlay: the action prefers the base file's value when both set one.
+[runner]
+concurrency = 1
 
 [defaults.agent]
 model = "minimax/MiniMax-M3"

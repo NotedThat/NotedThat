@@ -1,0 +1,22 @@
+{
+  "providers": {
+    "thirdparty": {
+      "name": "Third-party OpenAI-compatible endpoint",
+      "baseUrl": "https://example.invalid/v1",
+      "api": "openai-completions",
+      "apiKey": "$THIRDPARTY_API_KEY",
+      "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false },
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "name": "GPT-OSS 120B (third-party)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
