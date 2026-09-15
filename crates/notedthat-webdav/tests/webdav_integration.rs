@@ -53,6 +53,7 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
         declared_kbs: Arc::new(declared_kbs),
         indexer_tx: tx,
+        events: None,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

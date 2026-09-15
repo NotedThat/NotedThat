@@ -33,6 +33,7 @@ const EVERY_ROUTE: &[(&str, &str)] = &[
     ("PATCH", "/api/v1/knowledgebases/notes/public.md"),
     ("POST", "/api/v1/knowledgebases/notes/replace/public.md"),
     ("POST", "/api/v1/knowledgebases/notes/search"),
+    ("GET", "/api/v1/knowledgebases/notes/events"),
 ];
 
 #[tokio::test]

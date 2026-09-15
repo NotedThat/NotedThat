@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+mod events;
 mod fs_watch;
 mod mcp_http;
 
@@ -31,8 +32,9 @@ mod mcp_http;
 mod mcp_http_listener;
 
 // `Backends` lives in a private module and is re-exported only under
-// `test-support`, so a production build cannot name it. Its three fields are
-// `Arc<dyn Storage>`, `Arc<dyn VectorStore>` and `Arc<dyn Embedder>`: exposing
+// `test-support`, so a production build cannot name it. Its fields are
+// `Arc<dyn Storage>`, `Arc<dyn VectorStore>`, `Arc<dyn Embedder>` and an
+// optional `Arc<dyn EventPublisher>`: exposing
 // them unconditionally would pin those traits into this crate's semver surface,
 // and changing them — which is precisely what the seam exists to allow — would
 // become a breaking change to `notedthat-server`.
@@ -40,12 +42,12 @@ mod backends {
     use super::VectorStore;
     use std::sync::Arc;
 
-    /// The three external services the server runs on.
+    /// The external services the server runs on.
     ///
     /// Kept as trait objects and constructed separately from the rest of startup
     /// so the server can be brought up against substitutes. Tests use that to
     /// run the real routers, indexer worker and shutdown sequence in-process,
-    /// with no S3, Qdrant or embedding endpoint to reach.
+    /// with no S3, Qdrant, embedding endpoint or broker to reach.
     pub struct Backends {
         /// Object storage backing every read and write.
         pub storage: Arc<dyn notedthat_core::Storage>,
@@ -53,6 +55,9 @@ mod backends {
         pub store: Arc<dyn VectorStore>,
         /// Embedding endpoint shared by the indexer worker and the searcher.
         pub embedder: Arc<dyn notedthat_indexer::embedder::Embedder>,
+        /// The object change event log, when one is configured. `run_with`
+        /// takes this as given and does not consult `Config::events`.
+        pub events: Option<Arc<dyn notedthat_core::EventPublisher>>,
     }
 }
 
@@ -68,6 +73,7 @@ pub use backends::Backends;
 fn backends_from_config(
     config: &Config,
     root: Option<&RootLock>,
+    events: Option<Arc<dyn notedthat_core::EventPublisher>>,
 ) -> anyhow::Result<backends::Backends> {
     let storage: Arc<dyn notedthat_core::Storage> = match &config.storage {
         StorageConfig::S3(s3) => {
@@ -129,6 +135,7 @@ fn backends_from_config(
         storage,
         store,
         embedder,
+        events,
     })
 }
 
@@ -150,6 +157,7 @@ async fn build_infrastructure(
         storage,
         store,
         embedder,
+        events,
     } = backends;
 
     let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
@@ -212,6 +220,7 @@ async fn build_infrastructure(
         access_policies: access_policies.clone(),
         indexer_tx: indexer_tx.clone(),
         staging_config: config.staging.clone(),
+        events: events.clone(),
     };
 
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
@@ -229,6 +238,7 @@ async fn build_infrastructure(
         max_patchable_size: config.max_patchable_size,
         indexer_tx,
         searcher,
+        events: events.clone(),
     };
 
     let worker_handle = tokio::spawn(
@@ -241,6 +251,7 @@ async fn build_infrastructure(
             config.embedder.batch_size,
         )
         .with_staging_config(config.staging.clone())
+        .with_event_publisher(events)
         .run(),
     );
 
@@ -293,7 +304,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // turn the single-process guarantee off.
     let storage_root = open_storage_root(&config).await?;
 
-    let backends = backends_from_config(&config, storage_root.as_ref())?;
+    // The one network round-trip before serving: a broker that cannot be
+    // reached refuses startup rather than running without its log (D39).
+    let events = events::connect(&config.events).await?;
+
+    let backends = backends_from_config(&config, storage_root.as_ref(), events)?;
     serve(config, backends).await
 }
 

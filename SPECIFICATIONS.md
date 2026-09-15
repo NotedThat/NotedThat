@@ -59,7 +59,7 @@ Three logical layers:
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D36 | Multipart upload | Switch to S3 multipart above **32 MiB** total size; part size **8 MiB** (matches `aws-sdk-s3` defaults). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
 | D37 | MCP Resources | **Shipped in M8.** Expose `notedthat://<kb_slug>/<percent-encoded path>` as browsable MCP Resources for clients like Claude Desktop and MCP Inspector. Flat listing via `resources/list` with an opaque base64 M8 cursor across KB boundaries. No `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents` base64-encoded. Landed alongside MCP HTTP transport (D31) in M8. |
-| D38 | Indexing queue (v1) | **Simple best-effort in-process queue.** Writes commit to S3 first, enqueue an indexing event to a bounded in-memory channel, then return. If the queue is full, return operation-specific `WriteError::IndexerBackpressureUpsert` or `WriteError::IndexerBackpressureTombstone` → HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 first; the client should retry to re-enqueue the indexing event. Log `INDEX_QUEUE_FULL`. If the embedder or Qdrant path fails downstream of the queue, log `INDEXING_FAILED` and mark the object stale/missing in search until a later write or future reindex. No durable queue, no job IDs, no caller-visible indexing status in v1. |
+| D38 | Indexing queue (v1) | **Simple best-effort in-process queue.** Writes commit to S3 first, enqueue an indexing event to a bounded in-memory channel, then return. If the queue is full, return operation-specific `WriteError::IndexerBackpressureUpsert` or `WriteError::IndexerBackpressureTombstone` → HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 first; the client should retry to re-enqueue the indexing event. Log `INDEX_QUEUE_FULL`. If the embedder or Qdrant path fails downstream of the queue, log `INDEXING_FAILED` and mark the object stale/missing in search until a later write or future reindex. No durable queue, no job IDs, no caller-visible indexing status in v1. D54 adds a durable *event* log beside this queue; moving indexing onto it is a follow-up, not a rewrite, because the publish hook sits at the same point. |
 | D39 | Startup provisioning (v1) | **Fail fast.** At startup, parse `NOTEDTHAT_KBS`, validate every slug, ensure each S3 bucket, manifest, and Qdrant collection exists, and exit non-zero if any declared KB cannot be provisioned or validated. No partial startup with missing KBs in v1. |
 | D40 | Path normalization (v1) | **Simple object-path rules.** Object paths are UTF-8 strings normalized by stripping one leading `/`, rejecting empty file paths, rejecting `.` / `..` segments, rejecting backslashes, preserving case, and using `/` as the only separator. Directories are virtual prefixes; only object bytes are stored. |
 | D41 | Pagination (v1) | **Simple limits.** `list` uses S3 lexicographic order and an opaque continuation cursor passed through from the storage adapter. `search` is top-k only: `limit` controls the number of hits; no search pagination/cursor in v1. |
@@ -76,6 +76,7 @@ Three logical layers:
 | D52 | Browse surface | **Server-rendered read-only HTML at `/browse`, over the same rules as every other surface.** `GET /browse/` lists knowledge bases the caller can see; `/browse/{kb}/{prefix}/` renders one directory level, synthesised from keys (D40). `list` gates a page and `read` gates each row's link, decided per key because a glob-scoped grant can make a directory listable but only partly readable. Object links point at the existing `/api/v1` representation — no second download path, no Markdown rendering. Anonymous denials answer `404` so the status cannot be used to enumerate private prefixes; a credentialed denial answers `403`. `.notedthat` is rendered for nobody. At a 10 000-key cap the page renders what it read with a visible notice rather than failing, unlike WebDAV's `507`, whose consumer would mistake a partial listing for a complete one. No JavaScript, no accounts, no editing, no search. |
 | D53 | OIDC identities, group and user subjects, deny rules | **Identity is delegated to an OIDC issuer; the manifest names its groups; a rule can deny.** With `NOTEDTHAT_OIDC_ISSUER` + `NOTEDTHAT_OIDC_AUDIENCE` set, any bearer that is not the service token is verified as a signed JWT (`RS*`/`ES*`, never `HS*`) against the issuer's JWKS — discovered at startup and refused on failure per D39, cached by `kid`, refetched at most once per 30 s and refreshed after an hour — and becomes a *user* principal: subject from the configurable username claim (`preferred_username`, falling back to `sub`), groups from the configurable groups claim (`groups`; array, string, or Zitadel's role-keyed object). NotedThat mints nothing and holds no session: an opaque access token is refused, so Authelia and Zitadel are configured to issue JWTs. A rule's `who` is now `anyone`, `signed-in` (the service token *and* every user), `group:<name>` or `user:<name>`, and a rule carries `may` **or** `may_not`: a verb is allowed on a key when some matching `may` rule covers it and no matching `may_not` rule does — both unions, so D51's order-independence holds. `.notedthat` is reachable only by the service token, never by a user however broad their grants, because the manifest carries the policy, group names included; scoping any subject to it fails validation. One `Authenticator` serves every surface; `Bearer` is accepted everywhere, `Basic` on WebDAV only. MCP acts as its caller by forwarding the presented bearer on its loopback call, and with `NOTEDTHAT_OIDC_RESOURCE` set the server publishes RFC 9728 metadata and names it in `WWW-Authenticate` on every `401`, which is how an MCP client finds the authorization server. Amends D21, D22 and D51; supersedes D27. |
 | D54 | Multi-KB MCP search | **MCP `search` takes `kb` as a list and fans out inside the tool; results are grouped per knowledge base and never merged.** The HTTP route stays single-slug: the tool sends one `POST /api/v1/knowledgebases/{kb}/search` per slug, concurrently, as the calling identity (D53), and answers `{results: [{kb, hits}], skipped}` with one group per slug in request order, each keeping its own ranking, every hit naming its knowledge base. `limit` is per knowledge base. **No cross-KB score is published**: a hit's `score` is RRF computed inside one Qdrant collection (D14), a function of the hit's position there, so every knowledge base's top hit scores the same whatever its relevance and a merged sort would be an arbitrary interleave; a ranked cross-KB view needs a comparable component score from the server first (#126) and can be added as a new field without breaking this shape. `kb` is always a list, searched at most 8 at a time — a bare string is rejected, a duplicate is `invalid_request` — and an omitted or empty `kb` means every knowledge base the caller can see, discovered by the same `GET /api/v1/knowledgebases` that `list_knowledgebases` makes. A listing shows a knowledge base the caller holds *any* grant in (D51), not necessarily `search`, which sets the two failure rules: with an **explicit list, any refusal fails the whole call** and the error names the slug (`not_found` for an undeclared slug, `forbidden` for a denied one); with **`kb` omitted, a `forbidden` or concealed `not_found` drops that knowledge base into `skipped`** and the call succeeds, while any other failure still fails it, named. Every other tool stays single-KB. Amends D25. |
+| D55 | Object change events | **Every object change is published as an event; subscribers stream them over SSE with durable, cross-replica replay from a configurable log.** `GET /api/v1/knowledgebases/{kb}/events` streams `object.written` / `object.deleted` as `text/event-stream`, each with an adapter-owned id that clients hand back as `Last-Event-ID`; a position the log no longer retains answers `410 gone` rather than silently resuming from now. Publish happens in `notedthat-write` immediately after storage acknowledges and after the D38 enqueue, so every surface is covered by one hook; on the `fs` backend the indexer worker announces detected changes from the `HEAD` it already performs, with a bounded last-seen stamp per key so the watcher's echo of the server's own write (D50) is not announced twice. Events are filtered per subscriber with the D51 evaluator and `Verb::List`, deletions included; anonymous subscribers are honoured under `anyone` rules. The log is selected by `NOTEDTHAT_EVENTS_BACKEND` under the §6.5 policy: `none` (default, route answers `404`), `memory` (process-local ring, replay across reconnects only — the honest choice for `fs`, one process per root by D49) and `nats` (one JetStream stream, the stream sequence as the id, shared by every replica). A publish that fails after the bytes are stored answers `503 backend_unavailable` with `Retry-After: 5` exactly as D38 does, making the client the retry mechanism and delivery at least once; an unreachable broker refuses startup (D39) and fails `/readyz` at runtime. MCP writes are attributed by an informational `X-NotedThat-Source: mcp` header the MCP server sets on its API calls. Webhooks, `object.indexed` and MCP `subscribe` are deferred and can ride the same log (§7.4). |
 
 ---
 
@@ -151,7 +152,7 @@ No SQLite. No app-layer arbiter. No capability probes. The S3 backend is truth a
 6. **One write path, three front ends.** Cross-surface behavior is identical by construction.
 7. **Thin over the backend.** NotedThat does not simulate, compensate for, or hide backend capabilities. It forwards headers and status codes honestly. The deployer picks the backend; we document what each one does (§8.1).
 8. **No local state that isn't derived.** No SQLite arbiters, no token denylist DB, no in-memory ETag mirrors. State lives in S3 (truth) or Qdrant (derived, rebuildable).
-9. **Single binary, single process.** `notedthat-server` hosts HTTP API + WebDAV in one process for v1. A separate small stdio binary provides MCP by wrapping the HTTP API. MCP-HTTP is post-v1.
+9. **Single binary, single process.** `notedthat-server` hosts HTTP API, WebDAV and MCP in one process. A separate small stdio binary provides MCP by wrapping the HTTP API. The only optional external service beyond storage, Qdrant and the embedder is an event broker (D54), and only when a deployment asks for cross-replica event replay; the default is none.
 10. **MCP wraps the HTTP API, always.** The v1 stdio wrapper, and any future MCP HTTP transport, go through the HTTP API for business logic — never bypass to the storage layer directly. One source of truth for auth, ACL, and validation.
 11. **KISS.** When a choice is between "solve it for the user" and "document it and let the deployer choose", we document.
 
@@ -257,6 +258,7 @@ pub trait Embedder: Send + Sync {
 unrecognised value refuses startup rather than falling back, because a mis-selected backend
 produces a deployment that looks healthy while reading an empty store. Variables belonging to the
 unselected backend also refuse startup, naming every conflict, rather than being silently ignored.
+`NOTEDTHAT_EVENTS_BACKEND` (§6.14) is selected under the same policy.
 
 Filesystem env vars (`NOTEDTHAT_STORAGE_BACKEND=fs`):
 - `NOTEDTHAT_FS_ROOT` — absolute path of the storage root. Required; no default, since a default
@@ -495,6 +497,7 @@ notedthat/
     ├── notedthat-api-http/       # HTTP API surface (axum handlers over core)
     ├── notedthat-webdav/         # WebDAV surface (dav-server DavFileSystem impl)
     ├── notedthat-write/          # shared write path (commit, patch, replace) for HTTP API + WebDAV
+    ├── notedthat-events/         # object change event log adapters (D55): memory ring, NATS JetStream
     ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
     ├── notedthat-server/         # server library — wires all listeners in one process
     ├── notedthat-mcp-stdio/      # library — MCP over stdio → HTTP API of a running server
@@ -503,7 +506,7 @@ notedthat/
 
 Dep graph:
 - `notedthat-core` — no deps on other workspace crates
-- `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer` — depend on core
+- `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer`, `notedthat-events` — depend on core (the `EventPublisher` trait and event types live in core, like `Storage`)
 - `notedthat-api-http` — depends on core + storage + indexer
 - `notedthat-webdav` — depends on core + an HTTP client to the local API
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
@@ -585,6 +588,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return `WriteError::IndexerBackpressureUpsert` for upserts or `WriteError::IndexerBackpressureTombstone` for tombstones, which the HTTP API and WebDAV surfaces map to HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 before the enqueue attempt; the client should retry to re-enqueue the indexing event.
 - Embedder or Qdrant failures are logged as `INDEXING_FAILED`; callers do not receive job IDs or indexing status.
 - Search may be stale in v1. A later write to the same object re-enqueues it.
+- With an events backend configured (§6.14), the same write path publishes an `object.written` / `object.deleted` event immediately after the enqueue; a publish failure is `WriteError::EventPublishFailed` → HTTP 503 `backend_unavailable` with `Retry-After: 5`, logged as `EVENT_PUBLISH_FAILED`.
 
 #### Reindex
 - No public HTTP endpoint, MCP tool, WebDAV action, or CLI for reindex in v1.
@@ -602,6 +606,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 | Unsatisfiable range | `416` | `range_not_satisfiable` | `416` |
 | Unprocessable — non-unique match | `422` | `no_match` / `ambiguous_match` | n/a (WebDAV unchanged) |
 | Backend unavailable / timeout | `503` | `backend_unavailable` | `503` |
+| Event log position retained out (`Last-Event-ID`) | `410` | n/a | n/a |
 | Unexpected internal error | `500` | `internal_error` | `500` |
 
 HTTP error bodies are JSON: `{ "error": "code", "message": "human readable", "request_id": "..." }`. MCP tool errors use the same `error` code string and include the human message as tool error content.
@@ -613,7 +618,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
-| `GET` | `/readyz` | Readiness (S3 + Qdrant reachable) — unauthenticated, unversioned |
+| `GET` | `/readyz` | Readiness — unauthenticated, unversioned. `503` while a configured event broker is disconnected (D55); S3 and Qdrant are not probed in v1 |
 | `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
 | `GET` | `/.well-known/oauth-protected-resource` | RFC 9728 protected-resource metadata (D53) — unauthenticated; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | `GET`, `HEAD` | `/browse/`, `/browse/{*path}` | Server-rendered HTML directory listings (D52). Anonymous or Bearer; other methods return `405` |
@@ -626,6 +631,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | `PATCH` | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write (bytes/lines splice, append). Requires `If-Match` for bytes/lines; optional for append. |
 | `POST` | `/api/v1/knowledgebases/{kb_slug}/search` | Hybrid search of one KB. Body: `{ query, filters?, limit? }`. Response `{ hits }`; MCP `search` (§6.10) wraps one of these per KB |
 | `POST` | `/api/v1/knowledgebases/{kb_slug}/replace/{*path}` | String replace with mandatory `If-Match`; body `{ old_string, new_string, replace_all? }`; response `{ etag, match_count, total_bytes }` per D47 |
+| `GET` | `/api/v1/knowledgebases/{kb_slug}/events` | Object change events as SSE (D55, §6.14). Query params: `prefix`, `event`, `mime`; header `Last-Event-ID`. `404` unless an events backend is configured. Like `search`, a literal sibling of the object catch-all |
 
 #### Path encoding
 
@@ -699,6 +705,76 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 
 ---
 
+### 6.14 Object change events `[DECIDED — D55]`
+
+Every write made through NotedThat, and on the `fs` backend every change the server detects in
+its tree, is published as one event once storage has acknowledged it. Subscribers read them
+from `GET /api/v1/knowledgebases/{kb_slug}/events` as `text/event-stream`.
+
+**Shape.** One JSON object per event:
+
+```
+id: 4812
+event: object.written
+data: {"event":"object.written","kb":"notes","object_key":"inbox/memo.mp3","etag":"\"9a3f…\"","size":48213011,"mime":"audio/mpeg","mtime":1757950000,"source":"http","occurred_at":"2026-09-15T14:33:20Z"}
+```
+
+Two types: `object.written` (create or modify — neither the API nor storage distinguish them)
+and `object.deleted` (no stamp). `source` is one of `http`, `webdav`, `mcp`, `fs-watch`,
+`reconcile`; `mcp` is self-declared through `X-NotedThat-Source: mcp`, which the MCP server sets
+on its API calls and which is informational. A WebDAV `MOVE` is two events. The `data` object
+repeats the type under `event` so the payload is self-describing in the broker too.
+
+**Where publish happens.** In `notedthat-write`, on every path (`commit`, `commit_copy`,
+`commit_delete`, `patch`, `replace`), immediately after storage acknowledges and after the D38
+enqueue succeeds, so a subscriber that `GET`s the key on receipt sees the bytes the event
+describes or newer. The write functions take `WriteSinks` — the indexing sender, the optional
+`EventPublisher`, and the calling surface's source. On the `fs` backend, `IndexEvent::Refresh`
+carries its origin (watch or reconcile) and the indexer worker publishes from the `HEAD` it
+already performs, before the indexability check, so an mp3 dropped into the tree is announced
+though it is never indexed; a missing key on re-read is `object.deleted`. The worker keeps a
+bounded last-seen stamp per key, fed by the `Upsert` and `Tombstone` events it receives, and
+announces a `Refresh` only when the stamp differs — that is what keeps the watcher's echo of the
+server's own write (D50) from being announced twice for objects the index does not hold.
+
+**Filtering.** After `KbAccess::resolve` and `require_any(Verb::List)` — so an undeclared or
+ungranted knowledge base answers exactly as everywhere else, whether or not events are on — each
+event is passed through `allows(Verb::List, key)`. Deletions are filtered like writes: a
+deletion reveals that the key existed. Then `?prefix=`, `?event=` and `?mime=` (exact or
+`type/*`; deletions carry no mime and never match a `mime` filter).
+
+**Ids and replay.** The adapter owns the id: a process counter for `memory`, the JetStream
+stream sequence for `nats` (global across replicas and knowledge bases; gaps per knowledge base
+are normal). `Last-Event-ID: n` replays every event with id greater than `n`, in order, then
+live; absent, live only; older than retained, or ahead of the log (a `memory` backend that
+restarted, a recreated stream — ids that never existed here), `410 gone` naming the oldest
+retained id, so the subscriber resyncs by listing rather than silently resuming from now. The stream opens with `retry: 3000`, sends a comment
+every 15 s, and carries `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
+
+**Backends** (`NOTEDTHAT_EVENTS_BACKEND`, §6.5 policy): `none` — default; nothing is published
+and the route answers `404`. `memory` — a ring of `NOTEDTHAT_EVENTS_MEMORY_CAPACITY` events plus
+a broadcast channel; replay across reconnects, not restarts or replicas. Cross-replica replay is
+only meaningful on `s3`; `fs` is one process per root (D49), and `memory` is exactly enough
+there. `nats` — one JetStream stream (`NOTEDTHAT_NATS_STREAM`, subjects
+`notedthat.events.<kb>.<written|deleted>`, retention `NOTEDTHAT_NATS_MAX_AGE_SECS`), created if
+absent, refused if a stream by that name captures other subjects; a subscription is an ordered,
+ack-less consumer filtered to the knowledge base's subjects starting one past the requested id.
+
+**Failure.** A publish that fails after the bytes are stored is `WriteError::EventPublishFailed`
+→ `503 backend_unavailable` with `Retry-After: 5` on the HTTP API and WebDAV alike, logged as
+`EVENT_PUBLISH_FAILED` with kb and key, exactly as D38: the client is the retry mechanism and
+delivery is at least once, never zero times. A failed publish from the worker (no caller) is
+logged and the next comparison re-detects the key. An unreachable broker refuses startup (D39),
+and a lost connection fails `/readyz` at runtime.
+
+**Known at-least-once cases, documented for subscribers.** A retried write publishes twice. The
+`fs` startup comparison re-announces objects the index does not track (anything non-indexable)
+on every restart. A worker that writes into the prefix it watches sees its own writes; it
+filters by `mime` or `prefix`, or compares `etag`. `events` at the root of a knowledge base is
+a route, like `search`.
+
+---
+
 ## 7. Open Questions
 
 ### 7.1 WebDAV micro-decisions (closed for v1)
@@ -723,7 +799,8 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 - **WebDAV**: `FakeLs` for save-workflow clients (D34).
 - **KB lifecycle**: delete + rename (D32).
 - **Content**: additional frontmatter conventions beyond OKF metadata extraction (D33).
-- **MCP**: `subscribe`/`listChanged` Resources capability (post-v1); per-KB access control for Resources.
+- **MCP**: `subscribe`/`listChanged` Resources capability (post-v1) — can be fed by the D55 event stream; per-KB access control for Resources.
+- **Events**: webhooks (server-initiated `POST` to a subscriber URL) over the same log — subscriber registry, outbound retries, signing; `object.indexed` once the indexer publishes its outcome (#97).
 - **Tuning**: env-var overrides for upload buffer / multipart thresholds (D35, D36).
 - **Storage**: full-rebuild-from-S3 as a first-class operation.
 - **Line ranges**: server-side line-index sidecar object (`.notedthat/idx/<key>.lines`) — deferred; index is recomputed per request in v1 (D45).

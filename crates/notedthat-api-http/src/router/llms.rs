@@ -12,6 +12,8 @@ A listing shows only what the caller may see, so a page can be shorter than the 
 
 `/browse/` is a human-facing HTML view of the same content. Use `/api/v1/` instead; do not scrape it.
 
+`GET /api/v1/knowledgebases/{kb_slug}/events` streams object change events as `text/event-stream` to callers the knowledge base grants `list`; send `Last-Event-ID` to resume after a disconnect, expect `410 gone` when that position is no longer retained, and `404 not_found` when the deployment has no events backend. Prefer it to polling listings when reacting to changes.
+
 `/healthz`, `/readyz`, and this `/llms.txt` document are globally public. Read the API documentation for object-write, conditional-request, range-read, pagination, and search formats before using those operations. This document contains no credentials or deployment-specific data.
 ";
 

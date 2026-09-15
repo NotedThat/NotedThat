@@ -122,6 +122,7 @@ pub fn test_app_state_with_default_channel(
         max_patchable_size: max_body_size,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     }
 }
 
@@ -146,6 +147,7 @@ pub fn test_app_state_with_channel(
             max_patchable_size: max_body_size,
             indexer_tx,
             searcher: Arc::new(NoopSearcher),
+            events: None,
         },
         rx,
     )

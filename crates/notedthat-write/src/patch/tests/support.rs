@@ -1,6 +1,7 @@
 use super::super::*;
 use async_trait::async_trait;
 use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
+use notedthat_indexer::IndexEvent;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -277,7 +278,7 @@ pub(super) async fn run_patch(
     let path = path();
     let outcome = patch(
         storage,
-        &indexer_tx,
+        &crate::WriteSinks::indexer_only(&indexer_tx),
         PatchRequest {
             kb: &kb,
             path: &path,
