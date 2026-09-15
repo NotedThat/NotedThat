@@ -1251,7 +1251,7 @@ granted nothing answers `403`; an anonymous caller granted nothing is concealed 
 
 | Header | Description |
 |--------|-------------|
-| `Last-Event-ID` | Resume after this id: every retained event with a greater id is replayed, in order, before live events. Omit it to receive live events only. Not a non-negative integer → `400`. Older than the log retains → `410`. |
+| `Last-Event-ID` | Resume after this id: every retained event with a greater id is replayed, in order, before live events. Omit it to receive live events only. Not a non-negative integer → `400`. Older than the log retains, or ahead of it → `410`. |
 | `Accept` | `text/event-stream` is conventional; the server does not require it |
 
 **Response:**
@@ -1262,7 +1262,7 @@ granted nothing answers `403`; an anonymous caller granted nothing is concealed 
 | 400 Bad Request | Malformed `Last-Event-ID` or `event` |
 | 403 Forbidden | Credential holder granted `list` nowhere in this knowledge base |
 | 404 Not Found | Undeclared slug, anonymous caller granted nothing, or no events backend configured (the message names `NOTEDTHAT_EVENTS_BACKEND`) |
-| 410 Gone | `Last-Event-ID` is older than the log retains; the message names the oldest retained id. Resync by listing the knowledge base rather than resuming from "now". |
+| 410 Gone | `Last-Event-ID` is older than the log retains, or ahead of it (a log that started again); the message names the oldest retained id. Resync by listing the knowledge base rather than resuming from "now". |
 | 503 Service Unavailable | The event backend cannot be read; `Retry-After: 5` |
 
 **Stream format.** The first frame carries a reconnect hint and a comment. Then one frame per
@@ -1316,7 +1316,11 @@ sequence, which is global across replicas and across knowledge bases — a subsc
 knowledge base sees gaps where other knowledge bases' events sit, which is normal. A client that
 reconnects with `Last-Event-ID` receives every event after that id that it may see, once, in
 order, from whichever replica it lands on. A `Last-Event-ID` ahead of the log (a `memory`
-backend that restarted and began counting again) is treated as "from now".
+backend that restarted and began counting again, or a recreated stream) is `410` as well: the
+ids it names never existed in this log, and whatever was published since — on the `fs`
+backend, the startup comparison's announcements of what changed while the server was down —
+is exactly what the subscriber has missed, so it must resync by listing rather than resume
+from "now".
 
 **Delivery is at least once.** A write that stored its bytes but could not publish its event
 answers `503 backend_unavailable` with `Retry-After: 5`; the write is idempotent, and the retry

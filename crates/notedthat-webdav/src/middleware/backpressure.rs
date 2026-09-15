@@ -104,7 +104,7 @@ pub(super) fn copy_destination_backpressure_response() -> Response {
 pub(super) fn move_source_tombstone_backpressure_response(_req_id: &str) -> Response {
     let mut resp = (
         StatusCode::SERVICE_UNAVAILABLE,
-        r#"{"error":"backend_unavailable","message":"destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Retry MOVE to re-enqueue the source tombstone; the destination write is idempotent."}"#,
+        r#"{"error":"backend_unavailable","message":"destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source."}"#,
     )
         .into_response();
     resp.headers_mut().insert(

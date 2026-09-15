@@ -65,28 +65,22 @@ impl Ring {
         self.buf.front().map(|e| e.0)
     }
 
-    fn latest(&self) -> Option<EventId> {
-        self.buf.back().map(|e| e.0)
-    }
-
-    fn after(&self, cursor: Option<EventId>) -> VecDeque<Entry> {
-        self.buf
-            .iter()
-            .filter(|e| cursor.is_none_or(|c| e.0 > c))
-            .cloned()
-            .collect()
+    fn after(&self, cursor: EventId) -> VecDeque<Entry> {
+        self.buf.iter().filter(|e| e.0 > cursor).cloned().collect()
     }
 }
 
 /// One subscriber's position: the backlog still to drain, the live receiver,
 /// and the cursor — the last id it has passed, delivered or not, so a lag can
-/// be refilled from the ring without re-sending or skipping anything.
+/// be refilled from the ring without re-sending or skipping anything. Zero
+/// when it attached before anything was published, so that a lag from there is
+/// still measured against the ring rather than waved through.
 struct Subscription {
     inner: Arc<Inner>,
     kb: KbSlug,
     backlog: VecDeque<Entry>,
     rx: broadcast::Receiver<Entry>,
-    cursor: Option<EventId>,
+    cursor: EventId,
 }
 
 enum Step {
@@ -110,10 +104,9 @@ impl Subscription {
                     let ring = self.inner.ring.lock().expect("ring mutex not poisoned");
                     self.rx = self.inner.tx.subscribe();
                     let refill = ring.after(self.cursor);
-                    let gap = match (self.cursor, ring.oldest()) {
-                        (Some(cursor), Some(oldest)) => oldest.0 > cursor.0 + 1,
-                        _ => false,
-                    };
+                    let gap = ring
+                        .oldest()
+                        .is_some_and(|oldest| oldest.0 > self.cursor.0 + 1);
                     drop(ring);
                     if gap {
                         return Step::Lagged;
@@ -125,10 +118,10 @@ impl Subscription {
             }
         };
         // Events the broadcast delivered that the backlog already covered.
-        if self.cursor.is_some_and(|c| entry.0 <= c) {
+        if entry.0 <= self.cursor {
             return Step::Skip;
         }
-        self.cursor = Some(entry.0);
+        self.cursor = entry.0;
         if entry.1.kb == self.kb {
             Step::Yield(entry)
         } else {
@@ -161,22 +154,25 @@ impl EventPublisher for MemoryPublisher {
     ) -> Result<EventStream, SubscribeError> {
         let ring = self.inner.ring.lock().expect("ring mutex not poisoned");
         let rx = self.inner.tx.subscribe();
-        if let (Some(requested), Some(oldest), Some(latest)) = (after, ring.oldest(), ring.latest())
-            && requested < latest
-            && requested.0 + 1 < oldest.0
-        {
-            return Err(SubscribeError::Gone { requested, oldest });
+        // The last id ever handed out; zero before the first publish.
+        let latest = EventId(ring.next_id - 1);
+        if let Some(requested) = after {
+            // Behind the ring, events were dropped. Ahead of it — a client from
+            // before a restart of this process, whose ids began again at one —
+            // the ids it names never existed here and whatever was published
+            // since the restart is exactly what it has missed. Both are told to
+            // resync rather than silently resumed from "now".
+            let oldest = ring.oldest().unwrap_or(EventId(ring.next_id));
+            let behind = requested < latest && requested.0 + 1 < oldest.0;
+            if behind || requested > latest {
+                return Err(SubscribeError::Gone { requested, oldest });
+            }
         }
         // No position means "from now": nothing replays, and the cursor starts at
-        // whatever is latest so a lag can still be measured from here. A position
-        // ahead of the log (a client from before a restart of this process, whose
-        // ids began again at one) is treated the same way rather than swallowing
-        // every new event up to that number.
+        // the latest id so a lag can still be measured from here.
         let (backlog, cursor) = match after {
-            Some(after) if ring.latest().is_some_and(|latest| after < latest) => {
-                (ring.after(Some(after)), Some(after))
-            }
-            _ => (VecDeque::new(), ring.latest()),
+            Some(after) if after < latest => (ring.after(after), after),
+            _ => (VecDeque::new(), latest),
         };
         drop(ring);
 
@@ -196,7 +192,7 @@ impl EventPublisher for MemoryPublisher {
                     }
                     Step::Skip => {}
                     Step::Lagged => {
-                        let resume_after = sub.cursor.unwrap_or(EventId(0));
+                        let resume_after = sub.cursor;
                         return Some((Err(StreamError::Lagged { resume_after }), None));
                     }
                     Step::Closed => return None,
@@ -349,25 +345,93 @@ mod tests {
             ),
             "{err:?}"
         );
-        // A position in the future is not gone; it is simply live.
-        let mut future = publisher
+        // A position ahead of the log never existed here: gone, not live.
+        let err = publisher
             .subscribe(&kb("notes"), Some(EventId(99)))
             .await
+            .err()
+            .expect("gone");
+        assert!(
+            matches!(
+                err,
+                SubscribeError::Gone {
+                    requested: EventId(99),
+                    oldest: EventId(3)
+                }
+            ),
+            "{err:?}"
+        );
+        // Exactly at the latest id is caught up and live.
+        let mut caught_up = publisher
+            .subscribe(&kb("notes"), Some(EventId(5)))
+            .await
             .unwrap();
-        nothing_pending(&mut future).await;
+        nothing_pending(&mut caught_up).await;
         publisher.publish(written("notes", "f")).await.unwrap();
-        assert_eq!(next_id(&mut future).await, EventId(6));
+        assert_eq!(next_id(&mut caught_up).await, EventId(6));
     }
 
     #[tokio::test]
-    async fn a_position_ahead_of_an_empty_ring_is_live_not_gone() {
+    async fn a_position_ahead_of_an_empty_ring_is_gone_and_names_the_next_id() {
+        // A client from before this process restarted: nothing it asks for
+        // exists here, and it must resync rather than miss what comes next.
         let publisher = MemoryPublisher::new(3);
-        let mut stream = publisher
+        let err = publisher
             .subscribe(&kb("notes"), Some(EventId(7)))
+            .await
+            .err()
+            .expect("gone");
+        assert!(
+            matches!(
+                err,
+                SubscribeError::Gone {
+                    requested: EventId(7),
+                    oldest: EventId(1)
+                }
+            ),
+            "{err:?}"
+        );
+        // Zero is "from the very start" and is fine on an empty ring.
+        let mut stream = publisher
+            .subscribe(&kb("notes"), Some(EventId(0)))
             .await
             .unwrap();
         publisher.publish(written("notes", "a")).await.unwrap();
         assert_eq!(next_id(&mut stream).await, EventId(1));
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_to_an_empty_ring_that_lags_a_whole_ring_is_told_so() {
+        // Attached before the first publish, then never polled: the channel
+        // drops the first four, the ring keeps 5-8, and 1-4 are unrecoverable.
+        let publisher = MemoryPublisher::new(4);
+        let mut stream = publisher.subscribe(&kb("notes"), None).await.unwrap();
+        for key in 1..=8 {
+            publisher
+                .publish(written("notes", &key.to_string()))
+                .await
+                .unwrap();
+        }
+        let item = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("an item")
+            .expect("stream open");
+        assert!(
+            matches!(
+                item,
+                Err(StreamError::Lagged {
+                    resume_after: EventId(0)
+                })
+            ),
+            "{item:?}"
+        );
+        // And the reconnect that follows is refused rather than skipping 1-4.
+        let err = publisher
+            .subscribe(&kb("notes"), Some(EventId(0)))
+            .await
+            .err()
+            .expect("gone");
+        assert!(matches!(err, SubscribeError::Gone { .. }), "{err:?}");
     }
 
     #[tokio::test]

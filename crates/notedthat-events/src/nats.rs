@@ -91,14 +91,16 @@ fn event_subject(event: &ObjectEvent) -> String {
     format!("{SUBJECT_ROOT}.{}.{kind}", event.kb.as_str())
 }
 
-/// Whether resuming after `after` would skip events the stream no longer holds.
+/// Whether resuming after `after` cannot be honoured: events between it and
+/// the stream's first retained sequence were retained out, or `after` is ahead
+/// of the stream altogether (the stream was recreated, so the position never
+/// existed here and whatever was published since is exactly what is missed).
 ///
 /// `first` and `last` are the stream's current bounds. An empty stream reports
-/// `first == last + 1`: fresh, that is `(1, 0)` and nothing is gone; after
-/// everything aged out it is `(n + 1, n)`, and a position below `n` did miss
-/// events.
+/// `first == last + 1`: fresh, that is `(1, 0)`; after everything aged out it
+/// is `(n + 1, n)`, and a position below `n` did miss events.
 fn is_gone(after: EventId, first: u64, last: u64) -> bool {
-    after.0 < last && after.0 + 1 < first
+    (after.0 < last && after.0 + 1 < first) || after.0 > last
 }
 
 impl NatsPublisher {
@@ -144,7 +146,13 @@ impl NatsPublisher {
         }
         if info.config.max_age != desired.max_age {
             // The operator changed the retention; the stream follows the config.
-            js.update_stream(&desired)
+            // Only that field: the rest of the existing configuration (replicas,
+            // storage, limits) is the operator's and is kept as found.
+            let updated = StreamConfig {
+                max_age: desired.max_age,
+                ..info.config.clone()
+            };
+            js.update_stream(&updated)
                 .await
                 .map_err(|error| NatsError::Stream {
                     stream: config.stream.clone(),
@@ -207,9 +215,10 @@ impl EventPublisher for NatsPublisher {
                     oldest: EventId(first),
                 });
             }
-            // A position at or beyond the end, or ahead of the stream entirely,
-            // is simply live — the same answer the memory adapter gives.
-            Some(requested) if requested.0 >= last => DeliverPolicy::New,
+            // A position at or below the end starts one past it even when that
+            // is the very next sequence: `New` would skip anything published
+            // between reading the bounds above and the consumer coming up, which
+            // is exactly the window a reconnecting, caught-up client sits in.
             Some(requested) => DeliverPolicy::ByStartSequence {
                 start_sequence: requested.0 + 1,
             },
@@ -300,15 +309,18 @@ mod tests {
         assert!(!is_gone(EventId(9), 10, 20), "exactly at the edge");
         assert!(!is_gone(EventId(15), 10, 20));
         assert!(!is_gone(EventId(20), 10, 20), "caught up");
-        assert!(!is_gone(EventId(99), 10, 20), "ahead of the stream is live");
+        assert!(
+            is_gone(EventId(99), 10, 20),
+            "ahead of the stream never existed"
+        );
         // Empty stream after everything aged out: 4..=20 existed and are lost.
         assert!(is_gone(EventId(3), 21, 20));
         assert!(
             !is_gone(EventId(20), 21, 20),
             "caught up before the age-out"
         );
-        // Fresh empty stream.
+        // Fresh empty stream: from the start is fine, a stale position is not.
         assert!(!is_gone(EventId(0), 1, 0));
-        assert!(!is_gone(EventId(7), 1, 0));
+        assert!(is_gone(EventId(7), 1, 0), "the stream was recreated");
     }
 }

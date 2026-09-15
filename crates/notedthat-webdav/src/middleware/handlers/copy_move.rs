@@ -171,7 +171,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
             }
             Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
                 return event_publish_failed_response(
-                    "destination copied and source deleted; the source's change event not published. Retry MOVE to publish; the destination write is idempotent.",
+                    "destination copied and source deleted; the source's change event not published. Send DELETE for the source to publish it — DELETE of a missing key is idempotent and still publishes, whereas a retried MOVE would find no source.",
                 );
             }
             Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {

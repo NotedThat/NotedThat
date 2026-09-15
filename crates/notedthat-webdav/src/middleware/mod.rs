@@ -1549,7 +1549,7 @@ mod intercept_write_methods {
             assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(resp.headers().get("retry-after").unwrap(), "5");
             assert!(response_body(resp).await.contains(
-                "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Retry MOVE to re-enqueue the source tombstone; the destination write is idempotent."
+                "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source."
             ));
             assert!(storage.get_stored("notes", "dst.md").is_some());
             assert!(storage.get_stored("notes", "src.md").is_none());
