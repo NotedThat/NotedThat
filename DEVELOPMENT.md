@@ -158,6 +158,14 @@ under `--include-ignored`:
   derives the issuer from the request host, so the container binds host port `9091`
   — stop the Compose overlay before running it.
 
+- `crates/notedthat-server/tests/events_nats_e2e.rs` — two real servers sharing one NATS
+  JetStream container (`nats:2.12-alpine -js`): ids strictly increase across replicas, a
+  reconnect with `Last-Event-ID` to either replica replays exactly the missed events, a purged
+  position is `410`, and losing the broker fails `/readyz` and turns writes into `503` with
+  `Retry-After`. Its containerless siblings, `events_e2e.rs` and the events cases in
+  `fs_backend_e2e.rs`, run every write surface and the watcher over the `memory` log in the
+  ordinary pass.
+
 Its containerless sibling, `crates/notedthat-storage-fs/tests/storage_conformance_local.rs`,
 runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinary
 `cargo test` pass. That makes `FsStorage` a pivot: agreement in both directions means the
