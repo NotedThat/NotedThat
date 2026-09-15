@@ -303,7 +303,10 @@ mod tests {
         assert!(!is_gone(EventId(99), 10, 20), "ahead of the stream is live");
         // Empty stream after everything aged out: 4..=20 existed and are lost.
         assert!(is_gone(EventId(3), 21, 20));
-        assert!(!is_gone(EventId(20), 21, 20), "caught up before the age-out");
+        assert!(
+            !is_gone(EventId(20), 21, 20),
+            "caught up before the age-out"
+        );
         // Fresh empty stream.
         assert!(!is_gone(EventId(0), 1, 0));
         assert!(!is_gone(EventId(7), 1, 0));
