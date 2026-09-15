@@ -219,6 +219,7 @@ mod patch_route {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         });
 
         (router, outcome.etag.unwrap())
@@ -260,6 +261,7 @@ mod patch_route {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -781,6 +783,7 @@ mod line_range_get {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -940,6 +943,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -1153,6 +1157,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         };
         let router = build_router(state);
 
@@ -1243,6 +1248,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         };
         let router = build_router(state);
 

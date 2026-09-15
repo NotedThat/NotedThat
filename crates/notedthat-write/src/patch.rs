@@ -5,12 +5,9 @@ use notedthat_core::{
     ByteRange, ConditionalHeaders, KbSlug, LineIndex, LineRange, ObjectPath, PutOutcome, Storage,
     StorageError,
 };
-use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc::Sender;
 
 use crate::WriteError;
-
-pub(crate) mod indexing;
+use crate::sinks::WriteSinks;
 
 /// Specifies how an object's bytes should be spliced.
 #[derive(Debug, Clone)]
@@ -59,7 +56,7 @@ pub struct PatchRequest<'a> {
 /// object is too large to patch, storage rejects the internal CAS, or the indexer queue is full.
 pub async fn patch(
     storage: &dyn Storage,
-    indexer_tx: &Sender<IndexEvent>,
+    sinks: &WriteSinks<'_>,
     request: PatchRequest<'_>,
 ) -> Result<PutOutcome, WriteError> {
     const MAX_ATTEMPTS: u32 = 3;
@@ -151,6 +148,7 @@ pub async fn patch(
         let content_type = caller_content_type
             .or(read.meta.content_type.as_deref())
             .unwrap_or("application/octet-stream");
+        let new_size = bytes_len_u64(new_bytes.len())?;
         let outcome = match storage
             .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
             .await
@@ -163,7 +161,7 @@ pub async fn patch(
             Err(error) => return Err(WriteError::Storage(error)),
         };
 
-        indexing::enqueue_patch_upsert(indexer_tx, kb, path, &outcome)?;
+        crate::commit::after_write(sinks, kb, path, &outcome, new_size, content_type).await?;
 
         return Ok(outcome);
     }

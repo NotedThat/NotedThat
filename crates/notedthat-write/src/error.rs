@@ -2,6 +2,24 @@
 
 use notedthat_core::{Error as CoreError, StorageError};
 
+/// What a write had already done to storage when a later step failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteEffect {
+    /// The bytes are stored under the key.
+    Stored,
+    /// The key is gone.
+    Deleted,
+}
+
+impl std::fmt::Display for WriteEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Stored => "stored",
+            Self::Deleted => "deleted",
+        })
+    }
+}
+
 /// Errors returned by shared write operations.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -25,6 +43,15 @@ pub enum WriteError {
     /// Indexer queue was full while enqueueing a tombstone.
     #[error("indexer queue full during tombstone")]
     IndexerBackpressureTombstone,
+    /// The event log refused the change after storage had already taken it.
+    ///
+    /// Mirrors the indexer backpressure variants: the caller answers 503 with
+    /// `Retry-After` and a retried write publishes the event (D38, D54).
+    #[error("change event not published after the object was {after}")]
+    EventPublishFailed {
+        /// What storage had already done by the time publishing failed.
+        after: WriteEffect,
+    },
     /// Object body exceeds the `NOTEDTHAT_MAX_PATCHABLE_SIZE` limit before or after splice.
     #[error("patch payload too large: {size} bytes (limit {limit})")]
     PatchTooLarge {

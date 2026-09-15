@@ -27,6 +27,28 @@ pub enum ApiError {
     /// Indexer queue was full while enqueueing a tombstone (DELETE).
     #[error("indexer tombstone backpressure")]
     IndexerBackpressureTombstone,
+    /// The change event could not be published after storage had already
+    /// taken the write (D54). Answered like indexer backpressure: 503 with
+    /// `Retry-After`, so the client retries the idempotent write.
+    #[error("change event not published after the object was {after}")]
+    EventPublishFailed {
+        /// What storage had already done.
+        after: notedthat_write::WriteEffect,
+    },
+    /// A `Last-Event-ID` older than what the event log retains.
+    #[error("events after {requested} are no longer retained; oldest retained is {oldest}")]
+    EventsGone {
+        /// The position the subscriber asked to resume after.
+        requested: notedthat_core::EventId,
+        /// The oldest position still held.
+        oldest: notedthat_core::EventId,
+    },
+    /// The event log could not be subscribed to.
+    #[error("event backend unavailable: {message}")]
+    EventsUnavailable {
+        /// What the adapter reported.
+        message: String,
+    },
     /// A domain error from `notedthat-core`.
     #[error(transparent)]
     Core(#[from] CoreError),
@@ -114,6 +136,9 @@ impl From<notedthat_write::WriteError> for ApiError {
             notedthat_write::WriteError::IndexerBackpressureTombstone => {
                 Self::IndexerBackpressureTombstone
             }
+            notedthat_write::WriteError::EventPublishFailed { after } => {
+                Self::EventPublishFailed { after }
+            }
             notedthat_write::WriteError::PatchLineOutOfRange {
                 total_lines,
                 total_bytes,
@@ -174,9 +199,13 @@ impl ApiError {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::IndexerBackpressureUpsert | Self::IndexerBackpressureTombstone => {
+            Self::IndexerBackpressureUpsert
+            | Self::IndexerBackpressureTombstone
+            | Self::EventPublishFailed { .. }
+            | Self::EventsUnavailable { .. } => {
                 (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
             }
+            Self::EventsGone { .. } => (StatusCode::GONE, "gone"),
             Self::Core(CoreError::InvalidInput { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
@@ -250,6 +279,24 @@ impl ApiError {
     }
 }
 
+impl ApiErrorResponse {
+    /// The D38 shape: storage already did the work, a queue behind it did not,
+    /// and the idempotent request should simply be repeated.
+    fn retry_later(request_id: String, message: String) -> Response {
+        let body = ErrorBody {
+            error: "backend_unavailable",
+            message,
+            request_id,
+        };
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(RETRY_AFTER, "5")],
+            Json(body),
+        )
+            .into_response()
+    }
+}
+
 impl IntoResponse for ApiErrorResponse {
     fn into_response(self) -> Response {
         // Line-mode 416: emit Content-Range: lines */<total> + X-Content-Range-Bytes: */<total_bytes>.
@@ -297,30 +344,33 @@ impl IntoResponse for ApiErrorResponse {
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
             ApiError::IndexerBackpressureUpsert => {
-                let body = ErrorBody {
-                    error: "backend_unavailable",
-                    message: "object stored; indexer queue full — retry to re-enqueue".to_string(),
-                    request_id: self.request_id,
-                };
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    [(RETRY_AFTER, "5")],
-                    Json(body),
-                )
-                    .into_response();
+                return Self::retry_later(
+                    self.request_id,
+                    "object stored; indexer queue full — retry to re-enqueue".to_string(),
+                );
             }
             ApiError::IndexerBackpressureTombstone => {
-                let body = ErrorBody {
-                    error: "backend_unavailable",
-                    message: "deleted from storage; retry to clear from search index".to_string(),
-                    request_id: self.request_id,
+                return Self::retry_later(
+                    self.request_id,
+                    "deleted from storage; retry to clear from search index".to_string(),
+                );
+            }
+            ApiError::EventPublishFailed { after } => {
+                let message = match after {
+                    notedthat_write::WriteEffect::Stored => {
+                        "object stored; change event not published — retry to publish"
+                    }
+                    notedthat_write::WriteEffect::Deleted => {
+                        "deleted from storage; change event not published — retry to publish"
+                    }
                 };
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    [(RETRY_AFTER, "5")],
-                    Json(body),
-                )
-                    .into_response();
+                return Self::retry_later(self.request_id, message.to_string());
+            }
+            ApiError::EventsUnavailable { message } => {
+                return Self::retry_later(
+                    self.request_id,
+                    format!("event backend unavailable: {message}"),
+                );
             }
             ApiError::ReplaceAmbiguous { count } => {
                 let body = ReplaceAmbiguousBody {
@@ -392,6 +442,7 @@ mod tests {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -412,6 +463,7 @@ mod tests {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -1130,6 +1182,7 @@ mod tests {
                 max_patchable_size: 16 * 1024 * 1024,
                 indexer_tx,
                 searcher: Arc::new(crate::testing::NoopSearcher),
+                events: None,
             })
         }
 

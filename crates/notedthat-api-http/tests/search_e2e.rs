@@ -218,6 +218,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher,
+        events: None,
     };
 
     let router = build_router(state);
@@ -250,6 +251,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     };
     build_router(state)
 }
