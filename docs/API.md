@@ -1689,11 +1689,33 @@ Note: `display_name`, `description`, and `perms` are post-v1 (HTTP list endpoint
 
 #### `search`
 
-Hybrid semantic + keyword search across a knowledge base.
+Hybrid semantic + keyword search across one or more knowledge bases in a single call.
 
-**Arguments**: `kb` (string), `query` (string), `filters?` (object with optional `mime`, `concept_type`, and `tags`), `limit?` (u32). Type matching is exact; tags match any supplied value; different fields are AND-composed.
+**Arguments**: `kb?` (array of slugs), `query` (string), `filters?` (object with optional `mime`, `concept_type`, and `tags`), `limit?` (u32). Type matching is exact; tags match any supplied value; different fields are AND-composed.
 
-**Response**: `{ "hits": [SearchHit] }` where each `SearchHit` has `object_key`, `byte_start`, `byte_end`, `heading_path`, `score`, `preview`, and optional `okf` concept metadata. See [OKF support](OKF.md) for the metadata shape and upgrade steps.
+- `kb` is always a list, even for one knowledge base: `["whatwg"]`. A bare string is rejected. Slugs come from `list_knowledgebases`; listing a slug twice is `invalid_request`.
+- Omit `kb` (or pass `[]`) to search every knowledge base the caller can see — the same set `list_knowledgebases` returns.
+- `limit` is **per knowledge base** (default 10, maximum 50), not a cap on the whole request.
+
+The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, at most 8 in flight at once, as the calling identity; the HTTP route itself stays single-slug.
+
+**Response**: one group per knowledge base, in request order (or the listing's order when `kb` was omitted), each keeping that knowledge base's own ranking. Every hit names its knowledge base so a flattened list stays unambiguous.
+
+```json
+{
+  "results": [
+    { "kb": "whatwg", "hits": [ { "kb": "whatwg", "object_key": "dom.md", "byte_start": 0, "byte_end": 1024, "score": 0.5, "preview": "…" } ] },
+    { "kb": "odf",    "hits": [ { "kb": "odf",    "object_key": "v1.3/part2-packages.md", "byte_start": 0, "byte_end": 900, "score": 0.5, "preview": "…" } ] }
+  ],
+  "skipped": []
+}
+```
+
+Each hit otherwise has the HTTP `SearchHit` fields: `object_key`, `byte_start`, `byte_end`, `heading_path`, `score`, `preview`, and optional `okf` concept metadata. See [OKF support](OKF.md) for the metadata shape and upgrade steps.
+
+**No cross-knowledge-base ranking.** The groups are not merged and no request-wide order is implied. `score` is a reciprocal-rank fusion value computed inside one knowledge base's collection (see *Score semantics* above), so every knowledge base's top hit scores the same whatever its relevance; a merged sort would be an arbitrary interleave, not a ranking.
+
+**Failures.** With an explicit `kb` list, any knowledge base that cannot be searched fails the whole call — a slug the server does not declare is `not_found`, one the caller's access rules deny is `forbidden` — and the error message names the slug, e.g. `forbidden (knowledge base "hr")`. With `kb` omitted, a knowledge base that is visible but refuses search (`forbidden`, or the concealed `not_found`) is dropped and its slug listed under `skipped`, so the caller can see coverage; any other failure (`invalid_request`, `backend_unavailable`, a transport error) still fails the whole call and names the knowledge base. `skipped` is always present and always empty for an explicit list.
 
 #### `read`
 

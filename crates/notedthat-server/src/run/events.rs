@@ -2,7 +2,7 @@
 //!
 //! The one place at startup that reaches a broker: `backends_from_config` is
 //! connectionless by design, and a `nats` deployment must refuse to start
-//! rather than run without its log (D39, D54).
+//! rather than run without its log (D39, D55).
 
 use std::sync::Arc;
 

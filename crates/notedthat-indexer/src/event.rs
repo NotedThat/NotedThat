@@ -11,7 +11,7 @@ use notedthat_core::{EventSource, KbSlug, ObjectPath};
 ///
 /// The worker does the same work either way; the distinction survives only so
 /// the change event it publishes on the `fs` backend can say which one found
-/// the change (D54).
+/// the change (D55).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshOrigin {
     /// The filesystem watcher reported the key.

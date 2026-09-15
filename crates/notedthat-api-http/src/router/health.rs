@@ -12,7 +12,7 @@ pub(super) async fn healthz() -> impl IntoResponse {
 }
 
 /// Ready unless a configured event log says it cannot take or serve events —
-/// the one backend with a cheap, connection-state answer today (D39, D54).
+/// the one backend with a cheap, connection-state answer today (D39, D55).
 pub(super) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     if let Some(events) = &state.events
         && !events.ready()

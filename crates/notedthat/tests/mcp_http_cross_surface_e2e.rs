@@ -369,7 +369,7 @@ async fn poll_mcp_search_hit(
             id,
             "search",
             serde_json::json!({
-                "kb": "notes",
+                "kb": ["notes"],
                 "query": phrase,
                 "limit": 5,
             }),
@@ -379,10 +379,13 @@ async fn poll_mcp_search_hit(
 
         if response.get("error").is_none() {
             let search_result = mcp_json_content(&response);
-            if let Some(hit) = search_result["hits"].as_array().and_then(|hits| {
-                hits.iter()
-                    .find(|hit| hit["object_key"].as_str() == Some("e2e.md"))
-            }) {
+            if let Some(hit) = search_result["results"][0]["hits"]
+                .as_array()
+                .and_then(|hits| {
+                    hits.iter()
+                        .find(|hit| hit["object_key"].as_str() == Some("e2e.md"))
+                })
+            {
                 return Some(hit.clone());
             }
         }
@@ -553,6 +556,143 @@ async fn mcp_http_write_search_identity() {
     server_handle.abort();
 }
 
+/// Poll MCP `search` with `arguments` until `ready` accepts the answer, or
+/// give up at `timeout`. A JSON-RPC error is never accepted.
+async fn poll_mcp_search_until(
+    client: &reqwest::Client,
+    mcp_url: &str,
+    arguments: serde_json::Value,
+    timeout: Duration,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut id = 500_u64;
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return None;
+        }
+        let response = mcp_call_tool(client, mcp_url, id, "search", arguments.clone()).await;
+        id += 1;
+        if response.get("error").is_none() {
+            let answer = mcp_json_content(&response);
+            if ready(&answer) {
+                return Some(answer);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+#[tokio::test]
+async fn mcp_http_search_spans_knowledge_bases() {
+    // Given: two knowledge bases, each holding one document, all in-process
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let config = test_config_with_kbs_and_mcp_http(&["alpha", "beta"], http_addr);
+    let backends = in_memory_backends();
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run_with(config, backends)
+            .await
+            .expect("server run failed");
+    });
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{http_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
+
+    let client = reqwest::Client::new();
+    for kb in ["alpha", "beta"] {
+        let put = client
+            .put(format!("{http_url}/api/v1/knowledgebases/{kb}/{kb}.md"))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Content-Type", "text/markdown")
+            .body(format!("# {kb}\n\nthe definition of a document in {kb}\n"))
+            .send()
+            .await
+            .expect("PUT should send");
+        assert!(put.status().is_success(), "PUT into {kb}: {}", put.status());
+    }
+    let initialize = mcp_request(
+        &client,
+        &mcp_url,
+        0,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "notedthat-e2e", "version": "0" }
+        }),
+    )
+    .await;
+    assert!(initialize.get("result").is_some(), "{initialize}");
+
+    let both_have_a_hit = |answer: &serde_json::Value| {
+        answer["results"].as_array().is_some_and(|groups| {
+            groups.len() == 2
+                && groups
+                    .iter()
+                    .all(|g| !g["hits"].as_array().unwrap_or(&vec![]).is_empty())
+        })
+    };
+
+    // When: one call names both knowledge bases, beta first
+    let answer = poll_mcp_search_until(
+        &client,
+        &mcp_url,
+        serde_json::json!({"kb": ["beta", "alpha"], "query": "definition of a document", "limit": 5}),
+        Duration::from_secs(40),
+        both_have_a_hit,
+    )
+    .await
+    .expect("both knowledge bases should answer within 40 s");
+
+    // Then: one group per knowledge base in request order, every hit naming
+    // its knowledge base, nothing skipped
+    let groups = answer["results"].as_array().unwrap();
+    assert_eq!(groups[0]["kb"], "beta", "{answer}");
+    assert_eq!(groups[1]["kb"], "alpha", "{answer}");
+    assert_eq!(groups[0]["hits"][0]["kb"], "beta", "{answer}");
+    assert_eq!(groups[0]["hits"][0]["object_key"], "beta.md", "{answer}");
+    assert_eq!(groups[1]["hits"][0]["kb"], "alpha", "{answer}");
+    assert_eq!(groups[1]["hits"][0]["object_key"], "alpha.md", "{answer}");
+    assert_eq!(answer["skipped"], serde_json::json!([]), "{answer}");
+
+    // When: the list names a knowledge base the server has not declared
+    let refused = mcp_call_tool(
+        &client,
+        &mcp_url,
+        1,
+        "search",
+        serde_json::json!({"kb": ["alpha", "nope"], "query": "definition of a document"}),
+    )
+    .await;
+
+    // Then: the whole call fails, and the error names the slug
+    let message = refused["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("an unknown slug should fail the call: {refused}"));
+    assert!(message.starts_with("not_found"), "{message}");
+    assert!(message.contains("\"nope\""), "{message}");
+
+    // When: the call names no knowledge base at all
+    let answer = poll_mcp_search_until(
+        &client,
+        &mcp_url,
+        serde_json::json!({"query": "definition of a document"}),
+        Duration::from_secs(10),
+        both_have_a_hit,
+    )
+    .await
+    .expect("an omitted kb should search every knowledge base");
+
+    // Then: every declared knowledge base is searched, in the order the API
+    // lists them, and none is skipped for the service token
+    let groups = answer["results"].as_array().unwrap();
+    assert_eq!(groups[0]["kb"], "alpha", "{answer}");
+    assert_eq!(groups[1]["kb"], "beta", "{answer}");
+    assert_eq!(answer["skipped"], serde_json::json!([]), "{answer}");
+
+    server_handle.abort();
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn mcp_http_write_stdio_search_identity() {
@@ -644,14 +784,14 @@ async fn mcp_http_write_stdio_search_identity() {
         1,
         "search",
         serde_json::json!({
-            "kb": "notes",
+            "kb": ["notes"],
             "query": phrase,
             "limit": 5,
         }),
     )
     .await;
     let stdio_result = mcp_json_content(&stdio_search);
-    let stdio_hit = stdio_result["hits"]
+    let stdio_hit = stdio_result["results"][0]["hits"]
         .as_array()
         .and_then(|hits| {
             hits.iter()

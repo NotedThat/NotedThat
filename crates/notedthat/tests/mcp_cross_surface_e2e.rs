@@ -285,7 +285,7 @@ async fn poll_mcp_search(
             id,
             "search",
             &serde_json::json!({
-                "kb": kb,
+                "kb": [kb],
                 "query": phrase,
                 "limit": 5,
             }),
@@ -317,7 +317,7 @@ async fn poll_mcp_search_gone(
             id,
             "search",
             &serde_json::json!({
-                "kb": kb,
+                "kb": [kb],
                 "query": phrase,
                 "limit": 5,
             }),
@@ -355,7 +355,7 @@ fn search_response_hit_count(resp: &serde_json::Value) -> Option<usize> {
     content.iter().find_map(|item| {
         let text = item.get("text")?.as_str()?;
         let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
-        v.get("hits")?.as_array().map(Vec::len)
+        v["results"][0]["hits"].as_array().map(Vec::len)
     })
 }
 
@@ -363,8 +363,8 @@ fn text_contains_hits(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| {
-            v.get("hits")
-                .and_then(serde_json::Value::as_array)
+            v["results"][0]["hits"]
+                .as_array()
                 .map(|hits| !hits.is_empty())
         })
         .unwrap_or(false)

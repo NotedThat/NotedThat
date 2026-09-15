@@ -46,7 +46,7 @@ pub enum WriteError {
     /// The event log refused the change after storage had already taken it.
     ///
     /// Mirrors the indexer backpressure variants: the caller answers 503 with
-    /// `Retry-After` and a retried write publishes the event (D38, D54).
+    /// `Retry-After` and a retried write publishes the event (D38, D55).
     #[error("change event not published after the object was {after}")]
     EventPublishFailed {
         /// What storage had already done by the time publishing failed.

@@ -1,5 +1,5 @@
 //! `GET /api/v1/knowledgebases/{kb_slug}/events` — object change events as
-//! server-sent events (SPECIFICATIONS.md §6.14, D54).
+//! server-sent events (SPECIFICATIONS.md §6.14, D55).
 //!
 //! The stream is filtered per event by the same evaluator every other surface
 //! uses: a subscriber sees a key's events only if it may `list` that key, and

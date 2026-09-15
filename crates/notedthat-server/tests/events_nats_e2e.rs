@@ -1,7 +1,7 @@
 //! Two server replicas sharing one NATS `JetStream` log: ids are strictly
 //! increasing across both, a client reconnecting to the other replica with
 //! `Last-Event-ID` receives exactly what it missed, once, in order, and a
-//! position the stream has retained out is `410 gone` (D54).
+//! position the stream has retained out is `410 gone` (D55).
 //!
 //! `#[ignore]`d: needs Docker for the broker. Run with
 //! `cargo test -p notedthat-server --test events_nats_e2e -- --ignored`.

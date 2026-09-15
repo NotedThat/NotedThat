@@ -1,5 +1,7 @@
 //! HTTP client wrapping reqwest for `NotedThat` API access.
 
+use crate::error::{McpToolError, map_response};
+use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
@@ -106,6 +108,24 @@ impl NotedThatClient {
     pub(crate) fn authorized(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req.bearer_auth(&self.token)
             .header(SOURCE_HEADER, SOURCE_VALUE)
+    }
+
+    /// The slugs of the knowledge bases visible to this client's caller, in
+    /// the order the API lists them: `GET /api/v1/knowledgebases`.
+    ///
+    /// Shared by `list_knowledgebases`, `resources/list` and a `search` with
+    /// no `kb` so that all three discover the same set.
+    pub(crate) async fn list_kbs(&self) -> Result<Vec<String>, McpToolError> {
+        #[derive(Deserialize)]
+        struct ListKbsResponse {
+            knowledgebases: Vec<String>,
+        }
+
+        let url = self.api_v1_url(&["knowledgebases"]);
+        let resp = self.authorized(self.http.get(url)).send().await?;
+        let resp = map_response(resp).await?;
+        let body: ListKbsResponse = resp.json().await?;
+        Ok(body.knowledgebases)
     }
 }
 

@@ -28,7 +28,7 @@ pub enum ApiError {
     #[error("indexer tombstone backpressure")]
     IndexerBackpressureTombstone,
     /// The change event could not be published after storage had already
-    /// taken the write (D54). Answered like indexer backpressure: 503 with
+    /// taken the write (D55). Answered like indexer backpressure: 503 with
     /// `Retry-After`, so the client retries the idempotent write.
     #[error("change event not published after the object was {after}")]
     EventPublishFailed {
