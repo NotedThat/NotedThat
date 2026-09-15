@@ -129,6 +129,7 @@ async fn app_with(
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher,
+        events: None,
     })
 }
 

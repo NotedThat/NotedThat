@@ -34,6 +34,7 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
         max_patchable_size: max_body_size,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
     };
     build_router(state)
 }
@@ -824,6 +825,7 @@ async fn delete_enqueues_tombstone_on_success() {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
     };
     let router = build_router(state);
 
@@ -879,6 +881,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
     };
     let router = build_router(state);
 

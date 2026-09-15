@@ -322,6 +322,7 @@ mod basic_auth {
                 declared_kbs: Arc::new(BTreeMap::new()),
                 access_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
+                events: None,
             }
         }
 
@@ -1043,6 +1044,7 @@ mod intercept_write_methods {
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
                 access_policies: Arc::new(BTreeMap::new()),
                 indexer_tx,
+                events: None,
             }
         }
 

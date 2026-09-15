@@ -42,6 +42,7 @@ mod tests {
             max_patchable_size: 1024,
             indexer_tx,
             searcher: Arc::new(NoopSearcher),
+            events: None,
         })
     }
 

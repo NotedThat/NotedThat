@@ -7,8 +7,8 @@ use notedthat_write::sniff_content_type;
 use crate::state::WebDavState;
 
 use super::super::backpressure::{
-    copy_destination_backpressure_response, dav_error_body, move_destination_backpressure_response,
-    move_source_tombstone_backpressure_response,
+    copy_destination_backpressure_response, dav_error_body, event_publish_failed_response,
+    move_destination_backpressure_response, move_source_tombstone_backpressure_response,
 };
 use super::super::helpers::{object_target_or_collection_error, response_with_optional_etag};
 use super::super::path_validation::parse_webdav_uri_path;
@@ -117,7 +117,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
             .is_ok();
     let outcome = match notedthat_write::commit_copy(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(),
         &src_kb,
         &src_obj,
         &dst_obj,
@@ -140,6 +140,13 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
                 copy_destination_backpressure_response()
             };
         }
+        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
+            return event_publish_failed_response(if delete_source {
+                "destination copied; its change event not published; source unchanged. Retry MOVE to publish."
+            } else {
+                "destination copied; its change event not published. Retry COPY to publish."
+            });
+        }
         Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
             return StatusCode::PRECONDITION_FAILED.into_response();
         }
@@ -148,7 +155,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     if delete_source {
         match notedthat_write::commit_delete(
             state.storage.as_ref(),
-            &state.indexer_tx,
+            &state.sinks(),
             &src_kb,
             &src_obj,
             ConditionalHeaders {
@@ -161,6 +168,11 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
             Ok(()) => {}
             Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
                 return move_source_tombstone_backpressure_response("");
+            }
+            Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
+                return event_publish_failed_response(
+                    "destination copied and source deleted; the source's change event not published. Retry MOVE to publish; the destination write is idempotent.",
+                );
             }
             Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
                 return (

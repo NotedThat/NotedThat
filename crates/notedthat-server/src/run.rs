@@ -212,6 +212,7 @@ async fn build_infrastructure(
         access_policies: access_policies.clone(),
         indexer_tx: indexer_tx.clone(),
         staging_config: config.staging.clone(),
+        events: None,
     };
 
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
@@ -229,6 +230,7 @@ async fn build_infrastructure(
         max_patchable_size: config.max_patchable_size,
         indexer_tx,
         searcher,
+        events: None,
     };
 
     let worker_handle = tokio::spawn(
