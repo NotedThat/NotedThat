@@ -8,8 +8,8 @@ use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
 use notedthat_core::testing::StubTokenVerifier;
 use notedthat_core::{
-    AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath,
-    Storage, Verb, Who,
+    AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, EventPublisher, KbSlug,
+    KeyPattern, ObjectPath, Storage, Verb, Who,
 };
 use notedthat_indexer::Searcher;
 
@@ -64,27 +64,42 @@ pub(super) fn signed_in_everything() -> AccessRule {
 /// grant can be scoped to, a sibling prefix outside it, the internal namespace,
 /// and a key that sorts last.
 pub(super) async fn app(policies: BTreeMap<String, AccessPolicy>) -> axum::Router {
-    app_with(policies, Arc::new(NoopSearcher), authenticator()).await
+    app_with(policies, Arc::new(NoopSearcher), authenticator(), None).await
 }
 
 pub(super) async fn app_with_searcher(
     policies: BTreeMap<String, AccessPolicy>,
     searcher: Arc<dyn Searcher>,
 ) -> axum::Router {
-    app_with(policies, searcher, authenticator()).await
+    app_with(policies, searcher, authenticator(), None).await
 }
 
 pub(super) async fn app_with_authenticator(
     policies: BTreeMap<String, AccessPolicy>,
     authenticator: Authenticator,
 ) -> axum::Router {
-    app_with(policies, Arc::new(NoopSearcher), authenticator).await
+    app_with(policies, Arc::new(NoopSearcher), authenticator, None).await
+}
+
+/// The fixture app over an event log.
+pub(super) async fn app_with_events(
+    policies: BTreeMap<String, AccessPolicy>,
+    events: Arc<dyn EventPublisher>,
+) -> axum::Router {
+    app_with(
+        policies,
+        Arc::new(NoopSearcher),
+        authenticator(),
+        Some(events),
+    )
+    .await
 }
 
 async fn app_with(
     policies: BTreeMap<String, AccessPolicy>,
     searcher: Arc<dyn Searcher>,
     authenticator: Authenticator,
+    events: Option<Arc<dyn EventPublisher>>,
 ) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
@@ -129,7 +144,7 @@ async fn app_with(
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher,
-        events: None,
+        events,
     })
 }
 
