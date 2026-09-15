@@ -275,10 +275,17 @@ skills in `warden.toml`, once per model profile in `.github/warden/`. The same
 review can be run locally against any git range, with the model picked on the
 command line (the profile overlays are only layered in by the workflow):
 
+Every lane goes through our self-hosted LLM egress proxy, which holds the
+provider keys, queues MiniMax calls behind a global in-flight limit, and
+fixes tool calling on the third-party endpoint. Locally you need the proxy's
+token and the route for the provider you want — ask a maintainer; neither is
+in the repository on purpose. Warden mirrors these to what pi expects.
+
 ```sh
-# MiniMax is always used through its own plan/API (pi provider `minimax`),
-# never through another gateway.
-export WARDEN_MINIMAX_API_KEY=...    # for  -m minimax/MiniMax-M3
+# MiniMax M3: pi's built-in provider, pointed at the proxy's Anthropic-style
+# route. Never route MiniMax through another plan or gateway.
+export WARDEN_MINIMAX_API_KEY=<proxy token>
+export WARDEN_MINIMAX_BASE_URL=<proxy route for MiniMax, Anthropic API>
 
 # Review everything changed since origin/main
 npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3
@@ -287,13 +294,11 @@ npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3
 npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3 --json -o bakeoff/minimax.json
 ```
 
-To run the third-party profile locally, give pi the repo's provider
-catalogue and the endpoint (ask a maintainer for the values; they are not in
-the repository on purpose):
+The third-party profile also needs the repo's provider catalogue:
 
 ```sh
-export WARDEN_THIRDPARTY_API_KEY=...
-export WARDEN_THIRDPARTY_BASE_URL=...
+export WARDEN_THIRDPARTY_API_KEY=<proxy token>
+export WARDEN_THIRDPARTY_BASE_URL=<proxy route for the third-party endpoint>
 PI_CODING_AGENT_DIR=.github/warden/pi npx @sentry/warden@0.48.0 origin/main -m thirdparty/openai/gpt-oss-120b
 ```
 

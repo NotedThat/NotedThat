@@ -1,0 +1,38 @@
+# Warden model profile: DeepSeek V4 Flash on the same third-party
+# OpenAI-compatible endpoint as the GPT-OSS lane (pi provider `thirdparty`,
+# declared in pi/models.json; route and token come from the
+# WARDEN_THIRDPARTY_* secrets, both pointing at our egress proxy).
+#
+# A second lane on that endpoint, kept narrow: only the two built-in skills
+# from /warden.toml, because the endpoint rate-limits this model at more
+# than a couple of hunks in flight (see the runner note) and eight passes
+# per hunk would take hours. Its value is a third model family next to
+# MiniMax M3 and GPT-OSS: in the PR #138 bake-off it investigated every
+# hunk (up to 16 tool-calling turns) and reported nothing on a PR where the
+# other two lanes each posted a false positive it had explicitly considered
+# and rejected.
+#
+# The auxiliary lane MUST be set explicitly: left unset it falls back to
+# pi's own default, which is Anthropic.
+version = 1
+
+# Two hunks at a time. Four in flight got HTTP 429 on 29 of 80 calls and
+# killed every code-review hunk; one at a time was clean but needed 13
+# minutes for 32 hunks. The egress proxy does not queue this route (only
+# MiniMax), so the limit has to be respected here. Must live in this
+# overlay: the action prefers the base file's value when both set one.
+[runner]
+concurrency = 2
+
+# DeepSeek V4 Flash is a reasoning model; the endpoint accepted
+# `reasoning_effort` without error in the bake-off but surfaced no
+# reasoning content, so `high` is a request, not a guarantee. Same on the
+# auxiliary lane, where false positives are supposed to die.
+[defaults.agent]
+model = "thirdparty/deepseek-v4-flash-0731"
+maxTurns = 30
+effort = "high"
+
+[defaults.auxiliary]
+model = "thirdparty/deepseek-v4-flash-0731"
+effort = "high"
