@@ -3,6 +3,7 @@
 //! Behavior: one event at a time, batched embedding, drain on shutdown.
 
 mod chunks;
+mod last_seen;
 mod pipeline;
 mod points;
 mod snapshot;
@@ -12,8 +13,9 @@ use crate::{
     event::IndexEvent,
     vector_store::{PointSelector, VectorStore},
 };
-use notedthat_core::{KbSlug, ObjectPath, StagingConfig, Storage};
-use std::sync::Arc;
+use last_seen::LastSeen;
+use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -53,6 +55,14 @@ pub struct IndexerWorker {
     pub batch_size: usize,
     /// Directory configuration for private index snapshots.
     pub staging: StagingConfig,
+    /// Where detected changes are announced, when an events backend is configured.
+    ///
+    /// Only `Refresh` publishes: a write through `NotedThat` was announced by the
+    /// write path before its `Upsert` was even enqueued.
+    pub events: Option<Arc<dyn EventPublisher>>,
+    /// The last stamp this worker saw for each key, so the `fs` watcher's echo
+    /// of a write the server made itself is not announced a second time.
+    last_seen: Mutex<LastSeen>,
 }
 
 impl IndexerWorker {
@@ -73,7 +83,16 @@ impl IndexerWorker {
             shutdown,
             batch_size,
             staging: StagingConfig::default(),
+            events: None,
+            last_seen: Mutex::new(LastSeen::default()),
         }
+    }
+
+    /// Announce changes this worker detects on the given event log.
+    #[must_use]
+    pub fn with_event_publisher(mut self, events: Option<Arc<dyn EventPublisher>>) -> Self {
+        self.events = events;
+        self
     }
 
     /// Use the validated shared staging directory for index snapshots.
@@ -128,17 +147,79 @@ impl IndexerWorker {
         );
 
         let result = match event {
-            IndexEvent::Upsert { kb, object_key, .. } => {
-                self.handle_upsert(kb, object_key, Skip::Never).await
+            IndexEvent::Upsert {
+                kb,
+                object_key,
+                etag,
+                ..
+            } => {
+                self.remember(&kb, &object_key, Some(etag));
+                self.handle_upsert(kb, object_key, Skip::Never, None).await
             }
-            IndexEvent::Refresh { kb, object_key } => {
-                self.handle_upsert(kb, object_key, Skip::IfUnchanged).await
+            IndexEvent::Refresh {
+                kb,
+                object_key,
+                origin,
+            } => {
+                self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
+                    .await
             }
-            IndexEvent::Tombstone { kb, object_key } => self.handle_tombstone(kb, object_key).await,
+            IndexEvent::Tombstone { kb, object_key } => {
+                self.remember(&kb, &object_key, None);
+                self.handle_tombstone(kb, object_key).await
+            }
         };
 
         if let Err(message) = result {
             tracing::error!(target: "notedthat::indexing", error = %message, "INDEXING_FAILED");
+        }
+    }
+
+    /// Record the stamp a key was last seen with: its `ETag`, or `None` once deleted.
+    /// Kept only while there is a log to keep quiet.
+    fn remember(&self, kb: &KbSlug, object_key: &ObjectPath, etag: Option<String>) {
+        if self.events.is_none() {
+            return;
+        }
+        self.last_seen
+            .lock()
+            .expect("last-seen mutex not poisoned")
+            .record(kb, object_key, etag);
+    }
+
+    /// Whether `etag` differs from the stamp the key was last seen with — and so
+    /// whether a detected change is news rather than the echo of the server's
+    /// own write (D50) or of a change already announced.
+    fn is_news(&self, kb: &KbSlug, object_key: &ObjectPath, etag: Option<&str>) -> bool {
+        self.last_seen
+            .lock()
+            .expect("last-seen mutex not poisoned")
+            .differs(kb, object_key, etag)
+    }
+
+    /// Publish a detected change. Failure is logged and indexing goes on: there
+    /// is no caller here to hand a 503 to, and the next pass re-detects the key.
+    pub(crate) async fn announce(&self, event: ObjectEvent) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let etag = match &event.kind {
+            notedthat_core::ObjectEventKind::Written { etag, .. } => Some(etag.as_str()),
+            notedthat_core::ObjectEventKind::Deleted => None,
+        };
+        if !self.is_news(&event.kb, &event.object_key, etag) {
+            return;
+        }
+        self.remember(&event.kb, &event.object_key, etag.map(str::to_owned));
+        let (kb, path) = (event.kb.clone(), event.object_key.clone());
+        if let Err(error) = events.publish(event).await {
+            tracing::error!(
+                target: "notedthat::events",
+                kb = %kb.as_str(),
+                path = %path.as_str(),
+                %error,
+                "EVENT_PUBLISH_FAILED"
+            );
         }
     }
 

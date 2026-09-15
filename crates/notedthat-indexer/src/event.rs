@@ -1,10 +1,35 @@
 //! `IndexEvent` — the message type on the async indexing queue.
 //!
-//! Producer (in `notedthat-api-http`'s `commit()` and DELETE handler) enqueues events
-//! via `mpsc::Sender::try_send`. Consumer (`IndexerWorker` in this crate) drains via
+//! Producers enqueue events via `mpsc::Sender::try_send` (`notedthat-write`, after
+//! storage acknowledges) or `send` (the `fs` backend's watcher and reconcile pass in
+//! `notedthat-server`). Consumer (`IndexerWorker` in this crate) drains via
 //! `mpsc::Receiver::recv`. See §6.12 (Indexing queue) and D38 for semantics.
 
-use notedthat_core::{KbSlug, ObjectPath};
+use notedthat_core::{EventSource, KbSlug, ObjectPath};
+
+/// What raised an [`IndexEvent::Refresh`].
+///
+/// The worker does the same work either way; the distinction survives only so
+/// the change event it publishes on the `fs` backend can say which one found
+/// the change (D54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshOrigin {
+    /// The filesystem watcher reported the key.
+    Watch,
+    /// A comparison of the tree against the index reported the key.
+    Reconcile,
+}
+
+impl RefreshOrigin {
+    /// The source stamped on a change event this refresh publishes.
+    #[must_use]
+    pub fn source(self) -> EventSource {
+        match self {
+            Self::Watch => EventSource::FsWatch,
+            Self::Reconcile => EventSource::Reconcile,
+        }
+    }
+}
 
 /// A single indexing side-effect enqueued after a successful storage operation.
 ///
@@ -43,6 +68,8 @@ pub enum IndexEvent {
         kb: KbSlug,
         /// Object key in the KB bucket.
         object_key: ObjectPath,
+        /// What noticed the change.
+        origin: RefreshOrigin,
     },
     /// Object was deleted from S3; delete matching points from Qdrant.
     Tombstone {

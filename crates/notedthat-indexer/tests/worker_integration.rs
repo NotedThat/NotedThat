@@ -25,7 +25,7 @@ use notedthat_indexer::vector_store::{
 };
 use notedthat_indexer::{
     Embedder, EmbedderError, IndexEvent, IndexerWorker, OpenAiCompatibleConfig,
-    OpenAiCompatibleEmbedder, QdrantProvisioner,
+    OpenAiCompatibleEmbedder, QdrantProvisioner, RefreshOrigin,
 };
 use qdrant_client::qdrant::{
     RetrievedPoint, VectorsOutput, value::Kind, vectors_output::VectorsOptions,
@@ -501,6 +501,7 @@ async fn refresh_once(
     tx.send(IndexEvent::Refresh {
         kb: kb.clone(),
         object_key: opath(key),
+        origin: RefreshOrigin::Watch,
     })
     .await
     .unwrap();
@@ -1661,5 +1662,278 @@ impl VectorStore for FailingEtagLookup {
         query: HybridQuery,
     ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>, VectorStoreError> {
         self.inner.hybrid_search(kb, query).await
+    }
+}
+
+// ─── Detected changes are announced, once ──────────────────────────────────
+
+mod announcing {
+    use super::*;
+    use futures::StreamExt;
+    use notedthat_core::{EventId, EventPublisher, EventSource, ObjectEvent, ObjectEventKind};
+    use notedthat_events::MemoryPublisher;
+    use std::time::Duration;
+
+    /// Run one worker over `events`, with `publisher` as its event log, until the
+    /// channel closes.
+    async fn drive(
+        storage: Arc<MockStorage>,
+        store: Arc<dyn VectorStore>,
+        publisher: Arc<MemoryPublisher>,
+        events: Vec<IndexEvent>,
+    ) {
+        let (tx, rx) = mpsc::channel(events.len().max(1));
+        for event in events {
+            tx.send(event).await.unwrap();
+        }
+        drop(tx);
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+        make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
+            .with_event_publisher(Some(publisher as Arc<dyn EventPublisher>))
+            .run()
+            .await;
+    }
+
+    /// Everything the log holds for the test knowledge base.
+    async fn announced(publisher: &MemoryPublisher) -> Vec<ObjectEvent> {
+        let mut stream = publisher.subscribe(&kb(), Some(EventId(0))).await.unwrap();
+        let mut out = Vec::new();
+        while let Ok(Some(item)) =
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+        {
+            out.push(item.unwrap().1);
+        }
+        out
+    }
+
+    fn refresh(key: &str, origin: RefreshOrigin) -> IndexEvent {
+        IndexEvent::Refresh {
+            kb: kb(),
+            object_key: opath(key),
+            origin,
+        }
+    }
+
+    fn upsert(key: &str, etag: &str) -> IndexEvent {
+        IndexEvent::Upsert {
+            kb: kb(),
+            object_key: opath(key),
+            etag: etag.to_owned(),
+            mtime: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_detected_mp3_is_announced_even_though_it_is_never_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert_bytes(
+            kb().as_str(),
+            "memo.mp3",
+            Bytes::from_static(b"ID3\x03"),
+            "audio/mpeg",
+        );
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![refresh("memo.mp3", RefreshOrigin::Watch)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].object_key.as_str(), "memo.mp3");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+        assert_eq!(
+            events[0].kind,
+            ObjectEventKind::Written {
+                etag: MockStorage::etag_for(b"ID3\x03"),
+                size: 4,
+                mime: "audio/mpeg".into(),
+                mtime: 1_700_000_000,
+            }
+        );
+        assert_eq!(count_points(&store, &kb(), "memo.mp3").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_detected_deletion_is_announced_as_deleted_with_its_origin() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![refresh("gone.md", RefreshOrigin::Reconcile)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, ObjectEventKind::Deleted);
+        assert_eq!(events[0].source, EventSource::Reconcile);
+    }
+
+    #[tokio::test]
+    async fn a_write_upsert_is_never_announced_by_the_worker() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md", "\"whatever\"")],
+        )
+        .await;
+
+        assert!(announced(&publisher).await.is_empty());
+        assert!(
+            count_points(&store, &kb(), "note.md").await > 0,
+            "still indexed"
+        );
+    }
+
+    /// The `fs` watcher reports the server's own write back to it (D50). The write
+    /// path already announced it; the echo must not.
+    #[tokio::test]
+    async fn the_watchers_echo_of_an_upsert_is_not_announced_again() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert_bytes(
+            kb().as_str(),
+            "memo.mp3",
+            Bytes::from_static(b"ID3\x03"),
+            "audio/mpeg",
+        );
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let etag = MockStorage::etag_for(b"ID3\x03");
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                upsert("memo.mp3", &etag),
+                refresh("memo.mp3", RefreshOrigin::Watch),
+                refresh("memo.mp3", RefreshOrigin::Reconcile),
+            ],
+        )
+        .await;
+
+        assert!(
+            announced(&publisher).await.is_empty(),
+            "the echo carries the stamp the write already announced"
+        );
+
+        // A genuinely new stamp is news again.
+        storage.insert_bytes(
+            kb().as_str(),
+            "memo.mp3",
+            Bytes::from_static(b"ID3\x04"),
+            "audio/mpeg",
+        );
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![refresh("memo.mp3", RefreshOrigin::Watch)],
+        )
+        .await;
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].source, EventSource::FsWatch);
+    }
+
+    #[tokio::test]
+    async fn a_deletion_the_server_made_is_not_announced_again_by_its_echo() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                IndexEvent::Tombstone {
+                    kb: kb(),
+                    object_key: opath("gone.md"),
+                },
+                refresh("gone.md", RefreshOrigin::Watch),
+            ],
+        )
+        .await;
+
+        assert!(announced(&publisher).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_publish_does_not_stop_indexing() {
+        struct Refusing;
+
+        #[async_trait]
+        impl EventPublisher for Refusing {
+            async fn publish(
+                &self,
+                _event: ObjectEvent,
+            ) -> Result<EventId, notedthat_core::PublishError> {
+                Err(notedthat_core::PublishError::Unavailable {
+                    message: "down".into(),
+                })
+            }
+
+            async fn subscribe(
+                &self,
+                _kb: &KbSlug,
+                _after: Option<EventId>,
+            ) -> Result<notedthat_core::EventStream, notedthat_core::SubscribeError> {
+                unimplemented!()
+            }
+
+            fn ready(&self) -> bool {
+                false
+            }
+
+            fn backend_name(&self) -> &'static str {
+                "refusing"
+            }
+        }
+
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(refresh("note.md", RefreshOrigin::Watch))
+            .await
+            .unwrap();
+        drop(tx);
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+        make_worker_with_batch(
+            storage,
+            embedder,
+            Arc::new(store.clone()),
+            rx,
+            CancellationToken::new(),
+            32,
+        )
+        .with_event_publisher(Some(Arc::new(Refusing)))
+        .run()
+        .await;
+
+        assert!(count_points(&store, &kb(), "note.md").await > 0);
     }
 }
