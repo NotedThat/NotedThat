@@ -2471,6 +2471,7 @@ dependencies = [
  "notedthat-core",
  "serde_json",
  "temp-env",
+ "testcontainers",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

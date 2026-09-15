@@ -28,6 +28,9 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 temp-env = "0.3"
+# One NATS container, for tests/events_integration_nats.rs only: the same scenario
+# set its memory sibling runs in the ordinary pass, over a real JetStream stream.
+testcontainers = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
