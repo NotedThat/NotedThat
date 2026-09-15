@@ -6,8 +6,8 @@ use crate::chunker;
 use crate::vector_store::PointSelector;
 use futures::StreamExt;
 use notedthat_core::{
-    ConditionalHeaders, KbSlug, ObjectMeta, ObjectPath, StagedBody, StorageError,
-    search::ConceptMetadata,
+    ConditionalHeaders, EventSource, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StagedBody,
+    StorageError, search::ConceptMetadata,
 };
 use std::sync::{Arc, Mutex};
 
@@ -23,11 +23,16 @@ struct PreparedSnapshot {
 }
 
 impl IndexerWorker {
+    /// `announce` names the source to publish a change event under, for
+    /// changes this worker detected rather than was told about. It fires from
+    /// the `HEAD` result, before any indexability check, so an mp3 dropped into
+    /// the tree is announced even though it is never indexed.
     pub(super) async fn handle_upsert(
         &self,
         kb: KbSlug,
         object_key: ObjectPath,
         skip: Skip,
+        announce: Option<EventSource>,
     ) -> Result<(), String> {
         let head = match self
             .storage
@@ -42,10 +47,23 @@ impl IndexerWorker {
                     path = %object_key.as_str(),
                     "object not found on re-read; treating as tombstone"
                 );
+                if let Some(source) = announce {
+                    self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
+                        .await;
+                }
                 return self.handle_tombstone(kb, object_key).await;
             }
             Err(err) => return Err(format!("storage.head_object failed: {err}")),
         };
+        if let Some(source) = announce {
+            self.announce(ObjectEvent::from_meta(
+                kb.clone(),
+                object_key.clone(),
+                &head,
+                source,
+            ))
+            .await;
+        }
 
         let mime = head.content_type.clone().unwrap_or_default();
         if !is_indexable(&mime) {

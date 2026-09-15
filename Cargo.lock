@@ -2482,6 +2482,7 @@ dependencies = [
  "bytes",
  "futures",
  "notedthat-core",
+ "notedthat-events",
  "notedthat-indexer",
  "pulldown-cmark",
  "qdrant-client",
