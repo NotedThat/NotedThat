@@ -96,9 +96,9 @@ fn event_subject(event: &ObjectEvent) -> String {
 /// of the stream altogether (the stream was recreated, so the position never
 /// existed here and whatever was published since is exactly what is missed).
 ///
-/// `first` and `last` are the stream's current bounds. An empty stream reports
-/// `first == last + 1`: fresh, that is `(1, 0)`; after everything aged out it
-/// is `(n + 1, n)`, and a position below `n` did miss events.
+/// `first` and `last` are the stream's current bounds. A stream that has never
+/// held a message reports `(0, 0)`; once everything aged out of it, `(n + 1, n)`,
+/// and a position below `n` did miss events.
 fn is_gone(after: EventId, first: u64, last: u64) -> bool {
     (after.0 < last && after.0 + 1 < first) || after.0 > last
 }
@@ -210,9 +210,11 @@ impl EventPublisher for NatsPublisher {
 
         let deliver_policy = match after {
             Some(requested) if is_gone(requested, first, last) => {
+                // A never-written stream reports `first == 0`; the oldest id it
+                // can ever answer for is the first sequence it will hand out.
                 return Err(SubscribeError::Gone {
                     requested,
-                    oldest: EventId(first),
+                    oldest: EventId(first.max(1)),
                 });
             }
             // A position at or below the end starts one past it even when that
@@ -319,8 +321,8 @@ mod tests {
             !is_gone(EventId(20), 21, 20),
             "caught up before the age-out"
         );
-        // Fresh empty stream: from the start is fine, a stale position is not.
-        assert!(!is_gone(EventId(0), 1, 0));
-        assert!(is_gone(EventId(7), 1, 0), "the stream was recreated");
+        // Never-written stream: from the start is fine, a stale position is not.
+        assert!(!is_gone(EventId(0), 0, 0));
+        assert!(is_gone(EventId(7), 0, 0), "the stream was recreated");
     }
 }

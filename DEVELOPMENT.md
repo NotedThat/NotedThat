@@ -166,6 +166,15 @@ under `--include-ignored`:
   `fs_backend_e2e.rs`, run every write surface and the watcher over the `memory` log in the
   ordinary pass.
 
+- `crates/notedthat-events/tests/events_integration_nats.rs` — the event log integration
+  suite (`tests/support/event_log_scenarios.rs`, see "One suite, every backend" below) run
+  over a real JetStream stream: replay after a position, `Gone` for a retained-out or
+  ahead-of-log position, isolation per knowledge base, delivery once and in order. One
+  container for the run; the scenarios take turns on one stream that each recreates, because
+  JetStream refuses two streams capturing the adapter's subject root. Its containerless
+  sibling, `events_integration_memory.rs`, runs the same bodies over the ring in the
+  ordinary pass.
+
 Its containerless sibling, `crates/notedthat-storage-fs/tests/storage_conformance_local.rs`,
 runs the same scenarios through `FsStorage` and `InMemoryStorage` in the ordinary
 `cargo test` pass. That makes `FsStorage` a pivot: agreement in both directions means the
@@ -194,6 +203,15 @@ None of these files contains a test body. Each supplies a fixture and calls
 that list** — every backend picks it up, which is what stops one backend's coverage
 from drifting ahead of the others'. The scenario name becomes the knowledge base slug, so it
 must be a valid `KbSlug`: at most 40 characters of `[a-z0-9_]`.
+
+The event log has the same arrangement in `crates/notedthat-events/tests/`:
+`support/event_log_scenarios.rs` holds the bodies and the `event_log_scenarios!` list,
+`events_integration_memory.rs` expands it over `MemoryPublisher` in the ordinary pass and
+`events_integration_nats.rs` over `NatsPublisher` under `--include-ignored`. Scenarios take an
+`EventLogFixture` rather than the bare `EventPublisher` for one reason: "make the oldest
+events unretrievable" is the single operation the contract needs that the adapters do
+differently (the ring evicts past its capacity, the stream is purged), so it is the
+fixture's `retain_out`, and everything else is asserted through the trait alone.
 
 One scenario is one S3 bucket, and the S3 fixture's `-volume.max=200` is headroom for
 that count rather than a bound on it. Past 200 scenarios SeaweedFS runs out of volume
