@@ -9,7 +9,11 @@
 //! Run with: `cargo test -p notedthat-server --test fs_backend_e2e`
 #![allow(missing_docs)]
 
+#[path = "support/sse.rs"]
+mod sse;
+
 use notedthat_core::{KbSlug, TenantSlug};
+use notedthat_events::MemoryPublisher;
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{
     Config, EmbedderConfig, LogFormat, ServerQdrantConfig, StorageConfig,
@@ -149,6 +153,9 @@ async fn start_over(
 
     // The real adapter, not a substitute — only Qdrant and the embedder are stood in for.
     let store = existing.map_or_else(InMemoryVectorStore::new, |(store, _)| store);
+    // Every server here announces on a memory log, so the detected-change sources
+    // can be observed from outside.
+    let events = Arc::new(MemoryPublisher::new(256));
     let backends = Backends {
         storage: Arc::new(FsStorage::new(
             &fs_config,
@@ -157,7 +164,7 @@ async fn start_over(
         )),
         store: Arc::new(store.clone()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
-        events: None,
+        events: Some(events.clone()),
     };
 
     let handle = tokio::spawn(async move {
@@ -655,5 +662,126 @@ async fn a_file_deleted_while_the_server_was_down_is_forgotten_at_startup() {
     assert!(
         server.indexed().await.contains("survivor.md"),
         "only the deleted object should be forgotten"
+    );
+}
+
+// ─── Detected changes are announced on the event stream ─────────────────────
+
+/// Generous: the watcher debounces for half a second before it acts.
+const EVENT_WAIT: Duration = Duration::from_secs(15);
+
+async fn subscribe(server: &Server) -> sse::Subscription {
+    let response = reqwest::Client::new()
+        .get(server.url(&format!("/api/v1/knowledgebases/{}/events", server.kb)))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("subscribe");
+    sse::Subscription::open(response)
+}
+
+/// A file dropped into the tree by something other than `NotedThat` is announced as
+/// `fs-watch`, and so is its removal — the motivating case for an mp3 that nothing
+/// indexes, seen from the stream a transcription worker would sit on.
+///
+/// Dropped into an existing directory on purpose: a new directory is resolved by
+/// comparing its subtree against the index (D50), so files under it arrive as
+/// `reconcile` instead. Either way they arrive once.
+#[tokio::test]
+async fn a_file_dropped_into_the_tree_is_announced_by_the_watcher() {
+    let server = start().await;
+    let mut sub = subscribe(&server).await;
+
+    let dropped = server.bucket_dir().join("memo.mp3");
+    std::fs::write(&dropped, b"ID3\x03").expect("write");
+
+    let frames = sub.events(1, EVENT_WAIT).await;
+    assert_eq!(frames[0].event.as_deref(), Some("object.written"));
+    assert_eq!(frames[0].key(), "memo.mp3");
+    assert_eq!(frames[0].source(), "fs-watch");
+    let data = frames[0].data.as_ref().unwrap();
+    assert_eq!(data["size"], 4);
+    assert!(
+        data["etag"].as_str().is_some_and(|e| !e.is_empty()),
+        "{data}"
+    );
+
+    std::fs::remove_file(&dropped).expect("remove");
+    let frames = sub.events(1, EVENT_WAIT).await;
+    assert_eq!(frames[0].event.as_deref(), Some("object.deleted"));
+    assert_eq!(frames[0].key(), "memo.mp3");
+    assert_eq!(frames[0].source(), "fs-watch");
+
+    // A whole new directory: its files are found by the subtree comparison.
+    let nested = server.bucket_dir().join("inbox/voice.wav");
+    std::fs::create_dir_all(nested.parent().unwrap()).expect("mkdir");
+    std::fs::write(&nested, b"RIFF").expect("write");
+    let frames = sub.events(1, EVENT_WAIT).await;
+    assert_eq!(frames[0].key(), "inbox/voice.wav");
+    assert_eq!(frames[0].source(), "reconcile");
+}
+
+/// A change made while nothing was running is found by the startup comparison and
+/// announced as `reconcile`.
+#[tokio::test]
+async fn a_file_seeded_before_startup_is_announced_by_reconcile() {
+    let server = start_seeded(|dir| {
+        std::fs::write(dir.join("seeded.md"), "# seeded\n").expect("seed");
+    })
+    .await;
+
+    // The startup pass runs before the listener answers, so the event is already
+    // in the log; replay it from the start.
+    let response = reqwest::Client::new()
+        .get(server.url(&format!("/api/v1/knowledgebases/{}/events", server.kb)))
+        .bearer_auth(TOKEN)
+        .header("Last-Event-ID", "0")
+        .send()
+        .await
+        .expect("subscribe");
+    let mut sub = sse::Subscription::open(response);
+    let frames = sub.events(1, EVENT_WAIT).await;
+    let seeded = frames
+        .iter()
+        .find(|f| f.key() == "seeded.md")
+        .unwrap_or_else(|| panic!("no event for seeded.md in {frames:?}"));
+    assert_eq!(seeded.event.as_deref(), Some("object.written"));
+    assert_eq!(seeded.source(), "reconcile");
+}
+
+/// The watcher reports the server's own writes back to it (D50). The write already
+/// announced itself, so the echo must stay silent — proven by the next thing the
+/// watcher does announce being a different file.
+#[tokio::test]
+async fn the_servers_own_write_is_announced_once_not_again_by_its_echo() {
+    let server = start().await;
+    let mut sub = subscribe(&server).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .put(object_url(&server, "inbox/talk.mp3"))
+        .bearer_auth(TOKEN)
+        .header("Content-Type", "audio/mpeg")
+        .body(vec![0x49, 0x44, 0x33, 0x04])
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(response.status(), 201);
+    let frames = sub.events(1, EVENT_WAIT).await;
+    assert_eq!(frames[0].key(), "inbox/talk.mp3");
+    assert_eq!(frames[0].source(), "http");
+
+    // Give the watcher's debounce window time to elapse, then make it prove it
+    // worked through everything queued before this by touching a second file.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    std::fs::write(server.bucket_dir().join("probe.md"), "# probe\n").expect("probe");
+    let frames = sub.events(1, EVENT_WAIT).await;
+    assert_eq!(
+        frames
+            .iter()
+            .map(|f| (f.key().to_string(), f.source().to_string()))
+            .collect::<Vec<_>>(),
+        vec![("probe.md".to_string(), "fs-watch".to_string())],
+        "nothing but the probe may follow the write's own event"
     );
 }
