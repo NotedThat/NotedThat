@@ -1,0 +1,36 @@
+[package]
+name = "notedthat-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Object change event log adapters for NotedThat: in-process ring and NATS JetStream"
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+# Both adapters compile by default so the published binary can select either at
+# runtime. Test suites that only need the ring switch the broker client off.
+default = ["nats"]
+nats = ["dep:async-nats"]
+
+[dependencies]
+notedthat-core = { path = "../notedthat-core", version = "0.5.0" }
+async-nats = { workspace = true, optional = true }
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+temp-env = "0.3"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
