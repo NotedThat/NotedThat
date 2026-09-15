@@ -88,6 +88,7 @@ fn test_config(
         tenant_slug: TenantSlug::default(),
         listen_addr,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:6334".to_string(),
@@ -176,6 +177,7 @@ impl Server {
             storage,
             store: Arc::new(InMemoryVectorStore::new()),
             embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+            events: None,
         };
         let handle = tokio::spawn(async move {
             notedthat_server::run::run_with(config, backends)
@@ -442,6 +444,7 @@ async fn an_unreachable_issuer_refuses_startup() {
         storage,
         store: Arc::new(InMemoryVectorStore::new()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+        events: None,
     };
 
     // When
