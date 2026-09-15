@@ -138,8 +138,9 @@ strictly, with the unselected backends' variables refused rather than ignored.
 restart, and two replicas each have their own log. That makes it the right choice for
 development and for any single-process deployment — including every `fs` deployment, which is one
 process per root by construction. Ids are a counter that starts again at 1 on every start; a
-client that reconnects after a restart with a `Last-Event-ID` from before it is treated as
-"from now".
+client that reconnects after a restart with a `Last-Event-ID` from before it answers `410` and
+must resync by listing, since the changes made while the server was down are exactly what it
+would otherwise miss.
 
 **`nats`** is one JetStream stream shared by every replica: ids are the stream sequence, so they
 are strictly increasing across replicas and a client reconnecting to any replica with

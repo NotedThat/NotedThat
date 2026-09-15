@@ -746,9 +746,9 @@ deletion reveals that the key existed. Then `?prefix=`, `?event=` and `?mime=` (
 **Ids and replay.** The adapter owns the id: a process counter for `memory`, the JetStream
 stream sequence for `nats` (global across replicas and knowledge bases; gaps per knowledge base
 are normal). `Last-Event-ID: n` replays every event with id greater than `n`, in order, then
-live; absent, live only; ahead of the log (a `memory` backend that restarted), live only; older
-than retained, `410 gone` naming the oldest retained id, so the subscriber resyncs by listing
-rather than silently resuming from now. The stream opens with `retry: 3000`, sends a comment
+live; absent, live only; older than retained, or ahead of the log (a `memory` backend that
+restarted, a recreated stream — ids that never existed here), `410 gone` naming the oldest
+retained id, so the subscriber resyncs by listing rather than silently resuming from now. The stream opens with `retry: 3000`, sends a comment
 every 15 s, and carries `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
 
 **Backends** (`NOTEDTHAT_EVENTS_BACKEND`, §6.5 policy): `none` — default; nothing is published

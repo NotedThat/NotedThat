@@ -68,11 +68,23 @@ pub async fn commit_copy(
         .await?;
     // A copy returns only the new ETag. The event wants the size too, and only
     // a subscriber cares, so the extra HEAD is paid only when one can exist.
+    // The copy is already durable by now, so a HEAD that fails — a racing
+    // delete, a transient error — degrades the stamp rather than the copy.
     let (size, mime) = if sinks.events.is_some() {
-        let meta = storage
+        match storage
             .head_object(kb, destination, ConditionalHeaders::default())
-            .await?;
-        (meta.size, meta.content_type.or(content_type))
+            .await
+        {
+            Ok(meta) => (meta.size, meta.content_type.or(content_type)),
+            Err(error) => {
+                tracing::warn!(
+                    target: "notedthat::events",
+                    kb = %kb, path = %destination, %error,
+                    "could not HEAD the copy destination for its event; publishing without a size"
+                );
+                (0, content_type)
+            }
+        }
     } else {
         (0, content_type)
     };
