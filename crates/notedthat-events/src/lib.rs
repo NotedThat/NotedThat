@@ -18,4 +18,4 @@ pub use config::{
 };
 pub use memory::MemoryPublisher;
 #[cfg(feature = "nats")]
-pub use nats::NatsPublisher;
+pub use nats::{NatsError, NatsPublisher, SUBJECT_ROOT};

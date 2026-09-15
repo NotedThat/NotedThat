@@ -28,6 +28,7 @@ notedthat-webdav = { path = "../notedthat-webdav", version = "0.7.0" }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.7.0" }
 notedthat-mcp = { path = "../notedthat-mcp", version = "0.7.0" }  # M8 deliberate dependency extension — see plan §W1.3
 notedthat-write = { path = "../notedthat-write", version = "0.7.0" }
+notedthat-events = { path = "../notedthat-events", version = "0.7.0" }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true

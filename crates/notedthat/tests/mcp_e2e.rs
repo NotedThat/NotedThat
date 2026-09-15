@@ -112,6 +112,7 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
         embedder: std::sync::Arc::new(notedthat_indexer::testing::StubEmbedder::new(
             EMBEDDING_DIM as usize,
         )),
+        events: None,
     }
 }
 
@@ -129,6 +130,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         staging: StagingConfig::default(),
         oidc: None,
         log_format: LogFormat::Pretty,

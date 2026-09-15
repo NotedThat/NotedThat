@@ -116,6 +116,7 @@ async fn start_over(
         tenant_slug: TenantSlug::default(),
         listen_addr: addr,
         storage: StorageConfig::Fs(fs_config.clone()),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),
@@ -156,6 +157,7 @@ async fn start_over(
         )),
         store: Arc::new(store.clone()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+        events: None,
     };
 
     let handle = tokio::spawn(async move {

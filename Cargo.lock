@@ -2555,6 +2555,7 @@ dependencies = [
  "jsonwebtoken",
  "notedthat-api-http",
  "notedthat-core",
+ "notedthat-events",
  "notedthat-indexer",
  "notedthat-mcp",
  "notedthat-server",

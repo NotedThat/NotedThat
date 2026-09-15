@@ -52,6 +52,7 @@ pub(super) fn in_memory_backends() -> Backends {
         storage: Arc::new(InMemoryStorage::default()),
         store: Arc::new(InMemoryVectorStore::new()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+        events: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),
