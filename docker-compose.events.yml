@@ -1,0 +1,49 @@
+# Event broker overlay for the Compose stack.
+#
+# The default stack publishes no object change events. This overlay adds a NATS server
+# with JetStream and points the server at it, so `GET /api/v1/knowledgebases/{kb}/events`
+# streams every change with durable, cross-replica replay (D54):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.events.yml up --build -d
+#
+# Pass both files to every command in that stack, `down` included. Combine with
+# docker-compose.s3.yml or docker-compose.auth.yml by listing all the files.
+#
+# For a single-process deployment the `memory` backend needs no broker at all:
+# set NOTEDTHAT_EVENTS_BACKEND=memory on the server instead of using this overlay.
+
+services:
+  nats:
+    image: nats:2.12-alpine
+    container_name: notedthat-nats
+    # `-js` enables JetStream; the store directory is a volume so the log survives
+    # a container restart; the monitoring port serves the health check.
+    command: ["-js", "--store_dir", "/data", "--http_port", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"   # client connections
+      - "127.0.0.1:8222:8222"   # monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+    restart: unless-stopped
+
+  notedthat-server:
+    environment:
+      NOTEDTHAT_EVENTS_BACKEND: nats
+      NOTEDTHAT_NATS_URL: nats://nats:4222
+      # Optional, shown with their defaults.
+      NOTEDTHAT_NATS_STREAM: ${NOTEDTHAT_NATS_STREAM:-notedthat-events}
+      NOTEDTHAT_NATS_MAX_AGE_SECS: ${NOTEDTHAT_NATS_MAX_AGE_SECS:-604800}
+    depends_on:
+      nats:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  nats-data:

@@ -119,6 +119,54 @@ Compose with the `${VAR-}` form.
 `AWS_*` variables are never considered: the S3 client uses the credentials given above and never
 consults the ambient credential chain, so ambient AWS variables have no effect either way.
 
+## Events backend
+
+NotedThat can publish every object change as an event and stream it to subscribers over
+`GET /api/v1/knowledgebases/{kb_slug}/events` ([API.md](API.md#get-apiv1knowledgebaseskb_slugevents)).
+Where the log lives is chosen at startup, and selected the same way the storage backend is:
+strictly, with the unselected backends' variables refused rather than ignored.
+
+| Variable | Flag | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `NOTEDTHAT_EVENTS_BACKEND` | `--events-backend` | No | `none` | `none`, `memory` or `nats`. Any other value is a startup error. With `none`, nothing is published and the events route answers `404`. |
+| `NOTEDTHAT_EVENTS_MEMORY_CAPACITY` | `--events-memory-capacity` | No | `10000` | With `memory`: how many events the ring keeps for replay. A `Last-Event-ID` older than the oldest retained event answers `410`. |
+| `NOTEDTHAT_NATS_URL` | `--nats-url` | Yes, when `nats` | — | NATS server URL, `nats://[user:pass@]host:4222`. Credentials travel in the URL, so `--help` hides this value. |
+| `NOTEDTHAT_NATS_STREAM` | `--nats-stream` | No | `notedthat-events` | The JetStream stream holding the log. Created on startup if absent; a stream by this name that captures other subjects refuses startup. Letters, digits, `_` and `-`. |
+| `NOTEDTHAT_NATS_MAX_AGE_SECS` | `--nats-max-age-secs` | No | `604800` (7 days) | How long the stream retains an event. Changing it updates the existing stream on the next start. A subscriber resuming from a position that has aged out answers `410`. |
+
+**`memory`** is a process-local ring: replay survives a subscriber's reconnect but not a server
+restart, and two replicas each have their own log. That makes it the right choice for
+development and for any single-process deployment — including every `fs` deployment, which is one
+process per root by construction. Ids are a counter that starts again at 1 on every start; a
+client that reconnects after a restart with a `Last-Event-ID` from before it is treated as
+"from now".
+
+**`nats`** is one JetStream stream shared by every replica: ids are the stream sequence, so they
+are strictly increasing across replicas and a client reconnecting to any replica with
+`Last-Event-ID` receives exactly what it missed. The server publishes to
+`notedthat.events.<kb>.<written|deleted>` and needs a JetStream-enabled server (`nats-server
+-js`). At startup an unreachable broker refuses to start; at runtime a lost connection turns
+`/readyz` into `503` and each write into `503 backend_unavailable` with `Retry-After: 5` after
+the bytes are stored, so the client's retry publishes the event. The Compose overlay
+`docker-compose.events.yml` runs a broker beside the server.
+
+**A write that stored its bytes but could not publish its event fails the request** with
+`503 backend_unavailable` and `Retry-After: 5`, on the HTTP API and on WebDAV alike, and logs
+`EVENT_PUBLISH_FAILED` with the knowledge base and key. This mirrors indexer backpressure below:
+the write is idempotent, the client is the retry mechanism, and delivery is at least once. A
+change the `fs` watcher detects has no client to hand a `503` to; a failed publish there is logged
+and the change is found again by the next comparison of the tree against the index.
+
+The rejection of unselected settings works as for storage, and groups the offenders by the
+backend that owns them:
+
+```
+Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is unset, so the default
+none backend is selected, but these settings belong to the nats backend and would be ignored:
+NOTEDTHAT_NATS_URL (--nats-url). Unset them or set NOTEDTHAT_EVENTS_BACKEND=nats to start the
+server.
+```
+
 ## Filesystem storage backend
 
 With `NOTEDTHAT_STORAGE_BACKEND=fs`, an object's key is its path under the root:
@@ -671,6 +719,9 @@ Error: duplicate KB slug in NOTEDTHAT_KBS (--kbs): "notes"
 Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is invalid: expected "s3" or "fs", got "filesystem"
 Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) is required when NOTEDTHAT_STORAGE_BACKEND=fs
 Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) must be an absolute path, got 'data'
+Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is invalid: expected "none", "memory" or "nats", got "kafka"
+Error: configuration error: NOTEDTHAT_NATS_URL (--nats-url) is required
+Error: configuration error: NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs) is invalid: expected a positive number of seconds, got "7d"
 ```
 
 Each names the environment variable and the flag that overrides it, because which one you used is
@@ -703,6 +754,14 @@ Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer): https://auth.examp
 
 A manifest access rule scoped to `.notedthat`, naming both `may` and `may_not`, or naming neither
 also refuses startup, with a message naming the rule's subject.
+
+With `NOTEDTHAT_EVENTS_BACKEND=nats`, the broker is contacted before any listener binds, and the
+stream is created or checked:
+
+```
+Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url): could not connect to NATS: failed to connect to NATS server
+Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url): JetStream stream notedthat-events exists with subjects ["orders.>"], not ["notedthat.events.>"]; point NOTEDTHAT_NATS_STREAM at a stream NotedThat owns
+```
 
 ### Removed variables
 
@@ -884,6 +943,8 @@ Since v1 has no public reindex endpoint (D42), operators should treat repeated D
 Conditional writes under backpressure: retry semantics interact with 412. Conditional writes (`If-Match`, `If-None-Match`) that succeed at S3 but return 503 at the indexer queue leave a naive retry in a state where S3 may return 412 because the object now exists or its ETag changed. Clients using conditional headers MUST detect the 503 → 412 sequence and either accept the ghost state or use a stronger consistency mechanism.
 
 The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three write surfaces (HTTP API, WebDAV, MCP-via-HTTP) surface this the same way: HTTP 503, error code `backend_unavailable`, and (for HTTP API + WebDAV) `Retry-After: 5`.
+
+**Event publish failure** takes the same shape. With an events backend configured, a write whose bytes are stored but whose change event could not be published (the broker is down) answers HTTP 503 `backend_unavailable` with `Retry-After: 5` and a message beginning `object stored; change event not published` or `deleted from storage; change event not published`. The indexing event was already enqueued. Retry the idempotent write and the event is published; a retry may publish the same change twice, which is the at-least-once contract subscribers are asked to handle. The server logs `EVENT_PUBLISH_FAILED` with the knowledge base and key, and `/readyz` reports `503` while the broker is unreachable. See [Events backend](#events-backend).
 
 ---
 
