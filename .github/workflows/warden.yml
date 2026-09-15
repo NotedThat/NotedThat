@@ -2,15 +2,28 @@
 #
 # Runs once per model profile under .github/warden/. Profiles are separate
 # subscriptions and fully independent: no merging, no cross-profile dedup,
-# each posts its own PR review. Two profiles today:
+# each posts its own PR review. Three profiles today:
 #   - minimax: the cheap lane — the two built-in skills from warden.toml,
-#     one hunk at a time, because the MiniMax Token Plan rate-limits
-#     anything busier (see the overlay);
+#     four hunks at a time, the most the MiniMax Token Plan tolerates (see
+#     the overlay);
 #   - thirdparty-gpt-oss: the wide lane — those two plus six more skills
 #     declared in its overlay, on a third-party OpenAI-compatible endpoint
-#     with no plan quota, whose location is a secret. (An OpenCode Go profile was tried and dropped because every model
-# call from a GitHub runner failed with "provider unavailable" while working
+#     with no plan quota, whose location is a secret;
+#   - thirdparty-deepseek: the two built-in skills again on DeepSeek V4
+#     Flash, same endpoint and secrets as the wide lane, two hunks at a
+#     time because the endpoint rate-limits that model.
+# (An OpenCode Go profile was tried and dropped because every model call
+# from a GitHub runner failed with "provider unavailable" while working
 # from a developer machine — see #131 before adding one.)
+#
+# Both lanes call their provider through a self-hosted egress proxy rather
+# than directly. It holds the real provider keys (the WARDEN_*_API_KEY
+# secrets are the proxy's own token), keeps a global in-flight limit per
+# provider so two PRs reviewed at once cannot trip the MiniMax plan, and
+# adds `tool_choice: "auto"` on the third-party route, whose gateway
+# otherwise turns a missing `tool_choice` into "none" and silently disables
+# tool calling for pi (Warden's runtime never sends the field). The proxy's
+# routes are the WARDEN_*_BASE_URL secrets.
 #
 # Advisory only. `warden.toml` keeps failCheck/requestChanges off, so nothing
 # here can block a merge; that stays a deliberate later decision (#131).
@@ -48,9 +61,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
-    # Per profile: the MiniMax lane runs two hunks at a time by design and a
-    # large feature PR (~350 hunks, PR #130) needs hours; the wide lane is
-    # fast. Hitting the limit is a cancelled review, not a red X.
+    # Per profile: the MiniMax lane runs four hunks at a time and may queue
+    # behind another PR at the proxy, so a large feature PR (~350 hunks,
+    # PR #130) can need hours; the wide lane is fast. Hitting the limit is a
+    # cancelled review, not a red X.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One subscription being down must not cancel the other profile's review.
@@ -58,10 +72,10 @@ jobs:
       matrix:
         include:
           # Two words per profile decide every secret it uses:
-          #   provider -> WARDEN_<provider>_API_KEY (and _BASE_URL when
-          #               needs-base-url is set). Warden mirrors the key to
-          #               the env name pi expects, so the word is also the
-          #               provider selection.
+          #   provider -> WARDEN_<provider>_API_KEY and _BASE_URL: the proxy
+          #               token and the proxy route for this provider. Warden
+          #               mirrors both to the names pi expects, so the word is
+          #               also the provider selection.
           #   app      -> WARDEN_<app>_APP_ID / _PRIVATE_KEY: the GitHub App
           #               the lane posts as. Reviews then come from
           #               `warden-<model>[bot]` rather than github-actions[bot],
@@ -71,18 +85,32 @@ jobs:
           #               each other), and lets Warden recognise its own
           #               earlier review to dismiss it once addressed — a flow
           #               it skips outright under GITHUB_TOKEN.
+          # preflight-path is the models listing under the route, used only
+          # to prove the proxy is reachable from the runner: the MiniMax
+          # route speaks the Anthropic API, which lists under /v1/models.
           # Only a profile's own secrets are exported into its job, never as
           # an empty string.
+          # pi's built-in `minimax` provider, pointed at the proxy's
+          # Anthropic-style route by the base-URL override.
           - profile: minimax
             provider: MINIMAX
             app: MINIMAX
+            preflight-path: /v1/models
             timeout: 300
           # The provider is declared in .github/warden/pi.
           - profile: thirdparty-gpt-oss
             provider: THIRDPARTY
             app: GPT_OSS
-            needs-base-url: true
+            preflight-path: /models
             timeout: 90
+          # Same provider and secrets as the lane above; its own GitHub App
+          # so the two lanes' check runs and reviews stay apart. Two hunks
+          # at a time at ~25 s each: a large PR (~350 hunks) needs hours.
+          - profile: thirdparty-deepseek
+            provider: THIRDPARTY
+            app: DEEPSEEK
+            preflight-path: /models
+            timeout: 240
     steps:
       - uses: actions/checkout@v7
         with:
@@ -96,34 +124,28 @@ jobs:
           PROVIDER: ${{ matrix.provider }}
           API_KEY: ${{ secrets[format('WARDEN_{0}_API_KEY', matrix.provider)] }}
           BASE_URL: ${{ secrets[format('WARDEN_{0}_BASE_URL', matrix.provider)] }}
-          NEEDS_BASE_URL: ${{ matrix.needs-base-url || false }}
         run: |
-          if [ -z "$API_KEY" ]; then
-            echo "::error::secret WARDEN_${PROVIDER}_API_KEY is not set for this repository"
-            exit 1
-          fi
-          echo "WARDEN_${PROVIDER}_API_KEY=$API_KEY" >> "$GITHUB_ENV"
-          if [ "$NEEDS_BASE_URL" = "true" ]; then
-            if [ -z "$BASE_URL" ]; then
-              echo "::error::secret WARDEN_${PROVIDER}_BASE_URL is not set for this repository"
+          for name in API_KEY BASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::secret WARDEN_${PROVIDER}_${name} is not set for this repository"
               exit 1
             fi
-            echo "WARDEN_${PROVIDER}_BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
-          fi
+            echo "WARDEN_${PROVIDER}_${name}=${!name}" >> "$GITHUB_ENV"
+          done
 
       # A model call that fails before any HTTP response surfaces in Warden
-      # only as "Connection error", so check the endpoint is reachable from
-      # this runner first and say so plainly. Prints the HTTP status and
+      # only as "Connection error", so check the proxy route is reachable
+      # from this runner first and say so plainly. Prints the HTTP status and
       # curl's exit code only; the URL itself is a masked secret.
       - name: Preflight the ${{ matrix.profile }} endpoint
-        if: matrix.needs-base-url
         env:
           URL: ${{ secrets[format('WARDEN_{0}_BASE_URL', matrix.provider)] }}
           KEY: ${{ secrets[format('WARDEN_{0}_API_KEY', matrix.provider)] }}
+          MODELS_PATH: ${{ matrix.preflight-path }}
         run: |
           status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
-            -H "Authorization: Bearer $KEY" "$URL/models") || rc=$?
-          echo "curl: GET <base-url>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
+            -H "Authorization: Bearer $KEY" "$URL$MODELS_PATH") || rc=$?
+          echo "curl: GET <base-url>$MODELS_PATH -> HTTP ${status:-none}, curl exit ${rc:-0}"
           if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
             echo "::error::the ${{ matrix.provider }} endpoint is not usable from this runner (HTTP ${status:-none}, curl exit ${rc:-0})"
             exit 1
@@ -132,7 +154,7 @@ jobs:
           # DNS, TLS and proxy behaviour; a curl success does not prove it.
           echo "node $(node --version)"
           node -e '
-            const url = process.env.URL + "/models";
+            const url = process.env.URL + process.env.MODELS_PATH;
             fetch(url, { headers: { authorization: "Bearer " + process.env.KEY } })
               .then(r => { console.log("node fetch: HTTP " + r.status); process.exit(r.ok ? 0 : 1); })
               .catch(e => { console.log("node fetch failed:", e.message, "|", e.cause && (e.cause.code + " " + e.cause.message)); process.exit(1); });
@@ -142,14 +164,14 @@ jobs:
       # models.json in its agent directory. Copied out of the checkout so
       # anything pi writes next to it (session state, catalogue cache) never
       # lands in the tree Warden is reviewing. The placeholder base URL in
-      # the committed file is replaced with the real one here: Warden's
-      # WARDEN_<PROVIDER>_BASE_URL override did not reach a models.json
-      # provider in the v0.48.0 action (every call went to the placeholder
-      # and died as "Connection error"), so the copy must be complete on
-      # its own.
+      # the committed file is replaced with the real one (the proxy route)
+      # here, for the lane that uses it: Warden's WARDEN_<PROVIDER>_BASE_URL
+      # override did not reach a models.json provider in the v0.48.0 action
+      # (every call went to the placeholder and died as "Connection error"),
+      # so the copy must be complete on its own.
       - name: Give pi the repo's provider catalogue
         env:
-          BASE_URL: ${{ secrets[format('WARDEN_{0}_BASE_URL', matrix.provider)] }}
+          BASE_URL: ${{ matrix.provider == 'THIRDPARTY' && secrets.WARDEN_THIRDPARTY_BASE_URL || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/pi-agent"
           cp .github/warden/pi/models.json "$RUNNER_TEMP/pi-agent/models.json"
