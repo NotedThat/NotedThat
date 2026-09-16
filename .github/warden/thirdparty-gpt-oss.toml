@@ -21,15 +21,22 @@ concurrency = 8
 # #133 and #130 it posted confident findings about GitHub Actions and Rust
 # syntax that a moment's thought refutes, and its verification pass (the
 # same model, same setting) let them through. `high` is the ceiling the
-# endpoint accepts (low|medium|high); the auxiliary lane gets it too, since
-# that is where false positives are supposed to die.
+# endpoint accepts (low|medium|high).
 [defaults.agent]
 model = "thirdparty/openai/gpt-oss-120b"
 maxTurns = 30
 effort = "high"
 
+# The auxiliary lane (JSON repair, verification, consolidation) is DeepSeek
+# V4 Flash, not GPT-OSS: a model grading its own findings shares its blind
+# spots, and on PR #138 DeepSeek was the one model that considered and
+# correctly rejected what the other two posted. Same endpoint and secrets
+# as the agent lane. Warden verifies four findings at a time, and the
+# endpoint rate-limits DeepSeek at more than two in flight; a verification
+# call that fails keeps the finding unverified (today's behaviour), so a
+# 429 here degrades gracefully rather than losing a finding.
 [defaults.auxiliary]
-model = "thirdparty/openai/gpt-oss-120b"
+model = "thirdparty/deepseek-v4-flash-0731"
 effort = "high"
 
 # --- Sentry's generalised review skills (getsentry/warden-skills, MIT) -------

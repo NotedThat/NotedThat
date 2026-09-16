@@ -13,7 +13,9 @@
 # and rejected.
 #
 # The auxiliary lane MUST be set explicitly: left unset it falls back to
-# pi's own default, which is Anthropic.
+# pi's own default, which is Anthropic. The other two lanes verify with
+# DeepSeek; this one verifies itself, there being no third model family to
+# cross it with yet.
 version = 1
 
 # Two hunks at a time. Four in flight got HTTP 429 on 29 of 80 calls and
