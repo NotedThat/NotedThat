@@ -137,12 +137,6 @@ jobs:
             echo "${name}=${!name}" >> "$GITHUB_ENV"
           done
 
-      # Temporary: the runner's egress address, to match this job against
-      # the proxy's access log while the per-lane routing is being verified.
-      - name: Show the runner's egress address
-        run: |
-          echo "runner egress: $(curl -sS --max-time 10 https://api.ipify.org || echo unknown)"
-
       # A model call that fails before any HTTP response surfaces in Warden
       # only as "Connection error", so check the proxy route is reachable
       # from this runner first and say so plainly. Prints the HTTP status and
