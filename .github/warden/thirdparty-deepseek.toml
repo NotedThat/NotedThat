@@ -14,8 +14,9 @@
 #
 # The auxiliary lane MUST be set explicitly: left unset it falls back to
 # pi's own default, which is Anthropic. The other two lanes verify with
-# DeepSeek; this one verifies itself, there being no third model family to
-# cross it with yet.
+# DeepSeek; this one verifies with GPT-OSS, so no lane grades its own
+# findings (DeepSeek verifying itself let a misread of a diff hunk through
+# on PR #142 at high confidence).
 version = 1
 
 # Two hunks at a time. Four in flight got HTTP 429 on 29 of 80 calls and
@@ -28,13 +29,17 @@ concurrency = 2
 
 # DeepSeek V4 Flash is a reasoning model; the endpoint accepted
 # `reasoning_effort` without error in the bake-off but surfaced no
-# reasoning content, so `high` is a request, not a guarantee. Same on the
-# auxiliary lane, where false positives are supposed to die.
+# reasoning content, so `high` is a request, not a guarantee.
 [defaults.agent]
 model = "thirdparty/deepseek-v4-flash-0731"
 maxTurns = 30
 effort = "high"
 
+# GPT-OSS rather than MiniMax as the verifier: same endpoint and secrets,
+# no plan quota, and it does not compete with the MiniMax scan lane for
+# the proxy's four MiniMax slots. MiniMax would be a one-line swap; the
+# catalogue step writes both routes into every lane and the token is the
+# same. `high` because that is where false positives are supposed to die.
 [defaults.auxiliary]
-model = "thirdparty/deepseek-v4-flash-0731"
+model = "thirdparty/openai/gpt-oss-120b"
 effort = "high"
