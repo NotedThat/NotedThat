@@ -71,13 +71,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two words per profile decide every secret it uses:
-          #   provider -> WARDEN_<provider>_API_KEY and _BASE_URL: the proxy
-          #               token and the proxy route for this provider. Warden
-          #               mirrors both to the names pi expects, so the word is
-          #               also the provider selection. Every lane also gets
-          #               the THIRDPARTY pair, because every overlay verifies
-          #               its findings with DeepSeek V4 on that endpoint.
+          # Two words per profile decide how it runs:
+          #   provider -> which route the preflight checks. The secrets
+          #               themselves are the same for every lane: both
+          #               providers' WARDEN_<provider>_API_KEY and _BASE_URL
+          #               (the proxy token and the proxy route) are exported
+          #               into every job, because each overlay verifies its
+          #               findings with a model from the other provider.
+          #               Warden mirrors them to the names pi expects.
           #   app      -> WARDEN_<app>_APP_ID / _PRIVATE_KEY: the GitHub App
           #               the lane posts as. Reviews then come from
           #               `warden-<model>[bot]` rather than github-actions[bot],
@@ -90,8 +91,8 @@ jobs:
           # preflight-path is the models listing under the route, used only
           # to prove the proxy is reachable from the runner: the MiniMax
           # route speaks the Anthropic API, which lists under /v1/models.
-          # Only a profile's own secrets (plus the verifier's) are exported
-          # into its job, never as an empty string.
+          # Secrets are never exported as an empty string; a missing one
+          # fails the job before any model call.
           # pi's built-in `minimax` provider, pointed at the proxy's
           # Anthropic-style route through pi/models.json.
           - profile: minimax
@@ -118,28 +119,22 @@ jobs:
         with:
           persist-credentials: false
 
-      # `env:` keys cannot be expressions, so the profile's secrets are
-      # exported through GITHUB_ENV under their derived names. Values written
-      # there stay masked in logs because they came from `secrets`.
-      - name: Export the ${{ matrix.profile }} provider secrets
+      # Both providers' secrets go into every job (see the matrix note):
+      # exported through GITHUB_ENV under the names Warden expects. Values
+      # written there stay masked in logs because they came from `secrets`.
+      - name: Export the provider secrets
         env:
-          PROVIDER: ${{ matrix.provider }}
-          API_KEY: ${{ secrets[format('WARDEN_{0}_API_KEY', matrix.provider)] }}
-          BASE_URL: ${{ secrets[format('WARDEN_{0}_BASE_URL', matrix.provider)] }}
-          # The verifier's provider, needed in every lane (see the matrix note).
-          THIRDPARTY_API_KEY: ${{ secrets.WARDEN_THIRDPARTY_API_KEY }}
-          THIRDPARTY_BASE_URL: ${{ secrets.WARDEN_THIRDPARTY_BASE_URL }}
+          WARDEN_MINIMAX_API_KEY: ${{ secrets.WARDEN_MINIMAX_API_KEY }}
+          WARDEN_MINIMAX_BASE_URL: ${{ secrets.WARDEN_MINIMAX_BASE_URL }}
+          WARDEN_THIRDPARTY_API_KEY: ${{ secrets.WARDEN_THIRDPARTY_API_KEY }}
+          WARDEN_THIRDPARTY_BASE_URL: ${{ secrets.WARDEN_THIRDPARTY_BASE_URL }}
         run: |
-          for name in API_KEY BASE_URL THIRDPARTY_API_KEY THIRDPARTY_BASE_URL; do
-            case "$name" in
-              THIRDPARTY_*) target="WARDEN_${name}" ;;
-              *) target="WARDEN_${PROVIDER}_${name}" ;;
-            esac
+          for name in WARDEN_MINIMAX_API_KEY WARDEN_MINIMAX_BASE_URL WARDEN_THIRDPARTY_API_KEY WARDEN_THIRDPARTY_BASE_URL; do
             if [ -z "${!name}" ]; then
-              echo "::error::secret ${target} is not set for this repository"
+              echo "::error::secret ${name} is not set for this repository"
               exit 1
             fi
-            echo "${target}=${!name}" >> "$GITHUB_ENV"
+            echo "${name}=${!name}" >> "$GITHUB_ENV"
           done
 
       # A model call that fails before any HTTP response surfaces in Warden

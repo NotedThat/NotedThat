@@ -35,11 +35,13 @@ model = "thirdparty/deepseek-v4-flash-0731"
 maxTurns = 30
 effort = "high"
 
-# GPT-OSS rather than MiniMax as the verifier: same endpoint and secrets,
-# no plan quota, and it does not compete with the MiniMax scan lane for
-# the proxy's four MiniMax slots. MiniMax would be a one-line swap; the
-# catalogue step writes both routes into every lane and the token is the
-# same. `high` because that is where false positives are supposed to die.
+# MiniMax M3 as the verifier: a third family looking at DeepSeek's
+# findings rather than GPT-OSS, which DeepSeek already verifies. It goes
+# through the proxy's MiniMax route (the catalogue step writes both routes
+# into every lane and the token is the same) and shares the proxy's four
+# MiniMax slots with the MiniMax scan lane, which the proxy's queue
+# absorbs. `high` because that is where false positives are supposed to
+# die.
 [defaults.auxiliary]
-model = "thirdparty/openai/gpt-oss-120b"
+model = "minimax/MiniMax-M3"
 effort = "high"
