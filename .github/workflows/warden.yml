@@ -1,14 +1,14 @@
 # Sentry Warden: LLM review of the PR diff.
 #
-# Runs once per model profile under .github/warden/. Profiles are separate
-# subscriptions and fully independent: no merging, no cross-profile dedup,
-# each posts its own PR review. Three profiles today:
-#   - minimax: the cheap lane — the two built-in skills from warden.toml,
-#     four hunks at a time, the most the MiniMax Token Plan tolerates (see
-#     the overlay);
-#   - thirdparty-gpt-oss: the wide lane — those two plus six more skills
-#     declared in its overlay, on a third-party OpenAI-compatible endpoint
-#     with no plan quota, whose location is a secret;
+# Runs once per model profile under .github/warden/. Each profile is a
+# complete, self-contained Warden config (shared review settings, models,
+# skills) and the lanes are fully independent: no merging, no cross-profile
+# dedup, each posts its own PR review. Three profiles today:
+#   - minimax: the cheap lane — the two built-in skills, four hunks at a
+#     time, the most the MiniMax Token Plan tolerates (see the profile);
+#   - thirdparty-gpt-oss: the wide lane — those two plus six more skills,
+#     on a third-party OpenAI-compatible endpoint with no plan quota, whose
+#     location is a secret;
 #   - thirdparty-deepseek: the two built-in skills again on DeepSeek V4
 #     Flash, same endpoint and secrets as the wide lane, two hunks at a
 #     time because the endpoint rate-limits that model.
@@ -25,14 +25,14 @@
 # tool calling for pi (Warden's runtime never sends the field). The proxy's
 # routes are the WARDEN_*_BASE_URL secrets.
 #
-# Advisory only. `warden.toml` keeps failCheck/requestChanges off, so nothing
+# Advisory only. Every profile keeps failCheck/requestChanges off, so nothing
 # here can block a merge; that stays a deliberate later decision (#131).
 #
 # Why the guards below:
 #   - Same-repo PRs only: a fork PR gets no secrets, so the job would only fail.
 #   - release-plz PRs are generated changelog/version bumps; nothing to review,
 #     and each one would burn a full run's worth of requests.
-#   - Draft PRs are filtered in warden.toml (`draft = false` on each trigger;
+#   - Draft PRs are filtered in the profiles (`draft = false` on each trigger;
 #     Warden's default is to review drafts too), not here, so a draft flipped
 #     to ready gets reviewed on its next push without a workflow change.
 name: Warden
@@ -205,17 +205,15 @@ jobs:
       # work and writes a findings file without touching GitHub; report replays
       # that file into a PR review and check runs.
       #
-      # `base-skill-root: .` because warden.toml is layered as the *base*
-      # config, and Warden insists on knowing where a base config's repo-local
-      # skills (.agents/skills/) live — the layering was built for org-wide
-      # base configs checked out from another repository. Here it is this one.
+      # One config file per lane, no base-config-path: Warden runs a base
+      # file's skills with the base file's own defaults, so a shared base
+      # that left the model to the overlay handed the built-in skills to
+      # pi's default model instead (see the profiles).
       - name: Analyze (${{ matrix.profile }})
         id: analyze
         uses: getsentry/warden@775db57bee73caaeb6dcdafd5b56fd472dd6a0bc # v0.48.0
         with:
           mode: analyze
-          base-config-path: warden.toml
-          base-skill-root: .
           config-path: .github/warden/${{ matrix.profile }}.toml
 
       # A short-lived installation token for this profile's GitHub App; the
@@ -237,6 +235,4 @@ jobs:
           mode: report
           findings-file: ${{ steps.analyze.outputs.findings-file }}
           github-token: ${{ steps.bot.outputs.token }}
-          base-config-path: warden.toml
-          base-skill-root: .
           config-path: .github/warden/${{ matrix.profile }}.toml

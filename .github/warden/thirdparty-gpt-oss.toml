@@ -1,15 +1,51 @@
 # Warden model profile: GPT-OSS 120B on a third-party OpenAI-compatible
-# endpoint (pi provider `thirdparty`, declared in pi/models.json; endpoint
-# and key come from the WARDEN_THIRDPARTY_* secrets).
+# endpoint (pi provider `thirdparty`, declared in pi/models.json; route and
+# token come from the WARDEN_THIRDPARTY_* secrets, both pointing at our
+# egress proxy).
 #
-# The wide lane. /warden.toml carries the two built-in skills; this overlay
-# adds six more — Sentry's generalised review skills and two community ones —
-# because this endpoint has no plan quota, so eight passes per hunk cost
-# nothing, and a second model family next to MiniMax M3 is the point.
+# The wide lane: the two built-in skills plus six more — Sentry's
+# generalised review skills and two community ones — because this endpoint
+# has no plan quota, so eight passes per hunk cost nothing, and a second
+# model family next to MiniMax M3 is the point.
 #
-# The auxiliary lane MUST be set explicitly: left unset it falls back to pi's
-# own default, which is Anthropic.
 version = 1
+
+# --- Shared review settings --------------------------------------------------
+# Identical in every profile under .github/warden/. Warden's base/overlay
+# layering was dropped on purpose: skills defined in a base file are run
+# with the base file's defaults, so a base that sets no model handed the
+# built-in skills to whatever model pi picked by default (PR #142 ran them
+# on MiniMax in every lane, and on GPT-OSS before that, whatever the
+# overlay said). A self-contained profile is what the action and the CLI
+# both read the same way. Keep the three in step by hand.
+
+[defaults]
+runtime = "pi"
+# Severity that counts as "would fail" for the summary. It has no teeth while
+# failCheck and requestChanges are off: Warden is advisory only until we have
+# seen enough of its findings to trust it as a gate (#131 acceptance criteria).
+failOn = "high"
+reportOn = "low"
+failCheck = false
+requestChanges = false
+# Not source: build output, hand-run QA notes, and the local code graph cache.
+ignorePaths = ["target/**", "docs/manual-qa/**", ".codegraph/**"]
+
+# Second read-only pass that re-checks each candidate finding before it is
+# reported, with the auxiliary model below.
+[defaults.verification]
+enabled = true
+
+# Generated files that would otherwise be chunked and sent to the model.
+[[defaults.chunking.filePatterns]]
+pattern = "Cargo.lock"
+mode = "skip"
+
+[[defaults.chunking.filePatterns]]
+pattern = "**/CHANGELOG.md"
+mode = "skip"
+
+# --- Models and pacing -------------------------------------------------------
 
 # No plan quota on this endpoint, and 78 tool calls in 26 s at five in
 # flight showed no strain; eight is the next step, twelve if a large PR
@@ -34,10 +70,36 @@ effort = "high"
 # as the agent lane. Warden verifies four findings at a time, and the
 # endpoint rate-limits DeepSeek at more than two in flight; a verification
 # call that fails keeps the finding unverified (today's behaviour), so a
-# 429 here degrades gracefully rather than losing a finding.
+# 429 here degrades gracefully rather than losing a finding. Must be set
+# explicitly: left unset it falls back to pi's own default, which is
+# Anthropic.
 [defaults.auxiliary]
 model = "thirdparty/deepseek-v4-flash-0731"
 effort = "high"
+
+# --- Built-in skills ---------------------------------------------------------
+# Every skill is one more pass over every matching hunk, so each one is
+# scoped with `paths` to the files it can say something about.
+
+[[skills]]
+name = "security-review"
+# Server code plus everything that decides what runs with secrets in CI or
+# ends up in the shipped image.
+paths = ["crates/**/*.rs", ".github/workflows/*.yml", "Dockerfile", "docker/**"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
+
+[[skills]]
+name = "code-review"
+paths = ["crates/**/*.rs", ".github/workflows/*.yml"]
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+draft = false
 
 # --- Sentry's generalised review skills (getsentry/warden-skills, MIT) -------
 # Skill sources: remote pinned to a commit (`remote = "owner/repo@sha"`) —
