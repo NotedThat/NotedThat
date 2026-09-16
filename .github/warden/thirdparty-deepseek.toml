@@ -1,12 +1,16 @@
-# Warden model profile: MiniMax M3 on the MiniMax subscription, via MiniMax's
-# own Anthropic-compatible API (pi provider `minimax`), reached through our
-# egress proxy's Anthropic-style route: pi/models.json points the built-in
-# provider at WARDEN_MINIMAX_BASE_URL, and the proxy token is
-# WARDEN_MINIMAX_API_KEY. Never route MiniMax through OpenCode Go — that plan
-# is reserved for the other open models.
+# Warden model profile: DeepSeek V4 Flash on the same third-party
+# OpenAI-compatible endpoint as the GPT-OSS lane (pi provider `thirdparty`,
+# declared in pi/models.json; route and token come from the
+# WARDEN_THIRDPARTY_* secrets, both pointing at our egress proxy).
 #
-# This is the cheap lane: only the two built-in skills. The wide lane (every
-# skill) is the GPT-OSS profile, which has no plan quota.
+# A second lane on that endpoint, kept narrow: only the two built-in
+# skills, because the endpoint rate-limits this model at more than a
+# couple of hunks in flight (see the runner note) and eight passes per
+# hunk would take hours. Its value is a third model family next to
+# MiniMax M3 and GPT-OSS: in the PR #138 bake-off it investigated every
+# hunk (up to 16 tool-calling turns) and reported nothing on a PR where the
+# other two lanes each posted a false positive it had explicitly considered
+# and rejected.
 #
 version = 1
 
@@ -47,32 +51,32 @@ mode = "skip"
 
 # --- Models and pacing -------------------------------------------------------
 
-# Four hunks at a time. The MiniMax Token Plan is sized for one interactive
-# developer (~3-4 concurrent agents on Plus) and answers anything busier
-# with 429 "Token Plan rate limit reached (2062)": five in flight — the
-# action's default — tripped Warden's circuit breaker on PR #130 after 65
-# of ~350 hunks, and the aborted skills were posted as green "No issues"
-# checks. Four is the plan's ceiling, and it is safe only because every
-# call goes through the egress proxy, which holds a global limit of four
-# in flight for MiniMax and queues the rest (FIFO, 429 with Retry-After
-# after 120 s): two PRs reviewed at once wait on each other instead of
-# tripping the plan. Without the proxy this would have to drop back to two.
+# Two hunks at a time. Four in flight got HTTP 429 on 29 of 80 calls and
+# killed every code-review hunk; one at a time was clean but needed 13
+# minutes for 32 hunks. The egress proxy does not queue this route (only
+# MiniMax), so the limit has to be respected here.
 [runner]
-concurrency = 4
+concurrency = 2
 
+# DeepSeek V4 Flash is a reasoning model; the endpoint accepted
+# `reasoning_effort` without error in the bake-off but surfaced no
+# reasoning content, so `high` is a request, not a guarantee.
 [defaults.agent]
-model = "minimax/MiniMax-M3"
-maxTurns = 30
-
-# The auxiliary lane (JSON repair, verification, consolidation) is DeepSeek
-# V4 Flash on the third-party endpoint, not MiniMax: on PR #138 MiniMax
-# posted a finding that misread `futures::stream::buffered` as unordered
-# and its own verification pass agreed with it, while DeepSeek checked and
-# rejected exactly that claim. The workflow exports both providers' secrets
-# into every lane for this. Must be set explicitly: left unset it falls
-# back to pi's own default, which is Anthropic.
-[defaults.auxiliary]
 model = "thirdparty/deepseek-v4-flash-0731"
+maxTurns = 30
+effort = "high"
+
+# MiniMax M3 as the verifier: a third family looking at DeepSeek's
+# findings rather than GPT-OSS, which DeepSeek already verifies, so no
+# lane grades its own findings (DeepSeek verifying itself let a misread of
+# a diff hunk through on PR #142 at high confidence). It goes through the
+# proxy's MiniMax route (the catalogue step writes both routes into every
+# lane and the token is the same) and shares the proxy's four MiniMax slots
+# with the MiniMax scan lane, which the proxy's queue absorbs. Must be set
+# explicitly: left unset it falls back to pi's own default, which is
+# Anthropic.
+[defaults.auxiliary]
+model = "minimax/MiniMax-M3"
 effort = "high"
 
 # --- Built-in skills ---------------------------------------------------------

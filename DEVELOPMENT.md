@@ -270,31 +270,34 @@ list from `cargo metadata`.
 
 ## Running Warden (LLM review) locally
 
-CI runs [Sentry Warden](https://github.com/getsentry/warden) on every PR with the
-skills in `warden.toml`, once per model profile in `.github/warden/`. The same
-review can be run locally against any git range, with the model picked on the
-command line (the profile overlays are only layered in by the workflow):
+CI runs [Sentry Warden](https://github.com/getsentry/warden) on every PR, once
+per profile in `.github/warden/`. Each profile is a complete Warden config —
+shared review settings, the scanning model, the verifying model, the skills —
+so the same review runs locally by pointing the CLI at the same file.
+
+Every lane goes through our self-hosted LLM egress proxy, which holds the
+provider keys, queues MiniMax calls behind a global in-flight limit, and
+fixes tool calling on the third-party endpoint. Locally you need the proxy's
+token and its two routes — ask a maintainer; none of them are in the
+repository on purpose. Every profile uses both providers (one scans, the
+other verifies), so export all four:
 
 ```sh
-# MiniMax is always used through its own plan/API (pi provider `minimax`),
-# never through another gateway.
-export WARDEN_MINIMAX_API_KEY=...    # for  -m minimax/MiniMax-M3
+export WARDEN_MINIMAX_API_KEY=<proxy token>
+export WARDEN_MINIMAX_BASE_URL=<proxy route for MiniMax, Anthropic API>
+export WARDEN_THIRDPARTY_API_KEY=<proxy token>
+export WARDEN_THIRDPARTY_BASE_URL=<proxy route for the third-party endpoint>
+export PI_CODING_AGENT_DIR=.github/warden/pi   # the repo's provider catalogue
 
-# Review everything changed since origin/main
-npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3
+# Review everything changed since origin/main, as the DeepSeek lane would
+npx @sentry/warden@0.48.0 origin/main -c .github/warden/thirdparty-deepseek.toml
 
 # Machine-readable output (findings, usage, cost), e.g. for comparing models
-npx @sentry/warden@0.48.0 origin/main -m minimax/MiniMax-M3 --json -o bakeoff/minimax.json
+npx @sentry/warden@0.48.0 origin/main -c .github/warden/minimax.toml --json -o bakeoff/minimax.json
 ```
 
-To run the third-party profile locally, give pi the repo's provider
-catalogue and the endpoint (ask a maintainer for the values; they are not in
-the repository on purpose):
-
-```sh
-export WARDEN_THIRDPARTY_API_KEY=...
-export WARDEN_THIRDPARTY_BASE_URL=...
-PI_CODING_AGENT_DIR=.github/warden/pi npx @sentry/warden@0.48.0 origin/main -m thirdparty/openai/gpt-oss-120b
-```
+The `WARDEN_*_BASE_URL` override works in the CLI; the action ignores it, so
+CI writes the routes into `.github/warden/pi/models.json` instead (see that
+directory's README). Never route MiniMax through another plan or gateway.
 
 `warden-findings.json` and `bakeoff/` are git-ignored. Node 20+ is required.

@@ -1,20 +1,49 @@
 {
   "providers": {
+    "minimax": {
+      "baseUrl": "https://example.invalid/minimax"
+    },
     "thirdparty": {
       "name": "Third-party OpenAI-compatible endpoint",
-      "baseUrl": "https://example.invalid/v1",
+      "baseUrl": "https://example.invalid/thirdparty",
       "api": "openai-completions",
       "apiKey": "$THIRDPARTY_API_KEY",
-      "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": true },
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true
+      },
       "models": [
         {
           "id": "openai/gpt-oss-120b",
           "name": "GPT-OSS 120B (third-party)",
           "reasoning": true,
-          "input": ["text"],
+          "input": [
+            "text"
+          ],
           "contextWindow": 131072,
           "maxTokens": 16384,
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-flash-0731",
+          "name": "DeepSeek V4 Flash (third-party)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
         }
       ]
     }
