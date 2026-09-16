@@ -1,6 +1,6 @@
 //! Shared application state for the axum router.
 
-use notedthat_core::{AccessPolicy, Authenticator, KbSlug, Storage};
+use notedthat_core::{AccessPolicy, Authenticator, EventPublisher, EventSource, KbSlug, Storage};
 use notedthat_indexer::Searcher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,6 +29,18 @@ pub struct AppState {
     pub indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
     /// The search implementation (injected at startup).
     pub searcher: Arc<dyn Searcher>,
+    /// The object change event log, when `NOTEDTHAT_EVENTS_BACKEND` selects one.
+    /// `None` is the default: writes are not announced and the events route
+    /// answers 404.
+    pub events: Option<Arc<dyn EventPublisher>>,
+}
+
+impl AppState {
+    /// Where a write made through this surface is reported, attributed to
+    /// `source` — the HTTP API itself, or MCP when the request says so.
+    pub(crate) fn sinks(&self, source: EventSource) -> notedthat_write::WriteSinks<'_> {
+        notedthat_write::WriteSinks::new(&self.indexer_tx, self.events.as_deref(), source)
+    }
 }
 
 #[cfg(test)]
@@ -48,6 +60,7 @@ mod tests {
             max_patchable_size: 1024,
             indexer_tx: tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         }
     }
 

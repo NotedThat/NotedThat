@@ -1,5 +1,5 @@
 use super::super::helpers::{
-    body_limit_usize, object_location, parse_path, patch_mode_from_headers,
+    body_limit_usize, event_source, object_location, parse_path, patch_mode_from_headers,
 };
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
@@ -18,6 +18,7 @@ pub(in crate::router) async fn patch_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
+    let source = event_source(&req);
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -98,7 +99,7 @@ pub(in crate::router) async fn patch_object(
 
     let outcome = notedthat_write::patch(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(source),
         notedthat_write::patch::PatchRequest {
             kb: &kb,
             path: &path,

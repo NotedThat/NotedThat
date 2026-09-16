@@ -214,6 +214,32 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", value_name = "MS")]
     pub fs_watch_debounce_ms: Option<OsString>,
 
+    /// Object change event log: `none`, `memory` or `nats` [default: none].
+    #[arg(long, env = "NOTEDTHAT_EVENTS_BACKEND", value_name = "BACKEND")]
+    pub events_backend: Option<OsString>,
+
+    /// Events the `memory` log retains for replay [default: 10000].
+    #[arg(long, env = "NOTEDTHAT_EVENTS_MEMORY_CAPACITY", value_name = "COUNT")]
+    pub events_memory_capacity: Option<OsString>,
+
+    /// NATS server URL, `nats://[user:pass@]host:4222`. Required with the
+    /// `nats` events backend; credentials travel in the URL.
+    #[arg(
+        long,
+        env = "NOTEDTHAT_NATS_URL",
+        value_name = "URL",
+        hide_env_values = true
+    )]
+    pub nats_url: Option<String>,
+
+    /// `JetStream` stream holding the event log [default: notedthat-events].
+    #[arg(long, env = "NOTEDTHAT_NATS_STREAM", value_name = "NAME")]
+    pub nats_stream: Option<String>,
+
+    /// How long the stream retains an event, in seconds [default: 604800].
+    #[arg(long, env = "NOTEDTHAT_NATS_MAX_AGE_SECS", value_name = "SECS")]
+    pub nats_max_age_secs: Option<OsString>,
+
     /// Qdrant gRPC endpoint, e.g. `http://127.0.0.1:6334`.
     #[arg(long, env = "NOTEDTHAT_QDRANT_URL", value_name = "URL")]
     pub qdrant_url: Option<String>,
@@ -466,6 +492,10 @@ mod tests {
             ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("key-id-leak-canary")),
             ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("secret-leak-canary")),
             ("NOTEDTHAT_QDRANT_API_KEY", Some("qdrant-leak-canary")),
+            (
+                "NOTEDTHAT_NATS_URL",
+                Some("nats://u:nats-leak-canary@broker:4222"),
+            ),
             ("EMBEDDING_API_KEY", Some("embedding-leak-canary")),
             // A non-credential, to show the value is hidden only where it must be.
             ("NOTEDTHAT_LISTEN_ADDR", Some("127.0.0.1:9999")),

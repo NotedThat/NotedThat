@@ -994,6 +994,7 @@ mod tests {
             access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
             declared_kbs: Arc::new(declared_kbs),
             indexer_tx,
+            events: None,
         })
     }
 

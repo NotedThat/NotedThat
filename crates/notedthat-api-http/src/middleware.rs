@@ -1,7 +1,9 @@
 //! Authentication middleware for the `NotedThat` API.
 
 use crate::error::ApiErrorResponse;
-use crate::router::{MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS};
+use crate::router::{
+    MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS,
+};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{MatchedPath, State};
@@ -32,6 +34,7 @@ const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
     (&Method::GET, MATCHED_KB_OBJECT),
     (&Method::HEAD, MATCHED_KB_OBJECT),
     (&Method::POST, MATCHED_KB_SEARCH),
+    (&Method::GET, MATCHED_KB_EVENTS),
 ];
 
 /// Axum middleware that establishes the request's [`Principal`].
@@ -150,6 +153,7 @@ mod tests {
             max_patchable_size: 16 * 1024 * 1024,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         }
     }
 

@@ -46,6 +46,7 @@ impl RunningServer {
             storage: Arc::new(InMemoryStorage::default()),
             store: Arc::new(InMemoryVectorStore::new()),
             embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+            events: None,
         };
         let base_url = format!("http://{}", config.listen_addr);
         let mcp_url = format!("{base_url}/mcp");
@@ -137,6 +138,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),

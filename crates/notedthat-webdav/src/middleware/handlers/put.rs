@@ -6,7 +6,7 @@ use notedthat_core::{ConditionalHeaders, StageError, StagedBody, StorageError};
 use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
 
-use super::super::backpressure::backpressure_response;
+use super::super::backpressure::{backpressure_response, event_publish_failed_response};
 use super::super::helpers::response_with_optional_etag;
 use super::super::path_validation::parse_webdav_uri_path;
 
@@ -75,7 +75,7 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
     };
     match notedthat_write::commit(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(),
         &kb,
         &path,
         body,
@@ -99,6 +99,11 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
             StatusCode::PRECONDITION_FAILED.into_response()
         }
         Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => backpressure_response(),
+        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
+            event_publish_failed_response(
+                "object stored; change event not published. Retry PUT to publish.",
+            )
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

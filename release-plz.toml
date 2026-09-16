@@ -86,6 +86,7 @@ changelog_include = [
   "notedthat-storage-fs",
   "notedthat-indexer",
   "notedthat-write",
+  "notedthat-events",
   "notedthat-api-http",
   "notedthat-webdav",
   "notedthat-mcp",

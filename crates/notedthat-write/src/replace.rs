@@ -2,9 +2,8 @@
 
 use bytes::{Bytes, BytesMut};
 use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError};
-use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc::Sender;
 
+use crate::sinks::WriteSinks;
 use crate::{ReplaceOutcome, WriteError};
 
 /// Request data for one optimistic replace operation.
@@ -34,7 +33,7 @@ pub struct ReplaceRequest<'a> {
 /// match-count requirements fail.
 pub async fn replace(
     storage: &dyn Storage,
-    indexer_tx: &Sender<IndexEvent>,
+    sinks: &WriteSinks<'_>,
     request: ReplaceRequest<'_>,
 ) -> Result<ReplaceOutcome, WriteError> {
     const MAX_ATTEMPTS: u32 = 3;
@@ -118,6 +117,10 @@ pub async fn replace(
         let content_type = caller_content_type
             .or(read.meta.content_type.as_deref())
             .unwrap_or("application/octet-stream");
+        let new_size =
+            u64::try_from(new_bytes.len()).map_err(|_| WriteError::PatchInvalidRange {
+                message: "replace: body length exceeds u64".into(),
+            })?;
         let put_outcome = match storage
             .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
             .await
@@ -130,7 +133,7 @@ pub async fn replace(
             Err(error) => return Err(WriteError::Storage(error)),
         };
 
-        crate::patch::indexing::enqueue_patch_upsert(indexer_tx, kb, path, &put_outcome)?;
+        crate::commit::after_write(sinks, kb, path, &put_outcome, new_size, content_type).await?;
 
         let match_count =
             u64::try_from(match_bound).map_err(|_| WriteError::PatchInvalidRange {

@@ -1,5 +1,7 @@
 #![allow(missing_docs)]
 
+#[path = "access/events.rs"]
+mod events;
 #[path = "access/fixture.rs"]
 mod fixture;
 #[path = "access/listing.rs"]

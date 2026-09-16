@@ -1,4 +1,4 @@
-use super::super::helpers::{body_limit_usize, object_location, parse_path};
+use super::super::helpers::{body_limit_usize, event_source, object_location, parse_path};
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -16,6 +16,7 @@ pub(in crate::router) async fn put_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
+    let source = event_source(&req);
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -68,7 +69,7 @@ pub(in crate::router) async fn put_object(
 
     let outcome = notedthat_write::commit(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(source),
         &kb,
         &path,
         body_bytes,
@@ -97,6 +98,7 @@ pub(in crate::router) async fn delete_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
+    let source = event_source(&req);
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -112,7 +114,7 @@ pub(in crate::router) async fn delete_object(
 
     notedthat_write::commit_delete(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(source),
         &kb,
         &path,
         conditionals,

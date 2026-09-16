@@ -9,6 +9,7 @@ members = [
   "crates/notedthat-storage-fs",
   "crates/notedthat-indexer",
   "crates/notedthat-write",
+  "crates/notedthat-events",
   "crates/notedthat-api-http",
   "crates/notedthat-webdav",
   "crates/notedthat-mcp",
@@ -31,6 +32,7 @@ authors = ["NotedThat Contributors"]
 notedthat-core = { path = "crates/notedthat-core", version = "0.7.0" }
 notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.7.0" }
 notedthat-write = { path = "crates/notedthat-write", version = "0.7.0" }
+notedthat-events = { path = "crates/notedthat-events", version = "0.7.0" }
 
 # MCP
 rmcp = { version = "2.1.0", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
@@ -67,6 +69,9 @@ http = "1"
 aws-sdk-s3 = { version = "1.137", default-features = false, features = ["rt-tokio", "http-1x", "default-https-client"] }
 aws-config = { version = "1.1", default-features = false, features = ["behavior-version-latest"] }
 aws-smithy-runtime-api = "1"
+
+# Event log broker (JetStream)
+async-nats = "0.50"
 
 # Vector DB
 qdrant-client = { version = "1.15", default-features = false, features = ["serde"] }
