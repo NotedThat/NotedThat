@@ -99,6 +99,7 @@ impl Backends {
             tenant_slug: TenantSlug::default(),
             listen_addr: free_addr(),
             storage: notedthat_server::config::StorageConfig::S3(self.s3_config.clone()),
+            events: notedthat_server::config::EventsConfig::None,
             log_format: LogFormat::Pretty,
             qdrant: ServerQdrantConfig {
                 url: self.qdrant_url.clone(),

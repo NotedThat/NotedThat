@@ -72,6 +72,7 @@ pub(super) fn state_with_policies(
         ),
         indexer_tx,
         staging_config: notedthat_core::StagingConfig::default(),
+        events: None,
     }
 }
 

@@ -103,9 +103,11 @@ impl NotedThatClient {
         url
     }
 
-    /// Attach `Authorization: Bearer <token>` header to a request.
+    /// Attach `Authorization: Bearer <token>` to a request, and name this
+    /// surface so a write's change event says `mcp` rather than `http`.
     pub(crate) fn authorized(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req.bearer_auth(&self.token)
+            .header(SOURCE_HEADER, SOURCE_VALUE)
     }
 
     /// The slugs of the knowledge bases visible to this client's caller, in
@@ -127,6 +129,12 @@ impl NotedThatClient {
     }
 }
 
+/// The header that attributes a write to this surface in its change event.
+/// Informational: the API grants nothing on its account.
+pub const SOURCE_HEADER: &str = "x-notedthat-source";
+/// The value the header carries.
+pub const SOURCE_VALUE: &str = "mcp";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +155,17 @@ mod tests {
             u.as_str(),
             "http://localhost:8080/api/v1/knowledgebases/notes"
         );
+    }
+
+    #[test]
+    fn every_request_names_this_surface_and_carries_the_bearer() {
+        let c = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
+        let req = c
+            .authorized(c.http.get(c.api_v1_url(&["knowledgebases"])))
+            .build()
+            .expect("request builds");
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer tok");
+        assert_eq!(req.headers().get(SOURCE_HEADER).unwrap(), SOURCE_VALUE);
     }
 
     #[test]

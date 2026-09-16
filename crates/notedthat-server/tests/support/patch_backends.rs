@@ -9,7 +9,7 @@
 //! provisioning, the same indexer worker, the same listeners.
 
 use notedthat_api_http::testing::InMemoryStorage;
-use notedthat_core::{KbSlug, TenantSlug};
+use notedthat_core::{EventPublisher, KbSlug, TenantSlug};
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use notedthat_server::run::Backends;
@@ -33,6 +33,14 @@ struct ListenerAddrs {
 }
 
 pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
+    start_runtime_with_events(max_patchable_size, None)
+}
+
+/// A runtime over an event log, so the events route has something to serve.
+pub(super) fn start_runtime_with_events(
+    max_patchable_size: u64,
+    events: Option<Arc<dyn EventPublisher>>,
+) -> RuntimeParts {
     let listeners = ListenerAddrs {
         http: notedthat_api_http::testing::reserve_addr(),
     };
@@ -42,7 +50,10 @@ pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
     RuntimeParts {
         config,
         kb,
-        backends: in_memory_backends(),
+        backends: Backends {
+            events,
+            ..in_memory_backends()
+        },
     }
 }
 
@@ -52,6 +63,7 @@ pub(super) fn in_memory_backends() -> Backends {
         storage: Arc::new(InMemoryStorage::default()),
         store: Arc::new(InMemoryVectorStore::new()),
         embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+        events: None,
     }
 }
 
@@ -75,6 +87,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),

@@ -33,6 +33,7 @@ fn make_app() -> axum::Router {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     };
     build_router(state)
 }
@@ -48,6 +49,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: mock,
+        events: None,
     };
     build_router(state)
 }

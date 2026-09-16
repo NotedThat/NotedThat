@@ -42,6 +42,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     })
 }
 
@@ -221,6 +222,7 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     })
 }
 

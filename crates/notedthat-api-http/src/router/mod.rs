@@ -5,6 +5,7 @@
 pub(crate) use helpers::{kb_not_found, lookup_kb};
 
 mod browse;
+mod events;
 mod health;
 mod helpers;
 mod kbs;
@@ -28,6 +29,7 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use browse::{browse_path, browse_root};
+use events::subscribe_events;
 use health::{healthz, readyz};
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
@@ -65,6 +67,7 @@ api_routes! {
     ROUTE_KBS / MATCHED_KBS => "/knowledgebases",
     ROUTE_KB / MATCHED_KB => "/knowledgebases/{kb_slug}",
     ROUTE_KB_SEARCH / MATCHED_KB_SEARCH => "/knowledgebases/{kb_slug}/search",
+    ROUTE_KB_EVENTS / MATCHED_KB_EVENTS => "/knowledgebases/{kb_slug}/events",
     ROUTE_KB_OBJECT / MATCHED_KB_OBJECT => "/knowledgebases/{kb_slug}/{*object_path}",
 }
 
@@ -95,6 +98,7 @@ pub fn build_router(state: AppState) -> Router {
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
+        .route(ROUTE_KB_EVENTS, get(subscribe_events))
         .route(
             ROUTE_KB_OBJECT,
             get(get_object)
@@ -147,8 +151,8 @@ pub fn build_router(state: AppState) -> Router {
 #[cfg(test)]
 mod route_constants {
     use super::{
-        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS, ROUTE_KB,
-        ROUTE_KB_OBJECT, ROUTE_KB_SEARCH, ROUTE_KBS,
+        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH,
+        MATCHED_KBS, ROUTE_KB, ROUTE_KB_EVENTS, ROUTE_KB_OBJECT, ROUTE_KB_SEARCH, ROUTE_KBS,
     };
 
     /// The router registers the relative form and the middleware matches the
@@ -161,6 +165,7 @@ mod route_constants {
             (ROUTE_KBS, MATCHED_KBS),
             (ROUTE_KB, MATCHED_KB),
             (ROUTE_KB_SEARCH, MATCHED_KB_SEARCH),
+            (ROUTE_KB_EVENTS, MATCHED_KB_EVENTS),
             (ROUTE_KB_OBJECT, MATCHED_KB_OBJECT),
         ] {
             assert_eq!(matched, format!("{API_V1_PREFIX}{route}"));
@@ -219,6 +224,7 @@ mod patch_route {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         });
 
         (router, outcome.etag.unwrap())
@@ -260,6 +266,7 @@ mod patch_route {
             max_patchable_size,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -781,6 +788,7 @@ mod line_range_get {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -940,6 +948,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         })
     }
 
@@ -1153,6 +1162,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         };
         let router = build_router(state);
 
@@ -1243,6 +1253,7 @@ mod tests {
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
         };
         let router = build_router(state);
 
