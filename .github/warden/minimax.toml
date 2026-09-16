@@ -1,8 +1,9 @@
 # Warden model profile: MiniMax M3 on the MiniMax subscription, via MiniMax's
 # own Anthropic-compatible API (pi provider `minimax`), reached through our
-# egress proxy's Anthropic-style route (WARDEN_MINIMAX_BASE_URL) with the
-# proxy token as WARDEN_MINIMAX_API_KEY. Never route MiniMax through OpenCode
-# Go — that plan is reserved for the other open models.
+# egress proxy's Anthropic-style route: pi/models.json points the built-in
+# provider at WARDEN_MINIMAX_BASE_URL, and the proxy token is
+# WARDEN_MINIMAX_API_KEY. Never route MiniMax through OpenCode Go — that plan
+# is reserved for the other open models.
 #
 # Overlay only: skills and triggers live in /warden.toml.
 #

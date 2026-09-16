@@ -160,23 +160,34 @@ jobs:
               .catch(e => { console.log("node fetch failed:", e.message, "|", e.cause && (e.cause.code + " " + e.cause.message)); process.exit(1); });
           ' || { echo "::error::Node cannot reach the ${{ matrix.provider }} endpoint from this runner (see above)"; exit 1; }
 
-      # pi (Warden's runtime) learns providers it does not ship with from a
-      # models.json in its agent directory. Copied out of the checkout so
-      # anything pi writes next to it (session state, catalogue cache) never
-      # lands in the tree Warden is reviewing. The placeholder base URL in
-      # the committed file is replaced with the real one (the proxy route)
-      # here, for the lane that uses it: Warden's WARDEN_<PROVIDER>_BASE_URL
-      # override did not reach a models.json provider in the v0.48.0 action
-      # (every call went to the placeholder and died as "Connection error"),
-      # so the copy must be complete on its own.
+      # pi (Warden's runtime) reads a models.json from its agent directory:
+      # it declares the third-party provider pi does not ship with, and
+      # points the built-in `minimax` provider at the proxy. Copied out of
+      # the checkout so anything pi writes next to it (session state,
+      # catalogue cache) never lands in the tree Warden is reviewing. The
+      # placeholder base URLs in the committed file are replaced with the
+      # proxy routes here, because the WARDEN_<PROVIDER>_BASE_URL override
+      # is not honoured inside the v0.48.0 action, only by the CLI: the
+      # third-party lane found that on its first run (every call went to
+      # the placeholder), and the MiniMax lane found it again when its
+      # calls went straight to MiniMax with the proxy token (a 401 in
+      # 350 ms, and not one request in the proxy's log). The copy must be
+      # complete on its own; the env override stays exported for local
+      # runs, where it does work.
       - name: Give pi the repo's provider catalogue
         env:
-          BASE_URL: ${{ matrix.provider == 'THIRDPARTY' && secrets.WARDEN_THIRDPARTY_BASE_URL || '' }}
+          MINIMAX_BASE_URL: ${{ secrets.WARDEN_MINIMAX_BASE_URL }}
+          THIRDPARTY_BASE_URL: ${{ secrets.WARDEN_THIRDPARTY_BASE_URL }}
         run: |
           mkdir -p "$RUNNER_TEMP/pi-agent"
           cp .github/warden/pi/models.json "$RUNNER_TEMP/pi-agent/models.json"
-          if [ -n "$BASE_URL" ]; then
-            sed -i "s|https://example.invalid/v1|$BASE_URL|" "$RUNNER_TEMP/pi-agent/models.json"
+          sed -i \
+            -e "s|https://example.invalid/minimax|$MINIMAX_BASE_URL|" \
+            -e "s|https://example.invalid/thirdparty|$THIRDPARTY_BASE_URL|" \
+            "$RUNNER_TEMP/pi-agent/models.json"
+          if grep -q 'example.invalid' "$RUNNER_TEMP/pi-agent/models.json"; then
+            echo "::error::a provider base URL placeholder was not replaced; is every WARDEN_*_BASE_URL secret set?"
+            exit 1
           fi
           echo "PI_CODING_AGENT_DIR=$RUNNER_TEMP/pi-agent" >> "$GITHUB_ENV"
 

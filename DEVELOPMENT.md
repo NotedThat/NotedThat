@@ -279,7 +279,10 @@ Every lane goes through our self-hosted LLM egress proxy, which holds the
 provider keys, queues MiniMax calls behind a global in-flight limit, and
 fixes tool calling on the third-party endpoint. Locally you need the proxy's
 token and the route for the provider you want — ask a maintainer; neither is
-in the repository on purpose. Warden mirrors these to what pi expects.
+in the repository on purpose. Warden mirrors these to what pi expects. (The
+`WARDEN_*_BASE_URL` override works in the CLI; CI cannot rely on it inside
+the action and writes the routes into `.github/warden/pi/models.json`
+instead — see that directory's README.)
 
 ```sh
 # MiniMax M3: pi's built-in provider, pointed at the proxy's Anthropic-style

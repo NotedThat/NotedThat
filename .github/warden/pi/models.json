@@ -1,8 +1,11 @@
 {
   "providers": {
+    "minimax": {
+      "baseUrl": "https://example.invalid/minimax"
+    },
     "thirdparty": {
       "name": "Third-party OpenAI-compatible endpoint",
-      "baseUrl": "https://example.invalid/v1",
+      "baseUrl": "https://example.invalid/thirdparty",
       "api": "openai-completions",
       "apiKey": "$THIRDPARTY_API_KEY",
       "compat": {
