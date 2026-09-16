@@ -36,7 +36,7 @@ thiserror.workspace = true
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.7.0", features = ["test-support"] }
 notedthat-api-http = { path = ".", features = ["test-support"] }
 # The memory event log, for the events route's tests. Without the broker client.
-notedthat-events = { path = "../notedthat-events", version = "0.5.0", default-features = false }
+notedthat-events = { path = "../notedthat-events", version = "0.7.0", default-features = false }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

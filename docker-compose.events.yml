@@ -2,7 +2,7 @@
 #
 # The default stack publishes no object change events. This overlay adds a NATS server
 # with JetStream and points the server at it, so `GET /api/v1/knowledgebases/{kb}/events`
-# streams every change with durable, cross-replica replay (D54):
+# streams every change with durable, cross-replica replay (D55):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.events.yml up --build -d
 #

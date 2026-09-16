@@ -1,5 +1,5 @@
 //! Object change events: the one shape every surface publishes and every
-//! subscriber reads (SPECIFICATIONS.md §6.14, D54).
+//! subscriber reads (SPECIFICATIONS.md §6.14, D55).
 //!
 //! An [`ObjectEvent`] says that one key in one knowledge base was written or
 //! deleted, by which surface, and — for a write — what the bytes now look like.
