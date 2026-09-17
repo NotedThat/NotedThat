@@ -49,7 +49,7 @@ pub(in crate::replace::tests) async fn run_replace_with(
     let path = path();
     replace(
         storage,
-        &indexer_tx,
+        &crate::WriteSinks::indexer_only(&indexer_tx),
         ReplaceRequest {
             kb: &kb,
             path: &path,

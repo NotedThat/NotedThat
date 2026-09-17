@@ -1,4 +1,6 @@
-use super::super::helpers::{body_limit_usize, object_location, parse_path, replace_conditionals};
+use super::super::helpers::{
+    body_limit_usize, event_source, object_location, parse_path, replace_conditionals,
+};
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -57,6 +59,7 @@ async fn replace_object(
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(&req);
+    let source = event_source(&req);
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -117,7 +120,7 @@ async fn replace_object(
 
     let outcome = notedthat_write::replace(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(source),
         notedthat_write::ReplaceRequest {
             kb: &kb,
             path: &path,

@@ -20,6 +20,13 @@ fn app() -> axum::Router {
 }
 
 fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
+    app_with(max_body_size, None)
+}
+
+fn app_with(
+    max_body_size: u64,
+    events: Option<Arc<dyn notedthat_core::EventPublisher>>,
+) -> axum::Router {
     let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
@@ -34,6 +41,7 @@ fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
         max_patchable_size: max_body_size,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events,
     };
     build_router(state)
 }
@@ -83,6 +91,74 @@ async fn healthz_no_auth_required() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = response_json(resp).await;
     assert_eq!(json["status"], "ok");
+}
+
+/// An event log that reports itself disconnected.
+struct DisconnectedEvents;
+
+#[async_trait::async_trait]
+impl notedthat_core::EventPublisher for DisconnectedEvents {
+    async fn publish(
+        &self,
+        _event: notedthat_core::ObjectEvent,
+    ) -> Result<notedthat_core::EventId, notedthat_core::PublishError> {
+        Err(notedthat_core::PublishError::Unavailable {
+            message: "disconnected".into(),
+        })
+    }
+
+    async fn subscribe(
+        &self,
+        _kb: &KbSlug,
+        _after: Option<notedthat_core::EventId>,
+    ) -> Result<notedthat_core::EventStream, notedthat_core::SubscribeError> {
+        Err(notedthat_core::SubscribeError::Unavailable {
+            message: "disconnected".into(),
+        })
+    }
+
+    fn ready(&self) -> bool {
+        false
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "nats"
+    }
+}
+
+#[tokio::test]
+async fn readyz_is_unavailable_while_the_event_backend_is_disconnected() {
+    let resp = app_with(1024, Some(Arc::new(DisconnectedEvents)))
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let json = response_json(resp).await;
+    assert_eq!(json["status"], "unavailable");
+    assert_eq!(json["events"], "nats");
+}
+
+#[tokio::test]
+async fn a_disconnected_event_backend_answers_503_with_retry_after_on_subscribe() {
+    let resp = app_with(1024, Some(Arc::new(DisconnectedEvents)))
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/knowledgebases/{KB}/events"))
+                .header(auth().0, auth().1)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.headers()["retry-after"], "5");
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "backend_unavailable");
 }
 
 #[tokio::test]
@@ -824,6 +900,7 @@ async fn delete_enqueues_tombstone_on_success() {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
     };
     let router = build_router(state);
 
@@ -879,6 +956,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
     };
     let router = build_router(state);
 

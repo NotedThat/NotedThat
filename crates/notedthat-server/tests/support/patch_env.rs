@@ -28,7 +28,15 @@ pub struct PatchServer {
 
 impl PatchServer {
     pub async fn start(max_patchable_size: u64) -> Self {
-        let runtime = patch_backends::start_runtime(max_patchable_size);
+        Self::start_with_events(max_patchable_size, None).await
+    }
+
+    /// A server whose writes are announced on `events`.
+    pub async fn start_with_events(
+        max_patchable_size: u64,
+        events: Option<std::sync::Arc<dyn notedthat_core::EventPublisher>>,
+    ) -> Self {
+        let runtime = patch_backends::start_runtime_with_events(max_patchable_size, events);
         let config = runtime.config;
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);

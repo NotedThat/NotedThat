@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, StorageError};
 
-use super::backpressure::delete_backpressure_response;
+use super::backpressure::{delete_backpressure_response, event_publish_failed_response};
 use super::path_validation::parse_webdav_uri_path;
 use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
@@ -30,7 +30,7 @@ pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response 
 
     match notedthat_write::commit_delete(
         state.storage.as_ref(),
-        &state.indexer_tx,
+        &state.sinks(),
         &kb,
         &path,
         conditionals,
@@ -43,6 +43,11 @@ pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response 
         }
         Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
             delete_backpressure_response()
+        }
+        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
+            event_publish_failed_response(
+                "deleted from storage; change event not published. Retry DELETE to publish.",
+            )
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

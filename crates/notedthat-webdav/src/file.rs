@@ -323,6 +323,7 @@ mod tests {
             declared_kbs: Arc::new(BTreeMap::new()),
             access_policies: Arc::new(BTreeMap::new()),
             indexer_tx,
+            events: None,
         })
     }
 

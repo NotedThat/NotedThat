@@ -5,12 +5,27 @@ use super::API_V1_PREFIX;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::Request;
+use axum::http::HeaderValue;
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, Error as CoreError, KbSlug, ObjectPath, parse_line_range_header,
+    ByteRange, ConditionalHeaders, Error as CoreError, EventSource, KbSlug, ObjectPath,
+    parse_line_range_header,
 };
 use notedthat_write::PatchMode;
 use std::fmt::Write;
+
+/// The header the MCP server sets on the API calls it makes on a caller's
+/// behalf, so a write's event can say `mcp` rather than `http`. Informational:
+/// any client may send it, and nothing is granted or refused on its account.
+pub const SOURCE_HEADER: &str = "x-notedthat-source";
+
+/// Which surface a write is attributed to in the events it publishes.
+pub(crate) fn event_source(req: &Request) -> EventSource {
+    match req.headers().get(SOURCE_HEADER).map(HeaderValue::as_bytes) {
+        Some(b"mcp") => EventSource::Mcp,
+        _ => EventSource::Http,
+    }
+}
 
 pub(super) const REPLACE_IF_MATCH_ERROR: &str =
     "If-Match is required for POST replace and must be a single strong ETag";
