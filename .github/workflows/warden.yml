@@ -1,9 +1,11 @@
 # Sentry Warden: LLM review of the PR diff.
 #
-# Runs once per model profile under .github/warden/. Each profile is a
-# complete, self-contained Warden config (shared review settings, models,
-# skills) and the lanes are fully independent: no merging, no cross-profile
-# dedup, each posts its own PR review. Three profiles today:
+# Runs one job per skill of each model profile under .github/warden/.
+# Each profile is a complete, self-contained Warden config (shared review
+# settings, models, skills); the lanes are fully independent — no merging,
+# no cross-profile dedup — and within a lane each skill's job posts its own
+# review, so a slow lane on a large PR still delivers the skills that
+# finish. Three profiles today:
 #   - minimax: the cheap lane — the two built-in skills, four hunks at a
 #     time, the most the MiniMax Token Plan tolerates (see the profile);
 #   - thirdparty-gpt-oss: the wide lane — those two plus six more skills,
@@ -56,64 +58,66 @@ permissions:
   checks: read
 
 jobs:
-  review:
+  # One job per (profile, skill), planned from the profiles themselves so
+  # the job list cannot drift from the skills each profile declares. The
+  # lane facts (provider, app, preflight path, timeout, per-job concurrency)
+  # live in plan-jobs.py next to the profiles.
+  plan:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
-    # Per profile: the MiniMax lane runs four hunks at a time and may queue
-    # behind another PR at the proxy, so a large feature PR (~350 hunks,
-    # PR #130) can need hours; the wide lane is fast. Hitting the limit is a
-    # cancelled review, not a red X.
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: plan
+        run: python3 .github/warden/plan-jobs.py >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: plan
+    name: review (${{ matrix.profile }}, ${{ matrix.skill }})
+    runs-on: ubuntu-latest
+    # Per skill: each job has its own budget, so a slow lane on a large PR
+    # still posts the skills that finish. Hitting the limit is a cancelled
+    # review, not a red X.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
-      # One subscription being down must not cancel the other profile's review.
+      # One subscription being down must not cancel the other lanes' reviews.
       fail-fast: false
-      matrix:
-        include:
-          # Two words per profile decide how it runs:
-          #   provider -> which route the preflight checks. The secrets
-          #               themselves are the same for every lane: both
-          #               providers' WARDEN_<provider>_API_KEY and _BASE_URL
-          #               (the proxy token and the proxy route) are exported
-          #               into every job, because each overlay verifies its
-          #               findings with a model from the other provider.
-          #               Warden mirrors them to the names pi expects.
-          #   app      -> WARDEN_<app>_APP_ID / _PRIVATE_KEY: the GitHub App
-          #               the lane posts as. Reviews then come from
-          #               `warden-<model>[bot]` rather than github-actions[bot],
-          #               which discloses the model, keeps the two lanes'
-          #               check runs apart (check runs are namespaced per
-          #               app, so Warden's hardcoded names no longer overwrite
-          #               each other), and lets Warden recognise its own
-          #               earlier review to dismiss it once addressed — a flow
-          #               it skips outright under GITHUB_TOKEN.
-          # preflight-path is the models listing under the route, used only
-          # to prove the proxy is reachable from the runner: the MiniMax
-          # route speaks the Anthropic API, which lists under /v1/models.
-          # Secrets are never exported as an empty string; a missing one
-          # fails the job before any model call.
-          # pi's built-in `minimax` provider, pointed at the proxy's
-          # Anthropic-style route through pi/models.json.
-          - profile: minimax
-            provider: MINIMAX
-            app: MINIMAX
-            preflight-path: /v1/models
-            timeout: 300
-          # The provider is declared in .github/warden/pi.
-          - profile: thirdparty-gpt-oss
-            provider: THIRDPARTY
-            app: GPT_OSS
-            preflight-path: /models
-            timeout: 90
-          # Same provider and secrets as the lane above; its own GitHub App
-          # so the two lanes' check runs and reviews stay apart. Two hunks
-          # at a time at ~25 s each: a large PR (~350 hunks) needs hours.
-          - profile: thirdparty-deepseek
-            provider: THIRDPARTY
-            app: DEEPSEEK
-            preflight-path: /models
-            timeout: 240
+      # The provider's ceiling is what limits a lane, not the runner count:
+      # the plan sizes each job's hunk concurrency so a lane's jobs together
+      # stay within it (MiniMax four via the proxy's queue, DeepSeek two,
+      # GPT-OSS unmetered).
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      # Two words per lane decide how it runs:
+      #   provider -> which route the preflight checks. The secrets
+      #               themselves are the same for every lane: both
+      #               providers' WARDEN_<provider>_API_KEY and _BASE_URL
+      #               (the proxy token and the proxy route) are exported
+      #               into every job, because each profile verifies its
+      #               findings with a model from the other provider.
+      #               Warden mirrors them to the names pi expects.
+      #   app      -> WARDEN_<app>_APP_ID / _PRIVATE_KEY: the GitHub App
+      #               the lane posts as. Reviews then come from
+      #               `warden-<model>[bot]` rather than github-actions[bot],
+      #               which discloses the model, keeps the lanes'
+      #               check runs apart (check runs are namespaced per
+      #               app, so Warden's hardcoded names no longer overwrite
+      #               each other), and lets Warden recognise its own
+      #               earlier review to dismiss it once addressed — a flow
+      #               it skips outright under GITHUB_TOKEN. The jobs of one
+      #               lane share an app: their `warden: <skill>` checks are
+      #               distinct, only the aggregate `warden` check is
+      #               re-created by each of them.
+      # preflight-path is the models listing under the route, used only
+      # to prove the proxy is reachable from the runner: the MiniMax
+      # route speaks the Anthropic API, which lists under /v1/models.
+      # Secrets are never exported as an empty string; a missing one
+      # fails the job before any model call.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -195,20 +199,34 @@ jobs:
           fi
           echo "PI_CODING_AGENT_DIR=$RUNNER_TEMP/pi-agent" >> "$GITHUB_ENV"
 
+      # This job's config: the lane's profile reduced to the one skill, at
+      # the per-job hunk concurrency from the plan. Written under .warden/
+      # (git-ignored) because the action wants a path inside the checkout.
+      - name: Reduce the profile to ${{ matrix.skill }}
+        env:
+          PROFILE: ${{ matrix.profile }}
+          SKILL: ${{ matrix.skill }}
+          CONCURRENCY: ${{ matrix.concurrency }}
+        run: |
+          mkdir -p .warden
+          python3 .github/warden/one-skill.py ".github/warden/$PROFILE.toml" "$SKILL" "$CONCURRENCY" \
+            > ".warden/$PROFILE-$SKILL.toml"
+          echo "WARDEN_CONFIG_PATH=.warden/$PROFILE-$SKILL.toml" >> "$GITHUB_ENV"
+
       # Split analyze/report (the documented shape): analyze does all the model
       # work and writes a findings file without touching GitHub; report replays
       # that file into a PR review and check runs.
       #
-      # One config file per lane, no base-config-path: Warden runs a base
+      # One config file per job, no base-config-path: Warden runs a base
       # file's skills with the base file's own defaults, so a shared base
       # that left the model to the overlay handed the built-in skills to
       # pi's default model instead (see the profiles).
-      - name: Analyze (${{ matrix.profile }})
+      - name: Analyze (${{ matrix.profile }}, ${{ matrix.skill }})
         id: analyze
         uses: getsentry/warden@775db57bee73caaeb6dcdafd5b56fd472dd6a0bc # v0.48.0
         with:
           mode: analyze
-          config-path: .github/warden/${{ matrix.profile }}.toml
+          config-path: ${{ env.WARDEN_CONFIG_PATH }}
 
       # A short-lived installation token for this profile's GitHub App; the
       # report step posts with it. Reads (the diff, existing comments) keep
@@ -223,10 +241,10 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
-      - name: Report (${{ matrix.profile }})
+      - name: Report (${{ matrix.profile }}, ${{ matrix.skill }})
         uses: getsentry/warden@775db57bee73caaeb6dcdafd5b56fd472dd6a0bc # v0.48.0
         with:
           mode: report
           findings-file: ${{ steps.analyze.outputs.findings-file }}
           github-token: ${{ steps.bot.outputs.token }}
-          config-path: .github/warden/${{ matrix.profile }}.toml
+          config-path: ${{ env.WARDEN_CONFIG_PATH }}
