@@ -20,24 +20,31 @@ import sys
 import tomllib
 
 LANES = {
-    # concurrency is per job; the lane runs len(skills) jobs at once.
-    #   minimax: the proxy queues MiniMax at four in flight; two jobs at two.
-    #   thirdparty-deepseek: the endpoint 429s above two in flight; two jobs at one.
-    #   thirdparty-gpt-oss: no plan quota; eight jobs at two is the experiment's
-    #     variable (the single job ran eight in flight in total).
+    # concurrency is per job; the lane runs len(skills) jobs at once, and
+    # the proxy is the real scheduler: it holds 4 MiniMax slots and 5
+    # third-party slots and answers a request that waits longer than its
+    # queue timeout with a 503, which Warden's circuit breaker turns into a
+    # failed skill after five in a row. So the budget is slots, not runners:
+    #   minimax: two jobs at one — two slots for scanning, two left for the
+    #     DeepSeek lane's verifier, which also goes through MiniMax (two jobs
+    #     at two used all four and starved it; PR #144).
+    #   thirdparty-deepseek: two jobs at one; the endpoint 429s above two.
+    #   thirdparty-gpt-oss: eight jobs at one — eight on a five-slot backend
+    #     shared with DeepSeek's long calls, which the queue absorbs; eight
+    #     at two (sixteen) queued past the timeout and lost three skills.
     "minimax": {
         "provider": "MINIMAX",
         "app": "MINIMAX",
         "preflight-path": "/v1/models",
         "timeout": 300,
-        "concurrency": 2,
+        "concurrency": 1,
     },
     "thirdparty-gpt-oss": {
         "provider": "THIRDPARTY",
         "app": "GPT_OSS",
         "preflight-path": "/models",
         "timeout": 90,
-        "concurrency": 2,
+        "concurrency": 1,
     },
     "thirdparty-deepseek": {
         "provider": "THIRDPARTY",
