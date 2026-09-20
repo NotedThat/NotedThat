@@ -158,10 +158,22 @@ jobs:
   #      index actually showing the new version before it exits — see the
   #      "Wait for crates.io" step.
   #
-  #      The cost of the dependency — a failed release skips that run's PR update
-  #      and leaves the release PR stale — is bounded now that
-  #      `release_always = true` (see release-plz.toml) lets the next push to main
-  #      retry both jobs.
+  #      The dependency is on *completion*, not success: release-plz-pr runs
+  #      after a failed release too (see its `if:`). A release that fails
+  #      before publishing anything leaves the crates.io baseline exactly as
+  #      the PR job expects, and the PR it opens may be the only way out. On
+  #      2026-09-20 the merge that added `notedthat-events` (#141) failed here:
+  #      the new crate sat at the workspace version 0.7.0, which was not on
+  #      crates.io, so `release_always` tried to publish it — against the
+  #      published notedthat-core 0.7.0, which lacks the event types it imports.
+  #      Only a version bump gets core and events onto crates.io together, and
+  #      the bump comes from the release PR, which a `needs:` on success had
+  #      skipped. Every later push to main repeated the failure.
+  #
+  #      A release that fails *partway* (some crates published) is the case
+  #      `release_always = true` (see release-plz.toml) exists for: the next
+  #      push to main retries and skips what is already published. A release PR
+  #      opened in between is refreshed by that run.
   #
   #   2. release-plz-release MUST NOT have a `concurrency:` block. GitHub
   #      cancels a *pending* run when a newer run for the same group is queued
@@ -264,10 +276,17 @@ jobs:
   release-plz-pr:
     name: Open / update release PR
     needs: [test, clippy, fmt, docker-build, integration-test, release-plz-release]
+    # `!cancelled()` is what lets this run after a failed release; without it a
+    # failed `needs:` skips the job. The result check keeps the rest of the
+    # gate: release-plz-release itself only runs once test, clippy, fmt, docker
+    # and the integration suite have passed, so it is `skipped` whenever any of
+    # them failed, and this job stays skipped with it.
     if: >-
-      github.event_name == 'push'
+      !cancelled()
+      && github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
+      && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
     runs-on: ubuntu-latest
     permissions:
       contents: write

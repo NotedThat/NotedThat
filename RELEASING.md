@@ -19,7 +19,7 @@ All 12 crates share a single ecosystem-level version:
 release-plz runs automatically on every push to `main`:
 
 1. `release-plz-release` runs first (needs: test, clippy, fmt, docker-build, integration-test). If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
-2. `release-plz-pr` runs after (needs: release-plz-release). It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates.
+2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed (see "Adding a crate"), the release PR is the way out, and a job that waited for a green release would never open it.
 3. Merging the release PR into `main` triggers the next cycle.
 
 ## Prerequisites (One-Time Setup)
@@ -60,6 +60,14 @@ If auto-registration failed, add them manually via the crates.io web UI.
 3. `release-plz-pr` opens/updates a release PR with the next version + aggregated CHANGELOG entries
 4. Review the release PR, then merge it into `main`
 5. The merge triggers another `release-plz-release` run which publishes the new version
+
+## Adding a Crate to the Workspace
+
+A new publishable crate takes the shared workspace version, which is already on crates.io for every other crate. Expect the following on the merge that adds it, and do not treat it as a broken release:
+
+1. `release-plz-release` fails on the merge push. `release_always = true` sees the new crate's version missing from crates.io and tries to publish it; `cargo publish` verifies the tarball against crates.io, where its sibling dependencies are still the *previous* publish and lack whatever the new crate imports from them. This repeats on every push to `main` until the version is bumped.
+2. `release-plz-pr` opens the release PR regardless. Merge it: the bump publishes the siblings first, at the new version, and the new crate builds against them.
+3. That release still stops at the new crate with `HTTP 403` — Trusted Publishing cannot create crates. By then its dependencies are on crates.io at the new version, so run **Publish crate (initial)** for the new crate (see Prerequisites, step 3), then push to `main` again (an empty commit will do) — `release_always` publishes the remaining crates, tags, and creates the GitHub Release.
 
 ## Emergency Manual Publish
 
