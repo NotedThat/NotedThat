@@ -7,12 +7,14 @@ mod error;
 mod mime;
 pub mod patch;
 pub mod replace;
+mod sinks;
 
 pub use commit::{MAX_UPLOAD_BYTES, check_size, commit, commit_copy, commit_delete};
-pub use error::WriteError;
+pub use error::{WriteEffect, WriteError};
 pub use mime::sniff_content_type;
 pub use patch::{PatchMode, patch};
 pub use replace::{ReplaceRequest, replace};
+pub use sinks::WriteSinks;
 
 /// Outcome of a replace write operation.
 pub struct ReplaceOutcome {

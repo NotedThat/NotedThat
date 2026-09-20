@@ -1,15 +1,16 @@
 //! Shared commit operations for object writes and deletes.
 
 use notedthat_core::{
-    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, PutOutcome, StagedBody, Storage,
-    StorageError,
+    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
+    Storage, StorageError,
 };
 use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
+use crate::error::WriteEffect;
 use crate::mime::sniff_content_type;
+use crate::sinks::WriteSinks;
 
 /// Maximum upload size accepted by shared write paths: 5 GiB.
 pub const MAX_UPLOAD_BYTES: u64 = 5 * 1024 * 1024 * 1024;
@@ -23,10 +24,11 @@ pub fn check_size(size: u64, limit: u64) -> Result<(), WriteError> {
     }
 }
 
-/// Store an object and enqueue a best-effort index upsert event.
+/// Store an object, enqueue a best-effort index upsert event and publish the
+/// change.
 pub async fn commit<B: Into<StagedBody>>(
     storage: &dyn Storage,
-    indexer_tx: &Sender<IndexEvent>,
+    sinks: &WriteSinks<'_>,
     kb: &KbSlug,
     path: &ObjectPath,
     body: B,
@@ -34,7 +36,8 @@ pub async fn commit<B: Into<StagedBody>>(
     conditionals: ConditionalHeaders,
 ) -> Result<PutOutcome, WriteError> {
     let body = body.into();
-    check_size(body.len(), MAX_UPLOAD_BYTES)?;
+    let size = body.len();
+    check_size(size, MAX_UPLOAD_BYTES)?;
     let _prefix = body.prefix(512).await.map_err(|source| {
         WriteError::Storage(StorageError::Other {
             source: Box::new(source),
@@ -45,31 +48,71 @@ pub async fn commit<B: Into<StagedBody>>(
         .put_staged_object(kb, path, body, Some(&mime), conditionals)
         .await?;
 
-    enqueue_upsert(indexer_tx, kb, path, &outcome)?;
+    after_write(sinks, kb, path, &outcome, size, &mime).await?;
     Ok(outcome)
 }
 
-/// Copy an object natively and enqueue its destination for indexing.
+/// Copy an object natively, enqueue its destination for indexing and publish
+/// the change.
 pub async fn commit_copy(
     storage: &dyn Storage,
-    indexer_tx: &Sender<IndexEvent>,
+    sinks: &WriteSinks<'_>,
     kb: &KbSlug,
     source: &ObjectPath,
     destination: &ObjectPath,
     options: CopyObjectOptions,
 ) -> Result<PutOutcome, WriteError> {
+    let content_type = options.content_type.clone();
     let outcome = storage
         .copy_object(kb, source, destination, options)
         .await?;
-    enqueue_upsert(indexer_tx, kb, destination, &outcome)?;
+    // A copy returns only the new ETag. The event wants the size too, and only
+    // a subscriber cares, so the extra HEAD is paid only when one can exist.
+    // The copy is already durable by now, so a HEAD that fails — a racing
+    // delete, a transient error — degrades the stamp rather than the copy.
+    let (size, mime) = if sinks.events.is_some() {
+        match storage
+            .head_object(kb, destination, ConditionalHeaders::default())
+            .await
+        {
+            Ok(meta) => (meta.size, meta.content_type.or(content_type)),
+            Err(error) => {
+                tracing::warn!(
+                    target: "notedthat::events",
+                    kb = %kb, path = %destination, %error,
+                    "could not HEAD the copy destination for its event; publishing without a size"
+                );
+                (0, content_type)
+            }
+        }
+    } else {
+        (0, content_type)
+    };
+    after_write(
+        sinks,
+        kb,
+        destination,
+        &outcome,
+        size,
+        mime.as_deref().unwrap_or_default(),
+    )
+    .await?;
     Ok(outcome)
 }
 
-fn enqueue_upsert(
-    indexer_tx: &Sender<IndexEvent>,
+/// Report a durable write: index first, then publish.
+///
+/// The order matters for D38's promise that a 503 makes the client the retry
+/// mechanism. Either failure returns an error after the bytes are stored, and
+/// a retried write re-runs both — an event may be published twice, never
+/// zero times.
+pub(crate) async fn after_write(
+    sinks: &WriteSinks<'_>,
     kb: &KbSlug,
     path: &ObjectPath,
     outcome: &PutOutcome,
+    size: u64,
+    mime: &str,
 ) -> Result<(), WriteError> {
     let event = IndexEvent::Upsert {
         kb: kb.clone(),
@@ -77,7 +120,7 @@ fn enqueue_upsert(
         etag: outcome.etag.clone().unwrap_or_default(),
         mtime: current_unix_seconds(),
     };
-    match indexer_tx.try_send(event) {
+    match sinks.indexer_tx.try_send(event) {
         Ok(()) => {}
         Err(TrySendError::Full(ev)) => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
@@ -92,13 +135,26 @@ fn enqueue_upsert(
         }
     }
 
-    Ok(())
+    let Some(events) = sinks.events else {
+        return Ok(());
+    };
+    let event = ObjectEvent::written(
+        kb.clone(),
+        path.clone(),
+        outcome.etag.clone().unwrap_or_default(),
+        size,
+        mime.to_string(),
+        current_unix_seconds(),
+        sinks.source,
+    );
+    publish(events, event, WriteEffect::Stored).await
 }
 
-/// Delete an object idempotently and enqueue a best-effort tombstone event.
+/// Delete an object idempotently, enqueue a best-effort tombstone event and
+/// publish the change.
 pub async fn commit_delete(
     storage: &dyn Storage,
-    indexer_tx: &Sender<IndexEvent>,
+    sinks: &WriteSinks<'_>,
     kb: &KbSlug,
     path: &ObjectPath,
     conditionals: ConditionalHeaders,
@@ -112,7 +168,7 @@ pub async fn commit_delete(
         kb: kb.clone(),
         object_key: path.clone(),
     };
-    match indexer_tx.try_send(event) {
+    match sinks.indexer_tx.try_send(event) {
         Ok(()) => {}
         Err(TrySendError::Full(ev)) => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
@@ -126,10 +182,29 @@ pub async fn commit_delete(
         }
     }
 
-    Ok(())
+    let Some(events) = sinks.events else {
+        return Ok(());
+    };
+    let event = ObjectEvent::deleted(kb.clone(), path.clone(), sinks.source);
+    publish(events, event, WriteEffect::Deleted).await
 }
 
-fn current_unix_seconds() -> i64 {
+async fn publish(
+    events: &dyn notedthat_core::EventPublisher,
+    event: ObjectEvent,
+    after: WriteEffect,
+) -> Result<(), WriteError> {
+    let (kb, path) = (event.kb.clone(), event.object_key.clone());
+    match events.publish(event).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::error!(target: "notedthat::events", kb = %kb, path = %path, %error, "EVENT_PUBLISH_FAILED");
+            Err(WriteError::EventPublishFailed { after })
+        }
+    }
+}
+
+pub(crate) fn current_unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
@@ -138,6 +213,7 @@ fn current_unix_seconds() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WriteEffect;
     use async_trait::async_trait;
     use bytes::Bytes;
     use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
@@ -170,11 +246,22 @@ mod tests {
 
         async fn head_object(
             &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
+            kb: &KbSlug,
+            path: &ObjectPath,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectMeta, StorageError> {
-            unimplemented!()
+            let key = format!("{}/{}", kb.as_str(), path.as_str());
+            let objects = self.objects.lock().expect("mutex not poisoned");
+            let etag = objects
+                .get(&key)
+                .ok_or_else(|| StorageError::NotFound { key: key.clone() })?;
+            Ok(ObjectMeta {
+                key: path.as_str().to_string(),
+                size: 7,
+                last_modified: Some(1_700_000_000),
+                content_type: Some("text/markdown".into()),
+                etag: Some(etag.clone()),
+            })
         }
 
         async fn get_object(
@@ -297,7 +384,7 @@ mod tests {
 
         let outcome = commit(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -324,7 +411,7 @@ mod tests {
 
         let outcome = commit_copy(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &source,
             &destination,
@@ -357,7 +444,7 @@ mod tests {
 
         let outcome = commit(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -384,7 +471,7 @@ mod tests {
 
         let first = commit(
             storage.as_ref(),
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path_a,
             Bytes::from_static(b"# A"),
@@ -394,7 +481,7 @@ mod tests {
         .await;
         let second = commit(
             storage.as_ref(),
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path_b,
             Bytes::from_static(b"# B"),
@@ -404,7 +491,7 @@ mod tests {
         .await;
         let third = commit(
             storage.as_ref(),
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path_c,
             Bytes::from_static(b"# C"),
@@ -456,7 +543,7 @@ mod tests {
 
         let outcome = commit_delete(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path,
             ConditionalHeaders::default(),
@@ -489,7 +576,7 @@ mod tests {
 
         let outcome = commit(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -518,7 +605,7 @@ mod tests {
 
         let outcome = commit(
             &storage,
-            &indexer_tx,
+            &WriteSinks::indexer_only(&indexer_tx),
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -554,5 +641,247 @@ mod tests {
     #[test]
     fn check_size_below_limit_returns_ok() {
         assert!(check_size(1024, MAX_UPLOAD_BYTES).is_ok());
+    }
+
+    /// Records what was published, or refuses everything.
+    struct RecordingPublisher {
+        published: Mutex<Vec<ObjectEvent>>,
+        refuse: bool,
+    }
+
+    impl RecordingPublisher {
+        fn recording() -> Self {
+            Self {
+                published: Mutex::new(Vec::new()),
+                refuse: false,
+            }
+        }
+
+        fn refusing() -> Self {
+            Self {
+                published: Mutex::new(Vec::new()),
+                refuse: true,
+            }
+        }
+
+        fn events(&self) -> Vec<ObjectEvent> {
+            self.published.lock().expect("mutex not poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl notedthat_core::EventPublisher for RecordingPublisher {
+        async fn publish(
+            &self,
+            event: ObjectEvent,
+        ) -> Result<notedthat_core::EventId, notedthat_core::PublishError> {
+            if self.refuse {
+                return Err(notedthat_core::PublishError::Unavailable {
+                    message: "broker down".into(),
+                });
+            }
+            let mut published = self.published.lock().expect("mutex not poisoned");
+            published.push(event);
+            Ok(notedthat_core::EventId(published.len() as u64))
+        }
+
+        async fn subscribe(
+            &self,
+            _kb: &KbSlug,
+            _after: Option<notedthat_core::EventId>,
+        ) -> Result<notedthat_core::EventStream, notedthat_core::SubscribeError> {
+            unimplemented!()
+        }
+
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    fn sinks<'a>(
+        indexer_tx: &'a mpsc::Sender<IndexEvent>,
+        events: &'a RecordingPublisher,
+        source: notedthat_core::EventSource,
+    ) -> WriteSinks<'a> {
+        WriteSinks::new(indexer_tx, Some(events), source)
+    }
+
+    #[tokio::test]
+    async fn a_committed_write_is_published_with_its_stamp_and_source() {
+        let storage = TestStorage::default();
+        let events = RecordingPublisher::recording();
+        let (indexer_tx, mut rx) = mpsc::channel(8);
+
+        let outcome = commit(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Webdav),
+            &kb(),
+            &path(),
+            Bytes::from_static(b"# Test"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("write succeeds");
+
+        rx.recv().await.expect("index event first");
+        let published = events.events();
+        assert_eq!(published.len(), 1);
+        let event = &published[0];
+        assert_eq!(event.kb.as_str(), "test-kb");
+        assert_eq!(event.object_key.as_str(), "test.md");
+        assert_eq!(event.source, notedthat_core::EventSource::Webdav);
+        assert_eq!(
+            event.kind,
+            notedthat_core::ObjectEventKind::Written {
+                etag: outcome.etag.expect("etag"),
+                size: 6,
+                mime: "text/markdown".into(),
+                mtime: match &event.kind {
+                    notedthat_core::ObjectEventKind::Written { mtime, .. } => *mtime,
+                    notedthat_core::ObjectEventKind::Deleted => unreachable!(),
+                },
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn indexer_backpressure_wins_and_nothing_is_published() {
+        let storage = TestStorage::default();
+        let events = RecordingPublisher::recording();
+        let (indexer_tx, _rx) = mpsc::channel(1);
+        indexer_tx
+            .try_send(IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: path(),
+            })
+            .expect("fill the queue");
+
+        let err = commit(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Http),
+            &kb(),
+            &path(),
+            Bytes::from_static(b"# Test"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, WriteError::IndexerBackpressureUpsert));
+        assert!(events.events().is_empty(), "no event behind a 503");
+    }
+
+    #[tokio::test]
+    async fn a_refused_publish_fails_the_write_but_the_object_stays_stored() {
+        let storage = TestStorage::default();
+        let events = RecordingPublisher::refusing();
+        let (indexer_tx, mut rx) = mpsc::channel(8);
+
+        let err = commit(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Http),
+            &kb(),
+            &path(),
+            Bytes::from_static(b"# Test"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                WriteError::EventPublishFailed {
+                    after: WriteEffect::Stored
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            storage
+                .objects
+                .lock()
+                .expect("mutex not poisoned")
+                .contains_key("test-kb/test.md"),
+            "the bytes were stored before publishing failed"
+        );
+        rx.recv().await.expect("the index event was still enqueued");
+    }
+
+    #[tokio::test]
+    async fn a_delete_publishes_a_deleted_event_and_a_refusal_says_deleted() {
+        let storage = TestStorage::default();
+        let (indexer_tx, _rx) = mpsc::channel(8);
+
+        let events = RecordingPublisher::recording();
+        commit_delete(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Mcp),
+            &kb(),
+            &path_named("gone.md"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("delete succeeds");
+        let published = events.events();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].kind, notedthat_core::ObjectEventKind::Deleted);
+        assert_eq!(published[0].source, notedthat_core::EventSource::Mcp);
+
+        let refusing = RecordingPublisher::refusing();
+        let err = commit_delete(
+            &storage,
+            &sinks(&indexer_tx, &refusing, notedthat_core::EventSource::Http),
+            &kb(),
+            &path_named("gone.md"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            WriteError::EventPublishFailed {
+                after: WriteEffect::Deleted
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_copy_heads_the_destination_for_the_stamp_only_when_publishing() {
+        let storage = TestStorage::default();
+        let (indexer_tx, _rx) = mpsc::channel(8);
+        let events = RecordingPublisher::recording();
+
+        let outcome = commit_copy(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Webdav),
+            &kb(),
+            &path_named("src.md"),
+            &path_named("dst.md"),
+            CopyObjectOptions::default(),
+        )
+        .await
+        .expect("copy succeeds");
+
+        let published = events.events();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].object_key.as_str(), "dst.md");
+        match &published[0].kind {
+            notedthat_core::ObjectEventKind::Written {
+                etag, size, mime, ..
+            } => {
+                assert_eq!(Some(etag), outcome.etag.as_ref());
+                assert_eq!(*size, 7, "size comes from the HEAD after the copy");
+                assert_eq!(mime, "text/markdown");
+            }
+            notedthat_core::ObjectEventKind::Deleted => panic!("a copy is a write"),
+        }
     }
 }

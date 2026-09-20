@@ -183,6 +183,7 @@ fn make_state() -> WebDavState {
         declared_kbs: Arc::new(declared.clone()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared)),
         indexer_tx: tx,
+        events: None,
     }
 }
 

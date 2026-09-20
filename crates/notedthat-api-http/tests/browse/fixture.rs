@@ -92,6 +92,7 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
+        events: None,
     })
 }
 

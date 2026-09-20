@@ -28,6 +28,7 @@ notedthat-webdav = { path = "../notedthat-webdav", version = "0.7.0" }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.7.0" }
 notedthat-mcp = { path = "../notedthat-mcp", version = "0.7.0" }  # M8 deliberate dependency extension — see plan §W1.3
 notedthat-write = { path = "../notedthat-write", version = "0.7.0" }
+notedthat-events = { path = "../notedthat-events", version = "0.7.0" }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
@@ -53,7 +54,14 @@ path = "src/lib.rs"
 notedthat-server = { path = ".", features = ["test-support"] }
 notedthat-api-http = { path = "../notedthat-api-http", version = "0.7.0", features = ["test-support"] }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.7.0", features = ["test-support"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# The event log adapters, for the events E2E suites: the memory ring in the
+# ordinary pass, and the NATS adapter against a testcontainer under --ignored.
+notedthat-events = { path = "../notedthat-events", version = "0.7.0" }
+async-nats.workspace = true
+futures.workspace = true
+# `stream` reads an SSE body chunk by chunk as it arrives.
+reqwest = { workspace = true, features = ["stream"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 bytes.workspace = true
 temp-env = "0.3"
 tempfile.workspace = true

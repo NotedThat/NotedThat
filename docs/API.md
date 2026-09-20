@@ -240,8 +240,9 @@ All error responses use the same JSON envelope:
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
+| 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
 | 500 | `internal_error` | Unexpected server error |
-| 503 | `backend_unavailable` | S3 backend unreachable or returned an error |
+| 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); or the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write) |
 
 ## Limits
 
@@ -472,7 +473,9 @@ curl http://localhost:8080/healthz
 
 ### GET /readyz
 
-Readiness probe. Returns `200 OK` (static response; no backend connectivity check in v1).
+Readiness probe. Returns `200 OK` unless a configured object change event backend
+(`NOTEDTHAT_EVENTS_BACKEND=nats`) reports that it is not connected, in which case it
+returns `503`. Storage and Qdrant are not probed in v1.
 
 **Authentication:** Not required.
 
@@ -481,6 +484,7 @@ Readiness probe. Returns `200 OK` (static response; no backend connectivity chec
 | Status | Body |
 |--------|------|
 | 200 OK | `{"status": "ok"}` |
+| 503 Service Unavailable | `{"status": "unavailable", "events": "nats", "reason": "event backend not connected"}` |
 
 **Example:**
 
@@ -1209,6 +1213,158 @@ curl -sSf -X POST \
 
 ---
 
+### GET /api/v1/knowledgebases/{kb_slug}/events
+
+Subscribe to object change events for one knowledge base as
+[server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+(`text/event-stream`). Every write made through NotedThat — the HTTP API, WebDAV and MCP — and,
+on the `fs` backend, every change the server detects in its tree, is published as one event once
+storage has acknowledged it, so a subscriber that `GET`s the key on receipt sees the bytes the
+event describes or something newer.
+
+Requires an events backend: with the default `NOTEDTHAT_EVENTS_BACKEND=none` the route answers
+`404 not_found` (after the access checks below, so an undeclared or ungranted knowledge base
+answers exactly as it does everywhere else). See
+[CONFIGURATION.md](CONFIGURATION.md#events-backend).
+
+**Authentication:** Requires a credential the knowledge base's access rules grant `list`
+somewhere, or an `anyone` rule granting `list` for anonymous callers. Each event is then filtered
+individually: a subscriber receives an event for a key only if it may `list` that key. Deletions
+are filtered the same way as writes, since a deletion reveals that the key existed. A credential
+granted nothing answers `403`; an anonymous caller granted nothing is concealed with `404`.
+
+**Path parameters:**
+
+| Parameter | Format | Description |
+|-----------|--------|-------------|
+| `kb_slug` | `[a-z0-9-]{1,40}` | Slug of a declared knowledge base |
+
+**Query parameters** (all optional, applied after the access filter):
+
+| Parameter | Description |
+|-----------|-------------|
+| `prefix` | Only keys starting with this string, e.g. `prefix=inbox/` |
+| `event` | `written` or `deleted`; anything else is `400` |
+| `mime` | Only writes whose stored content type matches — exactly (`audio/mpeg`) or by type (`audio/*`). Deletions carry no content type and are excluded whenever `mime` is set. |
+
+**Request headers:**
+
+| Header | Description |
+|--------|-------------|
+| `Last-Event-ID` | Resume after this id: every retained event with a greater id is replayed, in order, before live events. Omit it to receive live events only. Not a non-negative integer → `400`. Older than the log retains, or ahead of it → `410`. |
+| `Accept` | `text/event-stream` is conventional; the server does not require it |
+
+**Response:**
+
+| Status | When |
+|--------|------|
+| 200 OK | The stream is open; `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no` |
+| 400 Bad Request | Malformed `Last-Event-ID` or `event` |
+| 403 Forbidden | Credential holder granted `list` nowhere in this knowledge base |
+| 404 Not Found | Undeclared slug, anonymous caller granted nothing, or no events backend configured (the message names `NOTEDTHAT_EVENTS_BACKEND`) |
+| 410 Gone | `Last-Event-ID` is older than the log retains, or ahead of it (a log that started again); the message names the oldest retained id. Resync by listing the knowledge base rather than resuming from "now". |
+| 503 Service Unavailable | The event backend cannot be read; `Retry-After: 5` |
+
+**Stream format.** The first frame carries a reconnect hint and a comment. Then one frame per
+event: `id` is the event's position in the log, `event` is its type, and `data` is one JSON
+object. A comment line is sent every 15 seconds while idle so proxies and idle timeouts keep the
+connection open.
+
+```
+retry: 3000
+: subscribed
+
+id: 4812
+event: object.written
+data: {"event":"object.written","kb":"notes","object_key":"inbox/memo.mp3","etag":"\"9a3f…\"","size":48213011,"mime":"audio/mpeg","mtime":1757950000,"source":"http","occurred_at":"2026-09-15T14:33:20Z"}
+
+id: 4813
+event: object.deleted
+data: {"event":"object.deleted","kb":"notes","object_key":"inbox/old.md","source":"webdav","occurred_at":"2026-09-15T14:33:21Z"}
+
+: keep-alive
+```
+
+**Event schema.** The `data` object repeats the type under `event` so it is self-describing on its
+own.
+
+| Field | Present on | Description |
+|-------|------------|-------------|
+| `event` | both | `object.written` (create or modify — neither the API nor storage distinguish the two) or `object.deleted` |
+| `kb` | both | Knowledge base slug |
+| `object_key` | both | The key, without a leading slash |
+| `etag` | `object.written` | The `ETag` of the bytes the event describes, quoted as in `HEAD` |
+| `size` | `object.written` | Size in bytes |
+| `mime` | `object.written` | Stored content type |
+| `mtime` | `object.written` | Last-modified Unix timestamp, seconds |
+| `source` | both | Which surface made or detected the change — see below |
+| `occurred_at` | both | When the server published it, RFC 3339 UTC |
+
+**Sources.** Every path that enqueues indexing work also publishes an event:
+
+| `source` | Produced by |
+|----------|-------------|
+| `http` | `PUT`, `PATCH`, `POST …/replace/…` and `DELETE` on the HTTP API |
+| `webdav` | WebDAV `PUT`, `DELETE`, `COPY` (destination) and `MOVE` — a `MOVE` is two events: the destination written, then the source deleted |
+| `mcp` | MCP tool calls, which write through the HTTP API. The MCP server marks its requests with `X-NotedThat-Source: mcp`; the header is informational, any client may send it, and nothing is granted or refused on its account |
+| `fs-watch` | The `fs` backend's watcher noticing a file written or removed in its tree by something other than NotedThat |
+| `reconcile` | The `fs` backend's comparison of its tree against the index: at startup, after a directory-level change (a new or renamed folder's files arrive this way), or on a rescan |
+
+**Ids and replay.** Ids are strictly increasing within a deployment and never reused. With the
+`memory` backend they are a process-local counter; with `nats` they are the JetStream stream
+sequence, which is global across replicas and across knowledge bases — a subscriber to one
+knowledge base sees gaps where other knowledge bases' events sit, which is normal. A client that
+reconnects with `Last-Event-ID` receives every event after that id that it may see, once, in
+order, from whichever replica it lands on. A `Last-Event-ID` ahead of the log (a `memory`
+backend that restarted and began counting again, or a recreated stream) is `410` as well: the
+ids it names never existed in this log, and whatever was published since — on the `fs`
+backend, the startup comparison's announcements of what changed while the server was down —
+is exactly what the subscriber has missed, so it must resync by listing rather than resume
+from "now".
+
+**Delivery is at least once.** A write that stored its bytes but could not publish its event
+answers `503 backend_unavailable` with `Retry-After: 5`; the write is idempotent, and the retry
+publishes. A retry may therefore publish the same change twice. On the `fs` backend the startup
+comparison re-announces objects the index does not track — anything non-indexable, such as
+audio — on every restart, since nothing records that they were announced before. Subscribers
+should be idempotent: compare `etag` with what they last processed, or check for the output they
+would produce (the transcription worker below skips an mp3 whose `.md` already exists).
+
+**Self-triggered loops.** A worker that writes into the prefix it watches sees its own writes.
+Nothing suppresses that server-side; filter by `mime` (a transcription worker subscribes to
+`mime=audio/*` and writes `text/markdown`) or by `prefix`, or compare `etag`.
+
+**Naming.** `events` at the root of a knowledge base is a route, like `search`: an object stored
+under exactly that key is not reachable through `GET /api/v1/knowledgebases/{kb_slug}/events`.
+
+**Example** — transcribe every mp3 uploaded under `inbox/` and write the text back as a document
+beside it (`examples/events/transcribe-mp3.sh` is the complete script):
+
+```sh
+curl -sN -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
+  "http://localhost:8080/api/v1/knowledgebases/notes/events?prefix=inbox/&mime=audio/*" |
+while IFS= read -r line; do
+  case "$line" in
+    data:*) key=$(printf '%s' "${line#data:}" | jq -r .object_key)
+            # download, transcribe, then PUT "$key.md" as text/markdown
+            ;;
+  esac
+done
+```
+
+**Behind nginx**, forward the route without buffering or a read timeout:
+
+```nginx
+location /api/v1/ {
+    proxy_pass         http://notedthat:8080;
+    proxy_http_version 1.1;
+    proxy_buffering    off;      # also set by the X-Accel-Buffering: no response header
+    proxy_read_timeout 0;        # the stream is idle between events; heartbeats every 15 s
+}
+```
+
+---
+
 ## Full route summary
 
 | Method | Path | Auth | Description |
@@ -1227,6 +1383,7 @@ curl -sSf -X POST \
 | PATCH | `/api/v1/knowledgebases/{kb_slug}/{path}` | Yes | Partial write; supports `Content-Range: bytes|lines` and `NT-Patch-Mode: append` |
 | POST | `/api/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
 | POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
+| GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
 
 
 ---
@@ -1457,6 +1614,13 @@ rules that pointed at the old WebDAV or MCP ports must be removed.
 **`/browse` is a live surface.** Forward it like any other route. Its responses carry
 `Cache-Control: no-store` and `Vary: Authorization`, because anonymous and credentialed callers
 share a URL and see different pages — do not configure a proxy cache that ignores either header.
+
+**`/api/v1/knowledgebases/{kb_slug}/events` is a long-lived stream.** It never finishes on its
+own, so a proxy must neither buffer it nor time it out on read. The response carries
+`Cache-Control: no-cache` and `X-Accel-Buffering: no` (which nginx honours by itself); for
+other proxies, disable response buffering and the read timeout on that route, and forward it
+over HTTP/1.1 or HTTP/2 rather than HTTP/1.0. See
+[the endpoint](#get-apiv1knowledgebaseskb_slugevents) for the nginx snippet.
 
 ---
 

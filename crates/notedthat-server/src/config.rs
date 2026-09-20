@@ -8,6 +8,7 @@
 use crate::cli::ServerCli;
 use crate::oidc::OidcSettings;
 use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
+use notedthat_events::{MemoryConfig, MemorySettings, NatsConfig, NatsSettings};
 use notedthat_storage_fs::FsSettings;
 use notedthat_storage_s3::S3Settings;
 use notedthat_write::MAX_UPLOAD_BYTES;
@@ -20,7 +21,7 @@ use std::time::Duration;
 ///
 /// Parsed separately from its configuration so the selection can be named in an error
 /// message before any backend configuration is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StorageBackendKind {
     /// An S3-compatible object store.
     S3,
@@ -64,6 +65,58 @@ impl StorageConfig {
         match self {
             Self::S3(_) => StorageBackendKind::S3,
             Self::Fs(_) => StorageBackendKind::Fs,
+        }
+    }
+}
+
+/// Which object change event log the server publishes to (`NOTEDTHAT_EVENTS_BACKEND`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EventsBackendKind {
+    /// No log: writes are not announced and the events route answers 404.
+    None,
+    /// A process-local ring — replay across reconnects, not restarts or replicas.
+    Memory,
+    /// A NATS `JetStream` stream shared by every replica.
+    Nats,
+}
+
+impl EventsBackendKind {
+    /// The `NOTEDTHAT_EVENTS_BACKEND` value that selects this backend.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Memory => "memory",
+            Self::Nats => "nats",
+        }
+    }
+}
+
+impl std::fmt::Display for EventsBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The selected events backend together with the configuration it needs.
+#[derive(Debug, Clone)]
+pub enum EventsConfig {
+    /// No event log (the default).
+    None,
+    /// The in-process ring.
+    Memory(MemoryConfig),
+    /// A NATS `JetStream` stream.
+    Nats(NatsConfig),
+}
+
+impl EventsConfig {
+    /// Which backend this is.
+    #[must_use]
+    pub fn kind(&self) -> EventsBackendKind {
+        match self {
+            Self::None => EventsBackendKind::None,
+            Self::Memory(_) => EventsBackendKind::Memory,
+            Self::Nats(_) => EventsBackendKind::Nats,
         }
     }
 }
@@ -129,6 +182,26 @@ fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendK
     ]
 }
 
+/// The `NOTEDTHAT_EVENTS_*` and `NOTEDTHAT_NATS_*` settings, each with the events
+/// backend that reads it. Same purpose and same guard as [`backend_owned_settings`].
+fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKind, bool)> {
+    use EventsBackendKind::{Memory, Nats};
+    vec![
+        (
+            "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
+            Memory,
+            cli.events_memory_capacity.is_some(),
+        ),
+        ("NOTEDTHAT_NATS_URL", Nats, cli.nats_url.is_some()),
+        ("NOTEDTHAT_NATS_STREAM", Nats, cli.nats_stream.is_some()),
+        (
+            "NOTEDTHAT_NATS_MAX_AGE_SECS",
+            Nats,
+            cli.nats_max_age_secs.is_some(),
+        ),
+    ]
+}
+
 /// Parse the backend selector, returning `None` when it was not supplied.
 ///
 /// Strict, unlike `NOTEDTHAT_LOG_FORMAT` and `NOTEDTHAT_S3_FORCE_PATH_STYLE`, which
@@ -160,7 +233,36 @@ fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBacke
     }
 }
 
-/// Refuse to start when settings belonging to the unselected backend are supplied.
+/// Parse the events backend selector, returning `None` when it was not supplied.
+///
+/// Strict for the same reason as [`parse_storage_backend`]: a mis-spelled selector
+/// that fell back to `none` would start cleanly and simply never announce anything.
+fn parse_events_backend(supplied: Option<&OsStr>) -> Result<Option<EventsBackendKind>, Error> {
+    let Some(value) = supplied else {
+        return Ok(None);
+    };
+    let name = setting("NOTEDTHAT_EVENTS_BACKEND");
+    let value = value.to_str().ok_or_else(|| Error::Config {
+        message: format!("{name} must be valid UTF-8"),
+    })?;
+    if value.is_empty() {
+        return Err(Error::Config {
+            message: format!("{name} must not be empty"),
+        });
+    }
+    match value {
+        "none" => Ok(Some(EventsBackendKind::None)),
+        "memory" => Ok(Some(EventsBackendKind::Memory)),
+        "nats" => Ok(Some(EventsBackendKind::Nats)),
+        other => Err(Error::Config {
+            message: format!(
+                "{name} is invalid: expected \"none\", \"memory\" or \"nats\", got \"{other}\""
+            ),
+        }),
+    }
+}
+
+/// Refuse to start when settings belonging to an unselected backend are supplied.
 ///
 /// Reports every offender at once: the realistic case is a whole `NOTEDTHAT_S3_*` family
 /// left behind by an operator switching to `fs`, and naming one per restart would take
@@ -169,36 +271,53 @@ fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBacke
 /// The check runs when the selector is unset too, and says so. That is the highest-value
 /// case: an operator who sets `NOTEDTHAT_FS_ROOT` and forgets the selector would
 /// otherwise get a perfectly healthy S3 deployment with an unread root.
-fn reject_other_backends_settings(
-    selected: Option<StorageBackendKind>,
-    cli: &ServerCli,
+///
+/// Generic over the selector so the storage and events backends share one message
+/// shape. Offenders are grouped by the backend that owns them, since with three
+/// events backends the unselected ones are not a single "other".
+fn reject_unselected_settings<K: Copy + Eq + Ord + std::fmt::Display>(
+    selector: &'static str,
+    selected: Option<K>,
+    default: K,
+    table: Vec<(&'static str, K, bool)>,
 ) -> Result<(), Error> {
-    let effective = selected.unwrap_or(StorageBackendKind::S3);
-    let offenders: Vec<String> = backend_owned_settings(cli)
-        .into_iter()
-        .filter(|(_, owner, supplied)| *owner != effective && *supplied)
-        .map(|(name, _, _)| setting(name))
-        .collect();
+    let effective = selected.unwrap_or(default);
+    let mut by_owner: BTreeMap<K, Vec<String>> = BTreeMap::new();
+    for (name, owner, supplied) in table {
+        if supplied && owner != effective {
+            by_owner.entry(owner).or_default().push(setting(name));
+        }
+    }
 
-    if offenders.is_empty() {
+    if by_owner.is_empty() {
         return Ok(());
     }
 
-    let owner = if effective == StorageBackendKind::S3 {
-        StorageBackendKind::Fs
-    } else {
-        StorageBackendKind::S3
-    };
-    let selector = setting("NOTEDTHAT_STORAGE_BACKEND");
     let selection = match selected {
-        Some(kind) => format!("{selector} is {kind}"),
-        None => format!("{selector} is unset, so the default s3 backend is selected"),
+        Some(kind) => format!("{} is {kind}", setting(selector)),
+        None => format!(
+            "{} is unset, so the default {default} backend is selected",
+            setting(selector)
+        ),
     };
+    let complaints: Vec<String> = by_owner
+        .iter()
+        .map(|(owner, names)| {
+            format!(
+                "these settings belong to the {owner} backend and would be ignored: {}",
+                names.join(", ")
+            )
+        })
+        .collect();
+    let fixes: Vec<String> = by_owner
+        .keys()
+        .map(|owner| format!("{selector}={owner}"))
+        .collect();
     Err(Error::Config {
         message: format!(
-            "{selection}, but these settings belong to the {owner} backend and would be ignored: {}. \
-             Unset them or set NOTEDTHAT_STORAGE_BACKEND={owner} to start the server.",
-            offenders.join(", ")
+            "{selection}, but {}. Unset them or set {} to start the server.",
+            complaints.join("; "),
+            fixes.join(" or ")
         ),
     })
 }
@@ -234,6 +353,9 @@ pub struct Config {
     /// The selected storage backend and its configuration
     /// (`NOTEDTHAT_STORAGE_BACKEND`; default `s3`).
     pub storage: StorageConfig,
+    /// The selected object change event log and its configuration
+    /// (`NOTEDTHAT_EVENTS_BACKEND`; default `none`).
+    pub events: EventsConfig,
     /// Log output format (`NOTEDTHAT_LOG_FORMAT`; `pretty` or `json`).
     pub log_format: LogFormat,
     /// Qdrant client configuration.
@@ -395,7 +517,19 @@ impl Config {
         })?;
 
         let selected = parse_storage_backend(cli.storage_backend.as_deref())?;
-        reject_other_backends_settings(selected, &cli)?;
+        reject_unselected_settings(
+            "NOTEDTHAT_STORAGE_BACKEND",
+            selected,
+            StorageBackendKind::S3,
+            backend_owned_settings(&cli),
+        )?;
+        let selected_events = parse_events_backend(cli.events_backend.as_deref())?;
+        reject_unselected_settings(
+            "NOTEDTHAT_EVENTS_BACKEND",
+            selected_events,
+            EventsBackendKind::None,
+            events_owned_settings(&cli),
+        )?;
         let storage = match selected.unwrap_or(StorageBackendKind::S3) {
             StorageBackendKind::S3 => {
                 StorageConfig::S3(notedthat_storage_s3::S3Config::from_settings(S3Settings {
@@ -415,6 +549,22 @@ impl Config {
                     allow_lossy_names: cli.fs_allow_lossy_names,
                     watch: cli.fs_watch,
                     watch_debounce_ms: cli.fs_watch_debounce_ms,
+                })?)
+            }
+        };
+
+        let events = match selected_events.unwrap_or(EventsBackendKind::None) {
+            EventsBackendKind::None => EventsConfig::None,
+            EventsBackendKind::Memory => {
+                EventsConfig::Memory(MemoryConfig::from_settings(&MemorySettings {
+                    capacity: cli.events_memory_capacity,
+                })?)
+            }
+            EventsBackendKind::Nats => {
+                EventsConfig::Nats(NatsConfig::from_settings(NatsSettings {
+                    url: cli.nats_url,
+                    stream: cli.nats_stream,
+                    max_age_secs: cli.nats_max_age_secs,
                 })?)
             }
         };
@@ -507,6 +657,7 @@ impl Config {
             tenant_slug,
             listen_addr,
             storage,
+            events,
             log_format,
             qdrant,
             embedder,
@@ -846,7 +997,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 45] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 50] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -864,6 +1015,11 @@ pub(crate) mod tests {
         "NOTEDTHAT_LOG_FORMAT",
         "NOTEDTHAT_S3_ENDPOINT_URL",
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+        "NOTEDTHAT_EVENTS_BACKEND",
+        "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
+        "NOTEDTHAT_NATS_URL",
+        "NOTEDTHAT_NATS_STREAM",
+        "NOTEDTHAT_NATS_MAX_AGE_SECS",
         "NOTEDTHAT_QDRANT_URL",
         "NOTEDTHAT_QDRANT_API_KEY",
         "NOTEDTHAT_QDRANT_TIMEOUT_MS",
@@ -921,6 +1077,11 @@ pub(crate) mod tests {
             ("NOTEDTHAT_LOG_FORMAT", None),
             ("NOTEDTHAT_S3_ENDPOINT_URL", None),
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
+            ("NOTEDTHAT_EVENTS_BACKEND", None),
+            ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", None),
+            ("NOTEDTHAT_NATS_URL", None),
+            ("NOTEDTHAT_NATS_STREAM", None),
+            ("NOTEDTHAT_NATS_MAX_AGE_SECS", None),
             ("NOTEDTHAT_QDRANT_URL", Some("http://localhost:6334")),
             ("NOTEDTHAT_QDRANT_API_KEY", None),
             ("NOTEDTHAT_QDRANT_TIMEOUT_MS", None),
@@ -1148,7 +1309,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 45);
+        assert_eq!(ALL_ENV_KEYS.len(), 50);
     }
 
     #[test]
@@ -1659,6 +1820,186 @@ pub(crate) mod tests {
                 backend_owned_settings(&ServerCli::default())
                     .iter()
                     .all(|(_, _, supplied)| !supplied)
+            );
+        }
+    }
+
+    mod events_backend {
+        use super::*;
+
+        #[test]
+        fn the_default_is_none_so_existing_deployments_publish_nothing() {
+            run_with_env(&[], || {
+                let config = Config::from_env().expect("valid");
+                assert_eq!(config.events.kind(), EventsBackendKind::None);
+            });
+        }
+
+        #[test]
+        fn memory_reads_its_capacity_and_defaults_it() {
+            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("memory"))], || {
+                let config = Config::from_env().expect("valid");
+                match config.events {
+                    EventsConfig::Memory(memory) => {
+                        assert_eq!(memory.capacity, notedthat_events::DEFAULT_MEMORY_CAPACITY);
+                    }
+                    other => panic!("expected memory, got {other:?}"),
+                }
+            });
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_EVENTS_BACKEND", Some("memory")),
+                    ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", Some("250")),
+                ],
+                || {
+                    let config = Config::from_env().expect("valid");
+                    match config.events {
+                        EventsConfig::Memory(memory) => assert_eq!(memory.capacity, 250),
+                        other => panic!("expected memory, got {other:?}"),
+                    }
+                },
+            );
+        }
+
+        #[test]
+        fn nats_requires_its_url_and_names_the_variable() {
+            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("nats"))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(
+                    names_setting(&error, "NOTEDTHAT_NATS_URL", "is required"),
+                    "{error}"
+                );
+            });
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_EVENTS_BACKEND", Some("nats")),
+                    ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
+                    ("NOTEDTHAT_NATS_STREAM", Some("evt")),
+                    ("NOTEDTHAT_NATS_MAX_AGE_SECS", Some("60")),
+                ],
+                || {
+                    let config = Config::from_env().expect("valid");
+                    match config.events {
+                        EventsConfig::Nats(nats) => {
+                            assert_eq!(nats.url, "nats://broker:4222");
+                            assert_eq!(nats.stream, "evt");
+                            assert_eq!(nats.max_age, Duration::from_secs(60));
+                        }
+                        other => panic!("expected nats, got {other:?}"),
+                    }
+                },
+            );
+        }
+
+        /// A typo must not fall back to `none`: the server would start and simply
+        /// never announce a change.
+        #[test]
+        fn an_unknown_events_backend_is_refused_rather_than_defaulted() {
+            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("kafka"))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(
+                    error.contains("expected \"none\", \"memory\" or \"nats\""),
+                    "{error}"
+                );
+                assert!(error.contains("kafka"), "{error}");
+            });
+            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some(""))], || {
+                let error = Config::from_env().unwrap_err().to_string();
+                assert!(
+                    names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "must not be empty"),
+                    "{error}"
+                );
+            });
+        }
+
+        #[test]
+        fn nats_variables_under_memory_are_reported_together_with_the_fix() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_EVENTS_BACKEND", Some("memory")),
+                    ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
+                    ("NOTEDTHAT_NATS_STREAM", Some("evt")),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(
+                        names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is memory"),
+                        "{error}"
+                    );
+                    assert!(error.contains("belong to the nats backend"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_NATS_URL"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_NATS_STREAM"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
+                },
+            );
+        }
+
+        /// The operator configures a broker and forgets the selector: the highest-value
+        /// case, since the server would otherwise start healthy and silent.
+        #[test]
+        fn a_nats_url_without_the_selector_is_refused_and_says_why() {
+            run_with_env(
+                &[("NOTEDTHAT_NATS_URL", Some("nats://broker:4222"))],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(
+                        names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is unset"),
+                        "{error}"
+                    );
+                    assert!(error.contains("default none backend"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
+                },
+            );
+        }
+
+        /// Both unselected backends' variables at once: each owner is named, and
+        /// each fix is offered.
+        #[test]
+        fn offenders_from_two_backends_are_grouped_by_owner() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", Some("10")),
+                    ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("belong to the memory backend"), "{error}");
+                    assert!(error.contains("belong to the nats backend"), "{error}");
+                    assert!(
+                        error.contains(
+                            "NOTEDTHAT_EVENTS_BACKEND=memory or NOTEDTHAT_EVENTS_BACKEND=nats"
+                        ),
+                        "{error}"
+                    );
+                },
+            );
+        }
+
+        #[test]
+        fn the_rejection_table_matches_each_adapter_inventory() {
+            let table = events_owned_settings(&ServerCli::default());
+            let memory: Vec<&str> = table
+                .iter()
+                .filter(|(_, kind, _)| *kind == EventsBackendKind::Memory)
+                .map(|(name, _, _)| *name)
+                .collect();
+            let nats: Vec<&str> = table
+                .iter()
+                .filter(|(_, kind, _)| *kind == EventsBackendKind::Nats)
+                .map(|(name, _, _)| *name)
+                .collect();
+            assert_eq!(memory, notedthat_events::MEMORY_ENV_VARS.to_vec());
+            assert_eq!(nats, notedthat_events::NATS_ENV_VARS.to_vec());
+
+            for (name, _, _) in &table {
+                assert!(
+                    ALL_ENV_KEYS.contains(name),
+                    "{name} is read but missing from ALL_ENV_KEYS"
+                );
+            }
+            assert!(
+                table.iter().all(|(_, _, supplied)| !supplied),
+                "a default command line supplies nothing"
             );
         }
     }

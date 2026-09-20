@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use notedthat_core::KbSlug;
-use notedthat_indexer::{IndexEvent, VectorStore};
+use notedthat_indexer::{IndexEvent, RefreshOrigin, VectorStore};
 use notedthat_storage_fs::{
     FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag, reconcile,
 };
@@ -110,6 +110,7 @@ async fn run_bridge(
                     .send(IndexEvent::Refresh {
                         kb,
                         object_key: key,
+                        origin: RefreshOrigin::Watch,
                     })
                     .await
                     .is_err()
@@ -191,6 +192,7 @@ async fn reconcile_into(
                     .send(IndexEvent::Refresh {
                         kb,
                         object_key: key,
+                        origin: RefreshOrigin::Reconcile,
                     })
                     .await
                     .is_err()

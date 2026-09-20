@@ -39,6 +39,7 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
         embedder: std::sync::Arc::new(notedthat_indexer::testing::StubEmbedder::new(
             EMBEDDING_DIM as usize,
         )),
+        events: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_serve
         tenant_slug: TenantSlug::default(),
         listen_addr,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
+        events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:1".to_string(),

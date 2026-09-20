@@ -8,6 +8,7 @@ pub mod bucket_name;
 pub mod conditional;
 pub mod error;
 pub mod etag;
+pub mod events;
 pub mod kb;
 pub mod listing;
 pub mod object_path;
@@ -37,6 +38,10 @@ pub use bucket_name::{
 pub use conditional::ConditionalHeaders;
 pub use error::{Error, StorageError};
 pub use etag::{EtagHasher, compute_etag};
+pub use events::{
+    EventId, EventPublisher, EventSource, EventStream, ObjectEvent, ObjectEventKind, PublishError,
+    StreamError, SubscribeError, unix_to_rfc3339,
+};
 pub use kb::{Kb, KbManifest, ManifestEmbedding, ObjectMeta};
 pub use listing::{Rollup, roll_up};
 pub use object_path::{ObjectPath, is_internal_path};

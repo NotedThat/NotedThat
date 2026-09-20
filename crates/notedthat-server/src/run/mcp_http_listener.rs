@@ -32,6 +32,7 @@ fn test_config() -> Config {
             secret_access_key: "any".to_string(),
             force_path_style: true,
         }),
+        events: crate::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
         qdrant: ServerQdrantConfig {
             url: "http://127.0.0.1:6334".to_string(),
@@ -80,7 +81,7 @@ async fn invalid_staging_directory_fails_before_infrastructure_setup() {
 
     // Guard the premise: the Qdrant URL really is bad enough to fail on its own.
     assert!(
-        super::backends_from_config(&config, None).is_err(),
+        super::backends_from_config(&config, None, None).is_err(),
         "test premise: an empty Qdrant URL must fail backend construction, \
          otherwise this test cannot distinguish the two orderings"
     );

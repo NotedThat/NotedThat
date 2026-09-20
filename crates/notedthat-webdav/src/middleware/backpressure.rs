@@ -66,6 +66,24 @@ pub(super) fn move_destination_backpressure_response(_req_id: &str) -> Response 
     resp
 }
 
+/// HTTP 503 response for `WriteError::EventPublishFailed`: storage took the
+/// write, the event log did not, and the operation is idempotent to retry.
+pub(super) fn event_publish_failed_response(message: &str) -> Response {
+    // The messages are literals without quotes or control characters, so no
+    // escaping is needed to keep the body valid JSON.
+    let body = format!(r#"{{"error":"backend_unavailable","message":"{message}"}}"#);
+    let mut resp = (StatusCode::SERVICE_UNAVAILABLE, body).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("retry-after"),
+        axum::http::HeaderValue::from_static("5"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
 pub(super) fn copy_destination_backpressure_response() -> Response {
     let mut resp = (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -86,7 +104,7 @@ pub(super) fn copy_destination_backpressure_response() -> Response {
 pub(super) fn move_source_tombstone_backpressure_response(_req_id: &str) -> Response {
     let mut resp = (
         StatusCode::SERVICE_UNAVAILABLE,
-        r#"{"error":"backend_unavailable","message":"destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Retry MOVE to re-enqueue the source tombstone; the destination write is idempotent."}"#,
+        r#"{"error":"backend_unavailable","message":"destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source."}"#,
     )
         .into_response();
     resp.headers_mut().insert(

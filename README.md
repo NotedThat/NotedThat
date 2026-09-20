@@ -134,6 +134,22 @@ docs/manual-qa/oidc-mcp.sh          # phase 1, then restart the server and PHASE
 Everything under `docker/authelia/` is a throwaway development value. See
 [OIDC authentication](docs/CONFIGURATION.md#oidc-authentication) for Authentik and Zitadel.
 
+### Compose with an event broker
+
+Adds a NATS JetStream server and points the server at it, so every object change is
+published and `GET /api/v1/knowledgebases/{kb}/events` streams it with replay that survives
+restarts and spans replicas:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.events.yml up --build -d
+examples/events/transcribe-mp3.sh   # subscribe, then upload an mp3 in another shell
+```
+
+A single-process deployment does not need the broker: `NOTEDTHAT_EVENTS_BACKEND=memory`
+keeps the log in the server. See [Events backend](docs/CONFIGURATION.md#events-backend) and
+[the endpoint](docs/API.md#get-apiv1knowledgebaseskb_slugevents), including what a reverse
+proxy needs for a long-lived stream.
+
 ### Compose with an S3-compatible store
 
 Adds SeaweedFS and points the server at it, which is the shape of the reference
