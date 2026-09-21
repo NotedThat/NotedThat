@@ -84,7 +84,7 @@ pub(super) async fn list_objects(
         &access.filter(Verb::List),
     )
     .await
-    .map_err(|error| err(ApiError::Storage(error)))?;
+    .map_err(|error| err(ApiError::from(error)))?;
 
     Ok(Json(serde_json::json!({
         "objects": result.objects,

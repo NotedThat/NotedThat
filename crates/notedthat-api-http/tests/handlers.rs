@@ -1442,11 +1442,8 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     });
 
     for (method, uri, body) in [
-        (
-            "GET",
-            format!("/api/v1/knowledgebases/{KB}/objects"),
-            Body::empty(),
-        ),
+        // The listing route — where the `fs` backend used to answer `503`.
+        ("GET", format!("/api/v1/knowledgebases/{KB}"), Body::empty()),
         (
             "GET",
             format!("/api/v1/knowledgebases/{KB}/a.md"),
@@ -1471,6 +1468,14 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
         let json = response_json(resp).await;
         assert_eq!(json["error"], "not_found", "{method} {uri}");
+        // The body names neither the bucket nor the tenant: how buckets are
+        // named is the operator's business, and this `404` must not stand out
+        // from the concealed denial or the undeclared slug on the wire.
+        let message = json["message"].as_str().expect("message");
+        assert!(
+            !message.contains("nt-") && !message.contains("bucket"),
+            "{method} {uri}: the message must not disclose the bucket: {message}"
+        );
     }
 }
 

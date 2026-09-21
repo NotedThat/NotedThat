@@ -116,15 +116,34 @@ impl From<StorageError> for ApiError {
             StorageError::RangeNotSatisfiable { complete_length } => {
                 Self::RangeNotSatisfiable { complete_length }
             }
+            StorageError::BucketNotFound { bucket } => Self::bucket_not_found(&bucket),
             other => Self::Storage(other),
         }
+    }
+}
+
+impl ApiError {
+    /// A declared knowledge base whose bucket is gone: `404 not_found` (D43) with a
+    /// message that names neither the bucket nor the tenant.
+    ///
+    /// `StorageError::BucketNotFound`'s own text is `bucket not found: nt-default-notes`,
+    /// which would tell every caller who reaches storage — an anonymous one on a
+    /// public knowledge base included — how buckets are named, and would make this
+    /// `404` distinguishable from the others on the wire. The bucket name goes to the
+    /// log, where the operator who has to put it back will look; the response stays
+    /// as uninformative as the concealed denial and the undeclared slug.
+    pub(crate) fn bucket_not_found(bucket: &str) -> Self {
+        tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
+        Self::Core(CoreError::NotFound {
+            resource: "knowledge base storage".to_string(),
+        })
     }
 }
 
 impl From<notedthat_write::WriteError> for ApiError {
     fn from(e: notedthat_write::WriteError) -> Self {
         match e {
-            notedthat_write::WriteError::Storage(e) => Self::Storage(e),
+            notedthat_write::WriteError::Storage(e) => Self::from(e),
             notedthat_write::WriteError::TooLarge { size, limit }
             | notedthat_write::WriteError::PatchTooLarge { size, limit } => {
                 Self::Core(CoreError::PayloadTooLarge { size, limit })
