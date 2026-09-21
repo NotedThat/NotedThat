@@ -144,12 +144,23 @@ async fn cancelling_staging_removes_private_file() {
     };
 
     assert!(cancelled.is_cancelled());
-    assert_eq!(
-        std::fs::read_dir(dir.path())
+    // The private file is created on a blocking thread, and the task's own removal of it
+    // runs there too when the abort lands while that thread is still handing the file back.
+    // The removal is guaranteed, not instantaneous, so give it a moment.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let leftover = std::fs::read_dir(dir.path())
             .expect("read staging dir")
-            .count(),
-        0
-    );
+            .count();
+        if leftover == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{leftover} staging file(s) left behind after cancellation"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 #[tokio::test]
