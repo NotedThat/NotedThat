@@ -119,14 +119,15 @@ pub trait Storage: Send + Sync {
 
     /// Fetch an object's bytes and metadata.
     ///
-    /// `range` carries parsed byte ranges for the backend, and `conditionals`
-    /// carries raw HTTP conditional headers for the backend to evaluate.
+    /// `range` carries the single requested byte range for the backend, and
+    /// `conditionals` carries raw HTTP conditional headers for the backend to
+    /// evaluate.
     /// Returns `Err(StorageError::NotFound)` if the object does not exist.
     async fn get_object(
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError>;
 
@@ -135,7 +136,7 @@ pub trait Storage: Send + Sync {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError>;
 

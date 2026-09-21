@@ -168,15 +168,11 @@ pub fn evaluate_read_preconditions(
 ///
 /// Returns the exclusive byte range together with the `Content-Range` value to report,
 /// or `Ok(None)` when no range was requested and the whole body should be served.
-///
-/// Only the first range is honoured. [`crate::storage::ObjectRead`] carries a single
-/// `content_range`, so the surfaces above cannot render a `multipart/byteranges`
-/// response even if a backend produced one.
 pub fn resolve_range(
     total_size: u64,
-    ranges: Option<&[ByteRange]>,
+    range: Option<&ByteRange>,
 ) -> Result<Option<(Range<u64>, String)>, StorageError> {
-    let Some(byte_range) = ranges.and_then(<[ByteRange]>::first) else {
+    let Some(byte_range) = range else {
         return Ok(None);
     };
 
@@ -303,10 +299,10 @@ mod tests {
     fn resolve_range_reports_an_inclusive_content_range() {
         let (exclusive, content_range) = resolve_range(
             100,
-            Some(&[ByteRange::FromStart {
+            Some(&ByteRange::FromStart {
                 first: 10,
                 last: 19,
-            }]),
+            }),
         )
         .expect("satisfiable")
         .expect("a range was requested");
@@ -315,31 +311,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_range_honours_only_the_first_range() {
-        let (exclusive, _) = resolve_range(
-            100,
-            Some(&[
-                ByteRange::FromStart { first: 0, last: 9 },
-                ByteRange::FromStart {
-                    first: 50,
-                    last: 59,
-                },
-            ]),
-        )
-        .expect("satisfiable")
-        .expect("a range was requested");
-        assert_eq!(exclusive, 0..10);
-    }
-
-    #[test]
     fn resolve_range_reports_the_complete_length_when_unsatisfiable() {
         assert!(matches!(
             resolve_range(
                 100,
-                Some(&[ByteRange::FromStart {
+                Some(&ByteRange::FromStart {
                     first: 200,
                     last: 300
-                }])
+                })
             ),
             Err(StorageError::RangeNotSatisfiable {
                 complete_length: 100
@@ -350,6 +329,5 @@ mod tests {
     #[test]
     fn resolve_range_without_a_range_serves_the_whole_body() {
         assert!(resolve_range(100, None).expect("ok").is_none());
-        assert!(resolve_range(100, Some(&[])).expect("ok").is_none());
     }
 }

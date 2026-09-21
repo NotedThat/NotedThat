@@ -268,7 +268,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<Vec<notedthat_core::ByteRange>>,
+            _range: Option<notedthat_core::ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectRead, StorageError> {
             unimplemented!()
@@ -278,7 +278,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<Vec<notedthat_core::ByteRange>>,
+            _range: Option<notedthat_core::ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<notedthat_core::ObjectStream, StorageError> {
             unimplemented!()

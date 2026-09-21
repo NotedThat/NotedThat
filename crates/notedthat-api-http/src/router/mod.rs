@@ -502,7 +502,7 @@ mod patch_route {
                 &self,
                 kb: &KbSlug,
                 path: &ObjectPath,
-                range: Option<Vec<ByteRange>>,
+                range: Option<ByteRange>,
                 conditionals: ConditionalHeaders,
             ) -> Result<ObjectRead, StorageError> {
                 self.inner.get_object(kb, path, range, conditionals).await
@@ -512,7 +512,7 @@ mod patch_route {
                 &self,
                 kb: &KbSlug,
                 path: &ObjectPath,
-                range: Option<Vec<ByteRange>>,
+                range: Option<ByteRange>,
                 conditionals: ConditionalHeaders,
             ) -> Result<notedthat_core::ObjectStream, StorageError> {
                 self.inner

@@ -627,10 +627,10 @@ impl DavFile for StorageReadFile {
                 .checked_add(count)
                 .and_then(|end| end.checked_sub(1))
                 .ok_or(FsError::TooLarge)?;
-            let ranges = vec![ByteRange::FromStart {
+            let range = ByteRange::FromStart {
                 first: self.read_offset,
                 last,
-            }];
+            };
 
             let object = self
                 .state
@@ -638,7 +638,7 @@ impl DavFile for StorageReadFile {
                 .get_object(
                     &self.kb,
                     &self.path,
-                    Some(ranges),
+                    Some(range),
                     ConditionalHeaders::default(),
                 )
                 .await
@@ -823,7 +823,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<Vec<ByteRange>>,
+            _range: Option<ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectRead, StorageError> {
             self.record("get_object");
@@ -837,7 +837,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<Vec<ByteRange>>,
+            _range: Option<ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<notedthat_core::ObjectStream, StorageError> {
             Err(unavailable())

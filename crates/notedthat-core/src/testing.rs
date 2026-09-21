@@ -196,7 +196,7 @@ impl Storage for InMemoryStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         let inner = self.inner.read().await;
@@ -210,7 +210,7 @@ impl Storage for InMemoryStorage {
         evaluate_read_preconditions(object_state(stored), &conditionals)?;
 
         let total_size = stored.bytes.len() as u64;
-        let (bytes, content_range) = match resolve_range(total_size, range.as_deref())? {
+        let (bytes, content_range) = match resolve_range(total_size, range.as_ref())? {
             Some((exclusive, content_range)) => (
                 stored
                     .bytes
@@ -231,7 +231,7 @@ impl Storage for InMemoryStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         let read = self.get_object(kb, path, range, conditionals).await?;
@@ -757,10 +757,10 @@ mod tests {
             .get_object(
                 &kb,
                 &object_path,
-                Some(vec![ByteRange::FromStart {
+                Some(ByteRange::FromStart {
                     first: 10,
                     last: 19,
-                }]),
+                }),
                 ConditionalHeaders::default(),
             )
             .await
@@ -793,10 +793,10 @@ mod tests {
             .get_object(
                 &kb,
                 &object_path,
-                Some(vec![ByteRange::FromStart {
+                Some(ByteRange::FromStart {
                     first: 100,
                     last: 200,
-                }]),
+                }),
                 ConditionalHeaders::default(),
             )
             .await

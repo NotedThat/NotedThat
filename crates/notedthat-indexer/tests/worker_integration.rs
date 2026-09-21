@@ -209,7 +209,7 @@ impl Storage for MockStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         _conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         let guard = self.objects.lock().unwrap();
@@ -235,7 +235,7 @@ impl Storage for MockStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);

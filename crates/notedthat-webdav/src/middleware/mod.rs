@@ -242,7 +242,7 @@ mod basic_auth {
                 &self,
                 _kb: &KbSlug,
                 _path: &ObjectPath,
-                _range: Option<Vec<ByteRange>>,
+                _range: Option<ByteRange>,
                 _conditionals: ConditionalHeaders,
             ) -> Result<ObjectRead, StorageError> {
                 Err(unavailable())
@@ -252,7 +252,7 @@ mod basic_auth {
                 &self,
                 _kb: &KbSlug,
                 _path: &ObjectPath,
-                _range: Option<Vec<ByteRange>>,
+                _range: Option<ByteRange>,
                 _conditionals: ConditionalHeaders,
             ) -> Result<notedthat_core::ObjectStream, StorageError> {
                 Err(unavailable())
@@ -811,7 +811,7 @@ mod intercept_write_methods {
                 &self,
                 kb: &KbSlug,
                 path: &ObjectPath,
-                _range: Option<Vec<ByteRange>>,
+                _range: Option<ByteRange>,
                 conditionals: ConditionalHeaders,
             ) -> Result<ObjectRead, StorageError> {
                 self.record("get_object");
@@ -832,7 +832,7 @@ mod intercept_write_methods {
                 &self,
                 _kb: &KbSlug,
                 _path: &ObjectPath,
-                _range: Option<Vec<ByteRange>>,
+                _range: Option<ByteRange>,
                 _conditionals: ConditionalHeaders,
             ) -> Result<notedthat_core::ObjectStream, StorageError> {
                 Err(unavailable())

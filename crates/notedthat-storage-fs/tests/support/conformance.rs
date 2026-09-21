@@ -539,51 +539,46 @@ pub async fn observe_ranges(store: &dyn Storage, kb: &KbSlug) -> Observations {
         .await
         .expect("empty write");
 
-    let cases: Vec<(&'static str, &str, Option<Vec<ByteRange>>)> = vec![
+    let cases: Vec<(&'static str, &str, Option<ByteRange>)> = vec![
         ("no_range", "a.md", None),
-        ("empty_range_vec", "a.md", Some(vec![])),
         (
             "from_start",
             "a.md",
-            Some(vec![ByteRange::FromStart { first: 2, last: 5 }]),
+            Some(ByteRange::FromStart { first: 2, last: 5 }),
         ),
         (
             "single_byte",
             "a.md",
-            Some(vec![ByteRange::FromStart { first: 0, last: 0 }]),
+            Some(ByteRange::FromStart { first: 0, last: 0 }),
         ),
         (
             "open_ended",
             "a.md",
-            Some(vec![ByteRange::FromStartOpen { first: 7 }]),
+            Some(ByteRange::FromStartOpen { first: 7 }),
         ),
-        (
-            "suffix",
-            "a.md",
-            Some(vec![ByteRange::Suffix { length: 3 }]),
-        ),
+        ("suffix", "a.md", Some(ByteRange::Suffix { length: 3 })),
         (
             "past_eof",
             "a.md",
-            Some(vec![ByteRange::FromStart {
+            Some(ByteRange::FromStart {
                 first: 50,
                 last: 60,
-            }]),
+            }),
         ),
         (
             "start_beyond_eof_open",
             "a.md",
-            Some(vec![ByteRange::FromStartOpen { first: 99 }]),
+            Some(ByteRange::FromStartOpen { first: 99 }),
         ),
         (
             "zero_length_suffix",
             "a.md",
-            Some(vec![ByteRange::Suffix { length: 0 }]),
+            Some(ByteRange::Suffix { length: 0 }),
         ),
         (
             "empty_object_any_range",
             "empty.md",
-            Some(vec![ByteRange::FromStart { first: 0, last: 3 }]),
+            Some(ByteRange::FromStart { first: 0, last: 3 }),
         ),
     ];
 
@@ -1174,7 +1169,7 @@ pub async fn observe_streaming(store: &dyn Storage, kb: &KbSlug) -> Observations
         .get_object_stream(
             kb,
             &path("a.md"),
-            Some(vec![ByteRange::FromStart { first: 2, last: 5 }]),
+            Some(ByteRange::FromStart { first: 2, last: 5 }),
             ConditionalHeaders::default(),
         )
         .await

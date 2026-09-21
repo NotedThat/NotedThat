@@ -95,8 +95,10 @@ pub(in crate::router) async fn get_object(
             let raw_str = raw
                 .to_str()
                 .map_err(|_| err(ApiError::MalformedRange("non-UTF-8 Range header".into())))?;
+            // The parser's reason rides along: a refused range set must say
+            // it was the count of ranges, not the syntax (D57).
             let parsed = parse_range_header(raw_str)
-                .map_err(|_| err(ApiError::MalformedRange(raw_str.to_owned())))?;
+                .map_err(|e| err(ApiError::MalformedRange(format!("{raw_str}: {e}"))))?;
             if parsed.unit == "lines" {
                 return serve_line_range_read(
                     &state,
@@ -107,11 +109,8 @@ pub(in crate::router) async fn get_object(
                     &request_id,
                 )
                 .await;
-            } else if parsed.unit == "bytes" && !parsed.ranges.is_empty() {
-                Some(parsed.ranges)
-            } else {
-                None
             }
+            parsed.range
         }
     };
 

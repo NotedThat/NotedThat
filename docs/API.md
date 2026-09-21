@@ -236,7 +236,8 @@ All error responses use the same JSON envelope:
 
 | HTTP status | `error` code | When it occurs |
 |-------------|--------------|----------------|
-| 400 | `invalid_request` | Malformed path, invalid KB slug, malformed `Range` header, or other bad input |
+| 400 | `invalid_request` | Malformed path, invalid KB slug, or other bad input |
+| 400 | `malformed_range` | Unparseable `Range` header, or a `bytes=` range set naming more than one range |
 | 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
 | 404 | `not_found` | KB slug not declared, object does not exist, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
@@ -270,12 +271,12 @@ Clients can request a partial object body by including a `Range` header:
 | `Range: bytes=0-499` | Returns first 500 bytes |
 | `Range: bytes=500-` | Returns from byte 500 to end |
 | `Range: bytes=-500` | Returns last 500 bytes |
-| `Range: bytes=0-499,1000-1499` | Multi-range (forwarded to S3 backend as-is) |
+| `Range: bytes=0-499,1000-1499` | Rejected: **400** `malformed_range` (one range per request) |
 
 **Responses:**
 - **206 Partial Content** — successful partial read; includes `Content-Range: bytes start-end/total`
 - **416 Range Not Satisfiable** — requested range is out of bounds; response includes `Content-Range: bytes */total`
-- **400 Bad Request** — malformed `Range` header (unparseable syntax)
+- **400 Bad Request** `malformed_range` — unparseable `Range` header, or more than one `bytes=` range. A `206` for several ranges would have to be `multipart/byteranges` (RFC 7233 §4.1), which NotedThat does not produce; serving only the first range would be a silent short read, so the request is refused instead.
 - **200 OK** — unknown range unit (e.g., `items=0-10`) is silently ignored per RFC 7233 §2.1; full object returned
 
 **curl example:**
@@ -418,8 +419,9 @@ curl -sI -X DELETE http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
 
 ## Backend compatibility
 
-NotedThat forwards Range and conditional headers verbatim to the S3 backend. Actual behavior
-depends on the backend's RFC 7232/7233 support.
+NotedThat parses the `Range` header itself, accepts one `bytes=` range per request, and forwards
+that range and the conditional headers to the storage backend. Actual behavior depends on the
+backend's RFC 7232/7233 support.
 
 NotedThat is tested against **SeaweedFS 4.18+** which supports:
 - Byte-range reads (`Range: bytes=`)
@@ -436,8 +438,8 @@ See `SPECIFICATIONS.md §9.1` for the full compatibility matrix.
 The following features are intentionally out of scope:
 
 - **`If-Range` header** (RFC 7233 §3.2) — not parsed, not forwarded
-- **`multipart/byteranges` response bodies** — multi-range requests are forwarded to S3, but
-  NotedThat does not parse or synthesize `multipart/byteranges` responses
+- **`multipart/byteranges` response bodies** — a `Range` header naming more than one range is
+  rejected with `400 malformed_range`; NotedThat never synthesizes `multipart/byteranges`
 - **Conditional DELETE with `If-None-Match` / `If-Modified-Since` / `If-Unmodified-Since`** —
   the S3 API does not support these on DELETE; they are silently ignored
 - **Conditional PUT with `If-Modified-Since` / `If-Unmodified-Since`** — same; silently ignored
@@ -760,7 +762,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | 200 OK | Full object bytes |
 | 206 Partial Content | Partial object bytes (byte-range or line-range request satisfied) |
 | 304 Not Modified | No body (conditional request matched) |
-| 400 Bad Request | `{"error": "invalid_request", ...}` — malformed `Range` header |
+| 400 Bad Request | `{"error": "malformed_range", ...}` — unparseable `Range` header, or more than one `bytes=` range |
 | 404 Not Found | `{"error": "not_found", ...}` |
 | 412 Precondition Failed | `{"error": "precondition_failed", ...}` |
 | 416 Range Not Satisfiable | `{"error": "range_not_satisfiable", ...}` |

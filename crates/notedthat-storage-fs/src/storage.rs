@@ -367,7 +367,7 @@ impl Storage for FsStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         let bucket = self.bucket(kb);
@@ -377,7 +377,7 @@ impl Storage for FsStorage {
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
             let total = metadata.len();
-            let (bytes, content_range) = match resolve_range(total, range.as_deref())? {
+            let (bytes, content_range) = match resolve_range(total, range.as_ref())? {
                 Some((exclusive, content_range)) => (
                     read_slice(&file_path, exclusive.start, exclusive.end - exclusive.start)
                         .map_err(|error| errors::object(&key, error))?,
@@ -406,7 +406,7 @@ impl Storage for FsStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         let bucket = self.bucket(kb);
@@ -421,7 +421,7 @@ impl Storage for FsStorage {
                 evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
                 let total = metadata.len();
-                let resolved = resolve_range(total, range.as_deref())?;
+                let resolved = resolve_range(total, range.as_ref())?;
                 let mut file =
                     std::fs::File::open(&file_path).map_err(|error| errors::object(&key, error))?;
 

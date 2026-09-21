@@ -74,7 +74,7 @@ impl DavFile for WebDavFile {
 
             let first = self.read_offset;
             let last = first.saturating_add(count as u64).saturating_sub(1);
-            let range = vec![ByteRange::FromStart { first, last }];
+            let range = ByteRange::FromStart { first, last };
             let result = self
                 .state
                 .storage
@@ -150,7 +150,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum StorageCall {
         HeadObject,
-        GetObject { range: Option<Vec<ByteRange>> },
+        GetObject { range: Option<ByteRange> },
     }
 
     #[derive(Default)]
@@ -215,7 +215,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            range: Option<Vec<ByteRange>>,
+            range: Option<ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectRead, StorageError> {
             self.calls
@@ -224,14 +224,10 @@ mod tests {
                 .push(StorageCall::GetObject {
                     range: range.clone(),
                 });
-            let len =
-                range
-                    .as_ref()
-                    .and_then(|ranges| ranges.first())
-                    .map_or(0, |range| match range {
-                        ByteRange::FromStart { first, last } => last.saturating_sub(*first) + 1,
-                        ByteRange::FromStartOpen { .. } | ByteRange::Suffix { .. } => 0,
-                    });
+            let len = range.as_ref().map_or(0, |range| match range {
+                ByteRange::FromStart { first, last } => last.saturating_sub(*first) + 1,
+                ByteRange::FromStartOpen { .. } | ByteRange::Suffix { .. } => 0,
+            });
             let len = usize::try_from(len).map_err(|_err| unavailable())?;
 
             Ok(ObjectRead {
@@ -245,7 +241,7 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<Vec<ByteRange>>,
+            _range: Option<ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<notedthat_core::ObjectStream, StorageError> {
             Err(unavailable())
@@ -354,7 +350,7 @@ mod tests {
         assert_eq!(
             storage.calls(),
             vec![StorageCall::GetObject {
-                range: Some(vec![ByteRange::FromStart { first: 0, last: 9 }]),
+                range: Some(ByteRange::FromStart { first: 0, last: 9 }),
             }]
         );
     }
