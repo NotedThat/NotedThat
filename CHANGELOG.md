@@ -10,6 +10,30 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/NotedThat/NotedThat/compare/v0.7.0...v0.7.1) - 2026-09-21
+
+### Added
+
+- *(server)* NOTEDTHAT_EVENTS_BACKEND selector, NATS adapter and wiring
+- *(api-http)* stream object change events over SSE per knowledge base
+- *(indexer)* announce detected fs changes from the worker, once
+- *(write)* publish object change events beside the index enqueue
+- *(events)* notedthat-events crate with the memory ring adapter
+- *(core)* object change event types and the EventPublisher trait
+
+### Fixed
+
+- *(events)* never skip an event on reconnect; a position ahead of the log is gone
+
+### Other
+
+- Merge pull request #141 from NotedThat/feat/object-change-events
+- *(events)* renumber the decision to D55 and pin the crate at the workspace version
+- *(events)* one integration suite over the memory ring and a real JetStream stream
+- object change events — endpoint, backend selector, D54, overlay, example
+- *(server)* two replicas on one NATS stream replay and expire events
+- *(server)* events E2E over the memory log and the fs watcher
+
 ## [0.7.0](https://github.com/NotedThat/NotedThat/compare/v0.6.0...v0.7.0) - 2026-09-14
 
 ### Added
