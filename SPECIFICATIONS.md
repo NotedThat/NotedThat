@@ -599,7 +599,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - Write path: S3 commit succeeds first, then enqueue `{kb, object_key, etag, mtime}` onto a bounded in-memory channel.
 - Queue capacity: fixed implementation constant in v1 (recommended `1024` events); env tuning post-v1.
 - If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return `WriteError::IndexerBackpressureUpsert` for upserts or `WriteError::IndexerBackpressureTombstone` for tombstones, which the HTTP API and WebDAV surfaces map to HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 before the enqueue attempt; the client should retry to re-enqueue the indexing event.
-- Embedder or Qdrant failures are logged as `INDEXING_FAILED` with the knowledge base and key; callers do not receive job IDs. What they can read is the per-knowledge-base aggregate at `GET /api/v1/knowledgebases/{kb}/index` and MCP `index_status` (D58): a state (`healthy`, `indexing`, `backpressured`, `stale`, `failed`), pending events, the queue's depth and capacity, the last success time, the last failure's one-line summary, and on `fs` the last reconciliation pass.
+- Embedder or Qdrant failures are logged as `INDEXING_FAILED` with the knowledge base and key; callers do not receive job IDs. What they can read is the per-knowledge-base aggregate at `GET /api/v1/knowledgebases/{kb}/index` and MCP `index_status` (D62): a state (`healthy`, `indexing`, `backpressured`, `stale`, `failed`), pending events, the queue's depth and capacity, the last success time, the last failure's one-line summary, and on `fs` the last reconciliation pass.
 - Search may be stale in v1. A later write to the same object re-enqueues it.
 - With an events backend configured (§6.14), the same write path publishes an `object.written` / `object.deleted` event immediately after the enqueue; a publish failure is `WriteError::EventPublishFailed` → HTTP 503 `backend_unavailable` with `Retry-After: 5`, logged as `EVENT_PUBLISH_FAILED`.
 
@@ -631,7 +631,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | Liveness — unauthenticated, unversioned |
-| `GET` | `/readyz` | Readiness — unauthenticated, unversioned. `503` while a configured event broker is disconnected (D55); S3 and Qdrant are not probed in v1. Per-knowledge-base index state is `…/{kb_slug}/index` (D58) |
+| `GET` | `/readyz` | Readiness — unauthenticated, unversioned. `503` while a configured event broker is disconnected (D55); S3 and Qdrant are not probed in v1. Per-knowledge-base index state is `…/{kb_slug}/index` (D62) |
 | `GET` | `/llms.txt` | Plain-text API navigation — unauthenticated, unversioned |
 | `GET` | `/.well-known/oauth-protected-resource` | RFC 9728 protected-resource metadata (D53) — unauthenticated; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | `GET`, `HEAD` | `/browse/`, `/browse/{*path}` | Server-rendered HTML directory listings (D52). Anonymous or Bearer; other methods return `405` |
@@ -645,7 +645,7 @@ API routes are prefixed with `/api/v1`. Object paths are percent-encoded into a 
 | `POST` | `/api/v1/knowledgebases/{kb_slug}/search` | Hybrid search of one KB. Body: `{ query, filters?, limit? }`. Response `{ hits }`; MCP `search` (§6.10) wraps one of these per KB |
 | `POST` | `/api/v1/knowledgebases/{kb_slug}/replace/{*path}` | String replace with mandatory `If-Match`; body `{ old_string, new_string, replace_all? }`; response `{ etag, match_count, total_bytes }` per D47 |
 | `GET` | `/api/v1/knowledgebases/{kb_slug}/events` | Object change events as SSE (D55, §6.14). Query params: `prefix`, `event`, `mime`; header `Last-Event-ID`. `404` unless an events backend is configured. Like `search`, a literal sibling of the object catch-all |
-| `GET` | `/api/v1/knowledgebases/{kb_slug}/index` | The knowledge base's search-index health (D58). Visible under the listing rule (D51). Like `search` and `events`, a literal sibling of the object catch-all |
+| `GET` | `/api/v1/knowledgebases/{kb_slug}/index` | The knowledge base's search-index health (D62). Visible under the listing rule (D51). Like `search` and `events`, a literal sibling of the object catch-all |
 
 #### Path encoding
 

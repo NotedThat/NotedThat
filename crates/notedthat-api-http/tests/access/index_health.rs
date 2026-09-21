@@ -116,9 +116,13 @@ async fn a_write_leaves_the_knowledge_base_indexing_until_the_worker_takes_it() 
     assert_eq!(body["pending"], 1);
     assert_eq!(body["queue"]["depth"], 1);
 
-    // When — the worker takes it and finishes.
+    // When — the worker takes it. Taking is not finishing: the base stays
+    // `indexing` (pending 1) with the queue empty, until the outcome lands.
     let event = side.queue_rx.recv().await.expect("queued event");
-    side.health.started(event.kb().as_str());
+    let body = json(get_index(app.clone(), "notes", None).await).await;
+    assert_eq!(body["state"], "indexing");
+    assert_eq!(body["pending"], 1);
+    assert_eq!(body["queue"]["depth"], 0);
     side.health.succeeded(event.kb().as_str());
 
     // Then

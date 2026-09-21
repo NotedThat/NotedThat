@@ -1968,11 +1968,8 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
     storage.insert("test-kb", "ok.md", "# Fine\n\nindexed", "text/markdown");
     let health = Arc::new(IndexHealth::new());
 
-    // While the event is queued and nobody has taken it, the base is indexing.
-    health.enqueued("test-kb");
-    assert_eq!(health.snapshot("test-kb").state, IndexState::Indexing);
-    health.started("test-kb");
-
+    // `run_one_with_health` records the enqueue itself; the worker's own
+    // completion is what brings `pending` back to zero.
     run_one_with_health(
         Arc::clone(&storage),
         Arc::new(ScriptedEmbedder::new(None, None)),
@@ -1988,7 +1985,7 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
     .await;
 
     let snapshot = health.snapshot("test-kb");
-    assert_eq!(snapshot.pending, 0, "the worker took what was queued");
+    assert_eq!(snapshot.pending, 0, "the worker finished what was queued");
     assert!(snapshot.last_indexed_at.is_some());
     assert_eq!(snapshot.last_failure, None);
     // The channel closed, so the loop ended: nothing drains the queue any more,

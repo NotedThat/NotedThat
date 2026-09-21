@@ -106,7 +106,14 @@ pub struct KbHealthSnapshot {
 
 #[derive(Debug, Default, Clone)]
 struct KbRecord {
-    pending: usize,
+    /// Events handed to the queue, ever. Monotonic, like `completed`: the two
+    /// are recorded by different tasks in no fixed order — the worker can take
+    /// an event and finish it before the writer's `enqueued` lands — and a
+    /// difference of two counters shrugs that off, where a single up/down
+    /// counter drifted by one for good every time it lost that race.
+    enqueued: u64,
+    /// Events the worker finished, succeeded or failed.
+    completed: u64,
     /// Whether the most recent completed event failed. Kept as a flag rather
     /// than derived from timestamps, which are whole seconds and would tie.
     last_outcome_failed: bool,
@@ -150,17 +157,15 @@ impl IndexHealth {
 
     /// An event for `kb` entered the queue.
     pub fn enqueued(&self, kb: &str) {
-        self.record(kb, |r, _| r.pending += 1);
+        self.record(kb, |r, _| r.enqueued += 1);
     }
 
-    /// The worker took an event for `kb` off the queue.
-    pub fn started(&self, kb: &str) {
-        self.record(kb, |r, _| r.pending = r.pending.saturating_sub(1));
-    }
-
-    /// An event for `kb` completed.
+    /// An event for `kb` completed. Counts it done: `pending` covers queued
+    /// *and* in-flight work, so an object still being embedded keeps the
+    /// knowledge base `indexing` until this or [`Self::failed`] is recorded.
     pub fn succeeded(&self, kb: &str) {
         self.record(kb, |r, now| {
+            r.completed += 1;
             r.last_indexed_at = Some(now);
             r.last_outcome_failed = false;
         });
@@ -170,6 +175,7 @@ impl IndexHealth {
     pub fn failed(&self, kb: &str, object_key: &str, summary: &str) {
         let summary = bound_summary(summary);
         self.record(kb, move |r, now| {
+            r.completed += 1;
             r.last_failure = Some(IndexFailure {
                 at: now,
                 object_key: object_key.to_string(),
@@ -215,7 +221,7 @@ impl IndexHealth {
         let state = derive_state(&record, inner.worker_alive, now);
         KbHealthSnapshot {
             state,
-            pending: record.pending,
+            pending: pending(&record),
             worker_alive: inner.worker_alive,
             last_indexed_at: record.last_indexed_at,
             last_failure: record.last_failure,
@@ -258,10 +264,16 @@ fn derive_state(record: &KbRecord, worker_alive: bool, now: i64) -> IndexState {
     {
         return IndexState::Backpressured;
     }
-    if record.pending > 0 {
+    if pending(record) > 0 {
         return IndexState::Indexing;
     }
     IndexState::Healthy
+}
+
+/// Queued plus in-flight events. A completion observed before its own
+/// enqueue reads as a transient `0`, never as a negative or a stuck `1`.
+fn pending(record: &KbRecord) -> usize {
+    usize::try_from(record.enqueued.saturating_sub(record.completed)).unwrap_or(usize::MAX)
 }
 
 /// The first line of `summary`, cut to [`FAILURE_SUMMARY_MAX_CHARS`].
@@ -307,29 +319,36 @@ mod tests {
     }
 
     #[test]
-    fn pending_counts_enqueued_events_until_the_worker_takes_them() {
+    fn pending_counts_enqueued_events_until_the_worker_finishes_them() {
         let health = IndexHealth::new();
         health.enqueued("notes");
         health.enqueued("notes");
         assert_eq!(health.snapshot("notes").pending, 2);
         assert_eq!(health.snapshot("notes").state, IndexState::Indexing);
-        health.started("notes");
-        assert_eq!(health.snapshot("notes").pending, 1);
-        health.started("notes");
+        // The first is done; the second is still being embedded: `indexing`.
         health.succeeded("notes");
+        assert_eq!(health.snapshot("notes").pending, 1);
+        assert_eq!(health.snapshot("notes").state, IndexState::Indexing);
+        health.failed("notes", "b.md", "embedder down");
         let snapshot = health.snapshot("notes");
         assert_eq!(snapshot.pending, 0);
-        assert_eq!(snapshot.state, IndexState::Healthy);
         assert!(snapshot.last_indexed_at.is_some());
         // Other knowledge bases are untouched.
         assert_eq!(health.snapshot("other").pending, 0);
     }
 
+    /// The writer records `enqueued` after handing the event over, and the
+    /// worker runs on its own task: it can finish the event first. Two
+    /// monotonic counters make that a transient `0`, not a `1` that never
+    /// drains.
     #[test]
-    fn pending_never_underflows() {
+    fn a_completion_observed_before_its_enqueue_does_not_leave_pending_stuck() {
         let health = IndexHealth::new();
-        health.started("notes");
+        health.succeeded("notes");
         assert_eq!(health.snapshot("notes").pending, 0);
+        health.enqueued("notes");
+        assert_eq!(health.snapshot("notes").pending, 0);
+        assert_eq!(health.snapshot("notes").state, IndexState::Healthy);
     }
 
     #[test]

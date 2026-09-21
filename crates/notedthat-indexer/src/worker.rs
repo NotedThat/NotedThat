@@ -157,7 +157,6 @@ impl IndexerWorker {
         let kb = event.kb().clone();
         let object_key = event.object_key().clone();
         let kind = event.kind();
-        self.health.started(kb.as_str());
         tracing::info!(
             target: "notedthat::indexing",
             kb = %kb.as_str(),
