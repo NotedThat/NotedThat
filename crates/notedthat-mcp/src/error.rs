@@ -44,6 +44,16 @@ pub enum McpToolError {
     /// 416 — Range header not satisfiable (RFC 7233 §4.4 — body is EMPTY).
     #[error("range_not_satisfiable")]
     RangeNotSatisfiable,
+    /// The object is larger than this MCP server will hand to a client in one
+    /// response (`NOTEDTHAT_MCP_MAX_READ_BYTES`). Not the API's `413`, which is
+    /// about a request body: the object exists and is readable — in slices.
+    #[error("{}", response_too_large_message(*limit, *total))]
+    ResponseTooLarge {
+        /// The budget, in bytes fetched from the API.
+        limit: u64,
+        /// The object's declared size, when the API said (`Content-Length`).
+        total: Option<u64>,
+    },
     /// Replacement `old_string` did not occur in the target text.
     #[error("no match found for old_string: {0}")]
     NoMatch(String),
@@ -91,6 +101,11 @@ impl From<McpToolError> for ErrorData {
             McpToolError::RangeNotSatisfiable => {
                 ErrorData::new(ErrorCode::INVALID_PARAMS, "range_not_satisfiable", None)
             }
+            McpToolError::ResponseTooLarge { limit, total } => ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                response_too_large_message(limit, total),
+                None,
+            ),
             McpToolError::NoMatch(old_string) => ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 format!("no match found for old_string: {old_string}"),
@@ -119,6 +134,21 @@ impl From<McpToolError> for ErrorData {
             ),
         }
     }
+}
+
+/// The `ResponseTooLarge` message: what was refused, the budget, and the way
+/// through — the `read` tool's slice arguments. Said the same way whether the
+/// refusal came from the `read` tool or from `resources/read`, which has no
+/// slices of its own.
+fn response_too_large_message(limit: u64, total: Option<u64>) -> String {
+    let size = total.map_or_else(
+        || "the object is larger than".to_string(),
+        |n| format!("the object is {n} bytes, over"),
+    );
+    format!(
+        "response_too_large: {size} this server's read budget of {limit} bytes; \
+         read it in slices with byte_start/byte_end or line_start/line_end on the read tool"
+    )
 }
 
 /// Serde shape for the HTTP API error body.
@@ -197,10 +227,62 @@ mod tests {
             McpToolError::BackendUnavailable,
             McpToolError::InternalError("boom".into()),
             McpToolError::Forbidden,
+            McpToolError::ResponseTooLarge {
+                limit: 1,
+                total: Some(2),
+            },
+            McpToolError::ResponseTooLarge {
+                limit: 1,
+                total: None,
+            },
         ];
         for e in cases {
             let _ed: ErrorData = e.into();
         }
+    }
+
+    #[test]
+    fn response_too_large_names_the_size_when_known_and_the_slice_arguments_always() {
+        let known: ErrorData = McpToolError::ResponseTooLarge {
+            limit: 1024,
+            total: Some(4096),
+        }
+        .into();
+        assert_eq!(known.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            known.message.starts_with("response_too_large: "),
+            "{}",
+            known.message
+        );
+        assert!(known.message.contains("4096 bytes"), "{}", known.message);
+        assert!(known.message.contains("1024 bytes"), "{}", known.message);
+        assert!(
+            known.message.contains("byte_start/byte_end"),
+            "{}",
+            known.message
+        );
+        assert!(
+            known.message.contains("line_start/line_end"),
+            "{}",
+            known.message
+        );
+
+        let unknown: ErrorData = McpToolError::ResponseTooLarge {
+            limit: 1024,
+            total: None,
+        }
+        .into();
+        assert!(
+            !unknown.message.contains(" bytes, over"),
+            "no size invented: {}",
+            unknown.message
+        );
+        assert!(
+            unknown.message.contains("1024 bytes"),
+            "{}",
+            unknown.message
+        );
+        assert!(unknown.message.contains("read tool"), "{}", unknown.message);
     }
 
     #[test]

@@ -58,10 +58,25 @@ pub(super) async fn run(
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let body_bytes = get_resp
-        .bytes()
+    // The copy runs through this process, so the read budget bounds a move
+    // too — but "read it in slices" is no way to finish a move. Say what is.
+    let body_bytes = client
+        .read_body_bounded(get_resp)
         .await
-        .map_err(McpToolError::Transport)
+        .map_err(|error| match error {
+            McpToolError::ResponseTooLarge { limit, total } => {
+                let size = total.map_or_else(
+                    || "the object is larger than".to_string(),
+                    |n| format!("the object is {n} bytes, over"),
+                );
+                McpToolError::InvalidRequest(format!(
+                    "move: {size} this server's read budget of {limit} bytes; a move copies the \
+                     object through this process, so raise NOTEDTHAT_MCP_MAX_READ_BYTES or move \
+                     it over WebDAV, where MOVE is server-side"
+                ))
+            }
+            other => other,
+        })
         .map_err(McpError::from)?;
 
     let put_url = client.api_v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
@@ -103,6 +118,53 @@ mod tests {
 
     fn client(url: &str) -> NotedThatClient {
         NotedThatClient::new(url, "tok").unwrap()
+    }
+
+    /// An object over the read budget cannot be moved through this process,
+    /// and the error says so — not "read it in slices", which cannot finish a
+    /// move. Nothing is written or deleted.
+    #[tokio::test]
+    async fn an_oversized_source_is_refused_with_a_move_specific_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes/big.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 2048]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri()).with_max_read_bytes(1024);
+        let error = run(
+            &c,
+            MoveArgs {
+                kb: "notes".into(),
+                from: "big.md".into(),
+                to: "moved.md".into(),
+                if_match: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error
+                .message
+                .starts_with("move: the object is 2048 bytes, over"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("WebDAV"), "{}", error.message);
+        assert!(!error.message.contains("slices"), "{}", error.message);
+        server.verify().await;
     }
 
     #[tokio::test]

@@ -37,10 +37,9 @@ pub async fn read_resource(
         .await
         .map_err(McpToolError::Transport)?;
     let resp = map_response(resp).await.map_err(McpError::from)?;
-    let bytes = resp
-        .bytes()
+    let bytes = client
+        .read_body_bounded(resp)
         .await
-        .map_err(McpToolError::Transport)
         .map_err(McpError::from)?;
     let mime_type = detect_mime_type(&parsed.object_key);
 
@@ -266,5 +265,50 @@ mod tests {
         let result = read_resource(&client(&server.uri()), "notedthat://kb/").await;
 
         assert!(result.is_err());
+    }
+
+    /// The budget is on the bytes fetched: a blob resource is ~4/3 of that on the
+    /// wire, which is documented rather than a second knob.
+    #[tokio::test]
+    async fn an_object_within_the_budget_is_served_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/big.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xFFu8; 1024]))
+            .mount(&server)
+            .await;
+        let c = client(&server.uri()).with_max_read_bytes(1024);
+        let result = read_resource(&c, "notedthat://kb/big.bin").await.unwrap();
+        match only_content(result) {
+            ResourceContents::BlobResourceContents { blob, .. } => {
+                assert_eq!(blob.len(), 1368, "base64 of 1024 bytes");
+            }
+            other => panic!("expected a blob, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_object_is_refused_and_points_at_the_read_tool() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/big.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xFFu8; 1025]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri()).with_max_read_bytes(1024);
+        let error = read_resource(&c, "notedthat://kb/big.bin")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error
+                .message
+                .starts_with("response_too_large: the object is 1025 bytes"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("read tool"), "{}", error.message);
+        server.verify().await;
     }
 }

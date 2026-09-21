@@ -14,5 +14,6 @@ pub mod resources_read;
 pub mod sse_refusal;
 /// MCP tool router and per-tool HTTP adapters.
 pub mod tools;
+pub use client::DEFAULT_MAX_READ_BYTES;
 pub use http::{McpHttpService, McpHttpServiceConfig, McpHttpServiceConfigError};
 pub use tools::NotedThatMcp;

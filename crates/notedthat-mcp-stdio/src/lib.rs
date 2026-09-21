@@ -30,7 +30,7 @@ use tracing_subscriber::EnvFilter;
     version,
     about = "MCP-over-stdio transport for NotedThat",
     long_about = "MCP-over-stdio transport for NotedThat.\n\n\
-                  Either setting can be given as the flag or as the environment variable \
+                  Every setting can be given as the flag or as the environment variable \
                   beside it; the flag wins when both are set.\n\n\
                   --token is visible to any user on the host via `ps` and is recorded in \
                   shell history, so prefer NOTEDTHAT_TOKEN on a shared machine.\n\n\
@@ -50,6 +50,11 @@ pub struct StdioCli {
         hide_env_values = true
     )]
     pub token: Option<String>,
+
+    /// Most bytes one object read may fetch from the server; a larger object is
+    /// refused with the read tool's slice arguments to use instead [default: 16777216].
+    #[arg(long, env = "NOTEDTHAT_MCP_MAX_READ_BYTES", value_name = "BYTES")]
+    pub mcp_max_read_bytes: Option<String>,
 }
 
 /// Serve MCP tools over stdio until the client disconnects.
@@ -73,9 +78,11 @@ pub async fn run() -> Result<()> {
 
     let url = require(cli.url, "NOTEDTHAT_URL")?;
     let token = require(cli.token, "NOTEDTHAT_TOKEN")?;
+    let max_read_bytes = read_budget(cli.mcp_max_read_bytes.as_deref())?;
 
-    let client =
-        NotedThatClient::new(&url, &token).context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?;
+    let client = NotedThatClient::new(&url, &token)
+        .context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?
+        .with_max_read_bytes(max_read_bytes);
 
     tracing::info!(
         target: "notedthat_mcp_stdio",
@@ -120,9 +127,26 @@ fn require(supplied: Option<String>, name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// The read budget: absent, empty or blank means the default (Compose hands an
+/// unset variable over as an empty string); anything else must be a positive
+/// byte count.
+fn read_budget(supplied: Option<&str>) -> Result<u64> {
+    let named = notedthat_core::setting("NOTEDTHAT_MCP_MAX_READ_BYTES");
+    let Some(value) = supplied.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(notedthat_mcp::DEFAULT_MAX_READ_BYTES);
+    };
+    let budget: u64 = value
+        .parse()
+        .with_context(|| format!("{named} must be a valid u64 integer"))?;
+    if budget == 0 {
+        bail!("{named} must be > 0");
+    }
+    Ok(budget)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{StdioCli, require};
+    use super::{StdioCli, read_budget, require};
     use clap::Parser as _;
 
     fn parse(vars: &[(&str, Option<&str>)], args: &[&str]) -> StdioCli {
@@ -163,6 +187,30 @@ mod tests {
             .to_string();
         assert!(error.contains("NOTEDTHAT_TOKEN"), "{error}");
         assert!(error.contains("is empty"), "{error}");
+    }
+
+    #[test]
+    fn the_read_budget_defaults_and_refuses_zero_and_nonsense() {
+        assert_eq!(
+            read_budget(None).unwrap(),
+            notedthat_mcp::DEFAULT_MAX_READ_BYTES
+        );
+        assert_eq!(read_budget(Some(" 4096 ")).unwrap(), 4096);
+        for empty in ["", "  "] {
+            assert_eq!(
+                read_budget(Some(empty)).unwrap(),
+                notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+                "{empty:?} is the default, as Compose's ${{VAR-}} requires"
+            );
+        }
+        for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
+            let error = read_budget(Some(value)).unwrap_err().to_string();
+            assert!(error.contains("NOTEDTHAT_MCP_MAX_READ_BYTES"), "{error}");
+            assert!(error.contains("--mcp-max-read-bytes"), "{error}");
+            assert!(error.contains(fragment), "{error}");
+        }
+        let cli = parse(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some("1024"))], &[]);
+        assert_eq!(cli.mcp_max_read_bytes.as_deref(), Some("1024"));
     }
 
     #[test]

@@ -1,9 +1,17 @@
 //! HTTP client wrapping reqwest for `NotedThat` API access.
 
 use crate::error::{McpToolError, map_response};
+use bytes::Bytes;
 use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
+
+/// The default read budget: what one object read may fetch from the API.
+///
+/// Equal to the API's own body cap, so anything written *through* the API can be
+/// read back whole. Only objects that arrived some other way — a `WebDAV` `PUT`, a
+/// file dropped into an `fs` tree — can be larger, and those are read in slices.
+pub const DEFAULT_MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Errors from constructing a [`NotedThatClient`].
 #[derive(Debug, Error)]
@@ -32,6 +40,8 @@ pub struct NotedThatClient {
     /// The bearer every request carries, or `None` for the anonymous caller,
     /// whose requests carry no `Authorization` header at all.
     pub(crate) token: Option<String>,
+    /// Most bytes one object read may fetch; see [`Self::read_body_bounded`].
+    pub(crate) max_read_bytes: u64,
 }
 
 impl NotedThatClient {
@@ -66,7 +76,17 @@ impl NotedThatClient {
             http,
             base_url: parsed,
             token: Some(token_trimmed.to_string()),
+            max_read_bytes: DEFAULT_MAX_READ_BYTES,
         })
+    }
+
+    /// Cap what one object read may fetch from the API, in bytes.
+    ///
+    /// Zero is not a budget; callers validate that before getting here.
+    #[must_use]
+    pub fn with_max_read_bytes(mut self, max_read_bytes: u64) -> Self {
+        self.max_read_bytes = max_read_bytes;
+        self
     }
 
     /// The same client — same connection pool, same base URL — presenting
@@ -81,6 +101,7 @@ impl NotedThatClient {
             http: self.http.clone(),
             base_url: self.base_url.clone(),
             token: Some(token.to_string()),
+            max_read_bytes: self.max_read_bytes,
         }
     }
 
@@ -96,6 +117,7 @@ impl NotedThatClient {
             http: self.http.clone(),
             base_url: self.base_url.clone(),
             token: None,
+            max_read_bytes: self.max_read_bytes,
         }
     }
 
@@ -129,6 +151,49 @@ impl NotedThatClient {
             None => req,
         };
         req.header(SOURCE_HEADER, SOURCE_VALUE)
+    }
+
+    /// The body of a successful response, within this client's read budget.
+    ///
+    /// A `Content-Length` over the budget is refused before a byte of body is
+    /// read. Without one — or with a misleading one — the body is read chunk by
+    /// chunk and refused the moment it exceeds the budget, so the most this ever
+    /// holds is the budget plus one chunk. Either refusal is
+    /// [`McpToolError::ResponseTooLarge`], which names the slice arguments.
+    ///
+    /// Inspect headers *before* calling this: it consumes the response.
+    pub(crate) async fn read_body_bounded(
+        &self,
+        mut resp: reqwest::Response,
+    ) -> Result<Bytes, McpToolError> {
+        let limit = self.max_read_bytes;
+        let declared = resp.content_length();
+        if let Some(total) = declared
+            && total > limit
+        {
+            return Err(McpToolError::ResponseTooLarge {
+                limit,
+                total: Some(total),
+            });
+        }
+
+        let capacity = declared
+            .unwrap_or(0)
+            .min(limit)
+            .try_into()
+            .unwrap_or(usize::MAX);
+        let mut body = Vec::with_capacity(capacity);
+        while let Some(chunk) = resp.chunk().await? {
+            let len = u64::try_from(body.len() + chunk.len()).unwrap_or(u64::MAX);
+            if len > limit {
+                return Err(McpToolError::ResponseTooLarge {
+                    limit,
+                    total: declared,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(body))
     }
 
     /// The knowledge bases visible to this client's caller, in the order the
@@ -255,6 +320,15 @@ mod tests {
         // not the server's own token — while the surface is still named
         assert!(req.headers().get("authorization").is_none());
         assert_eq!(req.headers().get(SOURCE_HEADER).unwrap(), SOURCE_VALUE);
+    }
+
+    #[test]
+    fn the_read_budget_defaults_to_the_api_body_cap_and_survives_a_token_swap() {
+        let c = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
+        assert_eq!(c.max_read_bytes, DEFAULT_MAX_READ_BYTES);
+        assert_eq!(DEFAULT_MAX_READ_BYTES, 16 * 1024 * 1024);
+        let c = c.with_max_read_bytes(4096);
+        assert_eq!(c.with_token("other").max_read_bytes, 4096);
     }
 
     #[test]

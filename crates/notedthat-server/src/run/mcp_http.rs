@@ -28,7 +28,8 @@ pub(crate) fn build_router(
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<axum::Router> {
     let client = NotedThatClient::new(internal_api_url, &config.api_token)
-        .context("failed to build MCP HTTP API client")?;
+        .context("failed to build MCP HTTP API client")?
+        .with_max_read_bytes(config.mcp_max_read_bytes);
     let mcp_config = McpHttpServiceConfig::new(
         config.mcp_http_allowed_hosts.clone(),
         config.mcp_http_allowed_origins.clone(),

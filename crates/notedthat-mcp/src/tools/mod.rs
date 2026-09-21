@@ -112,7 +112,8 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Read an object by optional range. Accepts byte_start/byte_end for byte ranges or line_start/line_end for line ranges (mutually exclusive). byte_end is exclusive."
+        description = "Read an object, whole or by range: byte_start/byte_end (byte_end exclusive) or line_start/line_end (1-based, inclusive; mutually exclusive with bytes). The text is in content and, with the metadata, in structuredContent, which carries the etag of the version read, the content type, bytes_returned, total_bytes and, for line reads, total_lines with the slice's bounds. Pass that etag as if_match to edit or replace. An object over the server's read budget is refused with the slice arguments to use instead.",
+        output_schema = rmcp::handler::server::common::schema_for_type::<read::ReadResult>()
     )]
     async fn read(
         &self,
@@ -455,6 +456,52 @@ mod resources_shared {
                 "{}: {schema}",
                 tool.name
             );
+        }
+    }
+
+    /// A client that validates `structuredContent` against `outputSchema` must find
+    /// every field the read tool sets — and no other tool claims a shape it does not
+    /// return.
+    #[test]
+    fn the_read_tool_declares_its_structured_content_and_no_other_tool_does() {
+        let tools = NotedThatMcp::tool_router().list_all();
+        let read = tools
+            .iter()
+            .find(|tool| tool.name == "read")
+            .expect("read tool");
+        let schema = read
+            .output_schema
+            .as_ref()
+            .expect("read declares an output schema");
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("object schema");
+        for field in [
+            "text",
+            "etag",
+            "content_type",
+            "bytes_returned",
+            "total_bytes",
+            "byte_start",
+            "byte_end",
+            "total_lines",
+            "line_start",
+            "line_end",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "output schema lacks {field}"
+            );
+        }
+        for tool in &tools {
+            if tool.name != "read" {
+                assert!(
+                    tool.output_schema.is_none(),
+                    "{} declares an output schema it does not honour",
+                    tool.name
+                );
+            }
         }
     }
 

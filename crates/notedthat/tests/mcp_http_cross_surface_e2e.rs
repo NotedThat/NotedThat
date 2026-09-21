@@ -81,6 +81,7 @@ fn test_config_with_mcp_http(
         ],
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }
@@ -133,6 +134,7 @@ fn test_config_with_kbs_and_mcp_http(
         ],
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }
@@ -1252,6 +1254,7 @@ async fn mcp_resources_list_and_read() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     // Given: MCP HTTP and the HTTP API are running over the in-process backends.
     let http_addr = notedthat_api_http::testing::reserve_addr();
@@ -1345,6 +1348,39 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
         updated_content, "hello planet",
         "content should be updated after MCP replace"
     );
+
+    // And over the HTTP transport too, a read's structuredContent names the
+    // version its text came from — the one the replace just produced.
+    let read_response = mcp_call_tool(
+        &client,
+        &mcp_url,
+        2,
+        "read",
+        serde_json::json!({ "kb": "notes", "path": "mcp-replace.md" }),
+    )
+    .await;
+    assert_eq!(
+        read_response["result"]["content"][0]["text"], "hello planet",
+        "{read_response}"
+    );
+    let meta = &read_response["result"]["structuredContent"];
+    let head = client
+        .head(format!(
+            "{http_url}/api/v1/knowledgebases/notes/mcp-replace.md"
+        ))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .send()
+        .await
+        .expect("HTTP HEAD failed");
+    let current_etag = head
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .expect("HEAD carries an ETag")
+        .to_owned();
+    assert_eq!(meta["etag"], current_etag, "{meta}");
+    assert_ne!(meta["etag"], first_etag, "the replace advanced the etag");
+    assert_eq!(meta["total_bytes"], 12, "{meta}");
 
     server_handle.abort();
 }

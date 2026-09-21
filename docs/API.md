@@ -1789,15 +1789,47 @@ Each hit otherwise has the HTTP `SearchHit` fields: `object_key`, `byte_start`, 
 
 #### `read`
 
-Read an object by optional byte range.
+Read an object, whole or by byte range or line range.
 
-**Arguments**: `kb` (string), `path` (string), `byte_start?` (u64, inclusive), `byte_end?` (u64, **exclusive**)
+**Arguments**: `kb` (string), `path` (string), and at most one of:
 
-**Response**: UTF-8 text content of the object (or byte slice)
+- `byte_start?` (u64, inclusive), `byte_end?` (u64, **exclusive**) — a byte slice
+- `line_start?` (u64, 1-based inclusive), `line_end?` (u64, 1-based inclusive) — a line slice; `line_end = line_start - 1` names an insert point and returns an empty slice
+
+**Response**: the text in `content[0].text`, and in `structuredContent` the same text under `text` beside the read's own metadata — from the same HTTP response as the text, never from a separate `list` or `HEAD`, whose answer could describe a newer version. The text is in both halves on purpose: MCP asks that `structuredContent` and `content` be functionally equivalent, and a host that hands the model only the structured half (some do once a tool declares an output schema) must still hand it the document.
+
+```json
+{
+  "text": "# Title\n\n…",
+  "etag": "\"3a2f…\"",
+  "content_type": "text/markdown",
+  "bytes_returned": 150,
+  "total_bytes": 400,
+  "byte_start": 0,
+  "byte_end": 150,
+  "total_lines": 20,
+  "line_start": 1,
+  "line_end": 5
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `text` | The text read — identical to `content[0].text`. |
+| `etag` | The version the text belongs to, verbatim (quoted). Pass it as `if_match` to `edit` or `replace`; a concurrent change is then `precondition_failed` rather than overwritten. |
+| `content_type` | The object's content type. |
+| `bytes_returned` | Bytes in `content` — the slice, not the object. |
+| `total_bytes` | The whole object's size. |
+| `byte_start`, `byte_end` | The returned slice, `byte_end` exclusive. `byte_start` and `total_bytes` come from the header; `byte_end` is `byte_start + bytes_returned`, from the body, because a header's inclusive end cannot spell the empty slice at offset 0 (an insert point before line 1 arrives as `0-0/N`). A full read is `0` and `total_bytes`, set even when the response carried no `Content-Length`. |
+| `total_lines`, `line_start`, `line_end` | Line reads only: the object's line count and the returned lines (1-based, inclusive; `line_end = line_start - 1` for an insert point). `null` on byte and full reads. |
+
+Every field but `bytes_returned` is `null` when the backend did not say — nothing is invented. The tool declares this shape as its `outputSchema`.
 
 **Byte range semantics**: MCP uses zero-based exclusive `byte_end`, while the HTTP `Range` header uses inclusive bounds. The MCP layer converts automatically: `byte_end=10` → `Range: bytes=0-9`.
 
-**Constraints**: `byte_end` requires `byte_start`; `byte_start >= byte_end` is rejected with `invalid_request`.
+**Constraints**: `byte_end` requires `byte_start`; `byte_start >= byte_end` is rejected with `invalid_request`. `line_end` requires `line_start`; `line_start` is at least 1; `line_end < line_start - 1` is rejected. Byte and line arguments together are rejected.
+
+**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB — the API's own body cap, so anything written through the API reads back whole) is refused with `response_too_large`, whose message states the object's size and the budget and names the slice arguments to use instead. A slice within the budget is served. Objects that large arrive over WebDAV or straight into an `fs` tree, never through the API. The budget bounds what one read *fetches*; the text then goes out twice — in `content[0]` and in `structuredContent.text` — so a text read's response is up to about twice the budget, plus JSON escaping: 16 MiB fetched, ~32 MiB out at the default. Size a proxy's response limit against that; the knob is the budget itself.
 
 #### `write`
 
@@ -1880,6 +1912,11 @@ Move/rename an object within a knowledge base. **Non-atomic** in v1: implemented
 
 **Response**: text confirmation or partial-failure error
 
+The copy runs through the MCP process, so the [read budget](#read) bounds a move as well: an object
+over `NOTEDTHAT_MCP_MAX_READ_BYTES` is refused (`invalid params`, message `move: …`) before anything is
+written or deleted, and the message says what to do — raise the budget, or move it over WebDAV,
+whose `MOVE` is server-side. (Sliced reads are no help here; there is no sliced move.)
+
 ### Resources
 
 NotedThat exposes MCP Resources so clients can browse and read objects without calling tools directly. Resources are advertised in the `initialize` response under `capabilities.resources`. There is no `subscribe` or `listChanged` support in v1.
@@ -1925,6 +1962,8 @@ MIME detection by extension:
 
 **Byte ranges** are not available through `resources/read` (which takes only `{ uri }`). Use the `read` tool with `byte_start` and `byte_end` arguments to fetch a slice of an object.
 
+**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB) is refused with `response_too_large`, which points at the `read` tool's slice arguments. The budget is on the bytes fetched; a binary resource is base64-encoded on top of that, so its `blob` is about four thirds of the budget at most. A resource carries its body once (unlike the `read` tool, which carries the text in both halves of its result), so that is the only expansion here.
+
 ### Path Encoding
 
 Object paths are percent-encoded per RFC 3986 before being placed in URLs. The `/` separator within a path is encoded as `%2F`. Example: `docs/rfc/7231.md` → `docs%2Frfc%2F7231.md`.
@@ -1942,6 +1981,7 @@ All MCP errors carry one of these codes:
 | `precondition_failed` | 412 | ETag mismatch (If-Match / If-None-Match) |
 | `payload_too_large` | 413 | Content exceeds server limit (16 MiB) |
 | `range_not_satisfiable` | 416 | Byte range beyond object size |
+| `response_too_large` | — | The object exceeds `NOTEDTHAT_MCP_MAX_READ_BYTES`; the message names the object's size, the budget and the `read` tool's slice arguments. Raised by the MCP server itself, not by the API. |
 | `backend_unavailable` | 503 | S3 or Qdrant unavailable |
 | `internal_error` | 500 | Unexpected server error |
 
