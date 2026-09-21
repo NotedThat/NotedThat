@@ -89,7 +89,9 @@ impl NotedThatMcp {
 
 #[tool_router]
 impl NotedThatMcp {
-    #[tool(description = "List all knowledge bases declared on the server")]
+    #[tool(
+        description = "List the knowledge bases visible to the caller, each with its slug, display name and, when its manifest says what it is for, a description. Read the descriptions before choosing where to search."
+    )]
     async fn list_knowledgebases(
         &self,
         context: RequestContext<RoleServer>,

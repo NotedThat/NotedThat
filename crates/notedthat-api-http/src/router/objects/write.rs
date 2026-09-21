@@ -67,6 +67,10 @@ pub(in crate::router) async fn put_object(
         })));
     }
 
+    // A body for `.notedthat/manifest.json` is checked against what startup
+    // would accept inside `notedthat_write::commit`, where every surface's
+    // write ends (#98, §3.1); the `400` here is `WriteError::InvalidManifest`
+    // mapped like any other write refusal.
     let outcome = notedthat_write::commit(
         state.storage.as_ref(),
         &state.sinks(source),

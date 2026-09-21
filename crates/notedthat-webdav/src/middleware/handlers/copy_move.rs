@@ -150,6 +150,11 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
             return StatusCode::PRECONDITION_FAILED.into_response();
         }
+        // The source is not a manifest startup would accept; nothing was
+        // copied and, on MOVE, the source is untouched (#98).
+        Err(notedthat_write::WriteError::InvalidManifest { message }) => {
+            return (StatusCode::BAD_REQUEST, message).into_response();
+        }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if delete_source {

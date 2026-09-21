@@ -277,6 +277,54 @@ uid; a named volume avoids the question.
 filesystem cannot make `a/b` both a file and a directory, so the second write is refused with an
 error naming the conflict. This is the one place the two backends genuinely differ.
 
+## Knowledge base description
+
+A knowledge base can say what it is for. The manifest's optional `description` is shown, with the
+`display_name`, by `GET /api/v1/knowledgebases` and the MCP `list_knowledgebases` tool, so an agent
+can choose where to search before it searches. `NOTEDTHAT_KBS` stays a list of slugs; the words
+live in the manifest, next to the access rules:
+
+```json
+{
+  "display_name": "Engineering notes",
+  "description": "Design notes, ADRs and meeting minutes of the platform team.",
+  "access": [ … ]
+}
+```
+
+The description is plain metadata written by an operator — never derived from the objects — and
+it is validated at startup like the access rules: one line (no newlines, tabs or other control
+characters), not blank, at most 500 characters. A manifest that breaks those limits stops the
+server booting with a message naming the problem; a manifest without the field is unchanged.
+
+To set it, edit the manifest and restart (policies and descriptions are one startup snapshot):
+
+- `fs` backend: edit `$NOTEDTHAT_FS_ROOT/nt-default-<kb>/.notedthat/manifest.json` in place (the
+  [directory layout](#filesystem-storage-backend) above).
+- `s3` backend: fetch the manifest, edit it, and put it back with the service token — it alone
+  reaches `.notedthat`:
+
+  ```sh
+  curl -H "Authorization: Bearer $TOKEN" \
+       http://localhost:8080/api/v1/knowledgebases/notes/.notedthat/manifest.json > manifest.json
+  # add "description": "…"
+  curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+       --data-binary @manifest.json \
+       http://localhost:8080/api/v1/knowledgebases/notes/.notedthat/manifest.json
+  ```
+
+  The write checks what startup would check — valid JSON, the limits above, the access rules,
+  and that the manifest names this knowledge base — and answers `400 invalid_request` with the
+  same message a refused boot would print, so a typo is found here and not by whoever restarts
+  the server next. The check lives in the shared write path, not in this route: a `PATCH`, a
+  `POST …/replace/`, a WebDAV `PUT`, `COPY` or `MOVE` onto the key (`400`), and so every MCP
+  tool that writes, are refused the same way. What is stored still takes effect at the next
+  restart.
+
+A description is shown exactly when its knowledge base is listed, so it follows the same
+visibility rule as everything else: a caller who holds no grant in a knowledge base is told nothing
+about it.
+
 ## Manifest access rules
 
 Access is configured in each knowledge base's `.notedthat/manifest.json`, not with an environment

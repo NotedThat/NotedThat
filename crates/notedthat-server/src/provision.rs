@@ -3,7 +3,7 @@
 //! See `SPECIFICATIONS.md` §6.12 provisioning steps and D39 (fail-fast startup).
 
 use notedthat_core::{
-    AccessPolicy, Error, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name,
+    AccessPolicy, Error, KbDetails, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name,
     validate_bucket_name,
 };
 use notedthat_indexer::{ProvisionError, QdrantProvisioner};
@@ -11,6 +11,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
+
+/// The startup snapshot of every declared knowledge base's manifest: what the
+/// surfaces may rely on until the next restart (D51).
+#[derive(Debug, Default)]
+pub struct ProvisionedKbs {
+    /// Each knowledge base's validated access rules, keyed by slug.
+    pub access_policies: BTreeMap<String, Arc<AccessPolicy>>,
+    /// Each knowledge base's display name and description, keyed by slug.
+    pub details: BTreeMap<String, KbDetails>,
+}
 
 /// Provision all declared knowledge bases against the storage backend.
 ///
@@ -29,8 +39,8 @@ pub async fn provision_kbs(
     embedder_model: &str,
     embedder_dim: u32,
     embedder_endpoint_hint: Option<&str>,
-) -> Result<BTreeMap<String, Arc<AccessPolicy>>, Error> {
-    let mut access_policies = BTreeMap::new();
+) -> Result<ProvisionedKbs, Error> {
+    let mut snapshot = ProvisionedKbs::default();
     for kb in kbs {
         validate_bucket_name(tenant, kb)?;
 
@@ -122,9 +132,14 @@ pub async fn provision_kbs(
             anonymous = manifest.access.visible_in_listing(&notedthat_core::Principal::Anyone),
             "access policy loaded"
         );
-        access_policies.insert(kb.as_str().to_string(), Arc::new(manifest.access.clone()));
+        snapshot
+            .access_policies
+            .insert(kb.as_str().to_string(), Arc::new(manifest.access.clone()));
+        snapshot
+            .details
+            .insert(kb.as_str().to_string(), manifest.details());
     }
-    Ok(access_policies)
+    Ok(snapshot)
 }
 
 fn provision_error(err: &ProvisionError) -> Error {

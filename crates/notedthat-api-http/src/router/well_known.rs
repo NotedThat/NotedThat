@@ -37,6 +37,7 @@ mod tests {
             storage: Arc::new(InMemoryStorage::default()),
             declared_kbs: Arc::new(BTreeMap::new()),
             access_policies: Arc::new(BTreeMap::new()),
+            kb_details: Arc::new(BTreeMap::new()),
             authenticator: Arc::new(authenticator),
             max_body_size: 1024,
             max_patchable_size: 1024,

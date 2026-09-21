@@ -190,7 +190,7 @@ pub(super) async fn run(
 /// deduplicated so the answer has exactly one group per requested slug.
 async fn select(client: &NotedThatClient, kb: Vec<String>) -> Result<Selection, McpError> {
     if kb.is_empty() {
-        return Ok(Selection::All(client.list_kbs().await?));
+        return Ok(Selection::All(client.list_kb_slugs().await?));
     }
     let mut seen = HashSet::with_capacity(kb.len());
     if let Some(duplicate) = kb.iter().find(|slug| !seen.insert(slug.as_str())) {
@@ -279,6 +279,9 @@ mod tests {
             .and(path("/api/v1/knowledgebases"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "knowledgebases": slugs
+                    .iter()
+                    .map(|slug| serde_json::json!({ "kb_slug": slug, "display_name": slug }))
+                    .collect::<Vec<_>>()
             })))
     }
 

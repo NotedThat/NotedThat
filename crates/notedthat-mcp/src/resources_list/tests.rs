@@ -12,9 +12,12 @@ async fn mount_kbs(server: &MockServer, kbs: &[&str]) {
     Mock::given(method("GET"))
         .and(path("/api/v1/knowledgebases"))
         .and(header("authorization", "Bearer test-token"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"knowledgebases": kbs})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "knowledgebases": kbs
+                .iter()
+                .map(|slug| serde_json::json!({ "kb_slug": slug, "display_name": slug }))
+                .collect::<Vec<_>>()
+        })))
         .mount(server)
         .await;
 }

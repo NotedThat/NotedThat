@@ -218,6 +218,7 @@ mod patch_route {
         let router = build_router(AppState {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
@@ -260,6 +261,7 @@ mod patch_route {
         build_router(AppState {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
@@ -782,6 +784,7 @@ mod line_range_get {
         build_router(AppState {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
@@ -942,6 +945,7 @@ mod tests {
         build_router(AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
@@ -1156,6 +1160,7 @@ mod tests {
         let state = AppState {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
@@ -1247,6 +1252,7 @@ mod tests {
         let state = AppState {
             storage: storage.clone(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,

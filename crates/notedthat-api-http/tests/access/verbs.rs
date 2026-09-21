@@ -5,7 +5,10 @@ use axum::http::{Request, StatusCode};
 use notedthat_core::{Verb, Who};
 use tower::ServiceExt;
 
-use super::fixture::{TOKEN, app, grant, grant_under, json, policy, signed_in_everything};
+use super::fixture::{
+    NOTES_DESCRIPTION, PRIVATE_DESCRIPTION, TOKEN, app, grant, grant_under, json, policy,
+    signed_in_everything,
+};
 
 fn only_notes(
     rules: impl IntoIterator<Item = notedthat_core::AccessRule>,
@@ -43,16 +46,78 @@ async fn a_knowledge_base_is_listed_when_the_caller_holds_any_grant_in_it() {
     // Then
     assert_eq!(anonymous.status(), StatusCode::OK);
     assert_eq!(
-        json(anonymous).await["knowledgebases"],
-        serde_json::json!(["notes"]),
+        listed_slugs(&json(anonymous).await),
+        ["notes"],
         "a knowledge base with no anonymous grant must not be named"
     );
     assert_eq!(authenticated.status(), StatusCode::OK);
     assert_eq!(
-        json(authenticated).await["knowledgebases"],
-        serde_json::json!(["notes", "private"]),
+        listed_slugs(&json(authenticated).await),
+        ["notes", "private"],
         "the credential holder can always find a base to repair its manifest"
     );
+}
+
+#[tokio::test]
+async fn a_description_is_shown_exactly_when_its_knowledge_base_is_listed() {
+    // Given — `notes` grants anonymous reads; `private` has no policy at all.
+    let app = app(only_notes([grant(Who::Anyone, [Verb::Read])])).await;
+
+    // When
+    let anonymous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/knowledgebases")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let authenticated = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/knowledgebases")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    // Then — the description rides on the listing rule (D51): a knowledge base
+    // the caller cannot see contributes no entry at all, so nothing about it
+    // is described, not even a name.
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    assert_eq!(
+        json(anonymous).await["knowledgebases"],
+        serde_json::json!([
+            { "kb_slug": "notes", "display_name": "Notes", "description": NOTES_DESCRIPTION },
+        ]),
+    );
+    assert_eq!(authenticated.status(), StatusCode::OK);
+    assert_eq!(
+        json(authenticated).await["knowledgebases"],
+        serde_json::json!([
+            { "kb_slug": "notes", "display_name": "Notes", "description": NOTES_DESCRIPTION },
+            { "kb_slug": "private", "display_name": "Private", "description": PRIVATE_DESCRIPTION },
+        ]),
+    );
+}
+
+/// The `kb_slug` of each listed entry, in listing order.
+fn listed_slugs(body: &serde_json::Value) -> Vec<String> {
+    body["knowledgebases"]
+        .as_array()
+        .expect("knowledgebases is an array")
+        .iter()
+        .map(|entry| {
+            entry["kb_slug"]
+                .as_str()
+                .expect("each entry names its slug")
+                .to_string()
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -234,7 +299,21 @@ async fn the_credential_holder_can_always_rewrite_the_manifest_that_locked_it_ou
                 .uri("/api/v1/knowledgebases/notes/.notedthat%2Fmanifest.json")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
-                .body(Body::from("{}"))
+                // A manifest startup would accept: the write path validates
+                // what it stores under this key, so the repair has to be a
+                // real manifest, not a placeholder.
+                .body(Body::from(
+                    serde_json::json!({
+                        "notedthat_version": "0.7.2",
+                        "manifest_version": 1,
+                        "tenant_slug": "default",
+                        "kb_slug": "notes",
+                        "display_name": "notes",
+                        "created_at": 1_700_000_000,
+                        "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+                    })
+                    .to_string(),
+                ))
                 .expect("request"),
         )
         .await

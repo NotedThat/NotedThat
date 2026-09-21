@@ -131,23 +131,72 @@ impl NotedThatClient {
         req.header(SOURCE_HEADER, SOURCE_VALUE)
     }
 
-    /// The slugs of the knowledge bases visible to this client's caller, in
-    /// the order the API lists them: `GET /api/v1/knowledgebases`.
+    /// The knowledge bases visible to this client's caller, in the order the
+    /// API lists them: `GET /api/v1/knowledgebases`.
     ///
     /// Shared by `list_knowledgebases`, `resources/list` and a `search` with
     /// no `kb` so that all three discover the same set.
-    pub(crate) async fn list_kbs(&self) -> Result<Vec<String>, McpToolError> {
+    pub(crate) async fn list_kbs(&self) -> Result<Vec<KbSummary>, McpToolError> {
+        /// An entry as this server spells it: an object since #98, a bare
+        /// slug before. Both binaries ship from one crate, so a newer adapter
+        /// on an older server is a deployment skew rather than a supported
+        /// pairing — but listing is the first thing every client does, and an
+        /// opaque `expected struct KbSummary` is the wrong way to learn it.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Entry {
+            Summary(KbSummary),
+            Slug(String),
+        }
+
         #[derive(Deserialize)]
         struct ListKbsResponse {
-            knowledgebases: Vec<String>,
+            knowledgebases: Vec<Entry>,
         }
 
         let url = self.api_v1_url(&["knowledgebases"]);
         let resp = self.authorized(self.http.get(url)).send().await?;
         let resp = map_response(resp).await?;
         let body: ListKbsResponse = resp.json().await?;
-        Ok(body.knowledgebases)
+        Ok(body
+            .knowledgebases
+            .into_iter()
+            .map(|entry| match entry {
+                Entry::Summary(summary) => summary,
+                Entry::Slug(kb_slug) => KbSummary {
+                    kb_slug,
+                    display_name: None,
+                    description: None,
+                },
+            })
+            .collect())
     }
+
+    /// Only the slugs of [`Self::list_kbs`], for the callers that address
+    /// knowledge bases without describing them.
+    pub(crate) async fn list_kb_slugs(&self) -> Result<Vec<String>, McpToolError> {
+        Ok(self
+            .list_kbs()
+            .await?
+            .into_iter()
+            .map(|kb| kb.kb_slug)
+            .collect())
+    }
+}
+
+/// One entry of `GET /api/v1/knowledgebases` (#98).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct KbSummary {
+    /// The slug every route takes.
+    pub(crate) kb_slug: String,
+    /// The manifest's human-readable name. `None` only for an entry a server
+    /// from before #98 sent as a bare slug; `list_knowledgebases` shows the
+    /// slug then, as the server itself does for a manifest without a name.
+    #[serde(default)]
+    pub(crate) display_name: Option<String>,
+    /// What the knowledge base is for, when its manifest says.
+    #[serde(default)]
+    pub(crate) description: Option<String>,
 }
 
 /// The header that attributes a write to this surface in its change event.

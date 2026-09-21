@@ -104,6 +104,11 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
                 "object stored; change event not published. Retry PUT to publish.",
             )
         }
+        // A manifest startup would refuse is refused here, with the reason,
+        // rather than stored and met as a refused boot later (#98).
+        Err(notedthat_write::WriteError::InvalidManifest { message }) => {
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

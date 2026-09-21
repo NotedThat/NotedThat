@@ -140,10 +140,12 @@ pub fn test_app_state_with_default_channel(
     max_body_size: u64,
 ) -> crate::state::AppState {
     let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
+    let kb_details = Arc::new(notedthat_core::slug_kb_details(&declared_kbs));
     crate::state::AppState {
         storage,
         declared_kbs,
         access_policies: Arc::new(BTreeMap::new()),
+        kb_details,
         authenticator,
         max_body_size,
         max_patchable_size: max_body_size,
@@ -164,11 +166,13 @@ pub fn test_app_state_with_channel(
     tokio::sync::mpsc::Receiver<notedthat_indexer::IndexEvent>,
 ) {
     let (indexer_tx, rx) = tokio::sync::mpsc::channel(1024);
+    let kb_details = Arc::new(notedthat_core::slug_kb_details(&declared_kbs));
     (
         crate::state::AppState {
             storage,
             declared_kbs,
             access_policies: Arc::new(BTreeMap::new()),
+            kb_details,
             authenticator,
             max_body_size,
             max_patchable_size: max_body_size,

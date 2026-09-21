@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::InMemoryStorage;
@@ -35,6 +35,7 @@ fn app_with(
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size,
@@ -441,10 +442,16 @@ async fn list_kbs_returns_declared_kbs() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = response_json(resp).await;
-    let kbs = json["knowledgebases"].as_array().unwrap();
-    assert_eq!(kbs.len(), 2);
-    assert!(kbs.contains(&serde_json::Value::String(KB.to_string())));
-    assert!(kbs.contains(&serde_json::Value::String(KB2.to_string())));
+    // Every entry is an object: the slug the routes take, the manifest's display
+    // name and, when set, its description (#98). The fixture's manifests say
+    // nothing beyond the slug, so no entry carries a description.
+    assert_eq!(
+        json["knowledgebases"],
+        serde_json::json!([
+            { "kb_slug": KB2, "display_name": KB2 },
+            { "kb_slug": KB, "display_name": KB },
+        ])
+    );
 }
 
 #[tokio::test]
@@ -920,6 +927,7 @@ async fn delete_enqueues_tombstone_on_success() {
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
@@ -976,6 +984,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
@@ -1458,6 +1467,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     let app = build_router(AppState {
         storage: Arc::new(InMemoryStorage::default()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
@@ -1503,6 +1513,197 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
             "{method} {uri}: the message must not disclose the bucket: {message}"
         );
     }
+}
+
+/// A manifest is checked when it is written (#98): the `PUT` this project
+/// documents as the way to set a description on the `s3` backend must refuse
+/// what startup would refuse, here and now, rather than store it with a `201`
+/// and stop the next boot.
+#[tokio::test]
+async fn a_manifest_startup_would_refuse_is_refused_at_put() {
+    let a = app();
+    let manifest = |description: &str| {
+        serde_json::json!({
+            "notedthat_version": "0.7.2",
+            "manifest_version": 1,
+            "tenant_slug": "default",
+            "kb_slug": KB,
+            "display_name": "Notes",
+            "description": description,
+            "created_at": 1_700_000_000,
+            "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+        })
+        .to_string()
+    };
+
+    // A description outside the limits: refused, naming the problem.
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest("two\nlines")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("description")),
+        "{json}"
+    );
+
+    // Not a manifest at all: refused the same way.
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from("# not json"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A manifest naming another knowledge base: refused.
+    let other = manifest("fine").replace(&format!("\"kb_slug\":\"{KB}\""), "\"kb_slug\":\"other\"");
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(other),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // The manifest startup would accept is stored.
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest("Engineering notes and ADRs.")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+/// The check lives in the shared write path, not in the `PUT` route, so the
+/// other ways of writing the same key are refused the same way (#98).
+#[tokio::test]
+async fn a_manifest_startup_would_refuse_is_refused_on_every_write_path() {
+    let a = app();
+    let manifest = serde_json::json!({
+        "notedthat_version": "0.7.2",
+        "manifest_version": 1,
+        "tenant_slug": "default",
+        "kb_slug": KB,
+        "display_name": "Notes",
+        "description": "Engineering notes and ADRs.",
+        "created_at": 1_700_000_000,
+        "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+    })
+    .to_string();
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let etag = resp
+        .headers()
+        .get(header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("the stored manifest has an ETag")
+        .to_string();
+
+    // A `PATCH` that lands bytes after the closing brace …
+    let resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"
+                ))
+                .header(auth().0, auth().1)
+                .header("NT-Patch-Mode", "append")
+                .header(header::IF_MATCH, &etag)
+                .body(Body::from("\ntrailing"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("manifest")),
+        "{json}"
+    );
+
+    // … and a replace that puts the description outside the limits.
+    let resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/knowledgebases/{KB}/replace/.notedthat/manifest.json"
+                ))
+                .header(auth().0, auth().1)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::IF_MATCH, &etag)
+                .body(Body::from(
+                    serde_json::json!({
+                        "old_string": "Engineering notes and ADRs.",
+                        "new_string": "two\\nlines",
+                        "replace_all": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("description")),
+        "{json}"
+    );
+
+    // Neither refused write touched the stored manifest.
+    let resp = a
+        .oneshot(authed_request(
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok()),
+        Some(etag.as_str())
+    );
 }
 
 #[tokio::test]

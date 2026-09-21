@@ -285,6 +285,10 @@ cosign verify-blob \
   notedthat-x86_64-unknown-linux-gnu.tar.xz
 ```
 
+Keep the adapter and the server on the same release: they ship from one crate, and an older
+adapter cannot read a newer server's knowledge-base listing (entries are objects since
+descriptions were added, not bare slugs). The other way round works.
+
 The adapter takes `--url`/`--token` flags as well as the `NOTEDTHAT_URL`/`NOTEDTHAT_TOKEN`
 variables, which helps with client configs that pass arguments more easily than environment. See
 [MCP stdio client](CONFIGURATION.md#mcp-stdio-client-notedthat-mcp-stdio).

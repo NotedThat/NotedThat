@@ -39,7 +39,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     .await;
     assert_eq!(
         discovery.json()["knowledgebases"],
-        serde_json::json!([PUBLIC_KB])
+        serde_json::json!([{ "kb_slug": PUBLIC_KB, "display_name": PUBLIC_KB }])
     );
     let browse = wire(
         "HTTP anonymous browse",

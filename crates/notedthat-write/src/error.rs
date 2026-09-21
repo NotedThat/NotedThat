@@ -78,6 +78,15 @@ pub enum WriteError {
         /// Human-readable reason.
         message: String,
     },
+    /// A body written to `.notedthat/manifest.json` is not the manifest startup
+    /// would accept: not a manifest document, naming another knowledge base, or
+    /// outside the limits `KbManifest::validate` enforces. The message is the
+    /// one the refused boot would have printed.
+    #[error("invalid manifest: {message}")]
+    InvalidManifest {
+        /// Human-readable reason, as startup would report it.
+        message: String,
+    },
     /// Replace operation found no occurrence of the requested old string.
     #[error("replace: no match found for old_string")]
     ReplaceNoMatch,

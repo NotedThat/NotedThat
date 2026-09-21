@@ -135,6 +135,7 @@ mod tests {
                     .collect::<notedthat_core::AccessPolicy>(),
                 ),
             )])),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
             max_body_size: 16 * 1024 * 1024,
