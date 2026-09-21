@@ -359,15 +359,29 @@ async fn test13_malformed_json_returns_400_invalid_request() {
 }
 
 #[tokio::test]
-async fn test14_unknown_fields_silently_ignored_returns_200() {
-    let resp = make_app()
-        .oneshot(search_request(r#"{"query":"x","extra":"ignored"}"#))
-        .await
-        .unwrap();
+async fn test14_unknown_fields_return_400_naming_the_key() {
+    // `filters` (plural) is the misspelling #125 was filed over: it used to
+    // be a 200 with the unfiltered result. Inside `filter` the same holds.
+    for (body, key) in [
+        (
+            r#"{"query":"x","filters":{"mime":"text/markdown"}}"#,
+            "filters",
+        ),
+        (
+            r#"{"query":"x","filter":{"mimetype":"text/markdown"}}"#,
+            "mimetype",
+        ),
+    ] {
+        let resp = make_app().oneshot(search_request(body)).await.unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = response_json(resp).await;
-    assert!(json["hits"].is_array());
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+        let json = response_json(resp).await;
+        assert_error_envelope(&json, "invalid_request");
+        assert!(
+            json["message"].as_str().is_some_and(|m| m.contains(key)),
+            "the message names {key}: {json}"
+        );
+    }
 }
 
 #[tokio::test]

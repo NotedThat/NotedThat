@@ -219,6 +219,10 @@ async fn llms_txt_is_plain_text_without_authentication() {
         "/webdav/",
         "Basic",
         "anyone",
+        "\"filter\"",
+        "object_key_prefix",
+        "updated_after",
+        "reciprocal-rank-fusion",
     ] {
         assert!(text.contains(needle), "llms.txt should mention {needle:?}");
     }

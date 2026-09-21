@@ -288,6 +288,60 @@ mod caller_identity {
         app.oneshot(request).await.expect("response").status()
     }
 
+    /// What a client actually receives for a `search` whose arguments carry a
+    /// key the tool does not know. rmcp refuses the call while deserializing
+    /// `Parameters<SearchArgs>`, before the tool runs, and answers it the way
+    /// MCP reports a tool failure: a *result* with `isError: true` whose text
+    /// is rmcp's own message — not a JSON-RPC error, and not the tool's
+    /// `invalid_request` string. `docs/API.md` says so; this pins it.
+    #[tokio::test]
+    async fn an_unknown_search_argument_is_refused_before_the_tool_runs() {
+        // Given — an API that would answer, so a call that got through would
+        // succeed. It must never be reached.
+        let api = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/knowledgebases/notes/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
+            .expect(0)
+            .mount(&api)
+            .await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "search", "arguments": {
+                "kb": ["notes"], "query": "q", "filter": { "mime": "text/markdown" }
+            } },
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "127.0.0.1")
+            .header("authorization", format!("Bearer {SERVICE_TOKEN}"))
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+
+        // When
+        let response = app(&api.uri()).oneshot(request).await.expect("response");
+
+        // Then — a tool error naming the key, and the API untouched.
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json-rpc");
+        assert!(json.get("error").is_none(), "not a JSON-RPC error: {json}");
+        assert_eq!(json["result"]["isError"], true, "{json}");
+        let message = json["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(
+            message.contains("unknown field `filter`") && message.contains("`filters`"),
+            "names the unknown key and the accepted one: {message}"
+        );
+        api.verify().await;
+    }
+
     #[tokio::test]
     async fn a_caller_token_in_the_http_parts_is_forwarded_to_the_api() {
         // Given — the API will only answer alice's own token.

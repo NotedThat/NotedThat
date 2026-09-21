@@ -473,7 +473,7 @@ All tools take `kb` (the slug) where relevant; `search` alone takes `kb` as a li
 | Tool | Purpose |
 |---|---|
 | `list_knowledgebases()` | Returns `[{kb_slug, display_name, description?, perms}]`; in v1 this is every KB declared in `NOTEDTHAT_KBS` |
-| `search(kb[]?, query, filters?, limit?)` | Hybrid search over one or more KBs, one HTTP search per slug (D54); returns `{results: [{kb, hits: [{kb, object_key, byte_start, byte_end, heading_path, score, preview}]}], skipped}` grouped per KB in request order, `limit` per KB, no merged ranking. Omitted `kb` = every KB the caller can see. |
+| `search(kb[]?, query, filters?, limit?)` | Hybrid search over one or more KBs, one HTTP search per slug (D54); `filters` is the HTTP body's `filter`, all seven fields, and both bodies refuse unknown keys (#125); returns `{results: [{kb, hits: [{kb, object_key, byte_start, byte_end, heading_path, score, preview}]}], skipped}` grouped per KB in request order, `limit` per KB, no merged ranking. Omitted `kb` = every KB the caller can see. |
 | `read(kb, path, byte_start?, byte_end?, line_start?, line_end?)` | Byte-range or line-range read of an object. `byte_*` and `line_*` args are mutually exclusive; provide one pair or omit both for a full read. |
 | `write(kb, path, content, if_match?, if_none_match?)` | Create/update object |
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
@@ -586,7 +586,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 
 #### List/search pagination
 - `list`: lexicographic S3 object order. Default limit `100`, max `1000`. Cursor is opaque and maps to the backend continuation token.
-- `search`: top-k only in v1. Default limit `10`, max `50`. No cursor/offset/search pagination. Ordered per D56: score descending, then `object_key`, then `byte_start`.
+- `search`: top-k only in v1. Default limit `10`, max `50`. No cursor/offset/search pagination. Ordered per D56: score descending, then `object_key`, then `byte_start`. The body — `query`, `filter`, `limit`, and `filter`'s seven fields — refuses unknown keys with `400` naming the key, on the HTTP route and on the MCP tool alike: a misspelt key must not be a silently unfiltered page (#125).
 
 #### Indexing queue
 - Write path: S3 commit succeeds first, then enqueue `{kb, object_key, etag, mtime}` onto a bounded in-memory channel.

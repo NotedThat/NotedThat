@@ -1155,6 +1155,11 @@ anonymous capability and the client omits `Authorization` (see [Authentication](
 
 All `filter` fields are optional and AND-composed. `limit` defaults to `10`, is clamped to `[1, 50]`, and a value above 50 is silently clamped (not an error).
 
+An unknown key — at the top level or inside `filter` — is `400 invalid_request`, and the message
+names the key and the accepted ones (`invalid request body: unknown field `filters`, expected one
+of `query`, `filter`, `limit``). Nothing is ignored: the field set is small and stable, and a
+misspelt key answered with the unfiltered result is exactly the confusion #125 was filed over.
+
 **Response body (200 OK)**:
 
 ```json
@@ -1179,7 +1184,7 @@ All `filter` fields are optional and AND-composed. `limit` defaults to `10`, is 
 | Status | `error` code | When |
 |--------|-------------|------|
 | 200 | — | Success. `hits` may be empty. |
-| 400 | `invalid_request` | Missing or blank `query`; malformed JSON; missing or non-`application/json` Content-Type; `limit=0`; malformed slug format. |
+| 400 | `invalid_request` | Missing or blank `query`; malformed JSON; an unknown key at the top level or inside `filter`; missing or non-`application/json` Content-Type; `limit=0`; malformed slug format. |
 | 401 | `unauthorized` | Missing or invalid Bearer token. |
 | 404 | `not_found` | `kb_slug` not declared in `NOTEDTHAT_KBS`. |
 | 413 | `payload_too_large` | Request body exceeds 64 KiB. |
@@ -1198,7 +1203,7 @@ curl -sSf -X POST \
 
 **Notes**:
 
-- **Score semantics**: Search returns top-`limit` hits ordered by descending RRF fusion score. Scores are RRF rank values — higher is better. They are **NOT** probabilities or cosine similarities, are **NOT** comparable across queries or knowledge bases, and should **not** be displayed to users as confidence values.
+- **Score semantics**: Search returns top-`limit` hits ordered by descending RRF fusion score. Scores are RRF rank values — higher is better. They are **NOT** probabilities or cosine similarities, are **NOT** comparable across queries or knowledge bases, and should **not** be displayed to users as confidence values. A non-empty knowledge base returns up to `limit` hits for any query, however unrelated; an empty `hits` array never means "nothing relevant". `/llms.txt` carries this caveat too, so it reaches agents that never see this file (#126).
 
 - **Ordering is deterministic** (D56): equal scores are the normal case with RRF, so hits are ordered by `score` descending, then `object_key` ascending (byte order), then `byte_start` ascending — a total order, since `(object_key, byte_start)` names one chunk. The server retrieves the whole fused candidate set from the vector backend (both retrieval arms in full, at most 500 points) and ranks it itself, so the backend never decides a tie, at the `limit` boundary or anywhere else. For an unchanged index, the same `query`, `limit`, `filter` and credential return a byte-identical `hits` array on every call. The one residual: each retrieval arm is itself a top-k, and a tie *exactly at an arm's edge* can change which candidate enters the set — a much rarer event than a tie among the fused scores, and one that only reaches the response when the arm is shallower than the corpus of near-equal candidates.
 
@@ -1217,6 +1222,14 @@ curl -sSf -X POST \
 > **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
+
+#### Upgrade notes (strict search body)
+
+> The search body used to ignore keys it did not know, at the top level and inside `filter`. It
+> now answers `400 invalid_request` naming the key (#125). A client that sent extra keys — most
+> likely `filters` for `filter` — was getting unfiltered results and now gets told; fix the key.
+> The MCP `search` tool is strict the same way, and its `filters` argument gained the four fields
+> it was missing (`object_key_prefix`, `heading_path_prefix`, `updated_after`, `updated_before`).
 
 ---
 
@@ -1725,7 +1738,7 @@ Note: `display_name`, `description`, and `perms` are post-v1 (HTTP list endpoint
 
 Hybrid semantic + keyword search across one or more knowledge bases in a single call.
 
-**Arguments**: `kb?` (array of slugs), `query` (string), `filters?` (object with optional `mime`, `concept_type`, and `tags`), `limit?` (u32). Type matching is exact; tags match any supplied value; different fields are AND-composed.
+**Arguments**: `kb?` (array of slugs), `query` (string), `filters?` (object), `limit?` (u32). `filters` takes exactly the HTTP body's [`filter` fields](#post-apiv1knowledgebaseskb_slugsearch): `object_key_prefix`, `mime`, `concept_type`, `heading_path_prefix`, `updated_after`, `updated_before`, `tags` — AND-composed, each with a description in the tool's input schema. An unknown argument or filter key is refused **before the tool runs**: rmcp fails to deserialize the arguments and answers the way MCP reports a tool failure — a result with `isError: true` whose text is rmcp's message naming the key and the accepted ones (`failed to deserialize parameters: unknown field `filter`, expected one of `kb`, `query`, `filters`, `limit``). It is not a JSON-RPC error and does not carry the tool's `invalid_request:` prefix, so a client matching on that string will not see it. `filter` (singular, the HTTP body's spelling) is the likeliest slip.
 
 - `kb` is always a list, even for one knowledge base: `["whatwg"]`. A bare string is rejected. Slugs come from `list_knowledgebases`; listing a slug twice is `invalid_request`.
 - Omit `kb` (or pass `[]`) to search every knowledge base the caller can see — the same set `list_knowledgebases` returns.

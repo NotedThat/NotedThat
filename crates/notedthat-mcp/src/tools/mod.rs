@@ -99,7 +99,7 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Hybrid search across one or more knowledge bases. kb is a list of slugs (discover them with list_knowledgebases); omit it, or pass [], to search every knowledge base the caller may search. Results are grouped per knowledge base in request order and each group keeps that knowledge base's own ranking; score is a per-knowledge-base rank artifact, not comparable across knowledge bases, so no merged ranking is given. limit is per knowledge base (default 10, max 50). With an explicit list, an unknown or inaccessible slug fails the whole call and is named in the error; with kb omitted, knowledge bases that refuse search are listed under skipped."
+        description = "Hybrid search across one or more knowledge bases. kb is a list of slugs (discover them with list_knowledgebases); omit it, or pass [], to search every knowledge base the caller may search. Results are grouped per knowledge base in request order and each group keeps that knowledge base's own ranking; score is a per-knowledge-base rank artifact, not comparable across knowledge bases, so no merged ranking is given. limit is per knowledge base (default 10, max 50). With an explicit list, an unknown or inaccessible slug fails the whole call and is named in the error; with kb omitted, knowledge bases that refuse search are listed under skipped. An argument or filter key this tool does not know is refused before the tool runs, as a tool error naming the key; the filter's fields are exactly the HTTP search body's."
     )]
     async fn search(
         &self,
