@@ -58,10 +58,9 @@ pub(super) async fn run(
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let body_bytes = get_resp
-        .bytes()
+    let body_bytes = client
+        .read_body_bounded(get_resp)
         .await
-        .map_err(McpToolError::Transport)
         .map_err(McpError::from)?;
 
     let put_url = client.api_v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
