@@ -7,7 +7,9 @@ use bytes::Bytes;
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
-use notedthat_core::{AccessPolicy, ConditionalHeaders, KbSlug, ObjectPath, Storage, Verb, Who};
+use notedthat_core::{
+    AccessPolicy, ConditionalHeaders, KbDetails, KbSlug, ObjectPath, Storage, Verb, Who,
+};
 use tower::ServiceExt;
 
 use super::fixture::{grant_under, json, listed_keys, policy};
@@ -37,6 +39,10 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
+        kb_details: Arc::new(BTreeMap::from([(
+            "notes".to_string(),
+            KbDetails::from_slug("notes"),
+        )])),
         authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
@@ -217,6 +223,10 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
+        kb_details: Arc::new(BTreeMap::from([(
+            "notes".to_string(),
+            KbDetails::from_slug("notes"),
+        )])),
         authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

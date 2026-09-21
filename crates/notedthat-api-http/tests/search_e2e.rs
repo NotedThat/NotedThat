@@ -212,6 +212,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
     let state = AppState {
         storage: Arc::clone(&storage) as Arc<dyn Storage>,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
@@ -245,6 +246,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
     let state = AppState {
         storage: storage as Arc<dyn Storage>,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,

@@ -8,7 +8,7 @@ use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
 use notedthat_core::testing::StubTokenVerifier;
 use notedthat_core::{
-    AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, EventPublisher, KbSlug,
+    AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, EventPublisher, KbDetails, KbSlug,
     KeyPattern, ObjectPath, Storage, Verb, Who,
 };
 use notedthat_indexer::Searcher;
@@ -19,6 +19,10 @@ pub(super) const TOKEN: &str = "test-token-abc";
 pub(super) const ALICE_TOKEN: &str = "jwt-alice";
 /// A bearer the stub verifier resolves to `bob`, in no group at all.
 pub(super) const BOB_TOKEN: &str = "jwt-bob";
+
+/// What the seeded manifests say the two knowledge bases are for (#98).
+pub(super) const NOTES_DESCRIPTION: &str = "Notes with a public prefix and an internal one.";
+pub(super) const PRIVATE_DESCRIPTION: &str = "Nothing here is for anonymous callers.";
 
 /// The credential rules every fixture app uses: the service token, plus a
 /// verifier that vouches for [`ALICE_TOKEN`] and [`BOB_TOKEN`].
@@ -132,6 +136,22 @@ async fn app_with(
     let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
     build_router(AppState {
         storage,
+        kb_details: Arc::new(BTreeMap::from([
+            (
+                "notes".to_string(),
+                KbDetails {
+                    display_name: "Notes".to_string(),
+                    description: Some(NOTES_DESCRIPTION.to_string()),
+                },
+            ),
+            (
+                "private".to_string(),
+                KbDetails {
+                    display_name: "Private".to_string(),
+                    description: Some(PRIVATE_DESCRIPTION.to_string()),
+                },
+            ),
+        ])),
         declared_kbs: Arc::new(declared_kbs),
         access_policies: Arc::new(
             policies

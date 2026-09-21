@@ -27,7 +27,7 @@ pub async fn list_resources(
     client: &NotedThatClient,
     cursor: Option<String>,
 ) -> Result<ListResourcesResult, McpError> {
-    let kbs = client.list_kbs().await?;
+    let kbs = client.list_kb_slugs().await?;
     let Some(position) = start_position(&kbs, cursor)? else {
         return Ok(ListResourcesResult::default());
     };

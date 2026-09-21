@@ -57,7 +57,8 @@ async fn provision_kbs_returns_policy_loaded_from_existing_manifest() {
         Some("http://embedder.example"),
     )
     .await
-    .expect("provisioning succeeds");
+    .expect("provisioning succeeds")
+    .access_policies;
 
     // Then: the validated policy is returned for immutable state sharing.
     assert!(
@@ -138,7 +139,8 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
         None,
     )
     .await
-    .expect("initial provisioning succeeds");
+    .expect("initial provisioning succeeds")
+    .access_policies;
     manifest.access = AccessPolicy::empty();
     storage
         .write_manifest(&kb, &manifest)
@@ -156,7 +158,8 @@ async fn provision_kbs_refreshes_policy_only_when_provisioning_runs_again() {
         None,
     )
     .await
-    .expect("restart provisioning succeeds");
+    .expect("restart provisioning succeeds")
+    .access_policies;
 
     // Then: the old snapshot is stable and only the restarted snapshot observes the edit.
     assert!(
@@ -215,7 +218,8 @@ async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access()
         None,
     )
     .await
-    .expect("provisioning succeeds rather than refusing the old field");
+    .expect("provisioning succeeds rather than refusing the old field")
+    .access_policies;
 
     // Then
     let policy = policies.get("notes").expect("declared KB has a policy");
@@ -228,5 +232,76 @@ async fn a_manifest_still_declaring_public_read_loads_with_no_anonymous_access()
     assert!(
         policy.allows(&Principal::service_token(), Verb::Write, "public.md"),
         "credentialed access must survive the upgrade untouched"
+    );
+}
+
+#[tokio::test]
+async fn provision_kbs_loads_the_description_beside_the_policy() {
+    // Given: a manifest that says what its knowledge base is for (#98).
+    let storage = InMemoryStorage::default();
+    let tenant = TenantSlug::default();
+    let kb = KbSlug::try_new("notes").expect("valid slug");
+    storage.ensure_bucket(&kb).await.expect("bucket created");
+    let mut manifest = KbManifest::new_v1(&tenant, &kb, "Team notes", 1_700_000_000);
+    manifest.description = Some("Meeting minutes and decisions of the platform team.".into());
+    storage
+        .write_manifest(&kb, &manifest)
+        .await
+        .expect("manifest stored");
+
+    // When
+    let provisioned = provision_kbs(
+        &storage,
+        &tenant,
+        std::slice::from_ref(&kb),
+        &provisioner(),
+        "test-model",
+        3,
+        None,
+    )
+    .await
+    .expect("provisioning succeeds");
+
+    // Then: the listing snapshot carries exactly what the manifest said.
+    assert_eq!(
+        provisioned.details.get("notes"),
+        Some(&notedthat_core::KbDetails {
+            display_name: "Team notes".into(),
+            description: Some("Meeting minutes and decisions of the platform team.".into()),
+        })
+    );
+    assert!(provisioned.access_policies.contains_key("notes"));
+}
+
+#[tokio::test]
+async fn provision_kbs_refuses_a_description_outside_its_limits() {
+    // Given: a description that is not the one line the field is for.
+    let storage = InMemoryStorage::default();
+    let tenant = TenantSlug::default();
+    let kb = KbSlug::try_new("notes").expect("valid slug");
+    storage.ensure_bucket(&kb).await.expect("bucket created");
+    let mut manifest = KbManifest::new_v1(&tenant, &kb, "Notes", 1_700_000_000);
+    manifest.description = Some("first line\nsecond line".into());
+    storage
+        .write_manifest(&kb, &manifest)
+        .await
+        .expect("manifest stored");
+
+    // When
+    let result = provision_kbs(
+        &storage,
+        &tenant,
+        std::slice::from_ref(&kb),
+        &provisioner(),
+        "test-model",
+        3,
+        None,
+    )
+    .await;
+
+    // Then: startup stops (D39), exactly as it does for a bad access rule.
+    assert!(
+        result.is_err(),
+        "a description outside its limits must abort startup"
     );
 }

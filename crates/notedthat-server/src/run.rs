@@ -166,18 +166,18 @@ async fn build_infrastructure(
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
     let provisioner = QdrantProvisioner::new(store.clone());
-    let access_policies = Arc::new(
-        provision_kbs(
-            storage.as_ref(),
-            &config.tenant_slug,
-            &kb_list,
-            &provisioner,
-            &config.embedder.model,
-            config.embedder.dimensions,
-            Some(config.embedder.endpoint_url.as_str()),
-        )
-        .await?,
-    );
+    let snapshot = provision_kbs(
+        storage.as_ref(),
+        &config.tenant_slug,
+        &kb_list,
+        &provisioner,
+        &config.embedder.model,
+        config.embedder.dimensions,
+        Some(config.embedder.endpoint_url.as_str()),
+    )
+    .await?;
+    let access_policies = Arc::new(snapshot.access_policies);
+    let kb_details = Arc::new(snapshot.details);
 
     // One authenticator for every surface. The API, the browse pages and MCP
     // accept its bearer credentials; WebDAV additionally accepts the Basic pair.
@@ -233,6 +233,7 @@ async fn build_infrastructure(
         storage: storage.clone(),
         declared_kbs,
         access_policies,
+        kb_details,
         authenticator: authenticator.clone(),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,

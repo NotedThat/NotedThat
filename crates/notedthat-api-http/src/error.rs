@@ -488,6 +488,7 @@ mod tests {
         crate::router::build_router(crate::state::AppState {
             storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: 16 * 1024 * 1024,
@@ -509,6 +510,7 @@ mod tests {
         crate::router::build_router(crate::state::AppState {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: 16 * 1024 * 1024,
@@ -1279,6 +1281,7 @@ mod tests {
             crate::router::build_router(crate::state::AppState {
                 storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                 access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+                kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
                 declared_kbs: Arc::new(kbs),
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
                 max_body_size: 16 * 1024 * 1024,

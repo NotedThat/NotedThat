@@ -7,8 +7,8 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::response::IntoResponse;
-use notedthat_core::{KbSlug, KeyFilter, ListResponse, Storage, StorageError, Verb};
-use serde::Deserialize;
+use notedthat_core::{KbDetails, KbSlug, KeyFilter, ListResponse, Storage, StorageError, Verb};
+use serde::{Deserialize, Serialize};
 
 /// Backend rows examined per storage call while refilling a filtered page.
 ///
@@ -30,6 +30,32 @@ pub(super) struct ListQuery {
     cursor: Option<String>,
 }
 
+/// One entry of `GET /api/v1/knowledgebases`: the slug the routes take, and
+/// the manifest's display name and description so an agent can choose where
+/// to search before it searches (#98).
+#[derive(Serialize)]
+struct KbListEntry {
+    kb_slug: String,
+    display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+impl KbListEntry {
+    fn new(kb_slug: &str, details: Option<&KbDetails>) -> Self {
+        Self {
+            kb_slug: kb_slug.to_string(),
+            display_name: details.map_or_else(|| kb_slug.to_string(), |d| d.display_name.clone()),
+            description: details.and_then(|d| d.description.clone()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct KbListResponse {
+    knowledgebases: Vec<KbListEntry>,
+}
+
 pub(super) async fn list_kbs(
     State(state): State<AppState>,
     req: Request,
@@ -37,26 +63,28 @@ pub(super) async fn list_kbs(
     // Visibility is derived from holding a grant rather than declared by a
     // capability of its own, and it applies to both principals now: a
     // credential no longer implies reach into every declared knowledge base.
+    // The description rides on the same rule: a knowledge base the caller
+    // cannot see contributes no entry, so nothing about it is described.
     let principal = crate::middleware::principal(&req);
-    let slugs: Vec<&str> = state
+    let knowledgebases: Vec<KbListEntry> = state
         .declared_kbs
         .keys()
         .filter(|slug| visible_in_listing(&state, slug, &principal))
-        .map(String::as_str)
+        .map(|slug| KbListEntry::new(slug, state.kb_details.get(slug)))
         .collect();
 
     // An anonymous caller who can see nothing is refused rather than handed an
     // empty array. Both leak the same amount — nothing — but `401` is the
     // truthful answer to "may I look at this deployment": credentials would
     // change it. This preserves the pre-D51 contract for the discovery route.
-    if slugs.is_empty() && principal.is_anonymous() {
+    if knowledgebases.is_empty() && principal.is_anonymous() {
         return Err(ApiErrorResponse {
             error: ApiError::Unauthorized,
             request_id: extract_request_id(&req),
         });
     }
 
-    Ok(Json(serde_json::json!({"knowledgebases": slugs})))
+    Ok(Json(KbListResponse { knowledgebases }))
 }
 
 pub(super) async fn list_objects(

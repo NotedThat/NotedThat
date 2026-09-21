@@ -31,6 +31,11 @@ pub struct KbManifest {
     pub kb_slug: KbSlug,
     /// Human-readable name for the KB.
     pub display_name: String,
+    /// What this knowledge base is for, in one line, for agents choosing
+    /// where to search (#98). Plain metadata written by an operator, never
+    /// derived from the objects; validated by [`KbManifest::validate`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Unix timestamp (seconds) of when this KB was first provisioned.
     pub created_at: i64,
     /// Qdrant collection name (reserved for M4 indexer; optional in M2).
@@ -61,6 +66,7 @@ impl KbManifest {
             tenant_slug: tenant.clone(),
             kb_slug: kb.clone(),
             display_name: display_name.to_string(),
+            description: None,
             created_at,
             qdrant_collection: None,
             embedding: None,
@@ -68,7 +74,11 @@ impl KbManifest {
         }
     }
 
-    /// Validate that this manifest's `manifest_version` is supported.
+    /// Maximum length of `description` in Unicode code points.
+    pub const DESCRIPTION_MAX_CHARS: usize = 500;
+
+    /// Validate that this manifest's `manifest_version` is supported, its
+    /// `description` fits the limits, and its access rules are sound.
     pub fn validate(&self) -> Result<(), Error> {
         if self.manifest_version != Self::CURRENT_VERSION {
             return Err(Error::InvalidInput {
@@ -79,9 +89,83 @@ impl KbManifest {
                 ),
             });
         }
+        if let Some(description) = &self.description {
+            validate_description(description)?;
+        }
         self.access.validate()?;
         Ok(())
     }
+
+    /// The caller-facing facts about this knowledge base: what listings show.
+    #[must_use]
+    pub fn details(&self) -> KbDetails {
+        KbDetails {
+            display_name: self.display_name.clone(),
+            description: self.description.clone(),
+        }
+    }
+}
+
+/// A `description` is an inline label an agent reads before choosing where to
+/// search, so it is one line, non-empty, and bounded. Control characters —
+/// newlines and tabs included — are refused rather than normalised, so the
+/// manifest an operator wrote is exactly what clients see.
+fn validate_description(description: &str) -> Result<(), Error> {
+    if description.trim().is_empty() {
+        return Err(Error::InvalidInput {
+            message: "description must not be empty; omit the field instead".into(),
+        });
+    }
+    if description.chars().count() > KbManifest::DESCRIPTION_MAX_CHARS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "description exceeds {} characters",
+                KbManifest::DESCRIPTION_MAX_CHARS
+            ),
+        });
+    }
+    if description.chars().any(char::is_control) {
+        return Err(Error::InvalidInput {
+            message: "description must be a single line without control characters".into(),
+        });
+    }
+    Ok(())
+}
+
+/// What a listing shows about a knowledge base besides its slug: the
+/// manifest's `display_name` and, when set, its `description`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KbDetails {
+    /// Human-readable name for the KB.
+    pub display_name: String,
+    /// One-line statement of what the knowledge base is for, when the
+    /// manifest carries one.
+    pub description: Option<String>,
+}
+
+impl KbDetails {
+    /// The details of a knowledge base whose manifest says nothing beyond its
+    /// slug: the slug doubles as the display name, as `provision_kbs` writes it.
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Self {
+        Self {
+            display_name: slug.to_string(),
+            description: None,
+        }
+    }
+}
+
+/// The details a deployment gets when no manifest says more than the slug:
+/// what startup provisioning writes for a fresh knowledge base, and the
+/// sensible starting point anywhere a details map has to be built without one.
+#[must_use]
+pub fn slug_kb_details(
+    declared: &std::collections::BTreeMap<String, KbSlug>,
+) -> std::collections::BTreeMap<String, KbDetails> {
+    declared
+        .keys()
+        .map(|slug| (slug.clone(), KbDetails::from_slug(slug)))
+        .collect()
 }
 
 /// A knowledge base as seen by the API layer.
@@ -147,6 +231,7 @@ mod tests {
             tenant_slug: TenantSlug::try_new("default").unwrap(),
             kb_slug: KbSlug::try_new("my-notes").unwrap(),
             display_name: "My Notes".to_string(),
+            description: None,
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: None,
@@ -182,6 +267,7 @@ mod tests {
             tenant_slug: TenantSlug::try_new("default").unwrap(),
             kb_slug: KbSlug::try_new("notes").unwrap(),
             display_name: "Notes".to_string(),
+            description: None,
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: None,
@@ -284,6 +370,7 @@ mod tests {
             tenant_slug: TenantSlug::try_new("default").unwrap(),
             kb_slug: KbSlug::try_new("my-notes").unwrap(),
             display_name: "My Notes".to_string(),
+            description: None,
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: Some(embedding.clone()),
@@ -307,6 +394,7 @@ mod tests {
             tenant_slug: TenantSlug::try_new("default").unwrap(),
             kb_slug: KbSlug::try_new("my-notes").unwrap(),
             display_name: "My Notes".to_string(),
+            description: None,
             created_at: 1_700_000_000_i64,
             qdrant_collection: None,
             embedding: Some(embedding),
@@ -327,5 +415,74 @@ mod tests {
                 .endpoint_url_hint
                 .is_none()
         );
+    }
+
+    fn manifest_with_description(description: Option<&str>) -> KbManifest {
+        let mut manifest = KbManifest::new_v1(
+            &TenantSlug::try_new("default").unwrap(),
+            &KbSlug::try_new("notes").unwrap(),
+            "Notes",
+            1_700_000_000_i64,
+        );
+        manifest.description = description.map(str::to_string);
+        manifest
+    }
+
+    #[test]
+    fn description_round_trips_and_is_omitted_when_absent() {
+        let with = manifest_with_description(Some("Engineering notes, ADRs and minutes."));
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["description"], "Engineering notes, ADRs and minutes.");
+        let restored: KbManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            restored.description.as_deref(),
+            Some("Engineering notes, ADRs and minutes.")
+        );
+        assert_eq!(
+            restored.details(),
+            KbDetails {
+                display_name: "Notes".into(),
+                description: Some("Engineering notes, ADRs and minutes.".into()),
+            }
+        );
+
+        let without = manifest_with_description(None);
+        let json = serde_json::to_value(&without).unwrap();
+        assert!(
+            json.get("description").is_none(),
+            "absent description is not serialised as null"
+        );
+        assert!(without.validate().is_ok());
+        assert_eq!(without.details(), KbDetails::from_slug("Notes"));
+    }
+
+    #[test]
+    fn description_within_limits_is_valid() {
+        let at_limit = "x".repeat(KbManifest::DESCRIPTION_MAX_CHARS);
+        assert!(
+            manifest_with_description(Some(&at_limit))
+                .validate()
+                .is_ok()
+        );
+        // Code points, not bytes: 500 multi-byte characters still fit.
+        let unicode = "é".repeat(KbManifest::DESCRIPTION_MAX_CHARS);
+        assert!(manifest_with_description(Some(&unicode)).validate().is_ok());
+    }
+
+    #[test]
+    fn description_outside_limits_is_refused() {
+        let too_long = "x".repeat(KbManifest::DESCRIPTION_MAX_CHARS + 1);
+        for (case, description) in [
+            ("empty", String::new()),
+            ("whitespace only", "   ".into()),
+            ("too long", too_long),
+            ("newline", "two\nlines".into()),
+            ("tab", "a\tb".into()),
+        ] {
+            let err = manifest_with_description(Some(&description))
+                .validate()
+                .expect_err(case);
+            assert!(matches!(err, Error::InvalidInput { .. }), "{case}: {err:?}");
+        }
     }
 }

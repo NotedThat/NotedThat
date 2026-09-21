@@ -8,8 +8,8 @@ use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
 use notedthat_core::{
-    AccessPolicy, AccessRule, ConditionalHeaders, KbSlug, KeyPattern, ObjectPath, Storage, Verb,
-    Who,
+    AccessPolicy, AccessRule, ConditionalHeaders, KbDetails, KbSlug, KeyPattern, ObjectPath,
+    Storage, Verb, Who,
 };
 use tower::ServiceExt;
 
@@ -87,6 +87,10 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
             ("private".to_string(), private),
         ])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
+        kb_details: Arc::new(BTreeMap::from([
+            ("notes".to_string(), KbDetails::from_slug("notes")),
+            ("private".to_string(), KbDetails::from_slug("private")),
+        ])),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,

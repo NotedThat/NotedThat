@@ -235,10 +235,9 @@ mod caller_identity {
         Mock::given(method("GET"))
             .and(path("/api/v1/knowledgebases"))
             .and(header("authorization", format!("Bearer {bearer}")))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"knowledgebases": ["notes"]})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "knowledgebases": [{ "kb_slug": "notes", "display_name": "notes" }]
+            })))
             .expect(1)
             .mount(&api)
             .await;

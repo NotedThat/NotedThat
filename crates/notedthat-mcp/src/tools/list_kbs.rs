@@ -9,9 +9,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListKbsArgs {}
 
+/// One listed knowledge base: the slug the other tools take, the manifest's
+/// display name and, when the manifest says, what the base is for — so an
+/// agent can choose where to search before it searches (#98).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KbEntry {
     pub kb_slug: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 pub(super) async fn run(client: &NotedThatClient) -> Result<CallToolResult, McpError> {
@@ -19,7 +25,11 @@ pub(super) async fn run(client: &NotedThatClient) -> Result<CallToolResult, McpE
         .list_kbs()
         .await?
         .into_iter()
-        .map(|kb_slug| KbEntry { kb_slug })
+        .map(|kb| KbEntry {
+            kb_slug: kb.kb_slug,
+            display_name: kb.display_name,
+            description: kb.description,
+        })
         .collect();
     Ok(CallToolResult::success(vec![ContentBlock::json(entries)?]))
 }
@@ -43,10 +53,16 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/knowledgebases"))
             .and(header("authorization", "Bearer test-token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"knowledgebases": ["notes", "scratch"]})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "knowledgebases": [
+                    {
+                        "kb_slug": "notes",
+                        "display_name": "Notes",
+                        "description": "Engineering notes and ADRs."
+                    },
+                    { "kb_slug": "scratch", "display_name": "scratch" }
+                ]
+            })))
             .mount(&server)
             .await;
         let c = client(&server.uri());
@@ -59,11 +75,22 @@ mod tests {
         let entries: Vec<KbEntry> = serde_json::from_str(&json_str).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kb_slug, "notes");
+        assert_eq!(entries[0].display_name, "Notes");
+        assert_eq!(
+            entries[0].description.as_deref(),
+            Some("Engineering notes and ADRs.")
+        );
         assert_eq!(entries[1].kb_slug, "scratch");
+        assert_eq!(entries[1].display_name, "scratch");
+        assert_eq!(entries[1].description, None);
+        // An absent description is absent, not `null`: the entry an agent
+        // reads is exactly what the manifest says.
+        let raw: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(raw[1].get("description").is_none());
     }
 
     #[tokio::test]
-    async fn schema_has_only_kb_slug() {
+    async fn schema_names_slug_display_name_and_description() {
         let schema = schemars::schema_for!(KbEntry);
         let schema_json = serde_json::to_value(&schema).unwrap();
         let props = schema_json
@@ -71,10 +98,11 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .unwrap();
         assert!(props.contains_key("kb_slug"));
-        assert!(!props.contains_key("display_name"));
-        assert!(!props.contains_key("description"));
+        assert!(props.contains_key("display_name"));
+        assert!(props.contains_key("description"));
+        // `perms` is what §6.10 promises and v1 does not return.
         assert!(!props.contains_key("perms"));
-        assert_eq!(props.len(), 1);
+        assert_eq!(props.len(), 3);
     }
 
     #[tokio::test]

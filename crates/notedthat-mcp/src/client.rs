@@ -131,15 +131,15 @@ impl NotedThatClient {
         req.header(SOURCE_HEADER, SOURCE_VALUE)
     }
 
-    /// The slugs of the knowledge bases visible to this client's caller, in
-    /// the order the API lists them: `GET /api/v1/knowledgebases`.
+    /// The knowledge bases visible to this client's caller, in the order the
+    /// API lists them: `GET /api/v1/knowledgebases`.
     ///
     /// Shared by `list_knowledgebases`, `resources/list` and a `search` with
     /// no `kb` so that all three discover the same set.
-    pub(crate) async fn list_kbs(&self) -> Result<Vec<String>, McpToolError> {
+    pub(crate) async fn list_kbs(&self) -> Result<Vec<KbSummary>, McpToolError> {
         #[derive(Deserialize)]
         struct ListKbsResponse {
-            knowledgebases: Vec<String>,
+            knowledgebases: Vec<KbSummary>,
         }
 
         let url = self.api_v1_url(&["knowledgebases"]);
@@ -148,6 +148,29 @@ impl NotedThatClient {
         let body: ListKbsResponse = resp.json().await?;
         Ok(body.knowledgebases)
     }
+
+    /// Only the slugs of [`Self::list_kbs`], for the callers that address
+    /// knowledge bases without describing them.
+    pub(crate) async fn list_kb_slugs(&self) -> Result<Vec<String>, McpToolError> {
+        Ok(self
+            .list_kbs()
+            .await?
+            .into_iter()
+            .map(|kb| kb.kb_slug)
+            .collect())
+    }
+}
+
+/// One entry of `GET /api/v1/knowledgebases` (#98).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct KbSummary {
+    /// The slug every route takes.
+    pub(crate) kb_slug: String,
+    /// The manifest's human-readable name.
+    pub(crate) display_name: String,
+    /// What the knowledge base is for, when its manifest says.
+    #[serde(default)]
+    pub(crate) description: Option<String>,
 }
 
 /// The header that attributes a write to this surface in its change event.

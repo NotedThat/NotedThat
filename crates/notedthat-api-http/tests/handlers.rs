@@ -35,6 +35,7 @@ fn app_with(
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size,
@@ -441,10 +442,16 @@ async fn list_kbs_returns_declared_kbs() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = response_json(resp).await;
-    let kbs = json["knowledgebases"].as_array().unwrap();
-    assert_eq!(kbs.len(), 2);
-    assert!(kbs.contains(&serde_json::Value::String(KB.to_string())));
-    assert!(kbs.contains(&serde_json::Value::String(KB2.to_string())));
+    // Every entry is an object: the slug the routes take, the manifest's display
+    // name and, when set, its description (#98). The fixture's manifests say
+    // nothing beyond the slug, so no entry carries a description.
+    assert_eq!(
+        json["knowledgebases"],
+        serde_json::json!([
+            { "kb_slug": KB2, "display_name": KB2 },
+            { "kb_slug": KB, "display_name": KB },
+        ])
+    );
 }
 
 #[tokio::test]
@@ -920,6 +927,7 @@ async fn delete_enqueues_tombstone_on_success() {
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
@@ -976,6 +984,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
