@@ -645,6 +645,17 @@ mod tests {
         let tool_fields: std::collections::BTreeSet<&str> =
             properties.keys().map(String::as_str).collect();
         assert_eq!(tool_fields, api_fields);
+
+        // Names are the readable half; the round trip pins the rest — a type
+        // or serde attribute that differs on one side loses a field, changes
+        // a value or fails to parse, and the JSON does not survive it.
+        let through_tool: SearchFilter =
+            serde_json::from_value(api.clone()).expect("the tool accepts the API's filter");
+        assert_eq!(
+            serde_json::to_value(&through_tool).unwrap(),
+            api,
+            "the tool forwards the API's filter unchanged"
+        );
         for (name, property) in properties {
             assert!(
                 property["description"]
