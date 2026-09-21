@@ -202,11 +202,12 @@ impl NotedThatClient {
     /// Shared by `list_knowledgebases`, `resources/list` and a `search` with
     /// no `kb` so that all three discover the same set.
     pub(crate) async fn list_kbs(&self) -> Result<Vec<KbSummary>, McpToolError> {
-        /// An entry as this server spells it: an object since #98, a bare
-        /// slug before. Both binaries ship from one crate, so a newer adapter
-        /// on an older server is a deployment skew rather than a supported
-        /// pairing — but listing is the first thing every client does, and an
-        /// opaque `expected struct KbSummary` is the wrong way to learn it.
+        /// An entry as the API spells it: an object since #98, a bare slug
+        /// before. This client only ever talks to the server it is mounted in,
+        /// so the bare form is not expected on the wire — but listing is the
+        /// first thing every client does, and tolerating both shapes costs
+        /// nothing while an opaque `expected struct KbSummary` would be the
+        /// wrong way to learn of a listing-shape change.
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Entry {

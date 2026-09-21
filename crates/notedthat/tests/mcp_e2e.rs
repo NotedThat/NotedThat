@@ -198,7 +198,7 @@ async fn mcp_initialize_returns_valid_response() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mcp_tools_list_returns_all_ten() {
+async fn mcp_tools_list_returns_all_eleven() {
     let fixture = start_notedthat_server_fixture().await;
     let mcp = McpSession::connect(&fixture.http_url, fixture.token);
     mcp.session_init().await;
@@ -223,6 +223,7 @@ async fn mcp_tools_list_returns_all_ten() {
         "delete",
         "move",
         "replace",
+        "index_status",
     ]
     .iter()
     .copied()
@@ -235,8 +236,8 @@ async fn mcp_tools_list_returns_all_ten() {
 
     assert_eq!(
         tools.len(),
-        10,
-        "expected exactly 10 tools, got {}: {actual_tools:?}",
+        11,
+        "expected exactly 11 tools, got {}: {actual_tools:?}",
         tools.len()
     );
     assert_eq!(actual_tools, expected_tools, "tool names mismatch");
@@ -742,7 +743,8 @@ async fn mcp_read_carries_the_etag_its_text_belongs_to() {
 /// `NOTEDTHAT_MCP_MAX_READ_BYTES`, set on its `Config` here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_read_over_the_budget_is_redirected_to_slices() {
-    let fixture = start_notedthat_server_fixture_with(|config| config.mcp_max_read_bytes = 64).await;
+    let fixture =
+        start_notedthat_server_fixture_with(|config| config.mcp_max_read_bytes = 64).await;
     let mcp = McpSession::connect(&fixture.http_url, fixture.token);
     mcp.session_init().await;
 
