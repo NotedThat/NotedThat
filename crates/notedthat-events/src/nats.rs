@@ -87,6 +87,8 @@ fn event_subject(event: &ObjectEvent) -> String {
     let kind = match event.kind {
         ObjectEventKind::Written { .. } => "written",
         ObjectEventKind::Deleted => "deleted",
+        ObjectEventKind::Indexed { .. } => "indexed",
+        ObjectEventKind::IndexFailed { .. } => "index_failed",
     };
     format!("{SUBJECT_ROOT}.{}.{kind}", event.kb.as_str())
 }
@@ -301,6 +303,25 @@ mod tests {
             EventSource::Http,
         );
         assert_eq!(event_subject(&deleted), "notedthat.events.notes.deleted");
+        let indexed = ObjectEvent::indexed(
+            kb(),
+            ObjectPath::try_from("a.md").unwrap(),
+            "\"e\"".into(),
+            "text/markdown".into(),
+            2,
+        );
+        assert_eq!(event_subject(&indexed), "notedthat.events.notes.indexed");
+        let failed = ObjectEvent::index_failed(
+            kb(),
+            ObjectPath::try_from("a.md").unwrap(),
+            None,
+            None,
+            "embedder.embed failed".into(),
+        );
+        assert_eq!(
+            event_subject(&failed),
+            "notedthat.events.notes.index_failed"
+        );
     }
 
     #[test]

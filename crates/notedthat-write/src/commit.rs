@@ -796,7 +796,7 @@ mod tests {
                 mime: "text/markdown".into(),
                 mtime: match &event.kind {
                     notedthat_core::ObjectEventKind::Written { mtime, .. } => *mtime,
-                    notedthat_core::ObjectEventKind::Deleted => unreachable!(),
+                    other => unreachable!("a write publishes object.written, got {other:?}"),
                 },
             }
         );
@@ -934,7 +934,7 @@ mod tests {
                 assert_eq!(*size, 7, "size comes from the HEAD after the copy");
                 assert_eq!(mime, "text/markdown");
             }
-            notedthat_core::ObjectEventKind::Deleted => panic!("a copy is a write"),
+            other => panic!("a copy is a write, got {other:?}"),
         }
     }
 }

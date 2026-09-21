@@ -2,11 +2,13 @@
 //! subscriber reads (SPECIFICATIONS.md §6.14, D55).
 //!
 //! An [`ObjectEvent`] says that one key in one knowledge base was written or
-//! deleted, by which surface, and — for a write — what the bytes now look like.
+//! deleted, by which surface, and — for a write — what the bytes now look like;
+//! or, from the indexer, that the key was indexed or failed to index (D64).
 //! The [`EventPublisher`] trait is the seam between the code that knows a change
 //! happened (`notedthat-write` after storage acknowledges; the indexer worker
-//! after re-reading a detected change) and the adapter that keeps the log
-//! (`notedthat-events`: a process-local ring or a `JetStream` stream).
+//! after re-reading a detected change, and again once it has finished with an
+//! object) and the adapter that keeps the log (`notedthat-events`: a
+//! process-local ring or a `JetStream` stream).
 //!
 //! Ids are the adapter's: strictly increasing within one deployment, never
 //! reused, and stable across replicas when the adapter is a shared broker. The
@@ -46,11 +48,13 @@ impl FromStr for EventId {
     }
 }
 
-/// Which surface made the change.
+/// Which surface made the change, or which part of the server reports it.
 ///
 /// Informational: `Mcp` is self-declared by the MCP server's HTTP client and any
 /// client can claim it. `FsWatch` and `Reconcile` are detected changes on the
 /// `fs` backend (D50) and describe what the server found, not who did it.
+/// `Indexer` is the worker reporting the outcome of its own work (D64), never a
+/// change to the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventSource {
@@ -64,6 +68,8 @@ pub enum EventSource {
     FsWatch,
     /// The `fs` backend's startup or on-demand comparison against the index.
     Reconcile,
+    /// The indexer worker, reporting what it did with an object.
+    Indexer,
 }
 
 impl EventSource {
@@ -76,6 +82,7 @@ impl EventSource {
             Self::Mcp => "mcp",
             Self::FsWatch => "fs-watch",
             Self::Reconcile => "reconcile",
+            Self::Indexer => "indexer",
         }
     }
 }
@@ -109,6 +116,41 @@ pub enum ObjectEventKind {
     /// The key no longer exists.
     #[serde(rename = "object.deleted")]
     Deleted,
+    /// The indexer finished an upsert or refresh of the key: `chunks` points
+    /// now represent the bytes stamped `etag`, and a search may find them.
+    ///
+    /// The size and mtime are not repeated: the `object.written` carrying the
+    /// same `etag` already said what the bytes look like, and a subscriber
+    /// correlates the two by that stamp.
+    #[serde(rename = "object.indexed")]
+    Indexed {
+        /// The `ETag` the indexer read with `HEAD` and verified on the stream
+        /// it staged — the version that is in the index.
+        etag: String,
+        /// Content type as `HEAD` reported it.
+        mime: String,
+        /// Points representing the object after this pass.
+        chunks: u32,
+    },
+    /// The indexer gave up on an upsert or refresh of the key
+    /// (`INDEXING_FAILED`); the index does not hold this version.
+    #[serde(rename = "object.index_failed")]
+    IndexFailed {
+        /// The `ETag` `HEAD` reported; absent when the failure came first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        etag: Option<String>,
+        /// Content type as `HEAD` reported it; absent when the failure came
+        /// first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+        /// The pipeline's own error, first line, at most 200 characters — the
+        /// same string the index health view reports (D62). Always set when
+        /// published; the HTTP stream withholds it from a subscriber whose
+        /// `list` grant does not span the whole knowledge base, so a received
+        /// event may lack it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
 }
 
 impl ObjectEventKind {
@@ -118,30 +160,43 @@ impl ObjectEventKind {
         match self {
             Self::Written { .. } => "object.written",
             Self::Deleted => "object.deleted",
+            Self::Indexed { .. } => "object.indexed",
+            Self::IndexFailed { .. } => "object.index_failed",
         }
     }
 
-    /// The content type, for writes.
+    /// The content type, when the event knows one.
     #[must_use]
     pub fn mime(&self) -> Option<&str> {
         match self {
-            Self::Written { mime, .. } => Some(mime),
+            Self::Written { mime, .. } | Self::Indexed { mime, .. } => Some(mime),
+            Self::IndexFailed { mime, .. } => mime.as_deref(),
+            Self::Deleted => None,
+        }
+    }
+
+    /// The `ETag` of the version the event is about, when the event knows one.
+    #[must_use]
+    pub fn etag(&self) -> Option<&str> {
+        match self {
+            Self::Written { etag, .. } | Self::Indexed { etag, .. } => Some(etag),
+            Self::IndexFailed { etag, .. } => etag.as_deref(),
             Self::Deleted => None,
         }
     }
 }
 
-/// One change to one object.
+/// One change to one object, or the indexer's verdict on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectEvent {
     /// The knowledge base.
     pub kb: KbSlug,
     /// The key within it.
     pub object_key: ObjectPath,
-    /// What happened, with the stamp of the bytes for a write.
+    /// What happened, with the stamp of the bytes it concerns.
     #[serde(flatten)]
     pub kind: ObjectEventKind,
-    /// Which surface made or detected the change.
+    /// Which surface made or detected the change, or reports the outcome.
     pub source: EventSource,
     /// When the server published it, RFC 3339 in UTC.
     pub occurred_at: String,
@@ -181,6 +236,47 @@ impl ObjectEvent {
             object_key,
             kind: ObjectEventKind::Deleted,
             source,
+            occurred_at: now_rfc3339(),
+        }
+    }
+
+    /// The indexer's success for one version of the key, stamped now.
+    #[must_use]
+    pub fn indexed(
+        kb: KbSlug,
+        object_key: ObjectPath,
+        etag: String,
+        mime: String,
+        chunks: u32,
+    ) -> Self {
+        Self {
+            kb,
+            object_key,
+            kind: ObjectEventKind::Indexed { etag, mime, chunks },
+            source: EventSource::Indexer,
+            occurred_at: now_rfc3339(),
+        }
+    }
+
+    /// The indexer's failure on the key, stamped now, with whatever `HEAD`
+    /// had established and the bounded summary the health view keeps.
+    #[must_use]
+    pub fn index_failed(
+        kb: KbSlug,
+        object_key: ObjectPath,
+        etag: Option<String>,
+        mime: Option<String>,
+        summary: String,
+    ) -> Self {
+        Self {
+            kb,
+            object_key,
+            kind: ObjectEventKind::IndexFailed {
+                etag,
+                mime,
+                summary: Some(summary),
+            },
+            source: EventSource::Indexer,
             occurred_at: now_rfc3339(),
         }
     }
@@ -376,6 +472,110 @@ mod tests {
     }
 
     #[test]
+    fn an_indexed_event_serialises_to_the_documented_shape() {
+        let mut event = ObjectEvent::indexed(
+            kb(),
+            key("inbox/memo.md"),
+            "\"b71c\"".into(),
+            "text/markdown".into(),
+            3,
+        );
+        event.occurred_at = "2026-09-15T14:33:21Z".into();
+        let json = serde_json::to_value(&event).expect("serialises");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "event": "object.indexed",
+                "kb": "notes",
+                "object_key": "inbox/memo.md",
+                "etag": "\"b71c\"",
+                "mime": "text/markdown",
+                "chunks": 3,
+                "source": "indexer",
+                "occurred_at": "2026-09-15T14:33:21Z",
+            })
+        );
+        let back: ObjectEvent = serde_json::from_value(json).expect("round trips");
+        assert_eq!(back, event);
+        assert_eq!(event.kind.name(), "object.indexed");
+        assert_eq!(event.kind.mime(), Some("text/markdown"));
+        assert_eq!(event.kind.etag(), Some("\"b71c\""));
+    }
+
+    #[test]
+    fn an_index_failure_omits_what_it_does_not_know() {
+        let blind = ObjectEvent::index_failed(
+            kb(),
+            key("a.md"),
+            None,
+            None,
+            "storage.head_object failed: backend unavailable".into(),
+        );
+        let json = serde_json::to_value(&blind).expect("serialises");
+        assert_eq!(json["event"], "object.index_failed");
+        assert_eq!(json["source"], "indexer");
+        assert!(json.get("etag").is_none());
+        assert!(json.get("mime").is_none());
+        assert_eq!(
+            json["summary"],
+            "storage.head_object failed: backend unavailable"
+        );
+        assert_eq!(blind.kind.mime(), None);
+        assert_eq!(blind.kind.etag(), None);
+
+        let mut stamped = ObjectEvent::index_failed(
+            kb(),
+            key("a.md"),
+            Some("\"e1\"".into()),
+            Some("text/plain".into()),
+            "embedder.embed failed: connection refused".into(),
+        );
+        stamped.occurred_at = "2026-09-15T14:33:22Z".into();
+        let json = serde_json::to_value(&stamped).expect("serialises");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "event": "object.index_failed",
+                "kb": "notes",
+                "object_key": "a.md",
+                "etag": "\"e1\"",
+                "mime": "text/plain",
+                "summary": "embedder.embed failed: connection refused",
+                "source": "indexer",
+                "occurred_at": "2026-09-15T14:33:22Z",
+            })
+        );
+        let back: ObjectEvent = serde_json::from_value(json).expect("round trips");
+        assert_eq!(back, stamped);
+        assert_eq!(stamped.kind.name(), "object.index_failed");
+        assert_eq!(stamped.kind.mime(), Some("text/plain"));
+        assert_eq!(stamped.kind.etag(), Some("\"e1\""));
+    }
+
+    #[test]
+    fn a_withheld_summary_reads_back_as_absent() {
+        // What a subscriber without a whole-base `list` grant receives.
+        let json = serde_json::json!({
+            "event": "object.index_failed",
+            "kb": "notes",
+            "object_key": "a.md",
+            "etag": "\"e1\"",
+            "mime": "text/plain",
+            "source": "indexer",
+            "occurred_at": "2026-09-15T14:33:22Z",
+        });
+        let event: ObjectEvent = serde_json::from_value(json).expect("deserialises");
+        assert_eq!(
+            event.kind,
+            ObjectEventKind::IndexFailed {
+                etag: Some("\"e1\"".into()),
+                mime: Some("text/plain".into()),
+                summary: None,
+            }
+        );
+    }
+
+    #[test]
     fn sources_use_the_documented_spellings() {
         for (source, wire) in [
             (EventSource::Http, "http"),
@@ -383,6 +583,7 @@ mod tests {
             (EventSource::Mcp, "mcp"),
             (EventSource::FsWatch, "fs-watch"),
             (EventSource::Reconcile, "reconcile"),
+            (EventSource::Indexer, "indexer"),
         ] {
             assert_eq!(source.as_str(), wire);
             assert_eq!(serde_json::to_value(source).unwrap(), wire);

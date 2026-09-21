@@ -233,10 +233,7 @@ impl IndexerWorker {
         let Some(events) = &self.events else {
             return;
         };
-        let etag = match &event.kind {
-            notedthat_core::ObjectEventKind::Written { etag, .. } => Some(etag.as_str()),
-            notedthat_core::ObjectEventKind::Deleted => None,
-        };
+        let etag = event.kind.etag();
         if !self.is_news(&event.kb, &event.object_key, etag) {
             return;
         }
