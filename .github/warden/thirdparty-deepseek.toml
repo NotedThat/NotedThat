@@ -67,7 +67,8 @@ maxTurns = 30
 effort = "high"
 
 # MiniMax M3 as the verifier: a third family looking at DeepSeek's
-# findings rather than GPT-OSS, which DeepSeek already verifies, so no
+# findings rather than GPT-OSS (which DeepSeek verifies when that lane
+# runs; it is switched off for now — see warden.yml's header), so no
 # lane grades its own findings (DeepSeek verifying itself let a misread of
 # a diff hunk through on PR #142 at high confidence). It goes through the
 # proxy's MiniMax route (the catalogue step writes both routes into every

@@ -6,7 +6,8 @@
 # is reserved for the other open models.
 #
 # This is the cheap lane: only the two built-in skills. The wide lane (every
-# skill) is the GPT-OSS profile, which has no plan quota.
+# skill) was the GPT-OSS profile, which has no plan quota; it is switched off
+# for now — see the header of .github/workflows/warden.yml.
 #
 version = 1
 
