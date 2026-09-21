@@ -10,6 +10,64 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/NotedThat/NotedThat/compare/v0.7.2...v0.8.0) - 2026-09-21
+
+### Added
+
+- [**breaking**] remove the notedthat-mcp-stdio binary; MCP is streamable HTTP only
+- *(api-http)* expose index health at GET /knowledgebases/{kb}/index; add MCP index_status
+- *(server,mcp-stdio)* NOTEDTHAT_MCP_MAX_READ_BYTES
+- *(mcp)* admit the anonymous caller where the manifests admit one
+- *(api-http)* a manifest is validated when it is written, not only at the next boot
+- *(core)* [**breaking**] carry a description in the knowledge base manifest and list knowledge bases as objects
+- *(indexer)* keep a per-knowledge-base index health record
+- *(mcp)* return the read's own ETag and totals as structured content
+
+### Fixed
+
+- *(api-http)* reconcile counts go only to a caller who may list the whole knowledge base
+- *(search)* [**breaking**] refuse unknown body keys; expose every filter over MCP
+- *(core)* the in-memory storage double refuses an unprovisioned knowledge base
+- *(core)* forbid hyphens in tenant slugs so bucket names are injective
+- *(api-http)* a refused Range header says why
+- *(core)* [**breaking**] reject multi-range byte reads and carry one range through Storage
+- *(storage-s3)* map NoSuchBucket to BucketNotFound
+- *(storage-fs)* an unreadable knowledge-base directory is unavailable, not gone
+- *(storage-fs)* answer a missing knowledge-base directory with BucketNotFound
+- *(indexer)* a reconciliation pass over one prefix says so
+- *(indexer)* pending counts queued and in-flight work, from two monotonic counters
+- *(write)* the manifest is validated wherever its bytes are stored
+- *(api-http)* the failure summary and a pass's scope follow the list grant
+- *(api-http)* a bucket-not-found reached through CoreError names no bucket
+- *(api-http)* a missing bucket's 404 names neither the bucket nor the tenant
+- *(mcp)* an over-budget move says how to move, not how to read
+- *(mcp)* read's slice end comes from the body; structuredContent carries the text
+- *(mcp)* bound every object read by the client's read budget
+- *(mcp)* a newer adapter still lists a server that sends bare slugs
+- *(server,mcp-stdio)* an empty NOTEDTHAT_MCP_MAX_READ_BYTES is the default
+
+### Other
+
+- rebase over #153–#157 — client_for as the Caller match, the read-budget e2e cases on McpSession, eleven tools
+- *(notedthat)* McpSession builds every request the same way
+- *(mcp)* read metadata end to end; oversized reads are redirected to slices
+- *(mcp)* assert the anonymous listing by slug; renumber the decision to D59
+- *(search)* match backticked field names so the accepted-key assertions are not vacuous
+- renumber the tenant-slug decision to D58
+- *(storage-fs)* a refused write is best-effort, not a guarantee
+- *(storage)* a missing bucket is BucketNotFound on every backend
+- Merge pull request #151 from NotedThat/fix/reject-multi-range-reads
+- dev-dependencies on workspace crates carry no version; name an unpublished crate up front
+- *(write)* the test-support dev-dependency on core carries no version
+- *(api-http)* the missing-bucket fixture from #152 carries index_health
+- *(api-http)* the missing-bucket fixture from #152 carries kb_details
+- *(api-http,webdav)* a manifest startup would refuse is refused on every surface
+- *(api-http)* describe MCP and WebDAV in /llms.txt, not only the HTTP API
+- *(mcp)* say what a client actually receives for an unknown search argument
+- *(mcp)* the filter parity check round-trips the API's filter through the tool type
+- *(server)* cargo install notedthat installs one binary
+- *(server)* the env-key inventory counts NOTEDTHAT_MCP_ANONYMOUS and NOTEDTHAT_MCP_MAX_READ_BYTES
+
 ## [0.7.2](https://github.com/NotedThat/NotedThat/compare/v0.7.1...v0.7.2) - 2026-09-21
 
 ### Other
