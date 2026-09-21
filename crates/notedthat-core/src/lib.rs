@@ -14,6 +14,7 @@ pub mod listing;
 pub mod object_path;
 pub mod preconditions;
 pub mod range;
+pub mod reconcile;
 pub mod search;
 pub mod setting;
 pub mod slug;
