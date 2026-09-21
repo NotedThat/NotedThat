@@ -96,14 +96,20 @@ spawns commands; bridge it with `mcp-remote` as under
     "notedthat": {
       "command": "npx",
       "args": [
-        "-y", "mcp-remote", "http://localhost:8080/mcp",
-        "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+        "-y", "mcp-remote@0.14.3", "http://localhost:8080/mcp",
+        "--header", "Authorization:${AUTH_HEADER}"
       ],
-      "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
+      "env": { "AUTH_HEADER": "Bearer your-token-here" }
     }
   }
 }
 ```
+
+The header argument has no space in it on purpose, and the `Bearer` prefix lives in the
+variable: Claude Desktop on Windows (and Cursor) does not escape spaces inside `args` when it
+spawns `npx`, so `"Authorization: Bearer …"` would arrive split and the header never sent. This
+shape works on every platform; see [Clients that only spawn a command](#clients-that-only-spawn-a-command)
+for the rest of the reasoning.
 
 ## n8n
 
@@ -196,10 +202,10 @@ VS Code also supports OAuth for HTTP servers; the notes under [Claude Code](#cla
       "command": {
         "path": "npx",
         "args": [
-          "-y", "mcp-remote", "https://notes.example.com/mcp",
-          "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+          "-y", "mcp-remote@0.14.3", "https://notes.example.com/mcp",
+          "--header", "Authorization:${AUTH_HEADER}"
         ],
-        "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
+        "env": { "AUTH_HEADER": "Bearer your-token-here" }
       }
     }
   }
@@ -219,17 +225,32 @@ every client:
 {
   "command": "npx",
   "args": [
-    "-y", "mcp-remote", "https://notes.example.com/mcp",
-    "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+    "-y", "mcp-remote@0.14.3", "https://notes.example.com/mcp",
+    "--header", "Authorization:${AUTH_HEADER}"
   ],
-  "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
+  "env": { "AUTH_HEADER": "Bearer your-token-here" }
 }
 ```
 
-Put the token in `env` and reference it from `args` (the `${VAR}` form is `mcp-remote`'s own
-expansion), rather than writing it into the argument list, so it does not show in the process
-list. Against a local server, the URL is `http://localhost:8080/mcp` and nothing needs to be added
-to `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`.
+Three things about that shape, each from `mcp-remote`'s own README:
+
+- **The header argument has no space, and `Bearer` is in the variable.** Cursor and Claude
+  Desktop on Windows do not escape spaces inside `args` when they spawn `npx`, so
+  `"Authorization: Bearer …"` arrives split and the header is never sent. `Authorization:${AUTH_HEADER}`
+  with the whole value in `env` works in every client, so it is the one shape shown. The `${VAR}`
+  expansion is `mcp-remote`'s own, which is also why the token is in `env` rather than in the
+  argument list, where the process list would show it. To keep it out of the arguments entirely,
+  `mcp-remote` also reads headers from a file: `--header-file /path/to/headers` (one
+  `Name: value` per line).
+- **The version is pinned.** `npx -y mcp-remote` would resolve whatever is latest at every launch,
+  and this is the process that carries the bearer to the server; pin it and move it on purpose.
+  The snippets were written against `0.14.3`.
+- **Plain `http://` needs `--allow-http` unless the host is `localhost`.** Against a local server
+  the URL is `http://localhost:8080/mcp` and nothing more is needed — not the flag, and nothing in
+  `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`. A server elsewhere on a LAN without TLS
+  (`http://notes.lan:8080/mcp`) needs `"--allow-http"` added to `args` *and* its hostname in
+  `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`; `mcp-remote` refuses the URL otherwise, and rightly — that is
+  a bearer on the wire in clear.
 
 ## Anything else that speaks MCP
 
