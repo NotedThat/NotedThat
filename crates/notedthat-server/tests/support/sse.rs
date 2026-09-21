@@ -3,6 +3,11 @@
 //! A stream never ends on its own, so every reader here takes a count and a
 //! deadline: it returns once that many event frames (frames carrying `data:`)
 //! have arrived, and panics with what it did get if they never do.
+//!
+//! The indexer publishes its verdict on every write it finishes (D64), at a
+//! moment of its own choosing, so a test about the *write path's* events reads
+//! with [`Subscription::events_where`] and [`change_events`] and lets the
+//! outcomes ride along unasserted.
 
 #![allow(dead_code)]
 
@@ -40,6 +45,16 @@ impl Frame {
     pub fn id_number(&self) -> u64 {
         self.id.as_deref().expect("id").parse().expect("numeric id")
     }
+
+    /// Whether the frame is the indexer's verdict rather than a change.
+    pub fn is_outcome(&self) -> bool {
+        self.source() == "indexer"
+    }
+}
+
+/// The predicate for a reader that wants change events only.
+pub fn change_events(frame: &Frame) -> bool {
+    !frame.is_outcome()
 }
 
 /// Parse every complete frame in `text`; a trailing partial frame is ignored.
@@ -109,14 +124,30 @@ impl Subscription {
     /// Wait until at least `wanted` event frames have arrived since the last
     /// call, and return every new one (comment-only frames are skipped).
     pub async fn events(&mut self, wanted: usize, timeout: Duration) -> Vec<Frame> {
+        self.events_where(wanted, timeout, |_| true).await
+    }
+
+    /// Wait until at least `wanted` event frames passing `keep` have arrived
+    /// since the last call, and return those; frames failing `keep` that
+    /// arrived in the meantime are consumed and dropped.
+    pub async fn events_where(
+        &mut self,
+        wanted: usize,
+        timeout: Duration,
+        keep: impl Fn(&Frame) -> bool,
+    ) -> Vec<Frame> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let all: Vec<Frame> = parse_frames(&self.text)
                 .into_iter()
                 .filter(|f| f.data.is_some())
                 .collect();
-            if all.len() - self.consumed >= wanted {
-                let new = all[self.consumed..].to_vec();
+            let new: Vec<Frame> = all[self.consumed..]
+                .iter()
+                .filter(|f| keep(f))
+                .cloned()
+                .collect();
+            if new.len() >= wanted {
                 self.consumed = all.len();
                 return new;
             }
@@ -137,17 +168,24 @@ impl Subscription {
 
     /// Assert that no event frame arrives within `quiet`.
     pub async fn expect_silence(&mut self, quiet: Duration) {
+        self.expect_silence_where(quiet, |_| true).await;
+    }
+
+    /// Assert that no event frame passing `keep` arrives within `quiet`;
+    /// whatever else arrived is consumed.
+    pub async fn expect_silence_where(&mut self, quiet: Duration, keep: impl Fn(&Frame) -> bool) {
         let deadline = tokio::time::Instant::now() + quiet;
         while let Ok(Some(chunk)) = tokio::time::timeout_at(deadline, self.body.next()).await {
             self.text
                 .push_str(std::str::from_utf8(&chunk.expect("chunk")).expect("utf-8"));
         }
-        let unread: Vec<Frame> = parse_frames(&self.text)
+        let all: Vec<Frame> = parse_frames(&self.text)
             .into_iter()
             .filter(|f| f.data.is_some())
-            .skip(self.consumed)
             .collect();
+        let unread: Vec<&Frame> = all[self.consumed..].iter().filter(|f| keep(f)).collect();
         assert!(unread.is_empty(), "expected no events, got {unread:?}");
+        self.consumed = all.len();
     }
 
     /// Every frame received so far, comments included.

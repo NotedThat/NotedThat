@@ -25,7 +25,7 @@ use notedthat_server::config::{
 use notedthat_server::run::Backends;
 use patch_env::API_TOKEN;
 use reqwest::StatusCode;
-use sse::Subscription;
+use sse::{Subscription, change_events};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
@@ -238,7 +238,9 @@ async fn events_replay_across_replicas_and_a_retained_out_position_is_gone() {
     for key in ["a.md", "b.md", "c.md"] {
         assert_eq!(put(&client, &a, &kb, key).await, StatusCode::CREATED);
     }
-    let seen = on_b.events(3, WAIT).await;
+    // The indexer on A reports each write it finishes on the same stream;
+    // this test is about the change events, so it reads past those.
+    let seen = on_b.events_where(3, WAIT, change_events).await;
     assert_eq!(
         seen.iter().map(sse::Frame::key).collect::<Vec<_>>(),
         vec!["a.md", "b.md", "c.md"]
@@ -259,7 +261,7 @@ async fn events_replay_across_replicas_and_a_retained_out_position_is_gone() {
     );
 
     let mut on_a = Subscription::open(subscribe(&client, &a, &kb, Some(&last_seen)).await);
-    let missed = on_a.events(2, WAIT).await;
+    let missed = on_a.events_where(2, WAIT, change_events).await;
     assert_eq!(
         missed
             .iter()
@@ -268,11 +270,12 @@ async fn events_replay_across_replicas_and_a_retained_out_position_is_gone() {
         vec![("object.written", "d.md"), ("object.deleted", "a.md")]
     );
     assert!(missed[0].id_number() > last_seen.parse::<u64>().unwrap());
-    on_a.expect_silence(Duration::from_millis(500)).await;
+    on_a.expect_silence_where(Duration::from_millis(500), change_events)
+        .await;
 
     // And B gives the identical answer for the same position.
     let mut on_b = Subscription::open(subscribe(&client, &b, &kb, Some(&last_seen)).await);
-    let again = on_b.events(2, WAIT).await;
+    let again = on_b.events_where(2, WAIT, change_events).await;
     assert_eq!(
         again.iter().map(sse::Frame::id_number).collect::<Vec<_>>(),
         missed.iter().map(sse::Frame::id_number).collect::<Vec<_>>()

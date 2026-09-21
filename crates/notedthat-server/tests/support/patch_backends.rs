@@ -41,6 +41,20 @@ pub(super) fn start_runtime_with_events(
     max_patchable_size: u64,
     events: Option<Arc<dyn EventPublisher>>,
 ) -> RuntimeParts {
+    start_runtime_with_backends(
+        max_patchable_size,
+        Backends {
+            events,
+            ..in_memory_backends()
+        },
+    )
+}
+
+/// A runtime over exactly `backends`.
+pub(super) fn start_runtime_with_backends(
+    max_patchable_size: u64,
+    backends: Backends,
+) -> RuntimeParts {
     let listeners = ListenerAddrs {
         http: notedthat_api_http::testing::reserve_addr(),
     };
@@ -50,10 +64,7 @@ pub(super) fn start_runtime_with_events(
     RuntimeParts {
         config,
         kb,
-        backends: Backends {
-            events,
-            ..in_memory_backends()
-        },
+        backends,
     }
 }
 
