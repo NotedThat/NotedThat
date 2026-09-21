@@ -49,10 +49,10 @@ Three logical layers:
 | D25 | MCP tool surface | Each MCP tool takes a `kb` (slug) argument — except `search`, whose `kb` is a list of slugs since D54. In v1, one static token can address every KB declared in `NOTEDTHAT_KBS`. A **`list_knowledgebases()`** discovery tool returns that declared KB list (matching WebDAV root PROPFIND). JWT-filtered visibility is v2. Full list in §6.10. |
 | D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 carries the knowledge base's `access` rules (D51). Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
 | D27 | JWT model (v2, deferred) | **Superseded by D53.** The plan was HS256 self-signed tokens carrying their own ACL. D51 moved the policy into the manifest and D53 delegates identity to an external OIDC issuer, so NotedThat mints nothing and the self-contained-claims design is not needed. |
-| D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; a tiny `notedthat-mcp-stdio` binary is shipped for local MCP use. See §6.11. |
-| D29 | MCP stdio mode | **stdio wraps the HTTP API** — it's a thin MCP-over-stdio → HTTP client adapter. Config = `NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`. No S3/Qdrant deps in this binary. |
+| D28 | Repository layout | **Cargo workspace, multiple crates.** Core / storage / indexer / api-http / webdav / mcp are separate crates; `notedthat-server` binary wires them; the stdio binary that once shipped beside it was removed by D57. See §6.11. |
+| D29 | MCP stdio mode | **Superseded by D57.** stdio wrapped the HTTP API as a thin MCP-over-stdio → HTTP client adapter (`NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`, no S3/Qdrant deps). Removed; the principle it embodied — MCP goes through the HTTP API — survives in the HTTP transport (§5 principle 10). |
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other S3-compatible backends (§8.1) are supported at deployer-choice; NotedThat makes no runtime distinction between them. The one runtime distinction it does make is D49's choice between the S3 and filesystem adapters. |
-| D31 | MCP transport (v1) | **stdio only in v1; streamable HTTP added in M8.** All current MCP clients (Claude Desktop, Cursor, Zed) use stdio locally. HTTP transport is always mounted at `POST /mcp` on the `NOTEDTHAT_LISTEN_ADDR` listener, serving stateless JSON-response MCP with Bearer auth — or, since D59, as the anonymous caller where a manifest grants `anyone` something. Legacy SSE paths return 405. |
+| D31 | MCP transport (v1) | **Streamable HTTP is the one transport (stdio shipped first, then was removed by D57).** HTTP transport is always mounted at `POST /mcp` on the `NOTEDTHAT_LISTEN_ADDR` listener, serving stateless JSON-response MCP with Bearer auth — or, since D59, as the anonymous caller where a manifest grants `anyone` something. Legacy SSE paths return 405. |
 | D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared at startup** — no admin API in v1. `NOTEDTHAT_KBS`, or the `--kbs` flag that overrides it, lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
 | D33 | Frontmatter handling | **OKF-aware indexing, raw storage.** Non-reserved `.md` files with YAML frontmatter and a non-empty string `type` expose concept metadata and tags in search; only their bodies are chunked, with original source offsets. Other documents retain raw Markdown indexing. Unknown fields remain in the original bytes. See [OKF support](docs/OKF.md). |
 | D34 | WebDAV FakeLs | **`[POST-v1]`** Not enabled in v1. Consequence: WebDAV clients that require `LOCK` before `PUT` (macOS Finder for saving, some Office suites, some mobile Files apps) will treat the mount as read-only or refuse to save. Read-only browsing works. API + MCP writes are unaffected. Add `FakeLs` when a real client scenario demands it. |
@@ -84,6 +84,7 @@ Three logical layers:
 | D60 | Knowledge base description | **A manifest may say what its knowledge base is for, and listings show it.** `.notedthat/manifest.json` gains an optional `description`: one line, ≤ 500 Unicode code points, not blank, no control characters — an inline label an agent reads before choosing where to search (#98), so it is bounded and single-line by validation rather than by convention. It is written by an operator, never derived from the objects, and loaded with the access rules as one startup snapshot (D51); a manifest outside the limits refuses startup (D39) and is refused with the same message by every write path that can store it — the shared write path (§3.1) checks a body bound for `.notedthat/manifest.json` on `PUT`, `PATCH`, replace, and WebDAV `PUT`/`COPY`/`MOVE`, so a bad description is met now and not by whoever restarts next — and one without the field is unchanged. `NOTEDTHAT_KBS` stays slug-only: words live in the manifest, next to the rules that govern the same knowledge base. `GET /api/v1/knowledgebases` now returns `[{kb_slug, display_name, description?}]` in place of bare slugs, and MCP `list_knowledgebases` returns the same entries — the shape §6.10 promised, less `perms`. Visibility is the listing rule: a knowledge base the caller cannot see contributes no entry, so nothing about it is described. Amends D25. |
 | D61 | MCP read metadata and read budget | **A `read` answers with the version and totals of the very response its text came from, beside the text; and no MCP object read fetches more than `NOTEDTHAT_MCP_MAX_READ_BYTES`.** `structuredContent` carries the `text` (the same as `content[0]`, so a host that hands the model only the structured half still hands it the document), `etag` (verbatim, quoted — the `if_match` for a following `edit` or `replace`), `content_type`, `bytes_returned`, `total_bytes`, the slice's `byte_start`/`byte_end` (exclusive, as the argument is; the end is `byte_start + bytes_returned` from the body, since a header's inclusive end cannot spell the empty slice at offset 0) and, on line reads, `total_lines` with the slice's lines — parsed from the same GET's `ETag`, `Content-Range` and `X-Content-Range-Bytes`, a `200` being the whole object by definition; anything the backend did not say is `null`, nothing is invented, and a malformed header costs its fields and never the read. The text stays alone in `content`, so a client never has to tell an object from its own description (the promise of #37, which D45 shipped the arguments for and this completes). The tool declares the shape as its `outputSchema`. The budget is on the bytes fetched from the API, default the API body cap (16 MiB) so anything written through the API reads back whole — only a WebDAV upload or a file placed in an `fs` tree (D49/D50) can be larger; a declared `Content-Length` over it is refused before a byte of body is read, and a body without one is read chunk by chunk and refused the moment it crosses, so the server never holds more than the budget plus one chunk. The refusal, `response_too_large`, states the size and the budget and names the slice arguments; it is not the API's `413`, which is about a request body. A binary resource is base64-encoded on top of the budget, and a text `read` carries its text twice (`content` and `structuredContent`), so its response is up to twice the budget; both expansions are documented rather than a second knob. `resources/read` and the copy inside `move` share the bound. Both transports take the setting; the stdio adapter applies it for its own process. Amends D25, D37, D45. |
 | D62 | Per-knowledge-base index health | **Each knowledge base reports one aggregate index state — `healthy`, `indexing`, `backpressured`, `stale` or `failed` — at `GET /api/v1/knowledgebases/{kb}/index` and MCP `index_status(kb)`; job internals stay unexposed.** D38's queue is unchanged: no durable state, no job ids, no retry. What changed is that every producer now stamps a small in-process record (`notedthat_indexer::IndexHealth`) as it goes — the write paths on enqueue and on a queue-full refusal, the worker when an event succeeds or fails, the `fs` bridge when it asks for a rescan and when a pass completes — and one route folds that into a state a caller can act on (#97). `pending` is the difference of two monotonic per-base counters, enqueued and completed, so it covers queued *and* in-flight work (an object being embedded is not searchable, so its base is `indexing` until the outcome lands) and a completion the worker records before the writer's enqueue — the two run on different tasks — is a transient zero rather than a count that never drains. The record is one process's: with several replicas the route answers for whichever took the request, and the docs say so. Precedence, most severe first: `failed` (the most recent outcome for this base failed, or the worker loop has ended — `worker: "stopped"`, which the `INDEX_QUEUE_CLOSED` arm also records instead of silently succeeding), `stale` (`fs` only: a rescan was requested by `FS_WATCH_LOST` or an overflow, or the startup pass has not completed, so changes may be unobserved), `backpressured` (a refusal within 30 s, or the shared queue full right now — full is full for every base), `indexing` (events pending), `healthy`. The view carries counts, timestamps (RFC 3339), the queue's depth and fixed capacity, the failure's one-line summary bounded to 200 characters, and on `fs` the last completed `ReconcileReport`; never bytes, credentials or queue contents. Visibility is the listing rule (D51): whoever would see the base listed may ask, `404`/`403` otherwise as everywhere; the failed object's key is included only for a caller who may `list` it, the failure summary — the pipeline's own first line, which names the endpoint it could not reach and as often the key it was on — only for a caller who may `list` the whole base, and the reconciliation pass's counts — which describe every key — only for such a caller too (its time for everyone). A pass over one prefix reports that prefix as its `scope`, so its counts are not read as the base's; `scope` is a key prefix, so the pass — prefix and counts together — is shown only to a caller who may `list` that prefix. `s3` has no source of `stale` until #96; a watch lost to `max_user_watches` still reports `stale` only until its rescan completes, since the bridge cannot tell the two rescan causes apart. `/readyz` stays process-level (#81). Amends D4, D38; extends D25's tool surface to 11. |
+| D57 | MCP stdio transport removed | **`notedthat-mcp-stdio` is gone; MCP is served over streamable HTTP at `POST /mcp` and nothing else.** The stdio binary existed because the first MCP clients could only spawn a subprocess (D31). Since M8 the server has mounted the HTTP transport itself, every client this project documents speaks it or authenticates through OAuth against it, and the generic `mcp-remote` bridge covers the clients that still only spawn a command — a solved problem outside this codebase. Keeping the binary meant a second transport to document, a second credential pair (`NOTEDTHAT_URL`/`NOTEDTHAT_TOKEN`), a second install story (Makefile, image layer, cargo-dist archive contents) and a `Fallback::ConfiguredToken` path in `notedthat-mcp` that let a call without a request-scoped caller act as the process's own token — exactly the escalation the HTTP transport refuses. The crate, the bin target, the Makefile, the `NOTEDTHAT_URL`/`NOTEDTHAT_TOKEN` settings and the stdio-only e2e suites are removed; the tool-level e2e coverage those suites carried now drives `POST /mcp` on the same in-process server. `docs/CLIENTS.md` shows the `mcp-remote` shape for command-only clients (Claude Desktop without an IdP, Zed). Supersedes D29; amends D28, D31; the workspace is 11 crates. |
 
 ---
 
@@ -95,7 +96,7 @@ Three logical layers:
 - **Multi-tenant-ready scoping**: v1 single tenant/static full access; v2 per-KB + per-prefix ACL
 - **WebDAV** — read-write, `Range`-honoring, unified root
 - **HTTP API** — read-write, byte-range aware
-- **MCP server** — read-write, byte-range aware; v1 stdio wrapper only, HTTP transport post-v1
+- **MCP server** — read-write, byte-range aware, streamable HTTP at `POST /mcp`
 - **Byte-range reads** everywhere; search hits carry `object_key + byte_start + byte_end` for exact re-fetch
 - **Pass-through optimistic concurrency** — conditional PUT headers forwarded to the backend verbatim (D9)
 
@@ -111,8 +112,8 @@ API `PUT`, MCP `write`, and WebDAV `PUT/MOVE/COPY/DELETE/MKCOL` all route throug
                         │             Clients                 │
                         │  HTTP API │  MCP  │  WebDAV         │  ← all read-write
                         │           │       │                 │
-                        │  Static Bearer    ├── stdio wrapper │  ← notedthat-mcp-stdio
-                        │  Basic user/pass ─┘   → HTTP API    │     wraps HTTP API (D29)
+                        │  Bearer   │  ↓    │  Bearer/Basic   │  ← MCP at POST /mcp
+                        │  or OIDC  │  HTTP │                 │     wraps HTTP API
                         └───────┬─────────────────────────────┘
                                 │  auth → resolve KB → ACL check
                         ┌───────▼─────────────────────────────┐
@@ -159,8 +160,8 @@ No SQLite. No app-layer arbiter. No capability probes. The S3 backend is truth a
 6. **One write path, three front ends.** Cross-surface behavior is identical by construction.
 7. **Thin over the backend.** NotedThat does not simulate, compensate for, or hide backend capabilities. It forwards headers and status codes honestly. The deployer picks the backend; we document what each one does (§8.1).
 8. **No local state that isn't derived.** No SQLite arbiters, no token denylist DB, no in-memory ETag mirrors. State lives in S3 (truth) or Qdrant (derived, rebuildable).
-9. **Single binary, single process.** `notedthat-server` hosts HTTP API, WebDAV and MCP in one process. A separate small stdio binary provides MCP by wrapping the HTTP API. The only optional external service beyond storage, Qdrant and the embedder is an event broker (D55), and only when a deployment asks for cross-replica event replay; the default is none.
-10. **MCP wraps the HTTP API, always.** The v1 stdio wrapper, and any future MCP HTTP transport, go through the HTTP API for business logic — never bypass to the storage layer directly. One source of truth for auth, ACL, and validation.
+9. **Single binary, single process.** `notedthat-server` hosts HTTP API, WebDAV and MCP in one process. The only optional external service beyond storage, Qdrant and the embedder is an event broker (D55), and only when a deployment asks for cross-replica event replay; the default is none.
+10. **MCP wraps the HTTP API, always.** The MCP transport goes through the HTTP API for business logic — never bypass to the storage layer directly. One source of truth for auth, ACL, and validation.
 11. **KISS.** When a choice is between "solve it for the user" and "document it and let the deployer choose", we document.
 
 ---
@@ -409,7 +410,7 @@ Every deployment has one static credential of its own, configured from the envir
 tenant.
 
 Env vars:
-- `NOTEDTHAT_API_TOKEN` — the Bearer token every surface accepts. `notedthat-mcp-stdio` uses this value via its own `NOTEDTHAT_TOKEN` env var when calling the API. String comparison, constant-time.
+- `NOTEDTHAT_API_TOKEN` — the Bearer token every surface accepts. String comparison, constant-time.
 - `NOTEDTHAT_WEBDAV_USERNAME` — HTTP Basic username the `WebDAV` surface accepts
 - `NOTEDTHAT_WEBDAV_PASSWORD` — HTTP Basic password the `WebDAV` surface accepts
 - `NOTEDTHAT_KBS` — comma-separated `slug:Display Name` pairs; the server ensures these KBs exist at startup (bucket + Qdrant collection created idempotently)
@@ -453,8 +454,7 @@ operator.
 **Surfaces.** One `Authenticator` resolves every request's principal; the HTTP API, the browse
 pages, `WebDAV` and `/mcp` all accept identity tokens as bearers. MCP acts as its caller: the bearer
 presented to `/mcp` is the bearer the loopback API call carries, so a `group:` rule binds a tool
-call exactly as it binds a direct request. `notedthat-mcp-stdio` is unchanged — whatever
-`NOTEDTHAT_TOKEN` holds, service token or identity token, is what it presents.
+call exactly as it binds a direct request.
 
 **MCP client discovery.** With `NOTEDTHAT_OIDC_RESOURCE` set to the deployment's public URL, the
 server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` and every `401` from
@@ -492,7 +492,7 @@ All tools take `kb` (the slug) where relevant; `search` alone takes `kb` as a li
 
 Resources: expose `notedthat://<kb_slug>/<percent-encoded path>` as MCP Resources for browsable clients — **shipped in M8** (D37). Flat listing with opaque base64 cursor across KB boundaries; no `subscribe` or `listChanged` in v1. Text objects return `TextResourceContents`; non-UTF-8 bytes return `BlobResourceContents`. `resources/read` is bounded by the same read budget as the `read` tool (D61) and, having no slice arguments of its own, refers an oversized object to that tool.
 
-Transports: **stdio in v1** (D31), via the `notedthat-mcp-stdio` binary (D29). **Streamable HTTP added in M8** (D31): `notedthat-server` always mounts `POST /mcp` on its unified listener with Bearer auth, stateless JSON-response mode, and 405 refusal of legacy SSE paths.
+Transports: **streamable HTTP only** (D31, D57): `notedthat-server` always mounts `POST /mcp` on its unified listener with Bearer auth, stateless JSON-response mode, and 405 refusal of legacy SSE paths.
 
 ### 6.11 Repository layout `[DECIDED — D28]`
 
@@ -512,8 +512,7 @@ notedthat/
     ├── notedthat-events/         # object change event log adapters (D55): memory ring, NATS JetStream
     ├── notedthat-mcp/            # MCP tool definitions (rmcp) + HTTP-client-backed impl
     ├── notedthat-server/         # server library — wires all listeners in one process
-    ├── notedthat-mcp-stdio/      # library — MCP over stdio → HTTP API of a running server
-    └── notedthat/                # distribution crate — owns both published binaries
+    └── notedthat/                # distribution crate — owns the published binary
 ```
 
 Dep graph:
@@ -523,10 +522,9 @@ Dep graph:
 - `notedthat-webdav` — depends on core + an HTTP client to the local API
 - `notedthat-mcp` — depends on core (for types) + an HTTP client
 - `notedthat-server` — depends on api-http + webdav + **notedthat-mcp** (deliberate M8 extension, plan §W1.3); runs one listener for HTTP API, WebDAV, and MCP HTTP
-- `notedthat-mcp-stdio` — depends on notedthat-mcp only
-- `notedthat` — no logic; owns the `notedthat-server` and `notedthat-mcp-stdio` binary targets and depends on those two library crates. Nothing depends on it.
+- `notedthat` — no logic; owns the `notedthat-server` binary target and depends on that library crate. Nothing depends on it.
 
-Per D10, `notedthat-server` is the main artifact. Both binaries are built from the `notedthat` crate: they ship together in the same Docker image, in one cargo-dist archive per target, and as a single installable (`cargo install notedthat`). `notedthat-server` and `notedthat-mcp-stdio` are library-only, so exactly one published crate owns each installed binary name.
+Per D10, `notedthat-server` is the main artifact. The binary is built from the `notedthat` crate: it ships in the Docker image, in one cargo-dist archive per target, and as a single installable (`cargo install notedthat`). `notedthat-server` is library-only, so exactly one published crate owns the installed binary name.
 
 ### 6.12 v1 operational contracts `[DECIDED — D38–D43]`
 

@@ -9,21 +9,23 @@ as every other surface. Anything that cannot still has the plain [HTTP API](API.
 This page is setup snippets, one client at a time. The tools themselves are documented under
 [MCP tools](API.md#tools).
 
-## Two ways in
+## One way in
 
-| | Remote (streamable HTTP) | Local (stdio) |
-| --- | --- | --- |
-| What the client talks to | `POST https://notes.example.com/mcp` | `notedthat-mcp-stdio`, a subprocess |
-| Install anything? | No | `cargo install notedthat`, the shell installer, or `make mcp-stdio` — see [Install options](#install-options) |
-| Credential | `Authorization: Bearer …` header, or OAuth via your identity provider | `NOTEDTHAT_TOKEN` (and `NOTEDTHAT_URL`) in the client's config |
-| Use it when | The client runs somewhere else (n8n, Windmill, claude.ai), or supports OAuth | The client runs on your machine and only knows how to spawn a command |
+Every client talks to the same endpoint: `POST https://notes.example.com/mcp`, the streamable
+HTTP transport, with the credential as an `Authorization: Bearer …` header or obtained through
+OAuth from your identity provider. There is nothing to install on the client side. The bearer can
+be `NOTEDTHAT_API_TOKEN` or an identity token from your OIDC provider; the rules that apply are
+the caller's, so an agent holding a restricted identity sees a restricted knowledge base.
 
-Both present the same eleven tools. The bearer can be `NOTEDTHAT_API_TOKEN` or an identity token
-from your OIDC provider; the rules that apply are the caller's, so an agent holding a restricted
-identity sees a restricted knowledge base. A knowledge base that is public — its manifest grants
-`anyone` `read` or `search` — needs no credential over MCP either: leave the header out and the
-client is the anonymous caller, with exactly what `anyone` may do and nothing more
-([D59](../SPECIFICATIONS.md#2-decisions-log)).
+A knowledge base that is public — its manifest grants `anyone` `read` or `search` — needs no
+credential over MCP either: leave the header out and the client is the anonymous caller, with
+exactly what `anyone` may do and nothing more ([D59](../SPECIFICATIONS.md#2-decisions-log)).
+
+A client that can only spawn a command — no HTTP transport of its own — is bridged with
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote), a stdio-to-HTTP adapter that ships
+with the MCP ecosystem rather than with NotedThat; see
+[Clients that only spawn a command](#clients-that-only-spawn-a-command). NotedThat itself no
+longer ships a stdio binary.
 
 **Reaching `/mcp` from another host.** The MCP endpoint answers only to `Host` values it is told
 to expect — the default is loopback. Any client that is not on the same machine needs the public
@@ -41,15 +43,6 @@ Remote, with the service token — one command, then the tools are available in 
 ```sh
 claude mcp add --transport http notedthat https://notes.example.com/mcp \
   --header "Authorization: Bearer $NOTEDTHAT_API_TOKEN"
-```
-
-Local, spawning the stdio adapter:
-
-```sh
-claude mcp add notedthat \
-  --env NOTEDTHAT_URL=http://localhost:8080 \
-  --env NOTEDTHAT_TOKEN="$NOTEDTHAT_API_TOKEN" \
-  -- notedthat-mcp-stdio
 ```
 
 Or commit it to the project so every checkout gets it, in `.mcp.json`:
@@ -91,7 +84,9 @@ HTTPS. The same caveat as for Claude Code applies: a deployment with public know
 not answer `401`, so a connector that has not completed OAuth is served as the anonymous caller;
 `NOTEDTHAT_MCP_ANONYMOUS=never` makes the sign-in mandatory again.
 
-Claude Desktop can also spawn the stdio adapter for a server on your own machine. Edit
+For a server on your own machine without an identity provider, Claude Desktop's config file only
+spawns commands; bridge it with `mcp-remote` as under
+[Clients that only spawn a command](#clients-that-only-spawn-a-command). Edit
 `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
 `%APPDATA%\Claude\claude_desktop_config.json` (Windows) and restart the app:
 
@@ -99,11 +94,12 @@ Claude Desktop can also spawn the stdio adapter for a server on your own machine
 {
   "mcpServers": {
     "notedthat": {
-      "command": "notedthat-mcp-stdio",
-      "env": {
-        "NOTEDTHAT_URL": "http://localhost:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "http://localhost:8080/mcp",
+        "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+      ],
+      "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
     }
   }
 }
@@ -170,22 +166,6 @@ than in the script.
 }
 ```
 
-Local:
-
-```json
-{
-  "mcpServers": {
-    "notedthat": {
-      "command": "notedthat-mcp-stdio",
-      "env": {
-        "NOTEDTHAT_URL": "http://localhost:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
-    }
-  }
-}
-```
-
 ## VS Code
 
 `.vscode/mcp.json` in the workspace, or the user-level equivalent:
@@ -206,25 +186,50 @@ VS Code also supports OAuth for HTTP servers; the notes under [Claude Code](#cla
 
 ## Zed
 
-`~/.config/zed/settings.json`:
+`~/.config/zed/settings.json`. Zed launches context servers as commands, so it goes through the
+`mcp-remote` bridge:
 
 ```json
 {
-  "assistant": {
-    "mcp_servers": {
-      "notedthat": {
-        "command": {
-          "path": "notedthat-mcp-stdio",
-          "env": {
-            "NOTEDTHAT_URL": "http://localhost:8080",
-            "NOTEDTHAT_TOKEN": "your-token-here"
-          }
-        }
+  "context_servers": {
+    "notedthat": {
+      "command": {
+        "path": "npx",
+        "args": [
+          "-y", "mcp-remote", "https://notes.example.com/mcp",
+          "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+        ],
+        "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
       }
     }
   }
 }
 ```
+
+## Clients that only spawn a command
+
+Some clients have no HTTP transport and can only start a subprocess that speaks MCP over stdio.
+NotedThat does not ship such a binary; the endpoint is HTTP, and
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) is the general-purpose bridge — it
+speaks stdio to the client and streamable HTTP to the server, forwards the header you give it,
+and can run the OAuth flow for a deployment with an identity provider. The shape is the same in
+every client:
+
+```json
+{
+  "command": "npx",
+  "args": [
+    "-y", "mcp-remote", "https://notes.example.com/mcp",
+    "--header", "Authorization: Bearer ${NOTEDTHAT_TOKEN}"
+  ],
+  "env": { "NOTEDTHAT_TOKEN": "your-token-here" }
+}
+```
+
+Put the token in `env` and reference it from `args` (the `${VAR}` form is `mcp-remote`'s own
+expansion), rather than writing it into the argument list, so it does not show in the process
+list. Against a local server, the URL is `http://localhost:8080/mcp` and nothing needs to be added
+to `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`.
 
 ## Anything else that speaks MCP
 
@@ -249,8 +254,8 @@ a deployment and told to read that first.
 
 ## Install options
 
-The stdio adapter, `notedthat-mcp-stdio`, ships from the single `notedthat` crate together with
-`notedthat-server`; every route below installs the pair.
+Nothing on the client side. These are the ways to install `notedthat-server` itself, which
+serves `/mcp`; the [README](../README.md) covers running it with Compose.
 
 **Shell installer** (macOS / Linux):
 
@@ -266,12 +271,10 @@ since prebuilt Windows binaries are not published yet):
 cargo install notedthat
 ```
 
-**From a checkout or the container image:**
+**From a checkout:**
 
 ```sh
-make mcp-stdio                         # build from this checkout
-make mcp-stdio-from-image              # extract from notedthat-server:local
-# Override PREFIX=/some/dir or IMAGE=ghcr.io/notedthat/server:tag as needed.
+cargo install --path crates/notedthat --locked
 ```
 
 Every prebuilt binary is cosign-signed with a SLSA L2 build provenance attestation — verify before
@@ -284,12 +287,3 @@ cosign verify-blob \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   notedthat-x86_64-unknown-linux-gnu.tar.xz
 ```
-
-Keep the adapter and the server on the same release: they ship from one crate, and an older
-adapter cannot read a newer server's knowledge-base listing (entries are objects since
-descriptions were added, not bare slugs). The other way round works.
-
-The adapter takes `--url`/`--token` flags as well as the `NOTEDTHAT_URL`/`NOTEDTHAT_TOKEN`
-variables, which helps with client configs that pass arguments more easily than environment, and an
-optional `--mcp-max-read-bytes`/`NOTEDTHAT_MCP_MAX_READ_BYTES` read budget (default 16 MiB). See
-[MCP stdio client](CONFIGURATION.md#mcp-stdio-client-notedthat-mcp-stdio).

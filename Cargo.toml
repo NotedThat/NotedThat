@@ -14,7 +14,6 @@ members = [
   "crates/notedthat-webdav",
   "crates/notedthat-mcp",
   "crates/notedthat-server",
-  "crates/notedthat-mcp-stdio",
   "crates/notedthat",
 ]
 

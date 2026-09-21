@@ -2400,7 +2400,6 @@ dependencies = [
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
- "notedthat-mcp-stdio",
  "notedthat-server",
  "notedthat-storage-s3",
  "reqwest",
@@ -2527,21 +2526,6 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
-]
-
-[[package]]
-name = "notedthat-mcp-stdio"
-version = "0.7.2"
-dependencies = [
- "anyhow",
- "clap",
- "notedthat-core",
- "notedthat-mcp",
- "rmcp",
- "temp-env",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

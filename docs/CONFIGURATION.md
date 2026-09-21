@@ -22,7 +22,7 @@ NOTEDTHAT_LISTEN_ADDR=0.0.0.0:8080 notedthat-server --listen-addr 127.0.0.1:8080
 The flag name is the variable name with the `NOTEDTHAT_` prefix dropped, lowercased, underscores
 turned into dashes: `NOTEDTHAT_S3_ENDPOINT_URL` is `--s3-endpoint-url`, and `EMBEDDING_MODEL` —
 which has no such prefix — is `--embedding-model`. `notedthat-server --help` lists all of them with
-their variables, and `notedthat-mcp-stdio --help` lists its two.
+their variables.
 
 Startup diagnostics name both forms, so an error is actionable whichever one you reached for:
 
@@ -511,8 +511,7 @@ rule removes what the others gave. What no rule can give them is `.notedthat`: t
 the policy, group names included, and only `NOTEDTHAT_API_TOKEN` reads or writes it.
 
 MCP acts as the caller. The bearer presented to `/mcp` is the bearer the server's own API call
-carries, so a tool call is bound by exactly the rules a direct request would be. The stdio adapter
-presents whatever `NOTEDTHAT_TOKEN` holds, service token or identity token.
+carries, so a tool call is bound by exactly the rules a direct request would be.
 
 ### MCP clients
 
@@ -1023,9 +1022,10 @@ The 503 response carries `Retry-After: 5` as a hint (not a guarantee). All three
 
 ## MCP HTTP listener
 
-NotedThat includes a built-in MCP-over-HTTP surface that exposes the same tools and resources as
-the stdio transport. It is always mounted as streamable HTTP at `POST /mcp` on the single
-`NOTEDTHAT_LISTEN_ADDR` listener, alongside the API at `/api/v1` and WebDAV at `/webdav`.
+NotedThat's MCP surface is streamable HTTP, always mounted at `POST /mcp` on the single
+`NOTEDTHAT_LISTEN_ADDR` listener, alongside the API at `/api/v1` and WebDAV at `/webdav`. There
+is no stdio binary; a client that can only spawn a command is bridged with `mcp-remote` (see
+[Connecting clients](CLIENTS.md#clients-that-only-spawn-a-command)).
 
 ### MCP HTTP environment variables
 
@@ -1093,23 +1093,3 @@ NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS=https://mcp.example.com
 NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS=mcp.example.com
 # Reverse proxy terminates TLS and forwards all routes to 127.0.0.1:8080
 ```
-
----
-
-## MCP stdio client (`notedthat-mcp-stdio`)
-
-The `notedthat-mcp-stdio` binary takes every setting either way — `--url`, `--token` and `--mcp-max-read-bytes`, or the variables beside them, with the flag winning. This matters for MCP client configuration files, which often make passing arguments to a child process easier than setting variables for it. It refuses to start if either setting is unsupplied, empty (after trimming whitespace), or if the URL is not a valid http/https URL.
-
-```json
-{ "command": "notedthat-mcp-stdio", "args": ["--url", "http://localhost:8080"], "env": { "NOTEDTHAT_TOKEN": "..." } }
-```
-
-Install it with `cargo install notedthat`, which ships both this binary and `notedthat-server`.
-
-| Variable | Flag | Required | Description |
-|----------|------|----------|-------------|
-| `NOTEDTHAT_URL` | `--url` | Yes | HTTP base URL of the running `notedthat-server` (e.g., `http://localhost:8080`). Trailing slash is stripped automatically. |
-| `NOTEDTHAT_TOKEN` | `--token` | Yes | Bearer token matching the server's `NOTEDTHAT_API_TOKEN`. Whitespace is trimmed; empty-after-trim is rejected. |
-| `NOTEDTHAT_MCP_MAX_READ_BYTES` | `--mcp-max-read-bytes` | No (default 16777216) | Most bytes one object read may fetch from the server; a larger object is refused with `response_too_large` and the `read` tool's slice arguments. Same meaning as the server's setting for the HTTP transport, applied by this process for its own client. Zero is rejected. |
-
-Note: `NOTEDTHAT_TOKEN` (MCP client) is distinct from the server-side `NOTEDTHAT_API_TOKEN`. The MCP client sends `NOTEDTHAT_TOKEN` as a `Bearer` header to the server, which validates it against `NOTEDTHAT_API_TOKEN`.

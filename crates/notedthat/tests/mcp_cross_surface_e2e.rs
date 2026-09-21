@@ -1,12 +1,17 @@
+//! Writes made over MCP reach search, and deletes leave it: the tool surface
+//! and the indexer agree, driven at `POST /mcp` on a real server.
+
 #![allow(dead_code, missing_docs)]
 // allow: SIZE_OK — task requires duplicating the container-backed MCP E2E fixture here.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
+
+#[path = "support/mcp_http.rs"]
+mod mcp_http;
+use mcp_http::McpSession;
 
 /// How long to wait for the server to bind after startup.
 ///
@@ -18,121 +23,6 @@ use tokio::sync::Mutex;
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
-const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
-
-fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
-    let mut child = Command::new(MCP_STDIO_BIN)
-        .env("NOTEDTHAT_URL", url)
-        .env("NOTEDTHAT_TOKEN", token)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn notedthat-mcp-stdio");
-    let stdin = child.stdin.take().expect("child stdin pipe");
-    let stdout = BufReader::new(child.stdout.take().expect("child stdout pipe"));
-    (child, stdin, stdout)
-}
-
-fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: &serde_json::Value) {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::to_string(&req).expect("serialize MCP request")
-    )
-    .expect("write MCP request");
-    stdin.flush().expect("flush MCP request");
-}
-
-fn mcp_response(stdout: &mut BufReader<ChildStdout>, _timeout: Duration) -> serde_json::Value {
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .expect("failed to read from stdout");
-    assert!(!line.trim().is_empty(), "stdout returned empty line");
-    let v: serde_json::Value =
-        serde_json::from_str(line.trim()).unwrap_or_else(|_| panic!("invalid JSON: {line:?}"));
-    assert_eq!(
-        v.get("jsonrpc").and_then(serde_json::Value::as_str),
-        Some("2.0"),
-        "expected JSON-RPC 2.0: {v}"
-    );
-    v
-}
-
-fn mcp_initialize(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-) -> serde_json::Value {
-    mcp_request(
-        stdin,
-        0,
-        "initialize",
-        &serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "test", "version": "0" }
-        }),
-    );
-    mcp_response(stdout, Duration::from_secs(5))
-}
-
-fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
-    let resp = mcp_initialize(stdin, stdout);
-    assert!(resp.get("result").is_some(), "initialize failed: {resp}");
-
-    let notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    });
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::to_string(&notification).expect("serialize initialized notification")
-    )
-    .expect("write initialized notification");
-    stdin.flush().expect("flush initialized notification");
-}
-
-fn mcp_call_tool(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: u64,
-    name: &str,
-    arguments: &serde_json::Value,
-) -> serde_json::Value {
-    mcp_request(
-        stdin,
-        id,
-        "tools/call",
-        &serde_json::json!({
-            "name": name,
-            "arguments": arguments,
-        }),
-    );
-    mcp_response(stdout, Duration::from_secs(5))
-}
-
-fn wait_for_shutdown(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
-    let start = std::time::Instant::now();
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status);
-        }
-        if start.elapsed() > timeout {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 fn unique_phrase(prefix: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -146,8 +36,8 @@ const EMBEDDING_DIM: u32 = 4;
 
 /// Storage, vector store and embedder, all in-process.
 ///
-/// These tests drive the real `notedthat-mcp-stdio` binary against a real
-/// server; only the three external services behind that server are substituted.
+/// These tests drive `POST /mcp` on a real server; only the three external
+/// services behind that server are substituted.
 fn in_memory_backends() -> notedthat_server::run::Backends {
     notedthat_server::run::Backends {
         storage: std::sync::Arc::new(notedthat_api_http::testing::InMemoryStorage::default()),
@@ -271,27 +161,21 @@ fn test_mutex() -> &'static Mutex<()> {
 }
 
 /// Poll MCP search until a hit for `phrase` appears in KB `kb`, or timeout.
-async fn poll_mcp_search(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    kb: &str,
-    phrase: &str,
-    timeout: Duration,
-) -> bool {
+async fn poll_mcp_search(mcp: &McpSession, kb: &str, phrase: &str, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     let mut id = 100_u64;
     while start.elapsed() < timeout {
-        let resp = mcp_call_tool(
-            stdin,
-            stdout,
-            id,
-            "search",
-            &serde_json::json!({
-                "kb": [kb],
-                "query": phrase,
-                "limit": 5,
-            }),
-        );
+        let resp = mcp
+            .call_tool(
+                id,
+                "search",
+                &serde_json::json!({
+                    "kb": [kb],
+                    "query": phrase,
+                    "limit": 5,
+                }),
+            )
+            .await;
         id += 1;
 
         if search_response_contains_phrase(&resp, phrase) {
@@ -303,27 +187,21 @@ async fn poll_mcp_search(
     false
 }
 
-async fn poll_mcp_search_gone(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    kb: &str,
-    phrase: &str,
-    timeout: Duration,
-) -> bool {
+async fn poll_mcp_search_gone(mcp: &McpSession, kb: &str, phrase: &str, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     let mut id = 200_u64;
     while start.elapsed() < timeout {
-        let resp = mcp_call_tool(
-            stdin,
-            stdout,
-            id,
-            "search",
-            &serde_json::json!({
-                "kb": [kb],
-                "query": phrase,
-                "limit": 5,
-            }),
-        );
+        let resp = mcp
+            .call_tool(
+                id,
+                "search",
+                &serde_json::json!({
+                    "kb": [kb],
+                    "query": phrase,
+                    "limit": 5,
+                }),
+            )
+            .await;
         id += 1;
 
         if search_response_hit_count(&resp) == Some(0) {
@@ -372,14 +250,6 @@ fn text_contains_hits(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn shutdown_child(mut child: Child, stdin: ChildStdin) {
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().expect("kill MCP child");
-        child.wait().expect("wait for killed MCP child");
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_write_becomes_searchable_via_mcp_search() {
     // Given: a fresh NotedThat server and MCP client with a unique markdown document.
@@ -387,42 +257,33 @@ async fn mcp_write_becomes_searchable_via_mcp_search() {
     let unique_phrase = unique_phrase("UNIQUE_MCP_CROSS_SURFACE");
     let path = format!("cross-surface-{unique_phrase}.md");
     let content = format!("# Cross-surface test\n{unique_phrase}\nThis document is indexed.");
-    let (child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     // When: MCP writes the document.
-    let write_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": path,
-            "content": content,
-            "mime_type": "text/markdown",
-        }),
-    );
+    let write_resp = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": path,
+                "content": content,
+                "mime_type": "text/markdown",
+            }),
+        )
+        .await;
     assert!(
         write_resp.get("error").is_none(),
         "write failed: {write_resp}"
     );
 
     // Then: MCP search returns that document after the indexer observes the write.
-    let found = poll_mcp_search(
-        &mut stdin,
-        &mut stdout,
-        "notes",
-        &unique_phrase,
-        Duration::from_secs(10),
-    )
-    .await;
+    let found = poll_mcp_search(&mcp, "notes", &unique_phrase, Duration::from_secs(10)).await;
     assert!(
         found,
         "search did not return the written document within 10s"
     );
-
-    shutdown_child(child, stdin);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -432,65 +293,49 @@ async fn mcp_delete_removes_from_search() {
     let unique_phrase = unique_phrase("UNIQUE_DELETE_TEST");
     let path = format!("delete-{unique_phrase}.md");
     let content = format!("# Delete test\n{unique_phrase}");
-    let (child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
-    let write_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": path,
-            "content": content,
-            "mime_type": "text/markdown",
-        }),
-    );
+    let write_resp = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": path,
+                "content": content,
+                "mime_type": "text/markdown",
+            }),
+        )
+        .await;
     assert!(
         write_resp.get("error").is_none(),
         "write failed: {write_resp}"
     );
 
-    let found = poll_mcp_search(
-        &mut stdin,
-        &mut stdout,
-        "notes",
-        &unique_phrase,
-        Duration::from_secs(10),
-    )
-    .await;
+    let found = poll_mcp_search(&mcp, "notes", &unique_phrase, Duration::from_secs(10)).await;
     assert!(
         found,
         "search did not return the written document within 10s"
     );
 
     // When: MCP deletes the document.
-    let delete_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "delete",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": path,
-        }),
-    );
+    let delete_resp = mcp
+        .call_tool(
+            2,
+            "delete",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": path,
+            }),
+        )
+        .await;
     assert!(
         delete_resp.get("error").is_none(),
         "delete failed: {delete_resp}"
     );
 
     // Then: MCP search stops returning hits for the unique phrase.
-    let gone = poll_mcp_search_gone(
-        &mut stdin,
-        &mut stdout,
-        "notes",
-        &unique_phrase,
-        Duration::from_secs(10),
-    )
-    .await;
+    let gone = poll_mcp_search_gone(&mcp, "notes", &unique_phrase, Duration::from_secs(10)).await;
     assert!(gone, "search still returned the deleted document after 10s");
-
-    shutdown_child(child, stdin);
 }

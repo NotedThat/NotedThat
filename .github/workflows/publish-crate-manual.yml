@@ -18,7 +18,6 @@ on:
           - notedthat-webdav
           - notedthat-mcp
           - notedthat-server
-          - notedthat-mcp-stdio
           - notedthat
 
 env:

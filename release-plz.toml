@@ -90,6 +90,5 @@ changelog_include = [
   "notedthat-api-http",
   "notedthat-webdav",
   "notedthat-mcp",
-  "notedthat-mcp-stdio",
   "notedthat-server",
 ]

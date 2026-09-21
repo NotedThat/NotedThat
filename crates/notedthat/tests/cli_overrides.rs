@@ -1,15 +1,14 @@
-//! Subprocess tests for the command line of both shipped binaries.
+//! Subprocess tests for the command line of the shipped binary.
 //!
 //! The unit tests prove the parser resolves a flag over a variable. These prove
-//! it of the binaries an operator actually runs — that the wiring from `argv`
+//! it of the binary an operator actually runs — that the wiring from `argv`
 //! through to a startup diagnostic survives, and that `--help` is reachable.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Resolved by Cargo at compile time: this suite lives in the package that
-/// declares both binaries, so neither path needs runtime guessing.
+/// declares the binary, so the path needs no runtime guessing.
 const SERVER_BIN: &str = env!("CARGO_BIN_EXE_notedthat-server");
-const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 /// A command with every setting cleared, so a variable that happens to be set on
 /// the developer's machine or on CI cannot decide the outcome of a test.
@@ -173,74 +172,4 @@ fn a_removed_setting_given_as_a_flag_names_its_replacement() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("was removed"), "{stderr}");
     assert!(stderr.contains("/mcp"), "{stderr}");
-}
-
-#[test]
-fn mcp_stdio_help_exits_zero_and_names_both_forms() {
-    let output = clean(MCP_STDIO_BIN).arg("--help").output().unwrap();
-    assert!(output.status.success());
-
-    let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("--url"), "{help}");
-    assert!(help.contains("NOTEDTHAT_URL"), "{help}");
-    assert!(help.contains("--token"), "{help}");
-    assert!(help.contains("NOTEDTHAT_TOKEN"), "{help}");
-}
-
-/// The transport announces the URL it resolved before opening stdio, which is
-/// what these two tests read.
-///
-/// Exit status cannot serve instead: with no client on the other end the service
-/// loop ends on a closed connection and exits non-zero, whatever the
-/// configuration was. Reaching the announcement at all is the signal that
-/// configuration was accepted.
-fn resolved_url_announcement(command: &mut Command) -> String {
-    let output = command.stdin(Stdio::null()).output().unwrap();
-    assert!(output.stdout.is_empty(), "stdout must stay clean");
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// Flags alone are enough: an MCP client that can pass arguments but not set
-/// variables for a child process must still be able to launch this.
-#[test]
-fn mcp_stdio_starts_from_flags_with_no_variables_set() {
-    let stderr = resolved_url_announcement(clean(MCP_STDIO_BIN).args([
-        "--url",
-        "http://127.0.0.1:8080",
-        "--token",
-        "flag-token",
-    ]));
-
-    assert!(
-        stderr.contains("notedthat-mcp-stdio starting"),
-        "flags alone must be a valid configuration: {stderr}"
-    );
-    assert!(stderr.contains("http://127.0.0.1:8080"), "{stderr}");
-}
-
-/// The variable here is a scheme the client rejects, so only the flag winning
-/// can get the transport as far as announcing a URL.
-#[test]
-fn an_mcp_stdio_flag_overrides_the_variable_it_mirrors() {
-    let stderr = resolved_url_announcement(
-        clean(MCP_STDIO_BIN)
-            .env("NOTEDTHAT_URL", "ftp://rejected.example.com")
-            .args(["--url", "http://127.0.0.1:8080", "--token", "tok"]),
-    );
-
-    assert!(stderr.contains("http://127.0.0.1:8080"), "{stderr}");
-    assert!(
-        !stderr.contains("ftp://rejected.example.com"),
-        "the variable must not be the one parsed: {stderr}"
-    );
-}
-
-/// Stdout carries JSON-RPC and nothing else, so a parse error must not reach it.
-#[test]
-fn an_mcp_stdio_argument_error_leaves_stdout_empty() {
-    let output = clean(MCP_STDIO_BIN).arg("--nope").output().unwrap();
-
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "stdout must stay clean");
-    assert!(!output.stderr.is_empty(), "the error belongs on stderr");
 }

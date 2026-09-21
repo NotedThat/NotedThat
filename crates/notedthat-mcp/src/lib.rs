@@ -1,5 +1,5 @@
 //! `notedthat-mcp`: MCP tool surface wrapping the `NotedThat` HTTP API.
-//! Consumed by `notedthat-mcp-stdio` and any future MCP HTTP transport.
+//! Served over the streamable HTTP transport by `notedthat-server` at `POST /mcp`.
 
 /// Caller authentication middleware for the MCP HTTP endpoint.
 pub mod auth;

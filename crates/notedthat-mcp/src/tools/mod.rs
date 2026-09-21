@@ -26,64 +26,38 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
-/// What a call runs as when its request carries no [`Caller`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fallback {
-    /// The configured token. Stdio has no request, so there is no bearer to
-    /// forward: the process's own credential is the caller.
-    ConfiguredToken,
-    /// Nothing: the call is refused. Over HTTP a missing [`Caller`] means the
-    /// auth middleware did not see this request — an anonymous caller it
-    /// admitted is marked, not absent — and acting as the configured token
-    /// instead would be exactly the escalation forwarding the caller's
-    /// credential closes.
-    Refuse,
-}
-
 /// MCP tool handler backed by the `NotedThat` HTTP API.
 #[derive(Clone)]
 pub struct NotedThatMcp {
     client: NotedThatClient,
-    fallback: Fallback,
 }
 
 impl NotedThatMcp {
-    /// A handler for the stdio transport: `client`'s token is the caller.
-    pub fn for_stdio(client: NotedThatClient) -> Self {
-        Self {
-            client,
-            fallback: Fallback::ConfiguredToken,
-        }
-    }
-
-    /// A handler for the HTTP transport: every call acts as the bearer the
-    /// auth middleware accepted, and a call that carries none is refused
-    /// rather than run as `client`'s token.
+    /// A handler for the streamable HTTP transport: every call acts as the
+    /// bearer the auth middleware accepted, and a call that carries none is
+    /// refused rather than run as `client`'s token.
     pub fn for_http(client: NotedThatClient) -> Self {
-        Self {
-            client,
-            fallback: Fallback::Refuse,
-        }
+        Self { client }
     }
 
     /// The API client for one call: the caller's own credential when the
     /// request carries one, no credential when the middleware admitted an
-    /// anonymous caller, otherwise whatever the transport's [`Fallback`]
-    /// allows.
+    /// anonymous caller, and a refusal otherwise.
     ///
-    /// Over the streamable HTTP transport rmcp places the request's
-    /// [`axum::http::request::Parts`] — axum extensions included — into the
-    /// call's extensions, and the auth middleware left a [`Caller`] there.
-    /// Over stdio there are no parts.
+    /// rmcp places the request's [`axum::http::request::Parts`] — axum
+    /// extensions included — into the call's extensions, and the auth
+    /// middleware left a [`Caller`] there. A call without one is a request
+    /// the middleware never saw, and acting as the configured token instead
+    /// would be exactly the escalation forwarding the caller's credential
+    /// closes.
     fn client_for(&self, extensions: &Extensions) -> Result<NotedThatClient, McpError> {
         let caller = extensions
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Caller>());
-        match (caller, self.fallback) {
-            (Some(Caller::Bearer(token)), _) => Ok(self.client.with_token(token)),
-            (Some(Caller::Anonymous), _) => Ok(self.client.anonymous()),
-            (None, Fallback::ConfiguredToken) => Ok(self.client.clone()),
-            (None, Fallback::Refuse) => Err(McpToolError::Forbidden.into()),
+        match caller {
+            Some(Caller::Bearer(token)) => Ok(self.client.with_token(token)),
+            Some(Caller::Anonymous) => Ok(self.client.anonymous()),
+            None => Err(McpToolError::Forbidden.into()),
         }
     }
 }
@@ -245,8 +219,7 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
     ///
     /// Without this override the `#[tool_handler]` macro would generate a `get_info` that only
     /// includes `enable_tools()`. Adding `enable_resources()` causes the MCP `initialize` response
-    /// to include `"resources": {}` (no `subscribe`, no `listChanged`) on both the stdio and HTTP
-    /// transports.
+    /// to include `"resources": {}` (no `subscribe`, no `listChanged`).
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             rmcp::model::ServerCapabilities::builder()
@@ -341,19 +314,6 @@ mod client_for {
         // fallback over HTTP
         assert!(forbidden(&refused), "{refused:?}");
     }
-
-    #[test]
-    fn stdio_call_acts_as_the_configured_token() {
-        // Given: a stdio handler and a call without a request, which is
-        // every stdio call
-        let handler = NotedThatMcp::for_stdio(client());
-
-        // When: the client for that call is picked
-        let picked = handler.client_for(&Extensions::new()).unwrap();
-
-        // Then: the configured token is the caller
-        assert_eq!(picked.token.as_deref(), Some("configured"));
-    }
 }
 
 #[cfg(test)]
@@ -379,7 +339,7 @@ mod resources_shared {
     }
 
     fn handler(url: &str) -> NotedThatMcp {
-        NotedThatMcp::for_stdio(client(url))
+        NotedThatMcp::for_http(client(url))
     }
 
     // ── Capability advertisement ─────────────────────────────────────────────

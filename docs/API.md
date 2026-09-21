@@ -1761,16 +1761,13 @@ The MCP (Model Context Protocol) surface wraps the HTTP API described above. It 
 
 ### Transports
 
-NotedThat supports two MCP transports: stdio (M7) and streamable HTTP (M8).
-
-#### stdio transport
-
-MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your MCP client to launch the binary as a subprocess; see [Connecting clients](CLIENTS.md) for setup snippets.
+NotedThat serves MCP over one transport, streamable HTTP. A client that can only spawn a
+subprocess is bridged with `mcp-remote`; see [Connecting clients](CLIENTS.md#clients-that-only-spawn-a-command).
 
 #### Streamable HTTP transport
 
-MCP is also available over HTTP at `POST /mcp` on the unified listener. It is always mounted with
-the API and WebDAV.
+MCP is served over HTTP at `POST /mcp` on the unified listener. It is always mounted with the
+API and WebDAV.
 
 **Endpoint:** `POST /mcp`
 

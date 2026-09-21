@@ -364,9 +364,8 @@ mod caller_identity {
     }
 
     #[test]
-    fn without_http_parts_the_configured_token_is_used() {
-        // Given — a handler built with the service token and no request context
-        // extensions to draw on, which is the stdio transport's situation.
+    fn with_token_swaps_only_the_credential() {
+        // Given — a client built with the service token.
         let client = NotedThatClient::new("http://127.0.0.1:1", SERVICE_TOKEN).expect("client");
         let with_caller = client.with_token(ALICE_TOKEN);
 
