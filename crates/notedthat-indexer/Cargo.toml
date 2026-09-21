@@ -36,7 +36,7 @@ tracing = { workspace = true }
 # The crate's own tests exercise the in-memory VectorStore.
 notedthat-indexer = { path = ".", features = ["test-support"] }
 # The memory event log, to assert what the worker announces for detected changes.
-notedthat-events = { path = "../notedthat-events", version = "0.7.2", default-features = false }
+notedthat-events = { path = "../notedthat-events", default-features = false }
 # One Qdrant container, for vector_store_conformance.rs only: it is what keeps
 # InMemoryVectorStore honest about the backend it substitutes for.
 testcontainers = { workspace = true }

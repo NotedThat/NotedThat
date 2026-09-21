@@ -66,6 +66,53 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo package --workspace --locked
+      # A dev-dependency on a workspace crate carries `path` only, never
+      # `version`. Cargo strips a path-only dev-dependency from the published
+      # manifest; one with a version stays in it and is resolved against
+      # crates.io when the crate is published. release-plz orders publishes by
+      # normal dependencies alone, so a versioned dev-dependency on a crate that
+      # is not on crates.io yet fails the *dependent* before release-plz ever
+      # reaches the crate itself — which is how notedthat-indexer blocked every
+      # release after notedthat-events was added (RELEASING.md, "Adding a
+      # crate"). `cargo metadata` reports a path-only dev-dependency's
+      # requirement as `*`.
+      #
+      # Checked on the ground truth rather than on intent: `cargo package` above
+      # has just written the normalised manifest Cargo would upload for every
+      # crate, and a dev-dependency Cargo kept is one it will resolve at publish
+      # time, whatever spelling put it there (`version = "*"` reads as `*` in
+      # `cargo metadata` too, and would slip past an intent check; one renamed
+      # with `package = "notedthat-…"` keeps the crate under another key, so the
+      # crate name is what is compared, not the key).
+      - name: Packaged manifests name no workspace crate as a dev-dependency
+        run: |
+          set -euo pipefail
+          metadata=$(cargo metadata --format-version 1 --no-deps)
+          target=$(jq -r '.target_directory' <<< "$metadata")
+          # Only this version's packages: a restored cache can hold older ones.
+          version=$(jq -r '.packages[0].version' <<< "$metadata")
+          jq -r '.packages[].name' <<< "$metadata" > /tmp/members
+          python3 - "$target"/package/*-"$version"/Cargo.toml <<'PY'
+          import sys, tomllib
+          members = set(open("/tmp/members").read().split())
+          bad = []
+          for path in sys.argv[1:]:
+              with open(path, "rb") as f:
+                  manifest = tomllib.load(f)
+              kept = []
+              for name, spec in manifest.get("dev-dependencies", {}).items():
+                  crate = spec.get("package", name) if isinstance(spec, dict) else name
+                  if crate in members:
+                      kept.append(name if crate == name else f"{name} (package = {crate})")
+              if kept:
+                  bad.append(f"{manifest['package']['name']}: {', '.join(kept)}")
+          if bad:
+              print("::error::a packaged manifest still names a workspace crate as a dev-dependency — "
+                    "drop `version` (or `workspace = true`) and keep `path`; see RELEASING.md, Adding a crate: "
+                    + "; ".join(bad))
+              sys.exit(1)
+          print(f"checked {len(sys.argv) - 1} packaged manifests: no workspace dev-dependencies kept")
+          PY
 
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
@@ -206,6 +253,35 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # Trusted Publishing cannot create a crate, so a workspace member that has
+      # never been published makes release-plz fail every push until someone
+      # bootstraps it (RELEASING.md, "Adding a crate"). Say so up front, by
+      # name, instead of letting it surface minutes later as a `cargo publish`
+      # error on whichever sibling release-plz happened to reach first.
+      #
+      # A warning, never a failure: release-plz must still run. It publishes
+      # the new crate's *dependencies* at the new version before it stops at
+      # the crate itself with the 403, and that is what the bootstrap needs —
+      # `cargo publish` verifies the new crate against crates.io. Failing here
+      # would leave those dependencies unpublished and the bootstrap with
+      # nothing to build against, until someone published them by hand.
+      - name: Name any crate that has never been published
+        run: |
+          set -euo pipefail
+          for crate in $(cargo metadata --format-version 1 --no-deps \
+                         | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
+            # `|| true`: under `set -e` a curl that could not connect would
+            # otherwise exit the script here; `--max-time` so a stalled
+            # connection cannot hang the job twelve times over.
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+                     -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
+                     "https://crates.io/api/v1/crates/${crate}" || true)
+            case "${status:-000}" in
+              200) ;;
+              404) echo "::warning::${crate} has never been published; Trusted Publishing cannot create it, so release-plz will stop at it with a 403 once its dependencies are up. Bootstrap it then — RELEASING.md, \"Adding a crate\"." ;;
+              *)   echo "::notice::could not check ${crate} on crates.io (HTTP ${status:-000}); continuing" ;;
+            esac
+          done
       - name: Run release-plz (release)
         id: release-plz
         uses: release-plz/action@v0.5

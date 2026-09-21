@@ -346,7 +346,7 @@ Full API documentation: [`docs/API.md`](docs/API.md)
 | `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
 | `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs both. |
 
-All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 12 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Contributing
 
