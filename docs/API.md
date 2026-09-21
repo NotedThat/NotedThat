@@ -1417,9 +1417,19 @@ per-knowledge-base counterpart of `/readyz`.
 `GET /api/v1/knowledgebases` may ask. An anonymous caller holding no grant gets `404`, a
 credentialed caller holding none gets `403`, exactly as on every other route.
 
+The view is **one process's record**. A deployment running several replicas behind one address
+(the `nats` events backend exists for exactly that) answers from whichever replica took the
+request: its queue depth, its `pending`, its last failure, its worker. Two polls can disagree, and
+a replica whose worker died reports `failed` while its siblings say `healthy`. Unlike the events
+sequence, which is global across replicas, this is per process — query each replica, or read one
+answer as advisory.
+
 The view is aggregate state only. It never carries document bytes, credentials, queue contents
-or job identifiers (D4, D38). Two fields of `last_failure` are held back by who is asking: the
-object key is shown only to a caller who could `list` that key, and the `summary` — the
+or job identifiers (D4, D38). Three fields are held back by who is asking: `last_failure`'s
+object key is shown only to a caller who could `list` that key; `last_reconcile`'s counts, which
+describe every key in the knowledge base, only to a caller who may `list` every key (a caller
+granted `public/**` alone gets the pass's time and nothing that says how much lies outside
+`public/`); and `last_failure`'s `summary` — the
 pipeline's own error, which names the embedder or vector-store endpoint it could not reach — only
 to a caller who presented a credential. An anonymous caller still learns that indexing failed,
 and when.
@@ -1452,19 +1462,19 @@ and when.
 | Field | Meaning |
 |-------|---------|
 | `state` | One of `failed`, `stale`, `backpressured`, `indexing`, `healthy` — see the table below. When more than one applies, the first in that order wins |
-| `pending` | Events for this knowledge base queued and not yet taken by the indexer |
+| `pending` | Events for this knowledge base queued or being indexed — an object is counted until its embed and upsert have finished, or failed |
 | `queue` | The process-wide indexing queue (D38): events waiting, and the fixed capacity. `depth == capacity` means writers are being refused with `503` right now |
 | `worker` | `running`, or `stopped` once the indexer loop has ended (a crash, or shutdown in progress) |
 | `last_indexed_at` | When an event for this knowledge base last completed — an upsert, a tombstone, or a refresh that found the index current. `null` until one has |
 | `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a credentialed caller the pipeline's own one-line error (`summary`, at most 200 characters); for a caller who may `list` it, the object key. `null` if none |
-| `last_reconcile` | `fs` backend only: what the last completed reconciliation pass found (D50). `null` on `s3`, and until the startup pass completes |
+| `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` the whole knowledge base, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`; without `scope` the counts are the whole base's. `null` on `s3`, and until the startup pass completes |
 
 **The state model, and what to do:**
 
 | State | It means | What to do |
 |-------|----------|------------|
 | `healthy` | Nothing pending, the last outcome succeeded, nothing has gone unobserved | Nothing. Search reflects every write the indexer has been told about |
-| `indexing` | Events for this knowledge base are queued or in progress | Wait and poll; a search now may miss the newest writes. `pending` counts down |
+| `indexing` | Events for this knowledge base are queued or in progress | Wait and poll; a search now may miss the newest writes. `pending` counts down as each event *finishes*, not as the worker picks it up |
 | `backpressured` | The queue was full within the last 30 s, or is full right now. Writers got `503 backend_unavailable` with `Retry-After: 5`; their bytes were stored but not indexed (D38) | Retry the refused writes — re-writing an object is what re-enqueues it. If it recurs, the embedder or Qdrant is slower than the write rate; the queue capacity is a fixed 1024 in v1 |
 | `stale` | `fs` backend: the watcher lost events (`FS_WATCH_LOST`, or the kernel's queue overflowed) and the rescan that repairs that has not completed yet — or the startup pass has not. Changes on disk may be unobserved | Wait for the pass; `last_reconcile` fills in when it completes. If `FS_WATCH_LOST` recurs in the log, raise `fs.inotify.max_user_watches` (see [Filesystem storage backend](CONFIGURATION.md#filesystem-storage-backend)). A knowledge base stuck `stale` with the log saying its pass was *skipped* has no search collection: check the provisioning warnings and restart once Qdrant is reachable |
 | `failed` | The most recent event for this knowledge base failed, or the indexer worker has stopped (`worker: "stopped"`) | Read `last_failure.summary`: it names the embedder or the vector store. Fix that, then re-write the affected object to reindex it (D42); there is no retry or dead-letter queue. A stopped worker means the process must be restarted |
