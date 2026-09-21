@@ -1832,7 +1832,7 @@ mod announcing {
     }
 
     /// The write path announced the write before enqueueing it; the worker's
-    /// part is the verdict (D64): the version it indexed, and how many points
+    /// part is the verdict (D65): the version it indexed, and how many points
     /// now stand for it.
     #[tokio::test]
     async fn a_write_upsert_is_not_announced_but_its_outcome_is() {

@@ -127,7 +127,7 @@ pub async fn commit_copy(
 /// Report a durable write: publish, then index.
 ///
 /// Publishing first is what lets the worker's `object.indexed` for this
-/// `ETag` always follow `object.written` in the log (D64): the write is on
+/// `ETag` always follow `object.written` in the log (D65): the write is on
 /// the log before its `Upsert` is even in the queue. D38's promise holds
 /// either way — either failure returns an error after the bytes are stored,
 /// and a retried write re-runs both — so an event may be published twice,
@@ -189,7 +189,7 @@ pub(crate) async fn after_write(
 
 /// Delete an object idempotently, publish the change and enqueue a
 /// best-effort tombstone event — in that order, the one rule `after_write`
-/// follows (D64).
+/// follows (D65).
 pub async fn commit_delete(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,

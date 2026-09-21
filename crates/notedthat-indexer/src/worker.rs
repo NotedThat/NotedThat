@@ -63,7 +63,7 @@ pub struct IndexerWorker {
     /// Only a `Refresh` announces a *change*: a write through `NotedThat` was
     /// announced by the write path before its `Upsert` was even enqueued. Every
     /// `Upsert` and `Refresh` then reports what became of it — `object.indexed`
-    /// or `object.index_failed` (D64) — once the health record has been stamped.
+    /// or `object.index_failed` (D65) — once the health record has been stamped.
     pub events: Option<Arc<dyn EventPublisher>>,
     /// The last stamp this worker saw for each key, so the `fs` watcher's echo
     /// of a write the server made itself is not announced a second time.
@@ -170,7 +170,7 @@ impl IndexerWorker {
             "processing index event"
         );
 
-        // A tombstone reports no outcome, success or failure (D64): there is
+        // A tombstone reports no outcome, success or failure (D65): there is
         // no `object.unindexed`, and `object.deleted` already said what
         // happened to the key.
         let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });

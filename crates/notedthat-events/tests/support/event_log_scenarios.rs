@@ -316,7 +316,7 @@ pub async fn events_round_trip_intact(fx: &dyn EventLogFixture) {
     assert_eq!(got.source, EventSource::Mcp);
 }
 
-/// The indexer's verdicts (D64) ride the same log as the writes that caused them and
+/// The indexer's verdicts (D65) ride the same log as the writes that caused them and
 /// come back whole: the kind name a subscriber filters on, the stamp it correlates
 /// with the write, the chunk count, and — for a failure — the summary and the
 /// absence of what `HEAD` never established.

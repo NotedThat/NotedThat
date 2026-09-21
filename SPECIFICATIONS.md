@@ -606,8 +606,8 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 #### Indexing queue
 - Write path: S3 commit succeeds first, then enqueue `{kb, object_key, etag, mtime}` onto a bounded in-memory channel.
 - Queue capacity: fixed implementation constant in v1 (recommended `1024` events); env tuning post-v1.
-- If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return `WriteError::IndexerBackpressureUpsert` for upserts or `WriteError::IndexerBackpressureTombstone` for tombstones, which the HTTP API and WebDAV surfaces map to HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 before the enqueue attempt, and with an events backend the change event is already published (D64); the client should retry to re-enqueue the indexing event.
-- Embedder or Qdrant failures are logged as `INDEXING_FAILED` with the knowledge base and key; callers do not receive job IDs. What they can read is the per-knowledge-base aggregate at `GET /api/v1/knowledgebases/{kb}/index` and MCP `index_status` (D62): a state (`healthy`, `indexing`, `backpressured`, `stale`, `failed`), pending events, the queue's depth and capacity, the last success time, the last failure's one-line summary, and on `fs` the last reconciliation pass. With an events backend, each finished upsert or refresh is also reported on the events stream as `object.indexed` or `object.index_failed` (D64), the per-write signal.
+- If the queue is full, log `INDEX_QUEUE_FULL` with KB/path and return `WriteError::IndexerBackpressureUpsert` for upserts or `WriteError::IndexerBackpressureTombstone` for tombstones, which the HTTP API and WebDAV surfaces map to HTTP 503 `backend_unavailable` with `Retry-After: 5`. The storage mutation IS committed to S3 before the enqueue attempt, and with an events backend the change event is already published (D65); the client should retry to re-enqueue the indexing event.
+- Embedder or Qdrant failures are logged as `INDEXING_FAILED` with the knowledge base and key; callers do not receive job IDs. What they can read is the per-knowledge-base aggregate at `GET /api/v1/knowledgebases/{kb}/index` and MCP `index_status` (D62): a state (`healthy`, `indexing`, `backpressured`, `stale`, `failed`), pending events, the queue's depth and capacity, the last success time, the last failure's one-line summary, and on `fs` the last reconciliation pass. With an events backend, each finished upsert or refresh is also reported on the events stream as `object.indexed` or `object.index_failed` (D65), the per-write signal.
 - Search may be stale in v1. A later write to the same object re-enqueues it.
 - With an events backend configured (§6.14), the same write path publishes an `object.written` / `object.deleted` event immediately before the enqueue; a publish failure is `WriteError::EventPublishFailed` → HTTP 503 `backend_unavailable` with `Retry-After: 5`, logged as `EVENT_PUBLISH_FAILED`.
 
@@ -732,11 +732,11 @@ Rationale: single-segment paths avoid multi-segment wildcard routing and elimina
 
 ---
 
-### 6.14 Object change events `[DECIDED — D55, D64]`
+### 6.14 Object change events `[DECIDED — D55, D65]`
 
 Every write made through NotedThat, and on the `fs` backend every change the server detects in
 its tree, is published as one event once storage has acknowledged it; once the indexer has
-finished with the object, its verdict follows on the same log (D64). Subscribers read them
+finished with the object, its verdict follows on the same log (D65). Subscribers read them
 from `GET /api/v1/knowledgebases/{kb_slug}/events` as `text/event-stream`.
 
 **Shape.** One JSON object per event:
@@ -753,7 +753,7 @@ data: {"event":"object.indexed","kb":"notes","object_key":"inbox/memo.mp3.md","e
 
 Four types. Two describe a change: `object.written` (create or modify — neither the API nor
 storage distinguish them) and `object.deleted` (no stamp). Two are the indexer's verdict on an
-upsert or refresh (D64): `object.indexed` (`etag` — the version now in the index — `mime`,
+upsert or refresh (D65): `object.indexed` (`etag` — the version now in the index — `mime`,
 `chunks`) and `object.index_failed` (`etag` and `mime` when `HEAD` had succeeded; `summary`, the
 bounded first line the D62 health view also reports). `source` is one of `http`, `webdav`,
 `mcp`, `fs-watch`, `reconcile`, `indexer`; `mcp` is self-declared through
@@ -766,7 +766,7 @@ too.
 `commit_delete`, `patch`, `replace`), immediately after storage acknowledges and before the D38
 enqueue, so a subscriber that `GET`s the key on receipt sees the bytes the event describes or
 newer, and so the worker's `object.indexed` for that `ETag` always follows the write on the log
-(D64). The write functions take `WriteSinks` — the indexing sender, the optional
+(D65). The write functions take `WriteSinks` — the indexing sender, the optional
 `EventPublisher`, and the calling surface's source. On the `fs` backend, `IndexEvent::Refresh`
 carries its origin (watch or reconcile) and the indexer worker publishes from the `HEAD` it
 already performs, before the indexability check, so an mp3 dropped into the tree is announced
@@ -775,7 +775,7 @@ bounded last-seen stamp per key, fed by the `Upsert` and `Tombstone` events it r
 announces a `Refresh` only when the stamp differs — that is what keeps the watcher's echo of the
 server's own write (D50) from being announced twice for objects the index does not hold.
 
-**Outcomes (D64).** Once the worker has finished an `Upsert` or `Refresh` it stamps the D62
+**Outcomes (D65).** Once the worker has finished an `Upsert` or `Refresh` it stamps the D62
 health record and then publishes: `object.indexed` when it re-embedded the object, with the
 `ETag` it verified on the staged stream and the number of points now representing the object;
 `object.index_failed` when the pipeline failed at any stage, with the same bounded summary the

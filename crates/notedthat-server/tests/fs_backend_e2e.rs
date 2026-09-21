@@ -736,7 +736,7 @@ async fn a_file_dropped_into_the_tree_is_announced_by_the_watcher() {
 
 /// A markdown file dropped into the tree is announced by the watcher and then, once
 /// the worker has re-read and embedded it, reported indexed under the same `ETag`
-/// (D64) — the whole detected-change path, on the real adapter.
+/// (D65) — the whole detected-change path, on the real adapter.
 #[tokio::test]
 async fn a_file_dropped_into_the_tree_is_announced_and_then_indexed() {
     let server = start().await;

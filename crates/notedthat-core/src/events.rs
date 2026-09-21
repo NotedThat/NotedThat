@@ -3,7 +3,7 @@
 //!
 //! An [`ObjectEvent`] says that one key in one knowledge base was written or
 //! deleted, by which surface, and — for a write — what the bytes now look like;
-//! or, from the indexer, that the key was indexed or failed to index (D64).
+//! or, from the indexer, that the key was indexed or failed to index (D65).
 //! The [`EventPublisher`] trait is the seam between the code that knows a change
 //! happened (`notedthat-write` after storage acknowledges; the indexer worker
 //! after re-reading a detected change, and again once it has finished with an
@@ -53,7 +53,7 @@ impl FromStr for EventId {
 /// Informational: `Mcp` is self-declared by the MCP server's HTTP client and any
 /// client can claim it. `FsWatch` and `Reconcile` are detected changes on the
 /// `fs` backend (D50) and describe what the server found, not who did it.
-/// `Indexer` is the worker reporting the outcome of its own work (D64), never a
+/// `Indexer` is the worker reporting the outcome of its own work (D65), never a
 /// change to the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

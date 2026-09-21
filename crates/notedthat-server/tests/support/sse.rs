@@ -4,7 +4,7 @@
 //! deadline: it returns once that many event frames (frames carrying `data:`)
 //! have arrived, and panics with what it did get if they never do.
 //!
-//! The indexer publishes its verdict on every write it finishes (D64), at a
+//! The indexer publishes its verdict on every write it finishes (D65), at a
 //! moment of its own choosing, so a test about the *write path's* events reads
 //! with [`Subscription::events_where`] and [`change_events`] and lets the
 //! outcomes ride along unasserted.

@@ -25,7 +25,7 @@ struct PreparedSnapshot {
     body_start: usize,
 }
 
-/// What an `Upsert` or `Refresh` did, for the outcome event (D64).
+/// What an `Upsert` or `Refresh` did, for the outcome event (D65).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PipelineOutcome {
     /// `chunks` points now carry the bytes stamped `etag`.
