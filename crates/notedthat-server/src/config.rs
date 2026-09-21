@@ -434,6 +434,9 @@ pub struct Config {
     pub mcp_anonymous: McpAnonymous,
     /// Maximum patchable object size in bytes (`NOTEDTHAT_MAX_PATCHABLE_SIZE`; default 100 MiB).
     pub max_patchable_size: u64,
+    /// Most bytes one MCP object read may fetch (`NOTEDTHAT_MCP_MAX_READ_BYTES`; default 16 MiB,
+    /// the API body cap). Larger objects are read in slices.
+    pub mcp_max_read_bytes: u64,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
     /// Identity-provider settings (`NOTEDTHAT_OIDC_*`); `None` when no issuer is set.
@@ -709,6 +712,22 @@ impl Config {
             });
         }
 
+        let mcp_max_read_bytes = cli
+            .mcp_max_read_bytes
+            .unwrap_or_else(|| notedthat_mcp::DEFAULT_MAX_READ_BYTES.to_string())
+            .parse::<u64>()
+            .map_err(|_e: std::num::ParseIntError| Error::Config {
+                message: format!(
+                    "{} must be a valid u64 integer",
+                    setting("NOTEDTHAT_MCP_MAX_READ_BYTES")
+                ),
+            })?;
+        if mcp_max_read_bytes == 0 {
+            return Err(Error::Config {
+                message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_READ_BYTES")),
+            });
+        }
+
         let staging =
             StagingConfig::from_setting(cli.upload_tmp_dir).map_err(|error| Error::Config {
                 message: error.to_string(),
@@ -730,6 +749,7 @@ impl Config {
             mcp_http_allowed_hosts,
             mcp_anonymous,
             max_patchable_size,
+            mcp_max_read_bytes,
             staging,
             oidc,
         })
@@ -1096,6 +1116,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
         "NOTEDTHAT_MCP_ANONYMOUS",
+        "NOTEDTHAT_MCP_MAX_READ_BYTES",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
         "NOTEDTHAT_OIDC_ISSUER",
@@ -1159,6 +1180,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
             ("NOTEDTHAT_MCP_ANONYMOUS", None),
+            ("NOTEDTHAT_MCP_MAX_READ_BYTES", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
             ("NOTEDTHAT_OIDC_ISSUER", None),
@@ -1376,6 +1398,39 @@ pub(crate) mod tests {
     #[test]
     fn all_env_keys_are_accounted_for() {
         assert_eq!(ALL_ENV_KEYS.len(), 51);
+    }
+
+    #[test]
+    fn mcp_max_read_bytes_defaults_to_the_api_body_cap() {
+        let cfg =
+            run_with_env(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.mcp_max_read_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn mcp_max_read_bytes_accepts_explicit_bytes() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some("4096"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.mcp_max_read_bytes, 4096);
+    }
+
+    #[test]
+    fn mcp_max_read_bytes_rejects_zero_and_non_numbers() {
+        for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
+            let result = run_with_env(
+                &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))],
+                Config::from_env,
+            );
+            assert!(matches!(result, Err(Error::Config { .. })));
+            assert!(names_setting(
+                &result.unwrap_err().to_string(),
+                "NOTEDTHAT_MCP_MAX_READ_BYTES",
+                fragment
+            ));
+        }
     }
 
     #[test]

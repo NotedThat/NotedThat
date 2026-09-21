@@ -81,6 +81,7 @@ fn test_config_with_mcp_http(
         ],
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }
@@ -133,6 +134,7 @@ fn test_config_with_kbs_and_mcp_http(
         ],
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }

@@ -106,6 +106,11 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_MCP_ANONYMOUS", value_name = "MODE")]
     pub mcp_anonymous: Option<String>,
 
+    /// Most bytes one MCP object read may fetch; larger objects are read in
+    /// slices [default: 16777216].
+    #[arg(long, env = "NOTEDTHAT_MCP_MAX_READ_BYTES", value_name = "BYTES")]
+    pub mcp_max_read_bytes: Option<String>,
+
     /// OIDC issuer URL, spelled exactly as the provider's `iss` claim. Enables
     /// identity-provider bearer tokens.
     #[arg(long, env = "NOTEDTHAT_OIDC_ISSUER", value_name = "URL")]

@@ -60,6 +60,7 @@ fn test_config() -> Config {
         ],
         mcp_anonymous: crate::config::McpAnonymous::Auto,
         max_patchable_size: 100 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }

@@ -144,6 +144,7 @@ async fn start_over(
         mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
+        mcp_max_read_bytes: 16 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     };
