@@ -712,16 +712,23 @@ impl Config {
             });
         }
 
-        let mcp_max_read_bytes = cli
+        // Empty or blank is the default, as for every sibling NOTEDTHAT_MCP_*
+        // setting: Compose passes them through as `${VAR-}`, so a deployment
+        // that never set this hands the server an empty string.
+        let mcp_max_read_bytes = match cli
             .mcp_max_read_bytes
-            .unwrap_or_else(|| notedthat_mcp::DEFAULT_MAX_READ_BYTES.to_string())
-            .parse::<u64>()
-            .map_err(|_e: std::num::ParseIntError| Error::Config {
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            None => notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+            Some(value) => value.parse::<u64>().map_err(|_e| Error::Config {
                 message: format!(
                     "{} must be a valid u64 integer",
                     setting("NOTEDTHAT_MCP_MAX_READ_BYTES")
                 ),
-            })?;
+            })?,
+        };
         if mcp_max_read_bytes == 0 {
             return Err(Error::Config {
                 message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_READ_BYTES")),
@@ -1081,7 +1088,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 51] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 52] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1415,6 +1422,22 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(cfg.mcp_max_read_bytes, 4096);
+    }
+
+    #[test]
+    fn mcp_max_read_bytes_empty_or_blank_is_the_default_like_its_siblings() {
+        for value in ["", "   "] {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_max_read_bytes,
+                notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+                "{value:?}"
+            );
+        }
     }
 
     #[test]

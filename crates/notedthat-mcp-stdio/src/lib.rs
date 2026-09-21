@@ -127,15 +127,15 @@ fn require(supplied: Option<String>, name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-/// The read budget: absent means the default, anything given must be a
-/// positive byte count.
+/// The read budget: absent, empty or blank means the default (Compose hands an
+/// unset variable over as an empty string); anything else must be a positive
+/// byte count.
 fn read_budget(supplied: Option<String>) -> Result<u64> {
     let named = notedthat_core::setting("NOTEDTHAT_MCP_MAX_READ_BYTES");
-    let Some(value) = supplied else {
+    let Some(value) = supplied.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(notedthat_mcp::DEFAULT_MAX_READ_BYTES);
     };
     let budget: u64 = value
-        .trim()
         .parse()
         .with_context(|| format!("{named} must be a valid u64 integer"))?;
     if budget == 0 {
@@ -196,6 +196,13 @@ mod tests {
             notedthat_mcp::DEFAULT_MAX_READ_BYTES
         );
         assert_eq!(read_budget(Some(" 4096 ".to_string())).unwrap(), 4096);
+        for empty in ["", "  "] {
+            assert_eq!(
+                read_budget(Some(empty.to_string())).unwrap(),
+                notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+                "{empty:?} is the default, as Compose's ${{VAR-}} requires"
+            );
+        }
         for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
             let error = read_budget(Some(value.to_string()))
                 .unwrap_err()
