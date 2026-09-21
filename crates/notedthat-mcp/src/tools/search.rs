@@ -691,7 +691,12 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("filter") && err.contains("filters"), "{err}");
+        // Backticked, so the accepted `filters` is not found inside the
+        // unknown `filter` — or the other way round.
+        assert!(
+            err.contains("unknown field `filter`") && err.contains("`filters`"),
+            "{err}"
+        );
 
         let err = serde_json::from_value::<SearchArgs>(
             serde_json::json!({ "query": "q", "filters": { "mimetype": "a/b" } }),

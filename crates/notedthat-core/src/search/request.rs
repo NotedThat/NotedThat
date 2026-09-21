@@ -162,8 +162,14 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("filters"), "names the key: {err}");
-        for accepted in ["query", "filter", "limit"] {
+        // serde spells it `unknown field `filters`, expected one of `query`,
+        // `filter`, `limit``; match the backticked names so `filter` is not
+        // vacuously found inside `filters`.
+        assert!(
+            err.contains("unknown field `filters`"),
+            "names the key: {err}"
+        );
+        for accepted in ["`query`", "`filter`", "`limit`"] {
             assert!(err.contains(accepted), "lists {accepted}: {err}");
         }
     }
