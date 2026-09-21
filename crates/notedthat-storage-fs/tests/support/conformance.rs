@@ -658,10 +658,9 @@ pub async fn observe_listing(store: &dyn Storage, kb: &KbSlug) -> Observations {
         .await
         .expect("list");
     let entry = page.objects.first().expect("at least one object");
-    out.push((
-        "entry_etag",
-        entry.etag.clone().unwrap_or_else(|| "absent".into()),
-    ));
+    // Whether a listing entry carries an `ETag` is a pinned divergence
+    // (`listing_entry_etag`): `S3Storage` and the in-memory double report one,
+    // `FsStorage` does not.
     out.push((
         "entry_content_type",
         entry
@@ -702,6 +701,20 @@ pub struct Divergence {
 }
 
 pub const PINNED_DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        name: "listing_entry_etag",
+        s3: "present",
+        fs: "absent",
+        memory: "present",
+        why: "S3's `ListObjectsV2` reports every object's `ETag` for free, and the \
+              reconciliation walk (D66) reads it from the listing so a pass never has to \
+              `HEAD` an unchanged object; the in-memory double reports it so that walk can \
+              be proven without a bucket. `FsStorage` would have to open a sidecar per \
+              entry to report one — up to a thousand reads per `PROPFIND` page — and its \
+              own reconciliation walk resolves the stamp on a path that is not a listing, \
+              so it leaves the field absent. A caller that needs the stamp on `fs` has \
+              `head_object`.",
+    },
     Divergence {
         name: "garbage_cursor",
         s3: "ok",
@@ -786,6 +799,18 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
 pub async fn observe_pinned_divergences(store: &dyn Storage, kb: &KbSlug) -> Observations {
     put(store, kb, "a.md", "x").await;
     vec![
+        (
+            "listing_entry_etag",
+            store
+                .list_objects(kb, None, 10, None)
+                .await
+                .expect("list")
+                .objects
+                .first()
+                .and_then(|object| object.etag.as_deref())
+                .map_or("absent", |_| "present")
+                .to_string(),
+        ),
         (
             "garbage_cursor",
             outcome(&store.list_objects(kb, None, 10, Some("not-a-cursor")).await),
