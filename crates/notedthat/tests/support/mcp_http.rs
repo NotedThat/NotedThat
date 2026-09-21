@@ -30,6 +30,23 @@ impl McpSession {
         }
     }
 
+    /// One `POST /mcp`, the way every request and notification goes out: the
+    /// streamable-HTTP headers, the credential when the session has one, and
+    /// no `Authorization` at all when it does not — an anonymous session must
+    /// not present an empty bearer and be refused for the wrong reason.
+    async fn post(&self, body: &serde_json::Value) -> reqwest::Response {
+        let mut request = self
+            .client
+            .post(&self.mcp_url)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .json(body);
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        request.send().await.expect("MCP HTTP request failed")
+    }
+
     /// The raw HTTP answer to one JSON-RPC request, for a test about the
     /// transport's own refusals (a `401` is HTTP, not JSON-RPC).
     pub async fn send(
@@ -44,16 +61,7 @@ impl McpSession {
             "method": method,
             "params": params,
         });
-        let mut request = self
-            .client
-            .post(&self.mcp_url)
-            .header("Accept", "application/json, text/event-stream")
-            .header("Content-Type", "application/json")
-            .json(&body);
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
-        request.send().await.expect("MCP HTTP request failed")
+        self.post(&body).await
     }
 
     /// One JSON-RPC exchange; the HTTP layer must succeed and the answer must
@@ -106,19 +114,7 @@ impl McpSession {
             "method": "notifications/initialized",
             "params": {}
         });
-        let response = self
-            .client
-            .post(&self.mcp_url)
-            .header("Accept", "application/json, text/event-stream")
-            .header("Content-Type", "application/json")
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.token.as_deref().unwrap_or_default()),
-            )
-            .json(&notification)
-            .send()
-            .await
-            .expect("initialized notification");
+        let response = self.post(&notification).await;
         assert!(
             response.status().is_success(),
             "initialized notification should be accepted, got {}",
