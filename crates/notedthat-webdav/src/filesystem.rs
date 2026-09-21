@@ -747,6 +747,10 @@ mod tests {
         next_cursor: Option<String>,
         head_not_found: bool,
         get_range_not_satisfiable: bool,
+        /// When set, `head_object` answers with it and `get_object` serves zeroed bytes
+        /// sized to the requested range, so a `StorageReadFile` can be driven end to end.
+        object: Option<ObjectMeta>,
+        get_ranges: Mutex<Vec<Option<ByteRange>>>,
     }
 
     impl MockStorage {
@@ -774,6 +778,17 @@ mod tests {
 
         fn list_calls(&self) -> Vec<ListCall> {
             self.list_calls.lock().expect("mutex not poisoned").clone()
+        }
+
+        fn with_object(object: ObjectMeta) -> Self {
+            Self {
+                object: Some(object),
+                ..Self::default()
+            }
+        }
+
+        fn get_ranges(&self) -> Vec<Option<ByteRange>> {
+            self.get_ranges.lock().expect("mutex not poisoned").clone()
         }
     }
 
@@ -816,6 +831,9 @@ mod tests {
                     key: path.as_str().to_string(),
                 });
             }
+            if let Some(object) = &self.object {
+                return Ok(object.clone());
+            }
             Err(unavailable())
         }
 
@@ -823,14 +841,30 @@ mod tests {
             &self,
             _kb: &KbSlug,
             _path: &ObjectPath,
-            _range: Option<ByteRange>,
+            range: Option<ByteRange>,
             _conditionals: ConditionalHeaders,
         ) -> Result<ObjectRead, StorageError> {
             self.record("get_object");
+            self.get_ranges
+                .lock()
+                .expect("mutex not poisoned")
+                .push(range.clone());
             if self.get_range_not_satisfiable {
                 return Err(StorageError::RangeNotSatisfiable { complete_length: 0 });
             }
-            Err(unavailable())
+            let Some(object) = &self.object else {
+                return Err(unavailable());
+            };
+            let len = range.as_ref().map_or(0, |range| match range {
+                ByteRange::FromStart { first, last } => last.saturating_sub(*first) + 1,
+                ByteRange::FromStartOpen { .. } | ByteRange::Suffix { .. } => 0,
+            });
+            let len = usize::try_from(len).map_err(|_err| unavailable())?;
+            Ok(ObjectRead {
+                bytes: Bytes::from(vec![0; len]),
+                meta: object.clone(),
+                content_range: None,
+            })
         }
 
         async fn get_object_stream(
@@ -1001,6 +1035,14 @@ mod tests {
 
     fn test_filesystem(storage: Arc<dyn Storage>, declared_kbs: &[&str]) -> WebDavStorage {
         WebDavStorage::new(test_state(storage, self::declared_kbs(declared_kbs)))
+    }
+
+    fn read_file(storage: Arc<dyn Storage>) -> StorageReadFile {
+        StorageReadFile::new(
+            test_state(storage, declared_kbs(&["notes"])),
+            kb_slug("notes"),
+            object_path("test.md"),
+        )
     }
 
     fn dav_path(value: &str) -> DavPath {
@@ -1496,6 +1538,112 @@ mod tests {
                 cursor: None,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn test_metadata_delegates_to_head_object_and_caches_size() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage.clone());
+
+        let meta = file.metadata().await.expect("metadata should load");
+
+        assert_eq!(meta.len(), 42);
+        assert_eq!(file.size_hint, Some(42));
+        assert_eq!(storage.calls(), vec!["head_object"]);
+    }
+
+    #[tokio::test]
+    async fn test_read_bytes_translates_to_storage_range_request() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage.clone());
+
+        let bytes = file.read_bytes(10).await.expect("read should succeed");
+
+        assert_eq!(bytes.len(), 10);
+        assert_eq!(storage.calls(), vec!["get_object"]);
+        assert_eq!(
+            storage.get_ranges(),
+            vec![Some(ByteRange::FromStart { first: 0, last: 9 })]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_bytes_advances_offset() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage);
+
+        let _bytes = file.read_bytes(5).await.expect("read should succeed");
+
+        assert_eq!(file.read_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn test_seek_from_start() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage);
+
+        let offset = file
+            .seek(SeekFrom::Start(42))
+            .await
+            .expect("seek should succeed");
+
+        assert_eq!(offset, 42);
+        assert_eq!(file.read_offset, 42);
+    }
+
+    #[tokio::test]
+    async fn test_seek_from_end_uses_cached_size() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage.clone());
+        let _meta = file.metadata().await.expect("metadata should load");
+
+        let offset = file
+            .seek(SeekFrom::End(0))
+            .await
+            .expect("seek should succeed");
+
+        assert_eq!(offset, 42);
+        assert_eq!(file.read_offset, 42);
+        assert_eq!(
+            storage.calls(),
+            vec!["head_object"],
+            "seek from end must reuse the size cached by metadata()"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seek_from_current() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage);
+        file.read_offset = 5;
+
+        let offset = file
+            .seek(SeekFrom::Current(10))
+            .await
+            .expect("seek should succeed");
+
+        assert_eq!(offset, 15);
+        assert_eq!(file.read_offset, 15);
+    }
+
+    #[tokio::test]
+    async fn test_write_bytes_returns_not_implemented() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage);
+
+        let result = file.write_bytes(Bytes::new()).await;
+
+        assert!(matches!(result, Err(FsError::NotImplemented)));
+    }
+
+    #[tokio::test]
+    async fn test_write_buf_returns_not_implemented() {
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage);
+
+        let result = file.write_buf(Box::new(Bytes::new())).await;
+
+        assert!(matches!(result, Err(FsError::NotImplemented)));
     }
 
     #[tokio::test]

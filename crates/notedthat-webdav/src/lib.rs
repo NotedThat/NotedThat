@@ -7,7 +7,6 @@
 
 pub(crate) mod access;
 pub mod error;
-pub mod file;
 pub mod filesystem;
 pub mod metadata;
 pub mod middleware;
