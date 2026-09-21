@@ -143,16 +143,22 @@ fn rank(state: IndexState) -> u8 {
 ///
 /// The object key is shown only to a caller who could list it, so a caller
 /// granted `read` under one prefix learns nothing about keys under another.
-/// The summary — the pipeline's own error, which names the embedder or vector
-/// store endpoint it could not reach — is shown only to a caller who presented
-/// a credential: it is what an operator or an agent holding a token acts on,
-/// and not something a deployment describes to the public. An anonymous
-/// caller still learns that indexing failed, and when.
+/// The summary — the pipeline's own first line — names the embedder or vector
+/// store endpoint it could not reach, and as often the key it was working on
+/// (`storage.head_object failed: object not found: internal/…`), so it can
+/// carry exactly what the key gate holds back. It goes only to a caller whose
+/// `list` grant spans the whole knowledge base, the bar the reconcile counts
+/// use: an operator, or an agent holding such a grant, is who acts on it.
+/// Everyone the listing rule admits still learns that indexing failed, and
+/// when.
 fn failure_view(access: &KbAccess, failure: IndexFailure) -> FailureView {
     let object_key = access
         .allows(Verb::List, &failure.object_key)
         .then_some(failure.object_key);
-    let summary = (!access.is_anonymous()).then_some(failure.summary);
+    let summary = access
+        .filter(Verb::List)
+        .covers_whole_kb()
+        .then_some(failure.summary);
     FailureView {
         at: unix_to_rfc3339(failure.at),
         object_key,
@@ -161,23 +167,39 @@ fn failure_view(access: &KbAccess, failure: IndexFailure) -> FailureView {
 }
 
 /// The pass's time is for everyone the listing rule admits — it is what a
-/// public caller needs to judge freshness. Its counts describe every key in
-/// the knowledge base, so they go only to a caller who may `list` every key;
-/// a caller granted `public/**` alone would otherwise learn how much lies
-/// outside `public/` and how much of it is moving.
+/// public caller needs to judge freshness. What it counted, and over what,
+/// follow the `list` grant as one unit: a whole-base pass describes every key,
+/// so its counts go only to a caller who may `list` every key; a pass over one
+/// prefix names that prefix in `scope`, so it goes only to a caller who may
+/// `list` the prefix — and its counts go with it, since "a pass over *some*
+/// prefix found 3 changed" is still a signal about the part of the base the
+/// caller cannot see. A caller granted `public/**` alone thus learns about
+/// passes over `public/` and nothing about the rest.
+///
+/// A prefix is judged as a key: `internal/` matches `**` and `internal/**`,
+/// not `public/**` nor `internal/a/**` — a narrower grant hides it, which errs
+/// on the side of showing less.
 fn reconcile_view(access: &KbAccess, summary: ReconcileSummary) -> ReconcileView {
-    let counts = access
-        .filter(Verb::List)
-        .covers_whole_kb()
-        .then_some(ReconcileCounts {
-            objects_on_disk: summary.objects_on_disk,
-            unchanged: summary.unchanged,
-            changed: summary.changed,
-            orphaned: summary.orphaned,
-        });
+    let visible = match &summary.scope {
+        Some(prefix) => access.allows(Verb::List, prefix),
+        None => access.filter(Verb::List).covers_whole_kb(),
+    };
+    let (scope, counts) = if visible {
+        (
+            summary.scope,
+            Some(ReconcileCounts {
+                objects_on_disk: summary.objects_on_disk,
+                unchanged: summary.unchanged,
+                changed: summary.changed,
+                orphaned: summary.orphaned,
+            }),
+        )
+    } else {
+        (None, None)
+    };
     ReconcileView {
         at: unix_to_rfc3339(summary.at),
-        scope: summary.scope,
+        scope,
         counts,
     }
 }

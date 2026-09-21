@@ -102,7 +102,7 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Report a knowledge base's search-index health: state is one of healthy, indexing, backpressured, stale or failed, with pending events, queue depth and capacity, whether the worker is running, when something was last indexed, the most recent failure (when; its summary for a credentialed caller; its object key when the caller may list it) and, on the fs backend, the last reconciliation pass. Check it when search results look incomplete or out of date; a failed or stale knowledge base may not reflect recent writes."
+        description = "Report a knowledge base's search-index health: state is one of healthy, indexing, backpressured, stale or failed, with pending events, queue depth and capacity, whether the worker is running, when something was last indexed, the most recent failure (when; its summary when the caller may list the whole knowledge base; its object key when the caller may list it) and, on the fs backend, the last reconciliation pass. Check it when search results look incomplete or out of date; a failed or stale knowledge base may not reflect recent writes."
     )]
     async fn index_status(
         &self,

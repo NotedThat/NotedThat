@@ -229,13 +229,15 @@ async fn a_failure_is_reported_and_its_key_only_to_a_caller_who_could_list_it() 
         body["last_failure"]["summary"],
         "embedder.embed failed: connection refused"
     );
-    // A credentialed caller who could not list the key gets the error alone.
+    // A credentialed caller who could not list the key gets neither: the
+    // summary is the pipeline's own first line and as often names the key.
     let body = json(get_index(app.clone(), "notes", Some(BOB_TOKEN)).await).await;
     assert_eq!(body["state"], "failed");
+    assert!(body["last_failure"]["at"].is_string());
     assert!(body["last_failure"].get("object_key").is_none());
-    assert_eq!(
-        body["last_failure"]["summary"],
-        "embedder.embed failed: connection refused"
+    assert!(
+        body["last_failure"].get("summary").is_none(),
+        "the error goes only to a caller who may list the whole base: {body}"
     );
 
     // And a later success clears the state, keeping the failure on record.
@@ -298,6 +300,57 @@ async fn stale_and_the_last_reconciliation_pass_are_reported() {
         body["last_reconcile"],
         serde_json::json!({ "at": "2023-11-14T22:13:20Z" })
     );
+}
+
+/// A pass over one prefix names that prefix, so the pass — `scope` and counts
+/// together — goes to a caller who may `list` the prefix, and to nobody else:
+/// a caller granted `public/**` learns about passes over `public/` and not
+/// that `internal/` exists, let alone how much of it moved.
+#[tokio::test]
+async fn a_prefix_pass_is_shown_only_to_a_caller_who_may_list_the_prefix() {
+    let (app, side) = app_with_index_side(
+        only_notes([
+            grant_under(Who::Anyone, [Verb::Read, Verb::List], &["public/**"]),
+            grant(Who::SignedIn, [Verb::Read]),
+            grant(Who::User("alice".into()), [Verb::List]),
+        ]),
+        8,
+    )
+    .await;
+    let pass = |scope: &str| ReconcileSummary {
+        at: 1_700_000_000,
+        scope: Some(scope.to_string()),
+        objects_on_disk: 3,
+        unchanged: 2,
+        changed: 1,
+        orphaned: 0,
+    };
+
+    side.health.reconciled("notes", pass("internal/"));
+    // Anonymous, listing `public/**` only: the time alone — no scope, no counts.
+    let body = json(get_index(app.clone(), "notes", None).await).await;
+    assert_eq!(
+        body["last_reconcile"],
+        serde_json::json!({ "at": "2023-11-14T22:13:20Z" }),
+        "{body}"
+    );
+    // Bob, credentialed but listing nothing: the time alone.
+    let body = json(get_index(app.clone(), "notes", Some(BOB_TOKEN)).await).await;
+    assert_eq!(
+        body["last_reconcile"],
+        serde_json::json!({ "at": "2023-11-14T22:13:20Z" }),
+        "{body}"
+    );
+    // Alice, who may list everything: the prefix and what the pass found there.
+    let body = json(get_index(app.clone(), "notes", Some(ALICE_TOKEN)).await).await;
+    assert_eq!(body["last_reconcile"]["scope"], "internal/");
+    assert_eq!(body["last_reconcile"]["changed"], 1);
+
+    // A pass over the prefix the anonymous caller may list is theirs to see.
+    side.health.reconciled("notes", pass("public/"));
+    let body = json(get_index(app, "notes", None).await).await;
+    assert_eq!(body["last_reconcile"]["scope"], "public/");
+    assert_eq!(body["last_reconcile"]["objects_on_disk"], 3);
 }
 
 /// The pass's counts describe every key in the knowledge base, so they go to

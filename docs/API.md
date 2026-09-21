@@ -1425,14 +1425,15 @@ sequence, which is global across replicas, this is per process — query each re
 answer as advisory.
 
 The view is aggregate state only. It never carries document bytes, credentials, queue contents
-or job identifiers (D4, D38). Three fields are held back by who is asking: `last_failure`'s
-object key is shown only to a caller who could `list` that key; `last_reconcile`'s counts, which
-describe every key in the knowledge base, only to a caller who may `list` every key (a caller
-granted `public/**` alone gets the pass's time and nothing that says how much lies outside
-`public/`); and `last_failure`'s `summary` — the
-pipeline's own error, which names the embedder or vector-store endpoint it could not reach — only
-to a caller who presented a credential. An anonymous caller still learns that indexing failed,
-and when.
+or job identifiers (D4, D38). What names or counts keys follows the `list` grant: `last_failure`'s
+object key is shown only to a caller who could `list` that key, and its `summary` — the
+pipeline's own first line, which names the embedder or vector-store endpoint it could not reach
+and as often the key it was working on — only to a caller who may `list` the whole knowledge
+base; `last_reconcile`'s counts, which describe every key, likewise only to a caller who may
+`list` every key, and a pass over one prefix (`scope`) — counts included — only to a caller who
+may `list` that prefix. A caller granted `public/**` alone gets every pass's time, the passes over
+`public/`, and nothing that says what lies outside `public/` or how much of it is moving. Everyone
+the listing rule admits still learns that indexing failed, and when.
 
 **Response:** `200 OK`, `Cache-Control: no-store`.
 
@@ -1466,8 +1467,8 @@ and when.
 | `queue` | The process-wide indexing queue (D38): events waiting, and the fixed capacity. `depth == capacity` means writers are being refused with `503` right now |
 | `worker` | `running`, or `stopped` once the indexer loop has ended (a crash, or shutdown in progress) |
 | `last_indexed_at` | When an event for this knowledge base last completed — an upsert, a tombstone, or a refresh that found the index current. `null` until one has |
-| `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a credentialed caller the pipeline's own one-line error (`summary`, at most 200 characters); for a caller who may `list` it, the object key. `null` if none |
-| `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` the whole knowledge base, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`; without `scope` the counts are the whole base's. `null` on `s3`, and until the startup pass completes |
+| `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a caller who may `list` the whole knowledge base the pipeline's own one-line error (`summary`, at most 200 characters); for a caller who may `list` it, the object key. `null` if none |
+| `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` what it walked, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`, and is shown — `scope` and counts together — to a caller who may `list` that prefix; without `scope` the counts are the whole base's and go to a caller who may `list` the whole base. `null` on `s3`, and until the startup pass completes |
 
 **The state model, and what to do:**
 

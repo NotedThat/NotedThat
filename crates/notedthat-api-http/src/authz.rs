@@ -103,11 +103,6 @@ impl KbAccess {
         self.policy.allows(&self.principal, verb, key)
     }
 
-    /// Whether the caller presented no credential.
-    pub(crate) fn is_anonymous(&self) -> bool {
-        self.principal.is_anonymous()
-    }
-
     /// Authorize seeing that the knowledge base exists at all: the listing
     /// rule (D51), which a view about the knowledge base rather than about any
     /// one key follows.
