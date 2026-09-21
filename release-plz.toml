@@ -1,6 +1,6 @@
 # release-plz configuration for unified ecosystem versioning.
 #
-# All 12 publishable crates share a single version via [workspace.package].version,
+# All 11 publishable crates share a single version via [workspace.package].version,
 # release as ONE workspace tag (vX.Y.Z), and feed into ONE root CHANGELOG.md.
 #
 # Architecture: the facade crate `notedthat` owns:
@@ -44,7 +44,7 @@ changelog_update = false
 # main simply retries it.
 #
 # Know what this widens. The actual invariant is now "any push to `main` whose
-# workspace version is ahead of crates.io publishes all 12 crates", and nothing
+# workspace version is ahead of crates.io publishes all 11 crates", and nothing
 # here enforces that the version only ever moves in a release PR. A `cargo
 # set-version` that rides along in an ordinary feature branch, or a hand-edited
 # `version`, publishes on merge with no release PR and no second look — and a
@@ -90,6 +90,5 @@ changelog_include = [
   "notedthat-api-http",
   "notedthat-webdav",
   "notedthat-mcp",
-  "notedthat-mcp-stdio",
   "notedthat-server",
 ]

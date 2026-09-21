@@ -2,11 +2,11 @@
 
 ## Overview
 
-NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 12 crates share a single version from `[workspace.package].version`. The `notedthat` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`. It is the distribution crate users install, and because it depends on every other crate it publishes last, so the tag appears only once the whole workspace is on crates.io.
+NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 11 crates share a single version from `[workspace.package].version`. The `notedthat` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`. It is the distribution crate users install, and because it depends on every other crate it publishes last, so the tag appears only once the whole workspace is on crates.io.
 
 ## Versioning Policy
 
-All 12 crates share a single ecosystem-level version:
+All 11 crates share a single ecosystem-level version:
 
 - **Major bump**: any breaking change in any crate
 - **Minor bump**: new capabilities added in any crate
@@ -19,7 +19,7 @@ All 12 crates share a single ecosystem-level version:
 release-plz runs automatically on every push to `main`:
 
 1. `release-plz-release` runs first (needs: test, clippy, fmt, docker-build, integration-test). If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
-2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed (see "Adding a crate"), the release PR is the way out, and a job that waited for a green release would never open it.
+2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 11 crates. Running after a failure matters: when only a version bump can make the release succeed (see "Adding a crate"), the release PR is the way out, and a job that waited for a green release would never open it.
 3. Merging the release PR into `main` triggers the next cycle.
 
 ## Prerequisites (One-Time Setup)
@@ -44,7 +44,7 @@ Trusted Publishing cannot create new crates on crates.io. Use the bootstrap work
 1. Actions → **Publish crate (initial)** → Run workflow
 2. Enter the crate name (e.g. `notedthat-core`)
 3. Leave `register_trusted_publishers` checked (best-effort TP registration)
-4. Repeat for all 12 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer`, `notedthat-write`, `notedthat-events`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat-mcp-stdio`, `notedthat`
+4. Repeat for all 11 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer`, `notedthat-write`, `notedthat-events`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat`
 
 Bootstrap in dependency order, `notedthat` last: `cargo publish` strips the `path` from a
 `path` + `version` dependency and verifies the build against crates.io, so a crate cannot
@@ -110,6 +110,24 @@ fields in a `github_config` object (an unwrapped body is a `422 missing field gi
 field names as of 2026-09, check against the crates.io API if it rejects them):
 `{"github_config":{"crate":"<crate>","repository_owner":"NotedThat","repository_name":"NotedThat","workflow_filename":"ci.yml","environment":"release"}}`.
 
+## Removing a Crate from the Workspace
+
+The mirror image, first done for `notedthat-mcp-stdio` (last published at 0.7.1; 0.7.2 never reached it):
+
+1. Take it out of `[workspace] members` in the root `Cargo.toml`, out of `release-plz.toml`'s
+   package list and the crate dropdown in `.github/workflows/publish-crate-manual.yml`, and out
+   of whatever else named it — `Dockerfile` layers, cargo-dist `[[bin]]` targets, docs, the
+   crate counts in this file and `README.md`.
+2. Leave crates.io alone. release-plz publishes workspace members only, so the next release
+   simply does not include the crate; the versions already published stay exactly as they are,
+   still installable and still resolvable from any lockfile that names them. Nothing is yanked —
+   a yank would refuse new installs without saying where to go, and would break nobody who
+   already depends on it either way.
+3. Its Trusted Publishing configuration on crates.io is now dangling; delete it by hand from
+   the crate's settings page, since no workflow will publish under it again.
+4. Say so in the release notes of the version that drops it: what replaced it, and that the
+   archive and installer no longer carry its binary.
+
 ## Emergency Manual Publish
 
 If a crate needs to be re-published manually:
@@ -122,11 +140,11 @@ This uses OIDC Trusted Publishing (no long-lived secret required after bootstrap
 
 Every `vX.Y.Z` tag produces:
 
-1. **crates.io publish** for all 12 crates (via OIDC Trusted Publishing in `ci.yml` release-plz-release).
+1. **crates.io publish** for all 11 crates (via OIDC Trusted Publishing in `ci.yml` release-plz-release).
 2. **GitHub Release** created by release-plz with the aggregated CHANGELOG body.
 3. **Container image** at `ghcr.io/notedthat/server:X.Y.Z` (+ `latest` for non-prerelease), signed with cosign keyless and carrying a SLSA L2 build provenance attestation. Built by `.github/workflows/release.yml` via the reusable `docker.yml`.
-4. **Static binary archives** — one `notedthat-<target>.tar.xz` per target across 6 targets (linux glibc/musl x86_64 + aarch64, macOS x86_64 + aarch64), each carrying **both** `notedthat-server` and `notedthat-mcp-stdio`, with a `.bundle` cosign signature and a per-artifact SLSA provenance attestation. Uploaded as GitHub Release assets by `.github/workflows/release.yml`. `notedthat` is the workspace's only cargo-dist app, so there is one archive per target rather than one per binary.
-5. **Shell installer** (`notedthat-installer.sh`) generated by cargo-dist, published as a release asset alongside the archives. It installs both binaries.
+4. **Static binary archives** — one `notedthat-<target>.tar.xz` per target across 6 targets (linux glibc/musl x86_64 + aarch64, macOS x86_64 + aarch64), each carrying `notedthat-server`, with a `.bundle` cosign signature and a per-artifact SLSA provenance attestation. Uploaded as GitHub Release assets by `.github/workflows/release.yml`. `notedthat` is the workspace's only cargo-dist app, so there is one archive per target rather than one per binary.
+5. **Shell installer** (`notedthat-installer.sh`) generated by cargo-dist, published as a release asset alongside the archives. It installs `notedthat-server`.
 
 Windows targets are temporarily disabled — see the comment on `targets` in the root `Cargo.toml`. Windows users install with `cargo install notedthat`.
 

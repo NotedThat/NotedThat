@@ -4,31 +4,25 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "NotedThat — installs the notedthat-server and notedthat-mcp-stdio binaries"
+description = "NotedThat — installs the notedthat-server binary"
 readme = "README.md"
 homepage.workspace = true
 authors.workspace = true
 
-# The facade crate owns every published binary. `notedthat-server` and
-# `notedthat-mcp-stdio` are libraries; hosting both bins here means exactly one
-# published crate installs each name, so `cargo install notedthat` is the whole
-# install story and two crates can never race for the same file in ~/.cargo/bin.
+# The facade crate owns every published binary. `notedthat-server` is a
+# library; hosting the bin here means exactly one published crate installs the
+# name, so `cargo install notedthat` is the whole install story.
 [[bin]]
 name = "notedthat-server"
 path = "src/bin/notedthat-server.rs"
 
-[[bin]]
-name = "notedthat-mcp-stdio"
-path = "src/bin/notedthat-mcp-stdio.rs"
-
-# Sole cargo-dist opt-in: one archive carrying both binaries, one installer.
+# Sole cargo-dist opt-in: one archive carrying the binary, one installer.
 # See [workspace.metadata.dist] in the root Cargo.toml for the target list.
 [package.metadata.dist]
 dist = true
 
 [dependencies]
 notedthat-server = { path = "../notedthat-server", version = "0.7.2" }
-notedthat-mcp-stdio = { path = "../notedthat-mcp-stdio", version = "0.7.2" }
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

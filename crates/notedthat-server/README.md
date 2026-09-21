@@ -9,8 +9,8 @@ This crate backs the container image at [`ghcr.io/notedthat/server`](https://git
 ## Install
 
 ```sh
-cargo install notedthat                      # both binaries
-docker pull ghcr.io/notedthat/server:latest  # server only
+cargo install notedthat                      # the notedthat-server binary
+docker pull ghcr.io/notedthat/server:latest  # the same, as an image
 # or grab a signed binary from https://github.com/NotedThat/NotedThat/releases
 ```
 

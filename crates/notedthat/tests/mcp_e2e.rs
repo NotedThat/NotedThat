@@ -1,12 +1,17 @@
+//! The MCP tool surface, end to end over the streamable HTTP transport: a
+//! real `notedthat-server` on in-process backends, driven at `POST /mcp`.
+
 #![allow(dead_code, missing_docs)]
 // allow: SIZE_OK — task requires duplicating the container-backed server fixture here.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
+
+#[path = "support/mcp_http.rs"]
+mod mcp_http;
+use mcp_http::McpSession;
 
 /// How long to wait for the server to bind after startup.
 ///
@@ -19,93 +24,6 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const API_TOKEN: &str = "e2e-test-token";
 
-// ─── Binary Discovery ───────────────────────────────────────────────────────
-
-pub const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
-
-// ─── Subprocess Helpers ─────────────────────────────────────────────────────
-
-pub fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
-    spawn_mcp_stdio_with(url, token, &[])
-}
-
-/// Spawn the stdio binary with extra environment, e.g. a read budget.
-pub fn spawn_mcp_stdio_with(
-    url: &str,
-    token: &str,
-    extra_env: &[(&str, &str)],
-) -> (Child, ChildStdin, BufReader<ChildStdout>) {
-    let mut child = Command::new(MCP_STDIO_BIN)
-        .env("NOTEDTHAT_URL", url)
-        .env("NOTEDTHAT_TOKEN", token)
-        .envs(extra_env.iter().copied())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn notedthat-mcp-stdio");
-    let stdin = child.stdin.take().unwrap();
-    let stdout = BufReader::new(child.stdout.take().unwrap());
-    (child, stdin, stdout)
-}
-
-pub fn mcp_request(stdin: &mut ChildStdin, id: u64, method: &str, params: &serde_json::Value) {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    writeln!(stdin, "{}", serde_json::to_string(&req).unwrap()).unwrap();
-    stdin.flush().unwrap();
-}
-
-pub fn mcp_response(stdout: &mut BufReader<ChildStdout>, _timeout: Duration) -> serde_json::Value {
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .expect("failed to read from stdout");
-    assert!(!line.trim().is_empty(), "stdout returned empty line");
-    let v: serde_json::Value =
-        serde_json::from_str(line.trim()).unwrap_or_else(|_| panic!("invalid JSON: {line:?}"));
-    assert_eq!(
-        v.get("jsonrpc").and_then(serde_json::Value::as_str),
-        Some("2.0"),
-        "expected JSON-RPC 2.0: {v}"
-    );
-    v
-}
-
-pub fn mcp_initialize(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-) -> serde_json::Value {
-    mcp_request(
-        stdin,
-        0,
-        "initialize",
-        &serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "test", "version": "0" }
-        }),
-    );
-    mcp_response(stdout, Duration::from_secs(5))
-}
-
-pub fn wait_for_shutdown(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
-    let start = std::time::Instant::now();
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status);
-        }
-        if start.elapsed() > timeout {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 // ─── Server Fixture (mirrors webdav_cross_surface_e2e.rs) ───────────────────
 
 /// Vector width the stub embedder and the provisioned collection agree on.
@@ -113,8 +31,8 @@ const EMBEDDING_DIM: u32 = 4;
 
 /// Storage, vector store and embedder, all in-process.
 ///
-/// These tests drive the real `notedthat-mcp-stdio` binary against a real
-/// server; only the three external services behind that server are substituted.
+/// These tests drive `POST /mcp` on a real server; only the three external
+/// services behind that server are substituted.
 fn in_memory_backends() -> notedthat_server::run::Backends {
     notedthat_server::run::Backends {
         storage: std::sync::Arc::new(notedthat_api_http::testing::InMemoryStorage::default()),
@@ -208,9 +126,17 @@ impl Drop for NotedThatServerFixture {
 }
 
 async fn start_notedthat_server_fixture() -> NotedThatServerFixture {
+    start_notedthat_server_fixture_with(|_| {}).await
+}
+
+/// A server whose `Config` is adjusted before it starts — a read budget, say.
+async fn start_notedthat_server_fixture_with(
+    adjust: impl FnOnce(&mut notedthat_server::config::Config),
+) -> NotedThatServerFixture {
     let _guard = test_mutex().lock().await;
     let http_addr = notedthat_api_http::testing::reserve_addr();
-    let config = test_config(http_addr);
+    let mut config = test_config(http_addr);
+    adjust(&mut config);
 
     let backends = in_memory_backends();
     let server_handle = tokio::spawn(async move {
@@ -237,32 +163,25 @@ fn test_mutex() -> &'static Mutex<()> {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_infra_smoke() {
-    // Given: the MCP stdio binary is available and receives syntactically valid configuration.
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+    // Given: a real server with `/mcp` mounted, and a client with its credential.
+    let fixture = start_notedthat_server_fixture().await;
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
 
     // When: the client sends the MCP initialize request.
-    let resp = mcp_initialize(&mut stdin, &mut stdout);
+    let resp = mcp.initialize().await;
 
     // Then: the server responds with a JSON-RPC result.
     assert!(resp.get("result").is_some(), "expected result: {resp}");
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
-#[tokio::test]
-#[ignore = "subprocess test — run with --ignored"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_initialize_returns_valid_response() {
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
+    let fixture = start_notedthat_server_fixture().await;
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
 
-    let resp = mcp_initialize(&mut stdin, &mut stdout);
+    let resp = mcp.initialize().await;
     let result = resp.get("result").expect("expected result field");
     assert!(
         result.get("protocolVersion").is_some(),
@@ -276,40 +195,16 @@ async fn mcp_initialize_returns_valid_response() {
         result.get("serverInfo").is_some(),
         "missing serverInfo: {result}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
-#[tokio::test]
-#[ignore = "subprocess test — run with --ignored"]
-async fn mcp_tools_list_returns_all_nine() {
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
-
-    // Initialize first (required by MCP protocol)
-    let _ = mcp_initialize(&mut stdin, &mut stdout);
-
-    // Send initialized notification
-    let notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    });
-    writeln!(
-        &mut stdin,
-        "{}",
-        serde_json::to_string(&notification).unwrap()
-    )
-    .unwrap();
-    stdin.flush().unwrap();
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mcp_tools_list_returns_all_eleven() {
+    let fixture = start_notedthat_server_fixture().await;
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     // Request tools/list
-    mcp_request(&mut stdin, 1, "tools/list", &serde_json::json!({}));
-    let resp = mcp_response(&mut stdout, Duration::from_secs(5));
+    let resp = mcp.request(1, "tools/list", &serde_json::json!({})).await;
 
     let tools = resp
         .get("result")
@@ -355,44 +250,6 @@ async fn mcp_tools_list_returns_all_nine() {
             "tool {name} missing inputSchema"
         );
     }
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
-}
-
-// ─── W4.3+W4.4 Helpers ──────────────────────────────────────────────────────
-
-fn mcp_call_tool(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: u64,
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> serde_json::Value {
-    mcp_request(
-        stdin,
-        id,
-        "tools/call",
-        &serde_json::json!({
-            "name": tool_name,
-            "arguments": args,
-        }),
-    );
-    mcp_response(stdout, Duration::from_secs(10))
-}
-
-fn mcp_session_init(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
-    let _ = mcp_initialize(stdin, stdout);
-    let notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    });
-    writeln!(stdin, "{}", serde_json::to_string(&notification).unwrap()).unwrap();
-    stdin.flush().unwrap();
 }
 
 async fn authenticated_object_state(
@@ -434,34 +291,34 @@ async fn authenticated_object_state(
 #[allow(clippy::too_many_lines)]
 async fn mcp_write_list_read_delete() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     // 1. Write a note.
-    let write_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "test-w4.md",
-            "content": "# Test\nHello from W4.3",
-        }),
-    );
+    let write_resp = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "test-w4.md",
+                "content": "# Test\nHello from W4.3",
+            }),
+        )
+        .await;
     assert!(
         write_resp.get("result").is_some(),
         "write should succeed: {write_resp}"
     );
 
     // 2. List with prefix — test-w4.md must appear.
-    let list_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "list",
-        &serde_json::json!({ "kb": "notes", "prefix": "test-" }),
-    );
+    let list_resp = mcp
+        .call_tool(
+            2,
+            "list",
+            &serde_json::json!({ "kb": "notes", "prefix": "test-" }),
+        )
+        .await;
     assert!(
         list_resp.get("result").is_some(),
         "list should succeed: {list_resp}"
@@ -479,13 +336,13 @@ async fn mcp_write_list_read_delete() {
     );
 
     // 3. Read full content — must contain the written text.
-    let read_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
-    );
+    let read_resp = mcp
+        .call_tool(
+            3,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        )
+        .await;
     assert!(
         read_resp.get("result").is_some(),
         "read should succeed: {read_resp}"
@@ -499,18 +356,18 @@ async fn mcp_write_list_read_delete() {
     );
 
     // 4. Ranged read — bytes 0..6 (exclusive) → "# Test".
-    let range_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        4,
-        "read",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "test-w4.md",
-            "byte_start": 0,
-            "byte_end": 6,
-        }),
-    );
+    let range_resp = mcp
+        .call_tool(
+            4,
+            "read",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "test-w4.md",
+                "byte_start": 0,
+                "byte_end": 6,
+            }),
+        )
+        .await;
     assert!(
         range_resp.get("result").is_some(),
         "ranged read should succeed: {range_resp}"
@@ -524,26 +381,26 @@ async fn mcp_write_list_read_delete() {
     );
 
     // 5. Delete the note.
-    let del_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        5,
-        "delete",
-        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
-    );
+    let del_resp = mcp
+        .call_tool(
+            5,
+            "delete",
+            &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        )
+        .await;
     assert!(
         del_resp.get("result").is_some(),
         "delete should succeed: {del_resp}"
     );
 
     // 6. Read after delete → not_found error.
-    let gone_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        6,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
-    );
+    let gone_resp = mcp
+        .call_tool(
+            6,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "test-w4.md" }),
+        )
+        .await;
     assert!(
         gone_resp.get("error").is_some(),
         "read of deleted note should return error: {gone_resp}"
@@ -553,62 +410,56 @@ async fn mcp_write_list_read_delete() {
         msg.contains("not_found"),
         "expected not_found in error message, got: {msg:?}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_move_happy() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     // 1. Write source note.
-    let write_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "src-move.md",
-            "content": "# Move source",
-        }),
-    );
+    let write_resp = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "src-move.md",
+                "content": "# Move source",
+            }),
+        )
+        .await;
     assert!(
         write_resp.get("result").is_some(),
         "write src should succeed: {write_resp}"
     );
 
     // 2. Move src-move.md → dst-move.md.
-    let move_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "move",
-        &serde_json::json!({
-            "kb": "notes",
-            "from": "src-move.md",
-            "to": "dst-move.md",
-        }),
-    );
+    let move_resp = mcp
+        .call_tool(
+            2,
+            "move",
+            &serde_json::json!({
+                "kb": "notes",
+                "from": "src-move.md",
+                "to": "dst-move.md",
+            }),
+        )
+        .await;
     assert!(
         move_resp.get("result").is_some(),
         "move should succeed: {move_resp}"
     );
 
     // 3. Read destination — must contain original content.
-    let read_dst = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
-    );
+    let read_dst = mcp
+        .call_tool(
+            3,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+        )
+        .await;
     assert!(
         read_dst.get("result").is_some(),
         "read dst should succeed: {read_dst}"
@@ -622,13 +473,13 @@ async fn mcp_move_happy() {
     );
 
     // 4. Read source — must be gone (not_found).
-    let read_src = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        4,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "src-move.md" }),
-    );
+    let read_src = mcp
+        .call_tool(
+            4,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "src-move.md" }),
+        )
+        .await;
     assert!(
         read_src.get("error").is_some(),
         "source should be gone after move: {read_src}"
@@ -640,45 +491,39 @@ async fn mcp_move_happy() {
     );
 
     // 5. Cleanup: delete destination.
-    let del_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        5,
-        "delete",
-        &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
-    );
+    let del_resp = mcp
+        .call_tool(
+            5,
+            "delete",
+            &serde_json::json!({ "kb": "notes", "path": "dst-move.md" }),
+        )
+        .await;
     assert!(
         del_resp.get("result").is_some(),
         "delete dst should succeed: {del_resp}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_move_self_rejected_without_mutating_source() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     let source_path = "self-move.md";
     let source_content = "self-move source content";
-    let write_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": source_path,
-            "content": source_content,
-            "mime_type": "text/plain",
-        }),
-    );
+    let write_resp = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": source_path,
+                "content": source_content,
+                "mime_type": "text/plain",
+            }),
+        )
+        .await;
     assert!(
         write_resp.get("result").is_some(),
         "source write should succeed: {write_resp}"
@@ -686,17 +531,17 @@ async fn mcp_move_self_rejected_without_mutating_source() {
     let before = authenticated_object_state(&fixture, source_path).await;
 
     for (id, to) in [(2, source_path), (3, "/self-move.md")] {
-        let response = mcp_call_tool(
-            &mut stdin,
-            &mut stdout,
-            id,
-            "move",
-            &serde_json::json!({
-                "kb": "notes",
-                "from": source_path,
-                "to": to,
-            }),
-        );
+        let response = mcp
+            .call_tool(
+                id,
+                "move",
+                &serde_json::json!({
+                    "kb": "notes",
+                    "from": source_path,
+                    "to": to,
+                }),
+            )
+            .await;
         assert_eq!(
             response["error"]["code"].as_i64(),
             Some(-32602),
@@ -710,13 +555,13 @@ async fn mcp_move_self_rejected_without_mutating_source() {
         );
     }
 
-    let read_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        4,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": source_path }),
-    );
+    let read_resp = mcp
+        .call_tool(
+            4,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": source_path }),
+        )
+        .await;
     assert_eq!(
         read_resp["result"]["content"][0]["text"].as_str(),
         Some(source_content),
@@ -728,23 +573,17 @@ async fn mcp_move_self_rejected_without_mutating_source() {
         "authenticated HTTP read must retain bytes, content type, and content-derived ETag"
     );
 
-    let del_resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        5,
-        "delete",
-        &serde_json::json!({ "kb": "notes", "path": source_path }),
-    );
+    let del_resp = mcp
+        .call_tool(
+            5,
+            "delete",
+            &serde_json::json!({ "kb": "notes", "path": source_path }),
+        )
+        .await;
     assert!(
         del_resp.get("result").is_some(),
         "cleanup should succeed: {del_resp}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
 // ─── W4.4: Error paths ──────────────────────────────────────────────────────
@@ -752,19 +591,19 @@ async fn mcp_move_self_rejected_without_mutating_source() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_read_missing() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
-    let resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "read",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "does-not-exist-w4.md",
-        }),
-    );
+    let resp = mcp
+        .call_tool(
+            1,
+            "read",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "does-not-exist-w4.md",
+            }),
+        )
+        .await;
     assert!(
         resp.get("error").is_some(),
         "read of missing object should error: {resp}"
@@ -774,12 +613,6 @@ async fn mcp_read_missing() {
         msg.contains("not_found"),
         "expected not_found in message, got: {msg:?}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
 /// The read→edit workflow with no second round trip: the `ETag` in the read's
@@ -790,30 +623,30 @@ async fn mcp_read_missing() {
 #[allow(clippy::too_many_lines)]
 async fn mcp_read_carries_the_etag_its_text_belongs_to() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
-    let written = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "read-meta.md",
-            "content": "one\ntwo\nthree\n",
-        }),
-    );
+    let written = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "read-meta.md",
+                "content": "one\ntwo\nthree\n",
+            }),
+        )
+        .await;
     assert!(written.get("result").is_some(), "write: {written}");
 
     // A full read: text in content, the version and totals beside it.
-    let read = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "read-meta.md" }),
-    );
+    let read = mcp
+        .call_tool(
+            2,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "read-meta.md" }),
+        )
+        .await;
     assert_eq!(read["result"]["content"][0]["text"], "one\ntwo\nthree\n");
     let meta = &read["result"]["structuredContent"];
     let (_, _, http_etag) = authenticated_object_state(&fixture, "read-meta.md").await;
@@ -831,13 +664,13 @@ async fn mcp_read_carries_the_etag_its_text_belongs_to() {
     );
 
     // A line read reports the slice's lines and the object's totals.
-    let lines = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "read-meta.md", "line_start": 2, "line_end": 2 }),
-    );
+    let lines = mcp
+        .call_tool(
+            3,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "read-meta.md", "line_start": 2, "line_end": 2 }),
+        )
+        .await;
     assert_eq!(lines["result"]["content"][0]["text"], "two\n");
     let line_meta = &lines["result"]["structuredContent"];
     assert_eq!(line_meta["etag"], http_etag);
@@ -851,20 +684,20 @@ async fn mcp_read_carries_the_etag_its_text_belongs_to() {
 
     // That etag is exactly what edit wants.
     let etag = meta["etag"].as_str().expect("etag string").to_string();
-    let edited = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        4,
-        "edit",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "read-meta.md",
-            "line_start": 2,
-            "line_end": 2,
-            "content": "TWO\n",
-            "if_match": etag,
-        }),
-    );
+    let edited = mcp
+        .call_tool(
+            4,
+            "edit",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "read-meta.md",
+                "line_start": 2,
+                "line_end": 2,
+                "content": "TWO\n",
+                "if_match": etag,
+            }),
+        )
+        .await;
     assert!(
         edited.get("result").is_some(),
         "edit with the read's etag: {edited}"
@@ -884,62 +717,54 @@ async fn mcp_read_carries_the_etag_its_text_belongs_to() {
         .expect("intervening write")
         .error_for_status()
         .expect("intervening write succeeds");
-    let stale = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        5,
-        "edit",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "read-meta.md",
-            "line_start": 1,
-            "line_end": 1,
-            "content": "clobber\n",
-            "if_match": etag,
-        }),
-    );
+    let stale = mcp
+        .call_tool(
+            5,
+            "edit",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "read-meta.md",
+                "line_start": 1,
+                "line_end": 1,
+                "content": "clobber\n",
+                "if_match": etag,
+            }),
+        )
+        .await;
     let msg = stale["error"]["message"].as_str().unwrap_or("");
     assert!(
         msg.contains("precondition_failed"),
         "a stale etag must be refused, got: {stale}"
     );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
-/// An object over the transport's read budget is refused with the way through,
-/// and a slice inside the budget is served (#88).
+/// An object over the server's read budget is refused with the way through,
+/// and a slice inside the budget is served (#88). The budget is the server's
+/// `NOTEDTHAT_MCP_MAX_READ_BYTES`, set on its `Config` here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_read_over_the_budget_is_redirected_to_slices() {
-    let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio_with(
-        &fixture.http_url,
-        fixture.token,
-        &[("NOTEDTHAT_MCP_MAX_READ_BYTES", "64")],
-    );
-    mcp_session_init(&mut stdin, &mut stdout);
+    let fixture =
+        start_notedthat_server_fixture_with(|config| config.mcp_max_read_bytes = 64).await;
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     let body = "x".repeat(200);
-    let written = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({ "kb": "notes", "path": "big.md", "content": body }),
-    );
+    let written = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({ "kb": "notes", "path": "big.md", "content": body }),
+        )
+        .await;
     assert!(written.get("result").is_some(), "write: {written}");
 
-    let whole = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "big.md" }),
-    );
+    let whole = mcp
+        .call_tool(
+            2,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "big.md" }),
+        )
+        .await;
     let msg = whole["error"]["message"].as_str().unwrap_or("");
     assert!(
         msg.starts_with("response_too_large: the object is 200 bytes"),
@@ -948,13 +773,13 @@ async fn mcp_read_over_the_budget_is_redirected_to_slices() {
     assert!(msg.contains("64 bytes"), "{msg}");
     assert!(msg.contains("byte_start/byte_end"), "{msg}");
 
-    let slice = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "read",
-        &serde_json::json!({ "kb": "notes", "path": "big.md", "byte_start": 0, "byte_end": 64 }),
-    );
+    let slice = mcp
+        .call_tool(
+            3,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "big.md", "byte_start": 0, "byte_end": 64 }),
+        )
+        .await;
     assert_eq!(
         slice["result"]["content"][0]["text"],
         "x".repeat(64),
@@ -963,42 +788,36 @@ async fn mcp_read_over_the_budget_is_redirected_to_slices() {
     assert_eq!(slice["result"]["structuredContent"]["total_bytes"], 200);
     assert_eq!(slice["result"]["structuredContent"]["byte_end"], 64);
 
-    mcp_request(
-        &mut stdin,
-        4,
-        "resources/read",
-        &serde_json::json!({ "uri": "notedthat://notes/big.md" }),
-    );
-    let resource = mcp_response(&mut stdout, Duration::from_secs(10));
+    let resource = mcp
+        .request(
+            4,
+            "resources/read",
+            &serde_json::json!({ "uri": "notedthat://notes/big.md" }),
+        )
+        .await;
     let msg = resource["error"]["message"].as_str().unwrap_or("");
     assert!(msg.contains("response_too_large"), "{resource}");
     assert!(msg.contains("read tool"), "{msg}");
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_write_precondition() {
     let fixture = start_notedthat_server_fixture().await;
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
-    mcp_session_init(&mut stdin, &mut stdout);
+    let mcp = McpSession::connect(&fixture.http_url, fixture.token);
+    mcp.session_init().await;
 
     // 1. Initial write — capture the returned etag.
-    let first = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "test-precond.md",
-            "content": "v1",
-        }),
-    );
+    let first = mcp
+        .call_tool(
+            1,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "test-precond.md",
+                "content": "v1",
+            }),
+        )
+        .await;
     assert!(
         first.get("result").is_some(),
         "first write should succeed: {first}"
@@ -1015,18 +834,18 @@ async fn mcp_write_precondition() {
 
     // 2. Write again with a deliberately wrong If-Match → precondition_failed.
     let wrong_etag = format!("{etag}-wrong");
-    let second = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        2,
-        "write",
-        &serde_json::json!({
-            "kb": "notes",
-            "path": "test-precond.md",
-            "content": "v2",
-            "if_match": wrong_etag,
-        }),
-    );
+    let second = mcp
+        .call_tool(
+            2,
+            "write",
+            &serde_json::json!({
+                "kb": "notes",
+                "path": "test-precond.md",
+                "content": "v2",
+                "if_match": wrong_etag,
+            }),
+        )
+        .await;
     assert!(
         second.get("error").is_some(),
         "write with wrong if_match should error: {second}"
@@ -1038,89 +857,34 @@ async fn mcp_write_precondition() {
     );
 
     // Cleanup.
-    let _ = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "delete",
-        &serde_json::json!({ "kb": "notes", "path": "test-precond.md" }),
-    );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
+    let _ = mcp
+        .call_tool(
+            3,
+            "delete",
+            &serde_json::json!({ "kb": "notes", "path": "test-precond.md" }),
+        )
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mcp_bad_token() {
     let fixture = start_notedthat_server_fixture().await;
-    // Intentionally pass a wrong token — every tool call should be rejected.
-    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, "wrong-token");
-    mcp_session_init(&mut stdin, &mut stdout);
+    // Intentionally pass a wrong token — the transport refuses every request
+    // before it reaches a tool, `initialize` included.
+    let mcp = McpSession::connect(&fixture.http_url, "wrong-token");
 
-    let resp = mcp_call_tool(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "list_knowledgebases",
-        &serde_json::json!({}),
+    let response = mcp
+        .send(
+            1,
+            "tools/call",
+            &serde_json::json!({ "name": "list_knowledgebases", "arguments": {} }),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a bad bearer is refused at the transport"
     );
-    assert!(
-        resp.get("error").is_some(),
-        "bad token should produce an error: {resp}"
-    );
-    let msg = resp["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("unauthorized"),
-        "expected unauthorized in message, got: {msg:?}"
-    );
-
-    drop(stdin);
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
-}
-
-#[tokio::test]
-#[ignore = "subprocess test"]
-async fn mcp_shutdown_returns_clean_exit() {
-    let (mut child, mut stdin, mut stdout) =
-        spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
-
-    // Initialize
-    let _ = mcp_initialize(&mut stdin, &mut stdout);
-
-    // Send shutdown request
-    mcp_request(&mut stdin, 99, "shutdown", &serde_json::json!(null));
-
-    // Wait for process exit (5s bound)
-    drop(stdin);
-    if let Some(status) = wait_for_shutdown(&mut child, Duration::from_secs(5)) {
-        // Exit code may be 0 or non-zero depending on rmcp shutdown handling
-        // The important thing is it exited cleanly (no kill needed)
-        let _ = status;
-    } else {
-        child.kill().unwrap();
-        child.wait().unwrap();
-        panic!("binary did not exit within 5s after shutdown request");
-    }
-}
-
-#[tokio::test]
-#[ignore = "subprocess test"]
-async fn mcp_stdin_close_causes_exit() {
-    let (mut child, stdin, _stdout) = spawn_mcp_stdio("http://127.0.0.1:65534", "test-token");
-
-    // Close stdin immediately (EOF)
-    drop(stdin);
-
-    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
-        panic!("binary did not exit within 5s after stdin EOF");
-    }
-    // else: exited — pass
+    let body: serde_json::Value = response.json().await.expect("401 body is JSON");
+    assert_eq!(body["error"], "unauthorized", "{body}");
 }

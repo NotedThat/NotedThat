@@ -536,10 +536,8 @@ A description is shown exactly when its knowledge base is listed: a knowledge ba
 cannot see contributes no entry, so nothing about it is described.
 
 **Upgrade note (bare slugs → objects).** Before knowledge base descriptions the array held bare
-slug strings. A client that indexed into it as strings must read `kb_slug` now. The bundled
-`notedthat-mcp-stdio` reads both shapes, so a newer adapter still lists an older server; an older
-adapter against a newer server does not, and fails `list_knowledgebases`, `resources/list` and a
-`kb`-less `search` with a deserialization error — upgrade the adapter, they ship together.
+slug strings. A client that indexed into it as strings must read `kb_slug` now. The server's own
+MCP client reads both shapes, so `/mcp` on a newer server never trips over the listing.
 
 **Example:**
 
@@ -1761,16 +1759,13 @@ The MCP (Model Context Protocol) surface wraps the HTTP API described above. It 
 
 ### Transports
 
-NotedThat supports two MCP transports: stdio (M7) and streamable HTTP (M8).
-
-#### stdio transport
-
-MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your MCP client to launch the binary as a subprocess; see [Connecting clients](CLIENTS.md) for setup snippets.
+NotedThat serves MCP over one transport, streamable HTTP. A client that can only spawn a
+subprocess is bridged with `mcp-remote`; see [Connecting clients](CLIENTS.md#clients-that-only-spawn-a-command).
 
 #### Streamable HTTP transport
 
-MCP is also available over HTTP at `POST /mcp` on the unified listener. It is always mounted with
-the API and WebDAV.
+MCP is served over HTTP at `POST /mcp` on the unified listener. It is always mounted with the
+API and WebDAV.
 
 **Endpoint:** `POST /mcp`
 

@@ -37,27 +37,21 @@ The supported development paths are documented in the root [README](README.md):
 Do not commit provider credentials. Copy `.env.example` to `.env`, replace its
 embedding endpoint, model, key, and dimensions, then follow the chosen README flow.
 
-## Running a Specific Crate
+## Running the Server
 
 ```sh
-cargo run --bin notedthat-mcp-stdio
+cargo run --bin notedthat-server
 ```
 
-Both binaries are owned by the `notedthat` crate, so select them with `--bin`;
-`-p notedthat-server` and `-p notedthat-mcp-stdio` name library crates and have
-nothing to run.
+The binary is owned by the `notedthat` crate, so select it with `--bin`;
+`-p notedthat-server` names a library crate and has nothing to run.
 
-## Installing the MCP stdio wrapper
+## Wiring an MCP client to a local build
 
-`notedthat-mcp-stdio` is the subprocess an MCP client (opencode, Claude Desktop, Cursor, Zed) spawns to talk to the server. To keep an MCP client wired up against a local build, install the binary somewhere on `PATH`. The Makefile has two paths, both writing to `$HOME/.local/bin/notedthat-mcp-stdio`:
-
-```sh
-make mcp-stdio             # cargo install from source — reflects your working tree
-                           # (cargo install --path crates/notedthat installs both binaries)
-make mcp-stdio-from-image  # docker cp from notedthat-server:local — fast, requires a built image
-```
-
-Override `PREFIX=/some/dir` or `IMAGE=some:tag` on the command line to install elsewhere. See `make help` for the full listing.
+MCP is served by the running server at `POST /mcp`; there is no client-side
+binary to install. Point the client at `http://localhost:8080/mcp` with the
+`Authorization: Bearer` header, or bridge a command-only client with
+`mcp-remote` — see [docs/CLIENTS.md](docs/CLIENTS.md).
 
 ## Test Conventions
 

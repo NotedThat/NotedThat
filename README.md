@@ -18,8 +18,8 @@ sync folder cannot do is the rest:
 
 - **Anything that speaks MCP is a client.** Claude Code, claude.ai, Claude Desktop, Cursor,
   VS Code, Zed, n8n, Windmill, the MCP Inspector — eleven tools (`search`, `read`, `write`, `edit`,
-  `append`, `replace`, `list`, `move`, `delete`, `list_knowledgebases`, `index_status`) over one HTTP endpoint
-  or a local stdio adapter. An assistant searches your notes for context and files what it
+  `append`, `replace`, `list`, `move`, `delete`, `list_knowledgebases`, `index_status`) over one HTTP
+  endpoint. An assistant searches your notes for context and files what it
   learned; a workflow appends the day's output to a journal. [Connecting clients →](docs/CLIENTS.md)
 - **Anything that opens a folder is a client.** GNOME Files, Dolphin, davfs2, rclone, WinSCP —
   mount the share and interact with it like a human would. What you save is searchable moments
@@ -73,7 +73,7 @@ rclone mount notedthat:notes ~/Notes --vfs-cache-mode writes
 
 Every client that is not on the server's own machine needs the public hostname in
 `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`, and TLS at a reverse proxy in front. Full setup for
-Claude Desktop, Cursor, VS Code, Zed, Windmill and the stdio adapter: [docs/CLIENTS.md](docs/CLIENTS.md).
+Claude Desktop, Cursor, VS Code, Zed, Windmill and command-only clients: [docs/CLIENTS.md](docs/CLIENTS.md).
 Every mount option, including Windows and the `LOCK` caveat: [docs/WEBDAV.md](docs/WEBDAV.md).
 
 ## Documentation
@@ -345,10 +345,9 @@ Full API documentation: [`docs/API.md`](docs/API.md)
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
 | `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
-| `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
-| `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs both. |
+| `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` binary, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs it. |
 
-All 12 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Contributing
 

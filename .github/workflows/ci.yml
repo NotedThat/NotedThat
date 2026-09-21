@@ -147,9 +147,8 @@ jobs:
     # Keep this budget tight on purpose. Almost everything here now runs on
     # in-memory backends (notedthat_indexer::testing, notedthat_api_http::testing),
     # so the only work that can grow without bound is what still needs real
-    # infrastructure: the storage-s3 container suite and the mcp-stdio
-    # subprocess tests that `--include-ignored` unlocks. This budget is the
-    # tripwire for those. Raising the number would hide growth rather than fix it.
+    # infrastructure: the container suites that `--include-ignored` unlocks.
+    # This budget is the tripwire for those. Raising the number would hide growth rather than fix it.
     #
     # Note what a breach costs, though: exceeding this does not FAIL the job,
     # it CANCELS it, and a cancelled dependency silently SKIPS release-plz
@@ -272,7 +271,7 @@ jobs:
                          | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
             # `|| true`: under `set -e` a curl that could not connect would
             # otherwise exit the script here; `--max-time` so a stalled
-            # connection cannot hang the job twelve times over.
+            # connection cannot hang the job eleven times over.
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
                      -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
                      "https://crates.io/api/v1/crates/${crate}" || true)
@@ -298,7 +297,7 @@ jobs:
       # chain to release.yml explicitly. The `..|.tag?` jq walker handles
       # either shape release-plz may emit (`{"releases":[...]}` or `[...]`),
       # and the `^v[0-9]` filter picks the workspace-wide tag (`v0.1.4`)
-      # while skipping per-crate tags (`notedthat-mcp-stdio-v0.1.4`).
+      # while skipping per-crate tags (`notedthat-mcp-v0.1.4`).
       - name: Trigger release.yml for the workspace tag
         if: steps.release-plz.outputs.releases != ''
         env:
