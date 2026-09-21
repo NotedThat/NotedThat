@@ -30,8 +30,12 @@
 #
 # Why the guards below:
 #   - Same-repo PRs only: a fork PR gets no secrets, so the job would only fail.
-#   - release-plz PRs are generated changelog/version bumps; nothing to review,
-#     and each one would burn a full run's worth of requests.
+#   - Release PRs are changelog/version bumps; nothing to review, and each
+#     one would burn a full run's worth of requests. release-plz opens them
+#     from `release-plz-*` branches; a hand-made one, for when release-plz
+#     cannot open it (#148), comes from `release/v*`. Both carry
+#     release-plz's PR title, `chore: release vX.Y.Z`, which is the third
+#     check, so a release PR from an unforeseen branch name is still skipped.
 #   - Draft PRs are filtered in the profiles (`draft = false` on each trigger;
 #     Warden's default is to review drafts too), not here, so a draft flipped
 #     to ready gets reviewed on its next push without a workflow change.
@@ -60,6 +64,8 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository
       && !startsWith(github.head_ref, 'release-plz-')
+      && !startsWith(github.head_ref, 'release/')
+      && !startsWith(github.event.pull_request.title, 'chore: release ')
     runs-on: ubuntu-latest
     # Per profile: the MiniMax lane runs four hunks at a time and may queue
     # behind another PR at the proxy, so a large feature PR (~350 hunks,
