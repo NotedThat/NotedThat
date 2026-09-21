@@ -78,7 +78,7 @@ pub async fn run() -> Result<()> {
 
     let url = require(cli.url, "NOTEDTHAT_URL")?;
     let token = require(cli.token, "NOTEDTHAT_TOKEN")?;
-    let max_read_bytes = read_budget(cli.mcp_max_read_bytes)?;
+    let max_read_bytes = read_budget(cli.mcp_max_read_bytes.as_deref())?;
 
     let client = NotedThatClient::new(&url, &token)
         .context("invalid NOTEDTHAT_URL or NOTEDTHAT_TOKEN")?
@@ -130,9 +130,9 @@ fn require(supplied: Option<String>, name: &str) -> Result<String> {
 /// The read budget: absent, empty or blank means the default (Compose hands an
 /// unset variable over as an empty string); anything else must be a positive
 /// byte count.
-fn read_budget(supplied: Option<String>) -> Result<u64> {
+fn read_budget(supplied: Option<&str>) -> Result<u64> {
     let named = notedthat_core::setting("NOTEDTHAT_MCP_MAX_READ_BYTES");
-    let Some(value) = supplied.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
+    let Some(value) = supplied.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(notedthat_mcp::DEFAULT_MAX_READ_BYTES);
     };
     let budget: u64 = value
@@ -195,18 +195,16 @@ mod tests {
             read_budget(None).unwrap(),
             notedthat_mcp::DEFAULT_MAX_READ_BYTES
         );
-        assert_eq!(read_budget(Some(" 4096 ".to_string())).unwrap(), 4096);
+        assert_eq!(read_budget(Some(" 4096 ")).unwrap(), 4096);
         for empty in ["", "  "] {
             assert_eq!(
-                read_budget(Some(empty.to_string())).unwrap(),
+                read_budget(Some(empty)).unwrap(),
                 notedthat_mcp::DEFAULT_MAX_READ_BYTES,
                 "{empty:?} is the default, as Compose's ${{VAR-}} requires"
             );
         }
         for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
-            let error = read_budget(Some(value.to_string()))
-                .unwrap_err()
-                .to_string();
+            let error = read_budget(Some(value)).unwrap_err().to_string();
             assert!(error.contains("NOTEDTHAT_MCP_MAX_READ_BYTES"), "{error}");
             assert!(error.contains("--mcp-max-read-bytes"), "{error}");
             assert!(error.contains(fragment), "{error}");
