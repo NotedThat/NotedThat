@@ -2,8 +2,13 @@ use serde::{Deserialize, Serialize};
 
 /// Filters applied to a search request. All fields are optional and AND-composed.
 ///
-/// Unknown JSON fields are silently ignored (no `deny_unknown_fields`) for forward compatibility.
+/// Unknown JSON keys are rejected, for the reason given on
+/// [`SearchRequest`](super::SearchRequest): a misspelt field must be a `400`,
+/// not a filter that silently did not apply. The MCP `search` tool publishes
+/// this exact field set in its input schema and forwards it verbatim; a test
+/// there keeps the two in step.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchFilter {
     /// Only return hits whose `object_key` starts with this prefix (client-side post-filter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,9 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_ignores_unknown_fields() {
-        let f: SearchFilter =
-            serde_json::from_str(r#"{"mime":"text/plain","unknown_field":true}"#).unwrap();
-        assert_eq!(f.mime, Some("text/plain".into()));
+    fn deserialize_refuses_unknown_fields_naming_them() {
+        let err = serde_json::from_str::<SearchFilter>(r#"{"mime":"text/plain","mimetype":true}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mimetype"), "{err}");
+        assert!(
+            err.contains("object_key_prefix"),
+            "lists the accepted keys: {err}"
+        );
     }
 }

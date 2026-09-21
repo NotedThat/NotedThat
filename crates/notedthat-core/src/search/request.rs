@@ -18,8 +18,16 @@ pub const MIN_LIMIT: u32 = 1;
 ///
 /// `#[non_exhaustive]` is NOT applied to request types — it would break
 /// struct-literal construction in tests and client code.
-/// Unknown JSON fields are silently ignored for forward compatibility.
+///
+/// Unknown JSON keys are **rejected**, at this level and inside
+/// [`SearchFilter`]. The field set is three names and stable, and the
+/// alternative was worse than a `400`: a body carrying `filters` (plural)
+/// used to be accepted and answered with the unfiltered result, so a
+/// one-letter mistake was a `200` with a superset and nothing to notice it
+/// by (#125). A newer client against an older server now hears which key the
+/// server does not know instead of silently getting more than it asked for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     /// The natural-language query string (required).
     pub query: String,
@@ -146,6 +154,30 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_top_level_key_is_refused_and_named() {
+        // `filters` is the one predictable misspelling: it is what the MCP
+        // tool calls its own argument.
+        let err = serde_json::from_str::<SearchRequest>(
+            r#"{"query":"x","filters":{"mime":"text/markdown"}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("filters"), "names the key: {err}");
+        for accepted in ["query", "filter", "limit"] {
+            assert!(err.contains(accepted), "lists {accepted}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_filter_key_is_refused_and_named() {
+        let err =
+            serde_json::from_str::<SearchRequest>(r#"{"query":"x","filter":{"mimetype":"a/b"}}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("mimetype"), "names the key: {err}");
+    }
+
+    #[test]
     fn limit_none_defaults_to_10() {
         let v = SearchRequest {
             query: "x".into(),
@@ -210,13 +242,6 @@ mod tests {
         assert_eq!(r.query, "hello");
         assert!(r.filter.is_none());
         assert!(r.limit.is_none());
-    }
-
-    #[test]
-    fn serde_unknown_fields_ignored() {
-        let r: SearchRequest =
-            serde_json::from_str(r#"{"query":"hello","extra":"ignored"}"#).unwrap();
-        assert_eq!(r.query, "hello");
     }
 
     #[test]

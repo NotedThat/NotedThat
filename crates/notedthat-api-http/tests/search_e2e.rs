@@ -449,6 +449,101 @@ async fn e2e_filter_by_heading_path_prefix() {
     env.join().await;
 }
 
+/// POST /search with `filter.mime`: a type nothing in the knowledge base has
+/// returns zero hits, and the type everything has returns the unfiltered hits.
+/// The e2e the #125 report would have needed — it measured a misspelt key
+/// (`filters`), which the request below shows is now a `400`.
+#[tokio::test]
+async fn e2e_filter_by_mime() {
+    let env = setup_full_e2e("notes-mime").await;
+    let kb = "notes-mime";
+
+    let put = env
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/knowledgebases/{kb}/canvas.md"))
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .header("content-type", "text/markdown")
+                .body(Body::from(
+                    "# Canvas
+
+A canvas is a virtual space on which content is painted.
+",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put.status(), StatusCode::CREATED);
+
+    wait_for_index(&env.store, &env.kb, 1, INDEX_READY_TIMEOUT)
+        .await
+        .expect("indexing timed out");
+
+    let search = |body: &'static str| {
+        env.router.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/knowledgebases/{kb}/search"))
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+    };
+
+    let unfiltered = search(r#"{"query":"canvas"}"#).await.unwrap();
+    assert_eq!(unfiltered.status(), StatusCode::OK);
+    let unfiltered = response_json(unfiltered).await;
+    assert!(
+        unfiltered["hits"].as_array().is_some_and(|h| !h.is_empty()),
+        "the note is a hit without a filter: {unfiltered}"
+    );
+
+    let excluded = search(r#"{"query":"canvas","filter":{"mime":"application/pdf"}}"#)
+        .await
+        .unwrap();
+    assert_eq!(excluded.status(), StatusCode::OK);
+    let excluded = response_json(excluded).await;
+    assert_eq!(
+        excluded["hits"],
+        serde_json::json!([]),
+        "a MIME type nothing has excludes everything: {excluded}"
+    );
+
+    let included = search(r#"{"query":"canvas","filter":{"mime":"text/markdown"}}"#)
+        .await
+        .unwrap();
+    assert_eq!(included.status(), StatusCode::OK);
+    let included = response_json(included).await;
+    assert_eq!(
+        included["hits"], unfiltered["hits"],
+        "the MIME type everything has changes nothing"
+    );
+
+    let misspelt = search(r#"{"query":"canvas","filters":{"mime":"application/pdf"}}"#)
+        .await
+        .unwrap();
+    assert_eq!(
+        misspelt.status(),
+        StatusCode::BAD_REQUEST,
+        "`filters` is refused rather than ignored"
+    );
+    let misspelt = response_json(misspelt).await;
+    assert_eq!(misspelt["error"], "invalid_request");
+    assert!(
+        misspelt["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("filters")),
+        "{misspelt}"
+    );
+
+    env.join().await;
+}
+
 /// DELETE a document, wait for its Qdrant tombstone to propagate, then verify
 /// the document no longer appears in search results.
 #[tokio::test]

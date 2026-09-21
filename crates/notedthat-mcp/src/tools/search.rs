@@ -26,26 +26,57 @@ use std::collections::HashSet;
 /// fired all at once; request order is kept regardless.
 const CONCURRENCY: usize = 8;
 
+/// The tool's arguments. Unknown keys are refused, as the API refuses them
+/// (#125): `filter` for `filters`, or a misspelt filter field, is an
+/// `invalid_request` naming the key rather than a search that quietly ran
+/// without it.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchArgs {
     /// Knowledge bases to search, by slug (discover them with
     /// `list_knowledgebases`). Omit, or pass `[]`, to search every knowledge
     /// base the caller may search.
     #[serde(default)]
     pub kb: Vec<String>,
+    /// The natural-language query, 1–8192 bytes.
     pub query: String,
+    /// Optional filters, AND-composed; the same fields the HTTP search body's
+    /// `filter` takes.
     pub filters: Option<SearchFilter>,
     /// Maximum hits per knowledge base, not across the request. Server
     /// default 10, maximum 50.
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+/// The HTTP search body's `filter`, field for field, with the descriptions an
+/// agent reads from the tool schema. Kept as its own type rather than
+/// re-exporting `notedthat_core::search::SearchFilter` because core does not
+/// depend on `schemars`; `schema_matches_the_api_filter` below keeps the two
+/// in step.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchFilter {
+    /// Only hits whose object key starts with this prefix, e.g. `docs/rfc/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_key_prefix: Option<String>,
+    /// Only hits from objects of exactly this MIME type, e.g. `text/markdown`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+    /// Only Open Knowledge Format concept hits of exactly this type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
+    /// Only hits whose heading path starts with these segments, in order,
+    /// e.g. `["Installation"]` for every chunk under that top heading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heading_path_prefix: Vec<String>,
+    /// Only hits from objects modified at or after this Unix time (seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_after: Option<i64>,
+    /// Only hits from objects modified at or before this Unix time (seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_before: Option<i64>,
+    /// Only Open Knowledge Format concept hits carrying at least one of these
+    /// tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -327,9 +358,9 @@ mod tests {
         }
         let mut args = args(&["a", "b"], "q", Some(7));
         args.filters = Some(SearchFilter {
-            mime: None,
             concept_type: Some("Metric".into()),
             tags: vec!["finance".into()],
+            ..SearchFilter::default()
         });
 
         // When: the call fans out
@@ -582,6 +613,94 @@ mod tests {
         assert!(schema["properties"]["tags"].is_object());
     }
 
+    /// The tool's filter is the API's filter: every field the HTTP body
+    /// accepts is in the published schema, with a description, and nothing
+    /// else is. A field added to one without the other fails here.
+    #[test]
+    fn schema_matches_the_api_filter() {
+        let api = serde_json::to_value(notedthat_core::search::SearchFilter {
+            object_key_prefix: Some("p".into()),
+            mime: Some("m".into()),
+            concept_type: Some("c".into()),
+            heading_path_prefix: vec!["h".into()],
+            updated_after: Some(1),
+            updated_before: Some(2),
+            tags: vec!["t".into()],
+        })
+        .unwrap();
+        let api_fields: std::collections::BTreeSet<&str> = api
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            api_fields.len(),
+            7,
+            "a fully-populated filter names every field"
+        );
+
+        let schema = serde_json::to_value(schemars::schema_for!(SearchFilter)).unwrap();
+        let properties = schema["properties"].as_object().unwrap();
+        let tool_fields: std::collections::BTreeSet<&str> =
+            properties.keys().map(String::as_str).collect();
+        assert_eq!(tool_fields, api_fields);
+        for (name, property) in properties {
+            assert!(
+                property["description"]
+                    .as_str()
+                    .is_some_and(|d| !d.is_empty()),
+                "{name} has a description for the agent to read"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_filter_field_is_forwarded_under_filter() {
+        // Given: an API that insists on the whole filter, under the API's key
+        let server = MockServer::start().await;
+        let filter = serde_json::json!({
+            "object_key_prefix": "docs/", "mime": "text/markdown",
+            "concept_type": "Metric", "heading_path_prefix": ["Intro", "Scope"],
+            "updated_after": 1_700_000_000, "updated_before": 1_800_000_000,
+            "tags": ["finance", "q3"]
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/v1/knowledgebases/notes/search"))
+            .and(body_partial_json(
+                serde_json::json!({ "query": "q", "filter": filter }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let args: SearchArgs = serde_json::from_value(
+            serde_json::json!({ "kb": ["notes"], "query": "q", "filters": filter }),
+        )
+        .unwrap();
+
+        // When / Then: the mock's expectation is the assertion
+        run(&client(&server.uri()), args).await.unwrap();
+    }
+
+    #[test]
+    fn unknown_argument_keys_are_refused_and_named() {
+        // `filter` (singular) is the API's spelling and the likeliest slip.
+        let err = serde_json::from_value::<SearchArgs>(
+            serde_json::json!({ "kb": ["notes"], "query": "q", "filter": { "mime": "a/b" } }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("filter") && err.contains("filters"), "{err}");
+
+        let err = serde_json::from_value::<SearchArgs>(
+            serde_json::json!({ "query": "q", "filters": { "mimetype": "a/b" } }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("mimetype"), "{err}");
+    }
+
     #[tokio::test]
     async fn happy_returns_hits() {
         let server = MockServer::start().await;
@@ -609,8 +728,7 @@ mod tests {
         let mut args = args(&["notes"], "q", None);
         args.filters = Some(SearchFilter {
             mime: Some("text/markdown".into()),
-            concept_type: None,
-            tags: vec![],
+            ..SearchFilter::default()
         });
         let result = run(&client(&server.uri()), args).await.unwrap();
         assert!(!result.content.is_empty());
