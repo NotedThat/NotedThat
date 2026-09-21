@@ -477,7 +477,7 @@ All tools take `kb` (the slug) where relevant; `search` alone takes `kb` as a li
 | Tool | Purpose |
 |---|---|
 | `list_knowledgebases()` | Returns `[{kb_slug, display_name, description?}]` for every KB the caller can see (D51), `description` from the manifest (D60); `perms` is deferred |
-| `search(kb[]?, query, filters?, limit?)` | Hybrid search over one or more KBs, one HTTP search per slug (D54); returns `{results: [{kb, hits: [{kb, object_key, byte_start, byte_end, heading_path, score, preview}]}], skipped}` grouped per KB in request order, `limit` per KB, no merged ranking. Omitted `kb` = every KB the caller can see. |
+| `search(kb[]?, query, filters?, limit?)` | Hybrid search over one or more KBs, one HTTP search per slug (D54); `filters` is the HTTP body's `filter`, all seven fields, and both bodies refuse unknown keys (#125); returns `{results: [{kb, hits: [{kb, object_key, byte_start, byte_end, heading_path, score, preview}]}], skipped}` grouped per KB in request order, `limit` per KB, no merged ranking. Omitted `kb` = every KB the caller can see. |
 | `read(kb, path, byte_start?, byte_end?, line_start?, line_end?)` | Byte-range or line-range read of an object. `byte_*` and `line_*` args are mutually exclusive; provide one pair or omit both for a full read. |
 | `write(kb, path, content, if_match?, if_none_match?)` | Create/update object |
 | `list(kb, prefix?, limit?, cursor?)` | List objects under a prefix |
