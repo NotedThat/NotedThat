@@ -68,10 +68,14 @@ pub struct IndexFailure {
 }
 
 /// What the last completed `fs` reconciliation pass found (D50).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileSummary {
     /// Unix seconds.
     pub at: i64,
+    /// The key prefix the pass walked, or `None` for the whole knowledge base.
+    /// A pass over `docs/` after a change there counts `docs/` alone, and the
+    /// numbers below say so rather than posing as the base's.
+    pub scope: Option<String>,
     /// Objects the walk found in storage.
     pub objects_on_disk: usize,
     /// Objects already indexed from exactly these bytes.
@@ -299,6 +303,7 @@ mod tests {
     fn summary(at: i64) -> ReconcileSummary {
         ReconcileSummary {
             at,
+            scope: None,
             objects_on_disk: 3,
             unchanged: 2,
             changed: 1,

@@ -248,6 +248,7 @@ async fn reconcile_into(
                 kb.as_str(),
                 ReconcileSummary {
                     at: now_unix(),
+                    scope: prefix.map(str::to_string),
                     objects_on_disk: report.objects_on_disk,
                     unchanged: report.unchanged,
                     changed: report.changed,
