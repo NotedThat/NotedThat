@@ -534,6 +534,12 @@ name one answers `404` instead. `HEAD` follows `GET`. A supplied invalid credent
 A description is shown exactly when its knowledge base is listed: a knowledge base the caller
 cannot see contributes no entry, so nothing about it is described.
 
+**Upgrade note (bare slugs → objects).** Before knowledge base descriptions the array held bare
+slug strings. A client that indexed into it as strings must read `kb_slug` now. The bundled
+`notedthat-mcp-stdio` reads both shapes, so a newer adapter still lists an older server; an older
+adapter against a newer server does not, and fails `list_knowledgebases`, `resources/list` and a
+`kb`-less `search` with a deserialization error — upgrade the adapter, they ship together.
+
 **Example:**
 
 ```sh

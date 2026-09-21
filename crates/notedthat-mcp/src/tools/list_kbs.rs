@@ -26,8 +26,8 @@ pub(super) async fn run(client: &NotedThatClient) -> Result<CallToolResult, McpE
         .await?
         .into_iter()
         .map(|kb| KbEntry {
+            display_name: kb.display_name.unwrap_or_else(|| kb.kb_slug.clone()),
             kb_slug: kb.kb_slug,
-            display_name: kb.display_name,
             description: kb.description,
         })
         .collect();
@@ -87,6 +87,33 @@ mod tests {
         // reads is exactly what the manifest says.
         let raw: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(raw[1].get("description").is_none());
+    }
+
+    /// A server from before #98 lists bare slugs. The adapter still works
+    /// against it — the slug doubles as the display name, as the server does
+    /// for a manifest without one — instead of failing every listing with an
+    /// opaque deserialization error.
+    #[tokio::test]
+    async fn a_pre_98_server_listing_bare_slugs_is_still_listed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"knowledgebases": ["notes", "scratch"]})),
+            )
+            .mount(&server)
+            .await;
+        let result = run(&client(&server.uri())).await.unwrap();
+        let json_str = match &result.content[0] {
+            ContentBlock::Text(t) => t.text.clone(),
+            _ => panic!("expected text content"),
+        };
+        let entries: Vec<KbEntry> = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kb_slug, "notes");
+        assert_eq!(entries[0].display_name, "notes");
+        assert_eq!(entries[0].description, None);
     }
 
     #[tokio::test]
