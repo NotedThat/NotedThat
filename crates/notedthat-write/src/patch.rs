@@ -141,6 +141,7 @@ pub async fn patch(
             }
         };
 
+        crate::manifest::check_manifest_bytes(kb, path, &new_bytes)?;
         let put_conditionals = ConditionalHeaders {
             if_match: Some(head_etag),
             ..ConditionalHeaders::default()

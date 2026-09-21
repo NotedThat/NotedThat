@@ -8,7 +8,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError, KbManifest, Verb};
+use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
 
 pub(in crate::router) async fn put_object(
     State(state): State<AppState>,
@@ -67,15 +67,10 @@ pub(in crate::router) async fn put_object(
         })));
     }
 
-    // The manifest is checked when it is written, not only at the next boot.
-    // This PUT is the documented way to set a description on the `s3`
-    // backend (#98); without the check a description or access rule outside
-    // the limits was stored with a `201` and refused startup for whoever
-    // restarted next, with the message they needed here.
-    if path.as_str() == KbManifest::KEY {
-        validate_manifest_body(&body_bytes, &kb).map_err(&err)?;
-    }
-
+    // A body for `.notedthat/manifest.json` is checked against what startup
+    // would accept inside `notedthat_write::commit`, where every surface's
+    // write ends (#98, §3.1); the `400` here is `WriteError::InvalidManifest`
+    // mapped like any other write refusal.
     let outcome = notedthat_write::commit(
         state.storage.as_ref(),
         &state.sinks(source),
@@ -99,28 +94,6 @@ pub(in crate::router) async fn put_object(
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     Ok(resp)
-}
-
-/// A body written to `.notedthat/manifest.json` has to be the manifest startup
-/// would accept: valid JSON, passing [`KbManifest::validate`], and naming this
-/// knowledge base — the same checks `provision_kbs` makes, so a `400` here is the
-/// refused boot the operator would otherwise have met later.
-fn validate_manifest_body(body: &[u8], kb: &notedthat_core::KbSlug) -> Result<(), ApiError> {
-    let manifest: KbManifest = serde_json::from_slice(body).map_err(|e| {
-        ApiError::Core(CoreError::InvalidInput {
-            message: format!("manifest is not a valid manifest document: {e}"),
-        })
-    })?;
-    if manifest.kb_slug != *kb {
-        return Err(ApiError::Core(CoreError::InvalidInput {
-            message: format!(
-                "manifest names knowledge base '{}' but was written to '{}'",
-                manifest.kb_slug.as_str(),
-                kb.as_str()
-            ),
-        }));
-    }
-    manifest.validate().map_err(ApiError::Core)
 }
 
 pub(in crate::router) async fn delete_object(

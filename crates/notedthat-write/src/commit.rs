@@ -38,6 +38,7 @@ pub async fn commit<B: Into<StagedBody>>(
     let body = body.into();
     let size = body.len();
     check_size(size, MAX_UPLOAD_BYTES)?;
+    crate::manifest::check_staged_manifest(kb, path, &body).await?;
     let _prefix = body.prefix(512).await.map_err(|source| {
         WriteError::Storage(StorageError::Other {
             source: Box::new(source),
@@ -63,6 +64,29 @@ pub async fn commit_copy(
     options: CopyObjectOptions,
 ) -> Result<PutOutcome, WriteError> {
     let content_type = options.content_type.clone();
+    if crate::manifest::is_manifest(destination) {
+        // A copy never has the bytes in hand, so the source is read to check
+        // them — bounded by its HEAD first, so an oversized source is refused
+        // unread. The source can change between this read and the copy; the
+        // `.notedthat` namespace is the credential holder's alone (D51), so
+        // that is a race with oneself, not a bypass.
+        let meta = storage
+            .head_object(kb, source, ConditionalHeaders::default())
+            .await?;
+        if meta.size > crate::manifest::MANIFEST_MAX_BYTES {
+            return Err(WriteError::InvalidManifest {
+                message: format!(
+                    "manifest is {} bytes; a manifest is at most {}",
+                    meta.size,
+                    crate::manifest::MANIFEST_MAX_BYTES
+                ),
+            });
+        }
+        let read = storage
+            .get_object(kb, source, None, ConditionalHeaders::default())
+            .await?;
+        crate::manifest::check_manifest_bytes(kb, destination, &read.bytes)?;
+    }
     let outcome = storage
         .copy_object(kb, source, destination, options)
         .await?;

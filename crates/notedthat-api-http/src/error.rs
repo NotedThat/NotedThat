@@ -199,7 +199,8 @@ impl From<notedthat_write::WriteError> for ApiError {
                 line_total: total_lines,
                 byte_total: total_bytes,
             },
-            notedthat_write::WriteError::PatchInvalidRange { message } => {
+            notedthat_write::WriteError::PatchInvalidRange { message }
+            | notedthat_write::WriteError::InvalidManifest { message } => {
                 Self::Core(CoreError::InvalidInput { message })
             }
             notedthat_write::WriteError::ReplaceNoMatch => Self::ReplaceNoMatch,
@@ -749,6 +750,19 @@ mod tests {
         let (status, code) = api_err.status_and_code();
         assert_eq!(status.as_u16(), 400);
         assert_eq!(code, "invalid_request");
+    }
+
+    /// A manifest the write path refused is the boot's own message, as a `400`.
+    #[test]
+    fn test_from_write_error_invalid_manifest() {
+        let api_err = ApiError::from(WriteError::InvalidManifest {
+            message: "description must be a single line without control characters".into(),
+        });
+
+        let (status, code) = api_err.status_and_code();
+        assert_eq!(status.as_u16(), 400);
+        assert_eq!(code, "invalid_request");
+        assert!(api_err.to_string().contains("description"));
     }
 
     #[test]
