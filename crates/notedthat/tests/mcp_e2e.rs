@@ -26,9 +26,19 @@ pub const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 // ─── Subprocess Helpers ─────────────────────────────────────────────────────
 
 pub fn spawn_mcp_stdio(url: &str, token: &str) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    spawn_mcp_stdio_with(url, token, &[])
+}
+
+/// Spawn the stdio binary with extra environment, e.g. a read budget.
+pub fn spawn_mcp_stdio_with(
+    url: &str,
+    token: &str,
+    extra_env: &[(&str, &str)],
+) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut child = Command::new(MCP_STDIO_BIN)
         .env("NOTEDTHAT_URL", url)
         .env("NOTEDTHAT_TOKEN", token)
+        .envs(extra_env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -763,6 +773,205 @@ async fn mcp_read_missing() {
         msg.contains("not_found"),
         "expected not_found in message, got: {msg:?}"
     );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+/// The read→edit workflow with no second round trip: the `ETag` in the read's
+/// `structuredContent` is the version the text came from, `edit` accepts it,
+/// and after someone else writes, the same token is refused rather than
+/// applied to a version the text never described (#86).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn mcp_read_carries_the_etag_its_text_belongs_to() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio(&fixture.http_url, fixture.token);
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    let written = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        &serde_json::json!({
+            "kb": "notes",
+            "path": "read-meta.md",
+            "content": "one\ntwo\nthree\n",
+        }),
+    );
+    assert!(written.get("result").is_some(), "write: {written}");
+
+    // A full read: text in content, the version and totals beside it.
+    let read = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "read",
+        &serde_json::json!({ "kb": "notes", "path": "read-meta.md" }),
+    );
+    assert_eq!(read["result"]["content"][0]["text"], "one\ntwo\nthree\n");
+    let meta = &read["result"]["structuredContent"];
+    let (_, _, http_etag) = authenticated_object_state(&fixture, "read-meta.md").await;
+    assert_eq!(
+        meta["etag"], http_etag,
+        "the etag the HTTP API reports: {meta}"
+    );
+    assert_eq!(meta["bytes_returned"], 14);
+    assert_eq!(meta["total_bytes"], 14);
+    assert_eq!(meta["byte_start"], 0);
+    assert_eq!(meta["byte_end"], 14);
+    assert!(
+        meta["total_lines"].is_null(),
+        "no line total on a full read: {meta}"
+    );
+
+    // A line read reports the slice's lines and the object's totals.
+    let lines = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "read",
+        &serde_json::json!({ "kb": "notes", "path": "read-meta.md", "line_start": 2, "line_end": 2 }),
+    );
+    assert_eq!(lines["result"]["content"][0]["text"], "two\n");
+    let line_meta = &lines["result"]["structuredContent"];
+    assert_eq!(line_meta["etag"], http_etag);
+    assert_eq!(line_meta["total_lines"], 3, "{line_meta}");
+    assert_eq!(line_meta["line_start"], 2);
+    assert_eq!(line_meta["line_end"], 2);
+    assert_eq!(line_meta["total_bytes"], 14);
+    assert_eq!(line_meta["byte_start"], 4);
+    assert_eq!(line_meta["byte_end"], 8);
+    assert_eq!(line_meta["bytes_returned"], 4);
+
+    // That etag is exactly what edit wants.
+    let etag = meta["etag"].as_str().expect("etag string").to_string();
+    let edited = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "edit",
+        &serde_json::json!({
+            "kb": "notes",
+            "path": "read-meta.md",
+            "line_start": 2,
+            "line_end": 2,
+            "content": "TWO\n",
+            "if_match": etag,
+        }),
+    );
+    assert!(
+        edited.get("result").is_some(),
+        "edit with the read's etag: {edited}"
+    );
+
+    // Someone else writes; the token from the earlier read now names a stale version.
+    reqwest::Client::new()
+        .put(format!(
+            "{}/api/v1/knowledgebases/notes/read-meta.md",
+            fixture.http_url
+        ))
+        .bearer_auth(fixture.token)
+        .header("content-type", "text/markdown")
+        .body("someone else's version\n")
+        .send()
+        .await
+        .expect("intervening write")
+        .error_for_status()
+        .expect("intervening write succeeds");
+    let stale = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "edit",
+        &serde_json::json!({
+            "kb": "notes",
+            "path": "read-meta.md",
+            "line_start": 1,
+            "line_end": 1,
+            "content": "clobber\n",
+            "if_match": etag,
+        }),
+    );
+    let msg = stale["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("precondition_failed"),
+        "a stale etag must be refused, got: {stale}"
+    );
+
+    drop(stdin);
+    if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+/// An object over the transport's read budget is refused with the way through,
+/// and a slice inside the budget is served (#88).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mcp_read_over_the_budget_is_redirected_to_slices() {
+    let fixture = start_notedthat_server_fixture().await;
+    let (mut child, mut stdin, mut stdout) = spawn_mcp_stdio_with(
+        &fixture.http_url,
+        fixture.token,
+        &[("NOTEDTHAT_MCP_MAX_READ_BYTES", "64")],
+    );
+    mcp_session_init(&mut stdin, &mut stdout);
+
+    let body = "x".repeat(200);
+    let written = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "write",
+        &serde_json::json!({ "kb": "notes", "path": "big.md", "content": body }),
+    );
+    assert!(written.get("result").is_some(), "write: {written}");
+
+    let whole = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "read",
+        &serde_json::json!({ "kb": "notes", "path": "big.md" }),
+    );
+    let msg = whole["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.starts_with("response_too_large: the object is 200 bytes"),
+        "{whole}"
+    );
+    assert!(msg.contains("64 bytes"), "{msg}");
+    assert!(msg.contains("byte_start/byte_end"), "{msg}");
+
+    let slice = mcp_call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "read",
+        &serde_json::json!({ "kb": "notes", "path": "big.md", "byte_start": 0, "byte_end": 64 }),
+    );
+    assert_eq!(
+        slice["result"]["content"][0]["text"],
+        "x".repeat(64),
+        "{slice}"
+    );
+    assert_eq!(slice["result"]["structuredContent"]["total_bytes"], 200);
+    assert_eq!(slice["result"]["structuredContent"]["byte_end"], 64);
+
+    mcp_request(
+        &mut stdin,
+        4,
+        "resources/read",
+        &serde_json::json!({ "uri": "notedthat://notes/big.md" }),
+    );
+    let resource = mcp_response(&mut stdout, Duration::from_secs(10));
+    let msg = resource["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("response_too_large"), "{resource}");
+    assert!(msg.contains("read tool"), "{msg}");
 
     drop(stdin);
     if wait_for_shutdown(&mut child, Duration::from_secs(5)).is_none() {
