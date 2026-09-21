@@ -54,6 +54,7 @@ macro_rules! event_log_scenarios {
         $emit!(resuming_from_zero_replays_everything);
         $emit!(kbs_are_isolated_and_share_ids);
         $emit!(events_round_trip_intact);
+        $emit!(index_outcomes_round_trip_intact);
         $emit!(a_retained_out_position_is_gone);
         $emit!(a_position_ahead_of_the_log_is_gone);
         $emit!(a_burst_is_delivered_once_in_order);
@@ -313,6 +314,61 @@ pub async fn events_round_trip_intact(fx: &dyn EventLogFixture) {
     assert_eq!(got.kind.name(), "object.deleted");
     assert_eq!(got.kind.mime(), None);
     assert_eq!(got.source, EventSource::Mcp);
+}
+
+/// The indexer's verdicts (D64) ride the same log as the writes that caused them and
+/// come back whole: the kind name a subscriber filters on, the stamp it correlates
+/// with the write, the chunk count, and — for a failure — the summary and the
+/// absence of what `HEAD` never established.
+pub async fn index_outcomes_round_trip_intact(fx: &dyn EventLogFixture) {
+    let (log, kb) = (fx.log(), fx.kb());
+    let mut stream = subscribe(log, kb, None).await;
+
+    let indexed = ObjectEvent::indexed(
+        kb.clone(),
+        path("inbox/memo.md"),
+        "\"b71c\"".into(),
+        "text/markdown".into(),
+        3,
+    );
+    let failed = ObjectEvent::index_failed(
+        kb.clone(),
+        path("inbox/broken.md"),
+        None,
+        None,
+        "storage.head_object failed: backend unavailable".into(),
+    );
+    let indexed_id = publish(log, indexed.clone()).await;
+    let failed_id = publish(log, failed.clone()).await;
+
+    let (id, got) = next(&mut stream).await;
+    assert_eq!(id, indexed_id);
+    assert_eq!(got, indexed, "a success arrives exactly as published");
+    assert_eq!(got.kind.name(), "object.indexed");
+    assert_eq!(got.kind.mime(), Some("text/markdown"));
+    assert_eq!(got.kind.etag(), Some("\"b71c\""));
+    assert_eq!(got.source, EventSource::Indexer);
+    assert!(
+        matches!(got.kind, ObjectEventKind::Indexed { chunks: 3, .. }),
+        "{:?}",
+        got.kind
+    );
+
+    let (id, got) = next(&mut stream).await;
+    assert_eq!(id, failed_id);
+    assert_eq!(got, failed, "a failure arrives exactly as published");
+    assert_eq!(got.kind.name(), "object.index_failed");
+    assert_eq!(got.kind.mime(), None, "HEAD never ran, so no content type");
+    assert_eq!(got.kind.etag(), None);
+    assert!(
+        matches!(
+            &got.kind,
+            ObjectEventKind::IndexFailed { summary: Some(summary), .. }
+                if summary == "storage.head_object failed: backend unavailable"
+        ),
+        "{:?}",
+        got.kind
+    );
 }
 
 pub async fn a_retained_out_position_is_gone(fx: &dyn EventLogFixture) {
