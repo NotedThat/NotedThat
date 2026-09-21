@@ -48,6 +48,15 @@ struct FailureView {
 #[derive(Serialize)]
 struct ReconcileView {
     at: String,
+    /// The prefix the pass walked; absent when it walked the whole base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    counts: Option<ReconcileCounts>,
+}
+
+#[derive(Serialize)]
+struct ReconcileCounts {
     objects_on_disk: usize,
     unchanged: usize,
     changed: usize,
@@ -112,7 +121,9 @@ fn render(
         last_failure: snapshot
             .last_failure
             .map(|failure| failure_view(access, failure)),
-        last_reconcile: snapshot.last_reconcile.map(reconcile_view),
+        last_reconcile: snapshot
+            .last_reconcile
+            .map(|summary| reconcile_view(access, summary)),
     }
 }
 
@@ -149,12 +160,24 @@ fn failure_view(access: &KbAccess, failure: IndexFailure) -> FailureView {
     }
 }
 
-fn reconcile_view(summary: ReconcileSummary) -> ReconcileView {
+/// The pass's time is for everyone the listing rule admits — it is what a
+/// public caller needs to judge freshness. Its counts describe every key in
+/// the knowledge base, so they go only to a caller who may `list` every key;
+/// a caller granted `public/**` alone would otherwise learn how much lies
+/// outside `public/` and how much of it is moving.
+fn reconcile_view(access: &KbAccess, summary: ReconcileSummary) -> ReconcileView {
+    let counts = access
+        .filter(Verb::List)
+        .covers_whole_kb()
+        .then_some(ReconcileCounts {
+            objects_on_disk: summary.objects_on_disk,
+            unchanged: summary.unchanged,
+            changed: summary.changed,
+            orphaned: summary.orphaned,
+        });
     ReconcileView {
         at: unix_to_rfc3339(summary.at),
-        objects_on_disk: summary.objects_on_disk,
-        unchanged: summary.unchanged,
-        changed: summary.changed,
-        orphaned: summary.orphaned,
+        scope: summary.scope,
+        counts,
     }
 }

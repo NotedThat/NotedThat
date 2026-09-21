@@ -616,6 +616,18 @@ impl KeyFilter<'_> {
             && !self.deny.iter().any(|pattern| pattern.matches(key))
     }
 
+    /// Whether the principal's grant spans the whole knowledge base — an
+    /// unscoped `may` and no `may_not` — as opposed to some of its keys.
+    ///
+    /// The question a view *about* a knowledge base rather than about one key
+    /// asks: object counts, for instance, describe every key, and belong to a
+    /// caller who could list every key. Unlike [`Self::is_allow_all`] this is
+    /// true for any such caller, not only the service token; `.notedthat` is
+    /// out of reach for the others either way and is not what counts describe.
+    pub fn covers_whole_kb(&self) -> bool {
+        self.deny.is_empty() && self.allow.iter().any(|pattern| pattern.is_whole_kb())
+    }
+
     /// Whether every key is allowed, so a caller can skip per-key filtering.
     ///
     /// Only ever true for the service token: everyone else must always have

@@ -247,7 +247,16 @@ async fn a_failure_is_reported_and_its_key_only_to_a_caller_who_could_list_it() 
 
 #[tokio::test]
 async fn stale_and_the_last_reconciliation_pass_are_reported() {
-    let (app, side) = app_with_index_side(only_notes([grant(Who::Anyone, [Verb::Read])]), 8).await;
+    // Anyone may read; a credential may list everything and so sees the
+    // pass's counts.
+    let (app, side) = app_with_index_side(
+        only_notes([
+            grant(Who::Anyone, [Verb::Read]),
+            grant(Who::SignedIn, [Verb::List]),
+        ]),
+        8,
+    )
+    .await;
 
     // Given — the fs bridge asked for a rescan and has not completed it.
     side.health.mark_stale("notes");
@@ -260,6 +269,7 @@ async fn stale_and_the_last_reconciliation_pass_are_reported() {
         "notes",
         ReconcileSummary {
             at: 1_700_000_000,
+            scope: None,
             objects_on_disk: 12,
             unchanged: 11,
             changed: 1,
@@ -268,7 +278,7 @@ async fn stale_and_the_last_reconciliation_pass_are_reported() {
     );
 
     // Then
-    let body = json(get_index(app, "notes", None).await).await;
+    let body = json(get_index(app.clone(), "notes", Some(TOKEN)).await).await;
     assert_eq!(body["state"], "healthy");
     assert_eq!(
         body["last_reconcile"],
@@ -280,6 +290,58 @@ async fn stale_and_the_last_reconciliation_pass_are_reported() {
             "orphaned": 0,
         })
     );
+    // The anonymous caller — granted `read` on everything but `list` on
+    // nothing — learns when the pass ran and not what it counted.
+    let body = json(get_index(app, "notes", None).await).await;
+    assert_eq!(body["state"], "healthy");
+    assert_eq!(
+        body["last_reconcile"],
+        serde_json::json!({ "at": "2023-11-14T22:13:20Z" })
+    );
+}
+
+/// The pass's counts describe every key in the knowledge base, so they go to
+/// a caller who may `list` every key — not to one whose grant covers part of
+/// it, who would otherwise learn how much lies outside that part.
+#[tokio::test]
+async fn reconcile_counts_go_only_to_a_caller_who_may_list_the_whole_base() {
+    let (app, side) = app_with_index_side(
+        only_notes([
+            grant_under(Who::Anyone, [Verb::Read, Verb::List], &["public/**"]),
+            grant(Who::SignedIn, [Verb::Read]),
+            grant(Who::User("alice".into()), [Verb::List]),
+        ]),
+        8,
+    )
+    .await;
+    side.health.reconciled(
+        "notes",
+        ReconcileSummary {
+            at: 1_700_000_000,
+            scope: None,
+            objects_on_disk: 412,
+            unchanged: 400,
+            changed: 12,
+            orphaned: 0,
+        },
+    );
+
+    // Anonymous, listing `public/**` only: the time alone.
+    let body = json(get_index(app.clone(), "notes", None).await).await;
+    assert_eq!(
+        body["last_reconcile"],
+        serde_json::json!({ "at": "2023-11-14T22:13:20Z" })
+    );
+    // Bob, credentialed but listing nothing: the time alone.
+    let body = json(get_index(app.clone(), "notes", Some(BOB_TOKEN)).await).await;
+    assert!(
+        body["last_reconcile"].get("objects_on_disk").is_none(),
+        "{body}"
+    );
+    // Alice, who may list everything: the counts.
+    let body = json(get_index(app, "notes", Some(ALICE_TOKEN)).await).await;
+    assert_eq!(body["last_reconcile"]["objects_on_disk"], 412);
+    assert_eq!(body["last_reconcile"]["orphaned"], 0);
 }
 
 #[tokio::test]
