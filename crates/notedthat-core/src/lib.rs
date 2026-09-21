@@ -42,7 +42,7 @@ pub use events::{
     EventId, EventPublisher, EventSource, EventStream, ObjectEvent, ObjectEventKind, PublishError,
     StreamError, SubscribeError, unix_to_rfc3339,
 };
-pub use kb::{Kb, KbDetails, KbManifest, ManifestEmbedding, ObjectMeta, slug_kb_details};
+pub use kb::{KbDetails, KbManifest, ManifestEmbedding, ObjectMeta, slug_kb_details};
 pub use listing::{Rollup, roll_up};
 pub use object_path::{ObjectPath, is_internal_path};
 pub use preconditions::{
