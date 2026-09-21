@@ -13,7 +13,7 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const API_TOKEN: &str = "e2e-test-token";
 const EXPECTED_M7_TOOLS: &str =
-    "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace";
+    "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace,index_status";
 const MCP_STDIO_BIN: &str = env!("CARGO_BIN_EXE_notedthat-mcp-stdio");
 
 /// Vector width the stub embedder and the provisioned collection agree on.

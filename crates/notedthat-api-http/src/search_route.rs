@@ -143,6 +143,7 @@ mod tests {
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         };
 
         Router::new()

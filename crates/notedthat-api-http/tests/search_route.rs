@@ -35,6 +35,7 @@ fn make_app() -> axum::Router {
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };
     build_router(state)
 }
@@ -52,6 +53,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
         indexer_tx,
         searcher: mock,
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };
     build_router(state)
 }

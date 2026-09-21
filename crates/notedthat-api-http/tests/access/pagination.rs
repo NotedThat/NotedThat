@@ -49,6 +49,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     })
 }
 
@@ -233,6 +234,7 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     })
 }
 

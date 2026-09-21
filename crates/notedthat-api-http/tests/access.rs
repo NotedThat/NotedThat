@@ -4,6 +4,8 @@
 mod events;
 #[path = "access/fixture.rs"]
 mod fixture;
+#[path = "access/index_health.rs"]
+mod index_health;
 #[path = "access/listing.rs"]
 mod listing;
 #[path = "access/pagination.rs"]

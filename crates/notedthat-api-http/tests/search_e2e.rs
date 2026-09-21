@@ -220,6 +220,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
         indexer_tx,
         searcher,
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };
 
     let router = build_router(state);
@@ -254,6 +255,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };
     build_router(state)
 }

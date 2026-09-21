@@ -11,7 +11,7 @@ use notedthat_core::{
     AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, EventPublisher, KbDetails, KbSlug,
     KeyPattern, ObjectPath, Storage, Verb, Who,
 };
-use notedthat_indexer::Searcher;
+use notedthat_indexer::{IndexHealth, Searcher};
 
 pub(super) const TOKEN: &str = "test-token-abc";
 
@@ -99,11 +99,59 @@ pub(super) async fn app_with_events(
     .await
 }
 
+/// What the fixture shares with a test that watches the indexing side: the
+/// health record the app reports, and the queue's receiver so the test can
+/// hold the queue full or let it drain.
+pub(super) struct IndexSide {
+    pub(super) health: Arc<IndexHealth>,
+    pub(super) queue_rx: tokio::sync::mpsc::Receiver<notedthat_indexer::IndexEvent>,
+}
+
+/// The fixture app with its indexing side exposed. The queue holds
+/// `queue_capacity` events.
+pub(super) async fn app_with_index_side(
+    policies: BTreeMap<String, AccessPolicy>,
+    queue_capacity: usize,
+) -> (axum::Router, IndexSide) {
+    let (indexer_tx, queue_rx) = tokio::sync::mpsc::channel(queue_capacity);
+    let health = Arc::new(IndexHealth::new());
+    let app = build(
+        policies,
+        Arc::new(NoopSearcher),
+        authenticator(),
+        None,
+        indexer_tx,
+        health.clone(),
+    )
+    .await;
+    (app, IndexSide { health, queue_rx })
+}
+
 async fn app_with(
     policies: BTreeMap<String, AccessPolicy>,
     searcher: Arc<dyn Searcher>,
     authenticator: Authenticator,
     events: Option<Arc<dyn EventPublisher>>,
+) -> axum::Router {
+    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
+    build(
+        policies,
+        searcher,
+        authenticator,
+        events,
+        indexer_tx,
+        Arc::new(IndexHealth::new()),
+    )
+    .await
+}
+
+async fn build(
+    policies: BTreeMap<String, AccessPolicy>,
+    searcher: Arc<dyn Searcher>,
+    authenticator: Authenticator,
+    events: Option<Arc<dyn EventPublisher>>,
+    indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
+    index_health: Arc<IndexHealth>,
 ) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
@@ -133,7 +181,6 @@ async fn app_with(
         ("notes".to_string(), notes),
         ("private".to_string(), private),
     ]);
-    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
     build_router(AppState {
         storage,
         kb_details: Arc::new(BTreeMap::from([
@@ -165,6 +212,7 @@ async fn app_with(
         indexer_tx,
         searcher,
         events,
+        index_health,
     })
 }
 

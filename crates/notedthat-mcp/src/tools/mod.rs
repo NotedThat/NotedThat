@@ -3,6 +3,7 @@
 mod append;
 mod delete;
 mod edit;
+mod index_status;
 mod list;
 mod list_kbs;
 mod mv;
@@ -98,6 +99,17 @@ impl NotedThatMcp {
         _args: Parameters<list_kbs::ListKbsArgs>,
     ) -> Result<CallToolResult, McpError> {
         list_kbs::run(&self.client_for(&context.extensions)?).await
+    }
+
+    #[tool(
+        description = "Report a knowledge base's search-index health: state is one of healthy, indexing, backpressured, stale or failed, with pending events, queue depth and capacity, whether the worker is running, when something was last indexed, the most recent failure (when; its summary for a credentialed caller; its object key when the caller may list it) and, on the fs backend, the last reconciliation pass. Check it when search results look incomplete or out of date; a failed or stale knowledge base may not reflect recent writes."
+    )]
+    async fn index_status(
+        &self,
+        context: RequestContext<RoleServer>,
+        args: Parameters<index_status::IndexStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        index_status::run(&self.client_for(&context.extensions)?, args.0).await
     }
 
     #[tool(
@@ -403,12 +415,13 @@ mod resources_shared {
     // ── Tool count contract ──────────────────────────────────────────────────
 
     #[test]
-    fn tools_list_returns_exactly_ten_m9_tools() {
+    fn tools_list_returns_exactly_the_eleven_tools() {
         let h = handler("http://localhost:8080");
         let m9 = [
             "append",
             "delete",
             "edit",
+            "index_status",
             "list",
             "list_knowledgebases",
             "move",
@@ -428,7 +441,7 @@ mod resources_shared {
             "nonexistent tools must not be registered"
         );
 
-        // Verify TOTAL count is exactly 10 by checking that no additional tools exist.
+        // Verify TOTAL count is exactly 11 by checking that no additional tools exist.
         // This catches accidental tool registrations that would break the contract.
         // "edit_string" resolved by #39 as top-level `replace` tool (no longer deferred).
         let deferred_tools = [
@@ -440,7 +453,7 @@ mod resources_shared {
         for name in deferred_tools {
             assert!(
                 h.get_tool(name).is_none(),
-                "deferred tool {name:?} must not be registered (would make count > 10)"
+                "deferred tool {name:?} must not be registered (would make count > 11)"
             );
         }
     }
