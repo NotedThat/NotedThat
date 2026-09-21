@@ -1796,10 +1796,11 @@ Read an object, whole or by byte range or line range.
 - `byte_start?` (u64, inclusive), `byte_end?` (u64, **exclusive**) — a byte slice
 - `line_start?` (u64, 1-based inclusive), `line_end?` (u64, 1-based inclusive) — a line slice; `line_end = line_start - 1` names an insert point and returns an empty slice
 
-**Response**: the text in `content[0].text`, and the read's own metadata in `structuredContent` — from the same HTTP response as the text, never from a separate `list` or `HEAD`, whose answer could describe a newer version:
+**Response**: the text in `content[0].text`, and in `structuredContent` the same text under `text` beside the read's own metadata — from the same HTTP response as the text, never from a separate `list` or `HEAD`, whose answer could describe a newer version. The text is in both halves on purpose: MCP asks that `structuredContent` and `content` be functionally equivalent, and a host that hands the model only the structured half (some do once a tool declares an output schema) must still hand it the document.
 
 ```json
 {
+  "text": "# Title\n\n…",
   "etag": "\"3a2f…\"",
   "content_type": "text/markdown",
   "bytes_returned": 150,
@@ -1814,11 +1815,12 @@ Read an object, whole or by byte range or line range.
 
 | Field | Meaning |
 |-------|---------|
+| `text` | The text read — identical to `content[0].text`. |
 | `etag` | The version the text belongs to, verbatim (quoted). Pass it as `if_match` to `edit` or `replace`; a concurrent change is then `precondition_failed` rather than overwritten. |
 | `content_type` | The object's content type. |
 | `bytes_returned` | Bytes in `content` — the slice, not the object. |
 | `total_bytes` | The whole object's size. |
-| `byte_start`, `byte_end` | The returned slice, `byte_end` exclusive. A full read is `0` and `total_bytes`. |
+| `byte_start`, `byte_end` | The returned slice, `byte_end` exclusive. `byte_start` and `total_bytes` come from the header; `byte_end` is `byte_start + bytes_returned`, from the body, because a header's inclusive end cannot spell the empty slice at offset 0 (an insert point before line 1 arrives as `0-0/N`). A full read is `0` and `total_bytes`, set even when the response carried no `Content-Length`. |
 | `total_lines`, `line_start`, `line_end` | Line reads only: the object's line count and the returned lines (1-based, inclusive; `line_end = line_start - 1` for an insert point). `null` on byte and full reads. |
 
 Every field but `bytes_returned` is `null` when the backend did not say — nothing is invented. The tool declares this shape as its `outputSchema`.
