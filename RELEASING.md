@@ -55,7 +55,8 @@ be bootstrapped until every crate it depends on is published at the same version
 published manifest; one with a version stays in and is resolved against crates.io during
 `cargo publish`. release-plz orders publishes by normal dependencies alone, so a versioned
 dev-dependency on a crate that is not on crates.io yet fails the *dependent* before release-plz
-reaches the new crate at all. CI's `package` job enforces the rule.
+reaches the new crate at all. CI's `package` job enforces the rule on the manifests
+`cargo package` actually writes, so whatever spelling put a version there is caught.
 
 ### 4. Verify Trusted Publishing Configs
 
@@ -84,7 +85,10 @@ A new publishable crate takes the shared workspace version, which is already on 
 You do not have to wait for step 3 to fail: the bootstrap can run as soon as the new crate's
 *own* dependencies are on crates.io at the workspace version, which `release-plz-release`
 reports (`<crate> <version>: already published`) as it works down the dependency order. The
-release job also checks for never-published crates before it starts and names them.
+release job also names any never-published crate at the top of its log, as a **warning** and
+not a failure — on purpose: release-plz has to run, because publishing the new crate's
+dependencies at the new version is what the bootstrap needs. A pre-flight that failed the job
+would leave them unpublished and the bootstrap with nothing to build against.
 
 **Bootstrapping without the secret.** A crate owner with `cargo login` done can publish from a
 workstation, from a clean checkout of the commit `main` is at (a worktree, not a working tree
@@ -161,9 +165,10 @@ publish time, but release-plz does not order publishes by dev-dependencies, so i
 sibling first. Bootstrap `<crate>` (see *Adding a Crate*), then drop `version` from that
 dev-dependency — CI's `package` job refuses the versioned form since 2026-09-21.
 
-**`release-plz-release` fails at its first step, "Every publishable crate exists on crates.io"**
-The named crate has never been published; nothing else in the job would have succeeded either.
-Bootstrap it (see *Adding a Crate*) and re-run the failed jobs.
+**`release-plz-release` warns at its first step that a crate has never been published**
+Expected on the merge that adds a crate; the job goes on to publish that crate's dependencies and
+then stops at the crate with `HTTP 403`. Bootstrap it (see *Adding a Crate*) and re-run the
+failed jobs.
 
 **TP `HTTP 403` on routine publish**
 The Trusted Publishing config on crates.io may not match the workflow filename or environment name. Verify at `https://crates.io/crates/<crate>/settings` that `ci.yml` + `release` is configured.
