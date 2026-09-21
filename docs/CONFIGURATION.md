@@ -313,10 +313,13 @@ To set it, edit the manifest and restart (policies and descriptions are one star
        http://localhost:8080/api/v1/knowledgebases/notes/.notedthat/manifest.json
   ```
 
-  The `PUT` checks what startup would check — valid JSON, the limits above, the access rules,
+  The write checks what startup would check — valid JSON, the limits above, the access rules,
   and that the manifest names this knowledge base — and answers `400 invalid_request` with the
   same message a refused boot would print, so a typo is found here and not by whoever restarts
-  the server next. What it stores still takes effect at the next restart.
+  the server next. The check lives in the shared write path, not in this route: a `PATCH`, a
+  `POST …/replace/`, a WebDAV `PUT`, `COPY` or `MOVE` onto the key (`400`), and so every MCP
+  tool that writes, are refused the same way. What is stored still takes effect at the next
+  restart.
 
 A description is shown exactly when its knowledge base is listed, so it follows the same
 visibility rule as everything else: a caller who holds no grant in a knowledge base is told nothing
