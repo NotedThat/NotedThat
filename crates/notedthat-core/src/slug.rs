@@ -65,7 +65,7 @@ impl<'de> Deserialize<'de> for KbSlug {
 /// what makes the derived bucket name `nt-{tenant}-{kb}` injective: the first hyphen
 /// after the prefix always ends the tenant, so `(acme, my-notes)` and `(acme-my, notes)`
 /// cannot both become `nt-acme-my-notes`. See SPECIFICATIONS.md §6.6 and decisions
-/// D24, D57.
+/// D24, D58.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct TenantSlug(String);
 

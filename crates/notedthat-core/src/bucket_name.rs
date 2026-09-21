@@ -17,7 +17,7 @@ pub const BUCKET_NAME_PREFIX: &str = "nt-";
 /// The encoding is injective: a [`TenantSlug`] contains no hyphen, so the first
 /// hyphen after the prefix always ends the tenant and the rest is the knowledge
 /// base. Two distinct `(tenant, kb)` pairs therefore never share a bucket — or,
-/// under the `fs` backend, a directory (D49, D57).
+/// under the `fs` backend, a directory (D49, D58).
 #[must_use]
 pub fn derive_bucket_name(tenant: &TenantSlug, kb: &KbSlug) -> String {
     format!("{BUCKET_NAME_PREFIX}{}-{}", tenant.as_str(), kb.as_str())
