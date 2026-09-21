@@ -187,7 +187,7 @@ live above them.
 
 The knowledge base directories themselves are created at startup and are expected to stay. Remove
 one while the server runs and that knowledge base answers `404 not_found` on every surface — reads,
-listings and writes alike; a write does not recreate it — until the directory is put back or the
+listings and writes alike; a write that finds it gone refuses rather than recreating it — until the directory is put back or the
 server is restarted, which provisions it again. This is the same answer the `s3` backend gives for a
 bucket deleted out from under it.
 

@@ -146,6 +146,12 @@ impl Inner {
     /// provisioning is a `404` on every surface (D43) rather than a `5xx` from `list`,
     /// a `NotFound` for the object from a read, or — worst — a write that quietly
     /// recreates the directory. One `stat`, next to the object's own that follows.
+    ///
+    /// Best-effort, not a lock: the `stat` and the write that follows are two
+    /// filesystem operations, and a directory removed between them is recreated by
+    /// `store` as before, in a window of microseconds. A write that *finds* the
+    /// directory gone is refused; that is the operator scenario (`rm -rf` by hand)
+    /// and enough for it.
     fn require_bucket(&self, bucket: &str) -> Result<PathBuf, StorageError> {
         let dir = self.layout.bucket_dir(bucket);
         if dir.is_dir() {
