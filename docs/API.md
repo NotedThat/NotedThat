@@ -1414,9 +1414,14 @@ that a search will find them. When the indexer finishes with the object it publi
 results. The recipe for "write, then use the result":
 
 1. `PUT` the object; note the `ETag` in the response.
-2. On the stream, wait for `object.indexed` for that key with that `etag` — it always follows the
-   corresponding `object.written`, since the write is on the log before its indexing is even
-   queued. `?event=indexed` selects only these.
+2. On the stream, wait for `object.indexed` for that key whose `etag` is yours **or any later
+   `object.written`'s** — it always follows the corresponding `object.written`, since the write
+   is on the log before its indexing is even queued. `?event=indexed` selects only these. The
+   index only ever holds the latest version: an upsert names a key, not a version, and indexes
+   whatever is current when the worker reaches it, so two writes in quick succession produce two
+   `object.written` with different `etag`s and two `object.indexed` that both carry the second —
+   the first version is never announced as indexed, because it never was. A verdict for a newer
+   version supersedes yours: your bytes are not the version anyone can search, and never will be.
 3. Search. There is nothing to poll and no reason to retry.
 
 `object.index_failed` for the key means it will not come: the pipeline gave up on that version
@@ -1447,7 +1452,10 @@ from "now".
 answers `503 backend_unavailable` with `Retry-After: 5`; the write is idempotent, and the retry
 publishes and queues the indexing. The event is published before the indexing is queued, so a
 write refused with `503` because the indexing queue was full has already been announced; its
-retry announces it again. A retry may therefore publish the same change twice. On the `fs` backend the startup
+retry announces it again. A retry may therefore publish the same change twice. The other side
+of that order: a write whose event the log refused is *not* queued for indexing either, so its
+bytes are stored but unsearchable until the client retries — on `s3` nothing else re-detects
+them; on `fs` the watcher's reconcile does, eventually. The `503` is the instruction to retry. On the `fs` backend the startup
 comparison re-announces objects the index does not track — anything non-indexable, such as
 audio — on every restart, since nothing records that they were announced before. Subscribers
 should be idempotent: compare `etag` with what they last processed, or check for the output they

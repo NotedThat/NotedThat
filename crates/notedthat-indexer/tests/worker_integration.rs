@@ -1868,6 +1868,48 @@ mod announcing {
         assert!(events[0].occurred_at.ends_with('Z'));
     }
 
+    /// An upsert names a key, not a version: it indexes whatever is current
+    /// when the worker reaches it. Two writes in quick succession therefore
+    /// yield verdicts that both carry the second version's stamp — the first
+    /// write's version is never announced as indexed, because it never was.
+    /// A subscriber waiting for its own `etag` must accept a later one as
+    /// superseding it, which is what the API.md recipe says.
+    #[tokio::test]
+    async fn back_to_back_writes_announce_only_the_latest_etag_as_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        // By the time the worker takes the first upsert, the second write has
+        // already replaced the bytes.
+        storage.insert(kb().as_str(), "note.md", "second version", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let first = MockStorage::etag_for(b"first version");
+        let second = MockStorage::etag_for(b"second version");
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md", &first), upsert("note.md", &second)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 2, "one verdict per upsert: {events:?}");
+        for event in &events {
+            assert_eq!(event.kind.name(), "object.indexed");
+            assert_eq!(
+                event.kind.etag(),
+                Some(second.as_str()),
+                "every verdict names the version that is in the index, never the superseded one"
+            );
+        }
+        assert!(
+            events.iter().all(|e| e.kind.etag() != Some(first.as_str())),
+            "nothing is ever published for the first write's version"
+        );
+    }
+
     /// A change the watcher detected is announced and then indexed, and the
     /// two events name the same version.
     #[tokio::test]
