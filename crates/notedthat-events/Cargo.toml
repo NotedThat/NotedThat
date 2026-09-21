@@ -15,7 +15,7 @@ default = ["nats"]
 nats = ["dep:async-nats"]
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.7.2" }
+notedthat-core = { path = "../notedthat-core", version = "0.8.0" }
 async-nats = { workspace = true, optional = true }
 async-trait.workspace = true
 bytes.workspace = true
