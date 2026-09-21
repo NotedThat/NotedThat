@@ -101,6 +101,11 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", value_name = "HOSTS")]
     pub mcp_http_allowed_hosts: Option<String>,
 
+    /// Whether `/mcp` admits a request with no credential: `auto` (yes, when a
+    /// knowledge base grants `anyone` something) or `never` [default: auto].
+    #[arg(long, env = "NOTEDTHAT_MCP_ANONYMOUS", value_name = "MODE")]
+    pub mcp_anonymous: Option<String>,
+
     /// OIDC issuer URL, spelled exactly as the provider's `iss` claim. Enables
     /// identity-provider bearer tokens.
     #[arg(long, env = "NOTEDTHAT_OIDC_ISSUER", value_name = "URL")]

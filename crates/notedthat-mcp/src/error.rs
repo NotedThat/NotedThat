@@ -10,6 +10,12 @@ pub enum McpToolError {
     #[error("invalid_request: {0}")]
     InvalidRequest(String),
     /// 401 — missing or invalid bearer token.
+    ///
+    /// Over HTTP a call carrying a bad credential never gets this far — the
+    /// auth middleware answers `401` first — so what reaches a tool is an
+    /// **anonymous** caller asking for something no anonymous caller may have:
+    /// a mutating tool (`write`, `edit`, `append`, `replace`, `move`,
+    /// `delete`), whose API route admits no anonymous principal at all.
     #[error("unauthorized")]
     Unauthorized,
     /// 403 — the credential is valid but the knowledge base's access rules do
@@ -21,6 +27,12 @@ pub enum McpToolError {
     #[error("forbidden")]
     Forbidden,
     /// 404 — knowledge base or object not found.
+    ///
+    /// Also what an **anonymous** caller gets for a knowledge base or key the
+    /// `anyone` rules do not grant: the API answers that denial with the same
+    /// `404` as an undeclared slug, so the status cannot enumerate private
+    /// knowledge bases, and MCP passes it on unchanged. A signed-in caller's
+    /// denial is [`Forbidden`](Self::Forbidden) instead.
     #[error("not_found: {0}")]
     NotFound(String),
     /// 412 — If-Match or If-None-Match precondition failed.

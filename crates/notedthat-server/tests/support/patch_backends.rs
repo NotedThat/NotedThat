@@ -113,6 +113,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,

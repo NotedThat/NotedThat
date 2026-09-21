@@ -164,6 +164,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,

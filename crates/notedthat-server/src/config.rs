@@ -98,6 +98,42 @@ impl std::fmt::Display for EventsBackendKind {
     }
 }
 
+/// Whether `/mcp` admits a request that presents no credential (`NOTEDTHAT_MCP_ANONYMOUS`).
+///
+/// The MCP surface acts as its caller on the loopback API, so an anonymous caller is bound
+/// by the manifests' `anyone` rules exactly as a direct anonymous request is. What this
+/// setting decides is only whether such a request is let in at all, because the alternative
+/// — a `401` with the bearer challenge — is what an OAuth-capable MCP client needs to see
+/// before it will sign in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum McpAnonymous {
+    /// Admit anonymous callers when at least one declared knowledge base grants `anyone`
+    /// something; otherwise `401`. The default.
+    #[default]
+    Auto,
+    /// Always `401` a missing credential, whatever the manifests grant — for a deployment
+    /// with public knowledge bases and an identity provider whose operator wants OAuth
+    /// clients challenged on connect rather than signed in by hand.
+    Never,
+}
+
+impl McpAnonymous {
+    /// The `NOTEDTHAT_MCP_ANONYMOUS` value that selects this mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Never => "never",
+        }
+    }
+}
+
+impl std::fmt::Display for McpAnonymous {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The selected events backend together with the configuration it needs.
 #[derive(Debug, Clone)]
 pub enum EventsConfig {
@@ -262,6 +298,30 @@ fn parse_events_backend(supplied: Option<&OsStr>) -> Result<Option<EventsBackend
     }
 }
 
+/// Parse `NOTEDTHAT_MCP_ANONYMOUS`.
+///
+/// An empty or blank value is the default, as it is for the sibling
+/// `NOTEDTHAT_MCP_HTTP_*` settings: Compose passes every MCP variable through as `${VAR-}`,
+/// so an operator who never set it hands the server an empty string. Anything else that is
+/// not a mode is refused, as the backend selectors are — the wrong spelling of `never` must
+/// not quietly become `auto`.
+fn parse_mcp_anonymous(supplied: Option<&str>) -> Result<McpAnonymous, Error> {
+    let value = supplied.map(str::trim).unwrap_or_default();
+    if value.is_empty() {
+        return Ok(McpAnonymous::default());
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => Ok(McpAnonymous::Auto),
+        "never" => Ok(McpAnonymous::Never),
+        other => Err(Error::Config {
+            message: format!(
+                "{} is invalid: expected \"auto\" or \"never\", got \"{other}\"",
+                setting("NOTEDTHAT_MCP_ANONYMOUS")
+            ),
+        }),
+    }
+}
+
 /// Refuse to start when settings belonging to an unselected backend are supplied.
 ///
 /// Reports every offender at once: the realistic case is a whole `NOTEDTHAT_S3_*` family
@@ -370,6 +430,8 @@ pub struct Config {
     pub mcp_http_allowed_origins: Vec<String>,
     /// Allowed hosts for MCP HTTP Host header validation (`NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`; empty → `["127.0.0.1", "localhost", "::1"]`).
     pub mcp_http_allowed_hosts: Vec<String>,
+    /// Whether `/mcp` admits anonymous callers (`NOTEDTHAT_MCP_ANONYMOUS`; default `auto`).
+    pub mcp_anonymous: McpAnonymous,
     /// Maximum patchable object size in bytes (`NOTEDTHAT_MAX_PATCHABLE_SIZE`; default 100 MiB).
     pub max_patchable_size: u64,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
@@ -621,6 +683,7 @@ impl Config {
             cli.mcp_http_allowed_hosts.as_deref(),
             &["127.0.0.1", "localhost", "::1"],
         );
+        let mcp_anonymous = parse_mcp_anonymous(cli.mcp_anonymous.as_deref())?;
 
         let max_patchable_size = cli
             .max_patchable_size
@@ -665,6 +728,7 @@ impl Config {
             webdav_password,
             mcp_http_allowed_origins,
             mcp_http_allowed_hosts,
+            mcp_anonymous,
             max_patchable_size,
             staging,
             oidc,
@@ -997,7 +1061,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 50] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 51] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1031,6 +1095,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_HTTP_ENABLED",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+        "NOTEDTHAT_MCP_ANONYMOUS",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
         "NOTEDTHAT_OIDC_ISSUER",
@@ -1093,6 +1158,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_HTTP_ENABLED", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
+            ("NOTEDTHAT_MCP_ANONYMOUS", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
             ("NOTEDTHAT_OIDC_ISSUER", None),
@@ -1309,7 +1375,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 50);
+        assert_eq!(ALL_ENV_KEYS.len(), 51);
     }
 
     #[test]
@@ -1643,6 +1709,52 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com", "other.com"]);
+        }
+
+        #[test]
+        fn mcp_anonymous_defaults_to_auto() {
+            let cfg = run_with_env(&[], Config::from_env).unwrap();
+            assert_eq!(cfg.mcp_anonymous, McpAnonymous::Auto);
+        }
+
+        #[test]
+        fn mcp_anonymous_empty_or_blank_is_auto_like_its_siblings() {
+            // Compose hands every MCP variable through as `${VAR-}`, so an
+            // unset variable arrives as an empty string.
+            for value in ["", "   "] {
+                let cfg = run_with_env(
+                    &[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))],
+                    Config::from_env,
+                )
+                .unwrap();
+                assert_eq!(cfg.mcp_anonymous, McpAnonymous::Auto, "{value:?}");
+            }
+        }
+
+        #[test]
+        fn mcp_anonymous_never_in_any_case() {
+            for value in ["never", "NEVER", " Never "] {
+                let cfg = run_with_env(
+                    &[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))],
+                    Config::from_env,
+                )
+                .unwrap();
+                assert_eq!(cfg.mcp_anonymous, McpAnonymous::Never, "{value:?}");
+            }
+        }
+
+        #[test]
+        fn an_unknown_mcp_anonymous_mode_is_refused_rather_than_defaulted() {
+            let err = run_with_env(
+                &[("NOTEDTHAT_MCP_ANONYMOUS", Some("nevr"))],
+                Config::from_env,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("NOTEDTHAT_MCP_ANONYMOUS") && err.contains("nevr"),
+                "names the setting and the value: {err}"
+            );
         }
 
         #[test]

@@ -204,6 +204,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
     }
 }

@@ -214,7 +214,7 @@ mod caller_identity {
     //! the bearer the loopback API call carries.
 
     use super::*;
-    use crate::auth::require_bearer_auth;
+    use crate::auth::{McpAuth, authenticate_caller};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::post_service;
@@ -260,8 +260,11 @@ mod caller_identity {
         Router::new().route(
             "/mcp",
             post_service(service.into_service()).route_layer(middleware::from_fn_with_state(
-                authenticator,
-                require_bearer_auth,
+                Arc::new(McpAuth {
+                    authenticator,
+                    anonymous: false,
+                }),
+                authenticate_caller,
             )),
         )
     }
@@ -316,7 +319,7 @@ mod caller_identity {
 
         // When / Then — `with_token` swaps only the credential.
         assert_eq!(with_caller.base_url_display(), client.base_url_display());
-        assert_eq!(with_caller.token, ALICE_TOKEN);
-        assert_eq!(client.token, SERVICE_TOKEN);
+        assert_eq!(with_caller.token.as_deref(), Some(ALICE_TOKEN));
+        assert_eq!(client.token.as_deref(), Some(SERVICE_TOKEN));
     }
 }

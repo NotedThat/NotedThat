@@ -142,6 +142,7 @@ async fn start_over(
         webdav_password: "fs-e2e-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,

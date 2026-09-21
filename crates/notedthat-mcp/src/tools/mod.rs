@@ -11,7 +11,7 @@ mod replace;
 mod search;
 mod write;
 
-use crate::auth::CallerToken;
+use crate::auth::Caller;
 use crate::client::NotedThatClient;
 use crate::error::McpToolError;
 use rmcp::{
@@ -25,15 +25,16 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
-/// What a call runs as when its request carries no [`CallerToken`].
+/// What a call runs as when its request carries no [`Caller`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fallback {
     /// The configured token. Stdio has no request, so there is no bearer to
     /// forward: the process's own credential is the caller.
     ConfiguredToken,
-    /// Nothing: the call is refused. Over HTTP a missing token means the auth
-    /// middleware did not see this request, and acting as the configured
-    /// token instead would be exactly the escalation forwarding the caller's
+    /// Nothing: the call is refused. Over HTTP a missing [`Caller`] means the
+    /// auth middleware did not see this request — an anonymous caller it
+    /// admitted is marked, not absent — and acting as the configured token
+    /// instead would be exactly the escalation forwarding the caller's
     /// credential closes.
     Refuse,
 }
@@ -65,19 +66,21 @@ impl NotedThatMcp {
     }
 
     /// The API client for one call: the caller's own credential when the
-    /// request carries one, otherwise whatever the transport's [`Fallback`]
+    /// request carries one, no credential when the middleware admitted an
+    /// anonymous caller, otherwise whatever the transport's [`Fallback`]
     /// allows.
     ///
     /// Over the streamable HTTP transport rmcp places the request's
     /// [`axum::http::request::Parts`] — axum extensions included — into the
-    /// call's extensions, and the auth middleware left a [`CallerToken`] there.
+    /// call's extensions, and the auth middleware left a [`Caller`] there.
     /// Over stdio there are no parts.
     fn client_for(&self, extensions: &Extensions) -> Result<NotedThatClient, McpError> {
         let caller = extensions
             .get::<axum::http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<CallerToken>());
+            .and_then(|parts| parts.extensions.get::<Caller>());
         match (caller, self.fallback) {
-            (Some(token), _) => Ok(self.client.with_token(token.as_str())),
+            (Some(Caller::Bearer(token)), _) => Ok(self.client.with_token(token)),
+            (Some(Caller::Anonymous), _) => Ok(self.client.anonymous()),
             (None, Fallback::ConfiguredToken) => Ok(self.client.clone()),
             (None, Fallback::Refuse) => Err(McpToolError::Forbidden.into()),
         }
@@ -249,14 +252,14 @@ mod client_for {
     }
 
     /// The extensions of a call that arrived over HTTP: rmcp's `Parts`, with
-    /// the `CallerToken` the auth middleware leaves when it ran.
-    fn http_call(caller: Option<&str>) -> Extensions {
+    /// the `Caller` the auth middleware leaves when it ran.
+    fn http_call(caller: Option<Caller>) -> Extensions {
         let (mut parts, ()) = axum::http::Request::builder()
             .body(())
             .unwrap()
             .into_parts();
-        if let Some(token) = caller {
-            parts.extensions.insert(CallerToken::unverified(token));
+        if let Some(caller) = caller {
+            parts.extensions.insert(caller);
         }
         let mut extensions = Extensions::new();
         extensions.insert::<Parts>(parts);
@@ -273,16 +276,34 @@ mod client_for {
         let handler = NotedThatMcp::for_http(client());
 
         // When: the client for that call is picked
-        let picked = handler.client_for(&http_call(Some("caller"))).unwrap();
+        let picked = handler
+            .client_for(&http_call(Some(Caller::unverified("caller"))))
+            .unwrap();
 
         // Then: it presents the caller's bearer, not the configured one
-        assert_eq!(picked.token, "caller");
+        assert_eq!(picked.token.as_deref(), Some("caller"));
+    }
+
+    #[test]
+    fn anonymous_http_call_carries_no_token() {
+        // Given: an HTTP handler and a call the middleware admitted as the
+        // anonymous caller
+        let handler = NotedThatMcp::for_http(client());
+
+        // When: the client for that call is picked
+        let picked = handler
+            .client_for(&http_call(Some(Caller::Anonymous)))
+            .unwrap();
+
+        // Then: it presents nothing — not the configured token, which would
+        // turn "anyone may read" into "anyone may do what the server may"
+        assert_eq!(picked.token, None);
     }
 
     #[test]
     fn http_call_without_a_caller_token_is_refused() {
         // Given: an HTTP handler and a call whose request the middleware
-        // never saw, so no CallerToken was left in it
+        // never saw, so no Caller was left in it
         let handler = NotedThatMcp::for_http(client());
 
         // When: the client for that call is picked
@@ -316,7 +337,7 @@ mod client_for {
         let picked = handler.client_for(&Extensions::new()).unwrap();
 
         // Then: the configured token is the caller
-        assert_eq!(picked.token, "configured");
+        assert_eq!(picked.token.as_deref(), Some("configured"));
     }
 }
 

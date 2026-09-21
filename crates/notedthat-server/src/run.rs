@@ -385,6 +385,7 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
             .merge(mcp_http::build_router(
                 &config,
                 state.authenticator.clone(),
+                &state.access_policies,
                 &internal_api_url,
                 shutdown_token.child_token(),
             )?);
