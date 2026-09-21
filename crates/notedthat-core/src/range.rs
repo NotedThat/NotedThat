@@ -296,7 +296,8 @@ pub fn parse_range_header(value: &str) -> Result<ParsedRange, RangeParseError> {
 
     if range_set.contains(',') {
         return Err(RangeParseError::InvalidSpec(
-            "multi-range bytes= not supported".into(),
+            "one byte range per request; a range set (multipart/byteranges) is not supported"
+                .into(),
         ));
     }
 
@@ -699,7 +700,8 @@ mod tests {
             assert_eq!(
                 parse_range_header(value),
                 Err(RangeParseError::InvalidSpec(
-                    "multi-range bytes= not supported".into()
+                    "one byte range per request; a range set (multipart/byteranges) is not supported"
+                        .into()
                 )),
                 "{value}"
             );

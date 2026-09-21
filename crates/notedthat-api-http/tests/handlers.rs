@@ -1129,6 +1129,13 @@ async fn get_multi_range_rejected() {
     assert!(!resp.headers().contains_key("content-range"));
     let json = response_json(resp).await;
     assert_eq!(json["error"], "malformed_range");
+    // The refusal says why — the count of ranges, not the syntax — so a client
+    // does not go looking for a typo in a header it wrote correctly.
+    let message = json["message"].as_str().expect("message");
+    assert!(
+        message.contains("one byte range per request"),
+        "the reason reaches the client: {message}"
+    );
 }
 
 #[tokio::test]
