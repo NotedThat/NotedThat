@@ -45,7 +45,7 @@ Three logical layers:
 | D21 | API auth (v1) | **Static Bearer token** from `NOTEDTHAT_API_TOKEN` env var. Single value, single tenant. No claims, no expiry, no rotation surface. Comparison-only auth check on every request. **Amended by D53:** it stays as the deployment's *service token* — the operator's own credential and the `.notedthat` recovery path — beside identity-provider tokens, rather than being replaced by them. |
 | D22 | WebDAV auth (v1) | **Static HTTP Basic credentials** from `NOTEDTHAT_WEBDAV_USERNAME` + `NOTEDTHAT_WEBDAV_PASSWORD`. Same user/pass for every WebDAV connection. **Amended by D53:** the pair resolves to the same service-token principal as D21's Bearer, `Basic` stays WebDAV-only, and WebDAV additionally accepts `Bearer` — a client that can set a header need not speak Basic, and an identity-provider token only exists as a bearer. |
 | D23 | WebDAV URL scheme | **Unified path-based root.** WebDAV is mounted at `https://host/webdav/` on the same listener as the API and MCP. In v1, root `PROPFIND` returns every KB declared in `NOTEDTHAT_KBS`, listed by KB `slug` (no per-token filtering until JWT v2). Nested paths route to `/webdav/<kb_slug>/<object_path>`. No subdomain sharding, no per-KB URLs. |
-| D24 | KB identity | Every KB has a stable `slug` (`[a-z0-9-]{1,40}`, immutable in v1) **and** a mutable `display_name` (Unicode-friendly, shown as WebDAV `DAV:displayname`). The `slug` is the internal identifier — used directly for the S3 bucket name (D20) and Qdrant collection name. No separate UUID identifier in v1; single-tenant, and slugs are unique per tenant (§6.8). |
+| D24 | KB identity | Every KB has a stable `slug` (`[a-z0-9-]{1,40}`, immutable in v1) **and** a mutable `display_name` (Unicode-friendly, held in the manifest §6.7; nothing renders it yet). The `slug` is the internal identifier — used directly for the S3 bucket name (D20) and Qdrant collection name. No separate UUID identifier in v1; single-tenant, and slugs are unique per tenant (§6.8). |
 | D25 | MCP tool surface | Each MCP tool takes a `kb` (slug) argument — except `search`, whose `kb` is a list of slugs since D54. In v1, one static token can address every KB declared in `NOTEDTHAT_KBS`. A **`list_knowledgebases()`** discovery tool returns that declared KB list (matching WebDAV root PROPFIND). JWT-filtered visibility is v2. Full list in §6.10. |
 | D26 | KB manifest | `s3://<kb_bucket>/.notedthat/manifest.json` — small, human-readable boot record (§6.7). Manifest v1 carries the knowledge base's `access` rules (D51). Written at KB create; updated when the shape of the collection changes. Not on the hot path; recoverable from operational config. |
 | D27 | JWT model (v2, deferred) | **Superseded by D53.** The plan was HS256 self-signed tokens carrying their own ACL. D51 moved the policy into the manifest and D53 delegates identity to an external OIDC issuer, so NotedThat mints nothing and the self-contained-claims design is not needed. |
@@ -53,7 +53,7 @@ Three logical layers:
 | D29 | MCP stdio mode | **Superseded by D63.** stdio wrapped the HTTP API as a thin MCP-over-stdio → HTTP client adapter (`NOTEDTHAT_URL` + `NOTEDTHAT_TOKEN`, no S3/Qdrant deps). Removed; the principle it embodied — MCP goes through the HTTP API — survives in the HTTP transport (§5 principle 10). |
 | D30 | Reference backend | **NotedThat's own reference deployment uses SeaweedFS ≥ 4.18 + Qdrant.** This is what we test against and what we ship containers for. Other S3-compatible backends (§8.1) are supported at deployer-choice; NotedThat makes no runtime distinction between them. The one runtime distinction it does make is D49's choice between the S3 and filesystem adapters. |
 | D31 | MCP transport (v1) | **Streamable HTTP is the one transport (stdio shipped first, then was removed by D63).** HTTP transport is always mounted at `POST /mcp` on the `NOTEDTHAT_LISTEN_ADDR` listener, serving stateless JSON-response MCP with Bearer auth — or, since D59, as the anonymous caller where a manifest grants `anyone` something. Legacy SSE paths return 405. |
-| D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared at startup** — no admin API in v1. `NOTEDTHAT_KBS`, or the `--kbs` flag that overrides it, lists the KBs (slug + display name) to ensure exist at startup. Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
+| D32 | KB provisioning (v1) | **`[TEMPORARY]` KBs declared at startup** — no admin API in v1. `NOTEDTHAT_KBS`, or the `--kbs` flag that overrides it, lists the KB slugs to ensure exist at startup; the manifest holds the `display_name` (§6.7, §6.8). Bucket + Qdrant collection created idempotently on boot. **KB deletion is not implemented in v1** (§7.6). |
 | D33 | Frontmatter handling | **OKF-aware indexing, raw storage.** Non-reserved `.md` files with YAML frontmatter and a non-empty string `type` expose concept metadata and tags in search; only their bodies are chunked, with original source offsets. Other documents retain raw Markdown indexing. Unknown fields remain in the original bytes. See [OKF support](docs/OKF.md). |
 | D34 | WebDAV FakeLs | **`[POST-v1]`** Not enabled in v1. Consequence: WebDAV clients that require `LOCK` before `PUT` (macOS Finder for saving, some Office suites, some mobile Files apps) will treat the mount as read-only or refuse to save. Read-only browsing works. API + MCP writes are unaffected. Add `FakeLs` when a real client scenario demands it. |
 | D35 | Upload buffering | In-memory upload cap **16 MiB** before spooling to a temp file. Max upload size **5 GiB** (matches S3's non-multipart PUT ceiling). **Values hardcoded in v1; env-var tuning `[POST-v1]`.** |
@@ -396,9 +396,9 @@ on the request hot path and is rebuildable if lost.
 | Name | Shape | Use | Stability |
 |---|---|---|---|
 | `kb_slug` | `[a-z0-9-]{1,40}` | S3 bucket name (D20), Qdrant collection name, WebDAV URL path, MCP `kb` arg, HTTP API URL | immutable in v1 |
-| `display_name` | Unicode string, ≤ 128 chars | WebDAV `DAV:displayname`, UI-friendly | mutable |
+| `display_name` | Unicode string, non-empty, ≤ 128 code points | UI-friendly name, held in `.notedthat/manifest.json` (§6.7); not rendered by any surface yet | mutable |
 
-Slug user-supplied at create (auto-derived from `display_name` if omitted). Uniqueness scope: per tenant.
+Slug supplied by the operator in `NOTEDTHAT_KBS` (D32). `display_name` is written as the slug when a KB is first provisioned (§6.12) and validated — non-empty, ≤ 128 code points — whenever the manifest is loaded; a manifest outside the limit refuses startup (D39). Uniqueness scope: per tenant.
 
 **No separate UUID identifier in v1.** The slug *is* the identifier. This is safe because v1 is single-tenant, slugs are immutable, and slugs are unique per tenant. If multi-tenant KB rename ever lands post-v1, an internal UUID may reappear then — not now.
 
@@ -413,7 +413,7 @@ Env vars:
 - `NOTEDTHAT_API_TOKEN` — the Bearer token every surface accepts. String comparison, constant-time.
 - `NOTEDTHAT_WEBDAV_USERNAME` — HTTP Basic username the `WebDAV` surface accepts
 - `NOTEDTHAT_WEBDAV_PASSWORD` — HTTP Basic password the `WebDAV` surface accepts
-- `NOTEDTHAT_KBS` — comma-separated `slug:Display Name` pairs; the server ensures these KBs exist at startup (bucket + Qdrant collection created idempotently)
+- `NOTEDTHAT_KBS` — comma-separated KB slugs; the server ensures these KBs exist at startup (bucket + Qdrant collection created idempotently)
 
 Both credentials resolve to the same principal: the **service token**, `signed-in` with no subject
 and no groups. It is bound by the manifest's rules like everyone else (D51), with one exception that
@@ -425,7 +425,7 @@ Example:
 NOTEDTHAT_API_TOKEN=sk_live_9f8c…
 NOTEDTHAT_WEBDAV_USERNAME=notedthat
 NOTEDTHAT_WEBDAV_PASSWORD=change-me
-NOTEDTHAT_KBS=my-notes:My Notes,work-kb:Work KB
+NOTEDTHAT_KBS=my-notes,work-kb
 ```
 
 #### 6.9.2 OIDC identities `[DECIDED — D53]`
@@ -531,10 +531,10 @@ Per D10, `notedthat-server` is the main artifact. The binary is built from the `
 The concrete HTTP API route surface (D44) lives in §6.13.
 
 #### Startup provisioning
-1. Parse `NOTEDTHAT_KBS` as comma-separated `slug:Display Name` pairs.
-2. Validate every slug (`[a-z0-9-]{1,40}`, no leading/trailing hyphen; the tenant slug is `[a-z0-9]{1,20}` per D58; reject empty display names). Reject any `(tenant_slug, kb_slug)` whose derived bucket name (§6.6) exceeds 63 chars.
+1. Parse `NOTEDTHAT_KBS` as comma-separated slugs.
+2. Validate every slug (`[a-z0-9-]{1,40}`, no leading/trailing hyphen; the tenant slug is `[a-z0-9]{1,20}` per D58; reject duplicates). Reject any `(tenant_slug, kb_slug)` whose derived bucket name (§6.6) exceeds 63 chars.
 3. Ensure each bucket exists; `BucketAlreadyOwnedByYou` is success. Under the `fs` backend (D49) this creates the per-KB directory, which is idempotent in the same way.
-4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug/display name/embedding dimensions; validate and load its `access` rules into the startup snapshot.
+4. Ensure each `.notedthat/manifest.json` exists and matches the declared slug and embedding dimensions; a fresh manifest takes the slug as its `display_name`. Validate the manifest (schema version, `display_name` per §6.8, `access` rules) and load its `access` rules into the startup snapshot.
 5. Ensure each Qdrant collection exists with the expected dense dimension and sparse BM25 vector.
 6. If any step fails: log the exact KB + backend error and exit non-zero. No partial startup.
 
