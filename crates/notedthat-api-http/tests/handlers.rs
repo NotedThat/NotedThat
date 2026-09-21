@@ -205,7 +205,29 @@ async fn llms_txt_is_plain_text_without_authentication() {
     println!("GET /llms.txt without Authorization -> {status}; Content-Type={content_type}");
     assert_eq!(status, StatusCode::OK);
     assert_eq!(content_type, "text/plain; charset=utf-8");
-    assert!(!body.is_empty());
+    let text = std::str::from_utf8(&body).expect("UTF-8");
+
+    // And: it describes every surface, not only the HTTP API — the endpoint,
+    // the transport and a client block for MCP; the share and its schemes for
+    // WebDAV — without naming any host or credential.
+    for needle in [
+        "/api/v1/knowledgebases",
+        "POST /mcp",
+        "streamable HTTP",
+        "\"mcpServers\"",
+        "https://HOST/mcp",
+        "/webdav/",
+        "Basic",
+        "anyone",
+    ] {
+        assert!(text.contains(needle), "llms.txt should mention {needle:?}");
+    }
+    for forbidden in ["localhost", "127.0.0.1", "Bearer e2e", "please-change"] {
+        assert!(
+            !text.contains(forbidden),
+            "llms.txt must stay deployment-agnostic; found {forbidden:?}"
+        );
+    }
 }
 
 // ─── Auth tests ─────────────────────────────────────────────────────────────
