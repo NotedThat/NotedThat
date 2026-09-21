@@ -1634,7 +1634,7 @@ NotedThat supports two MCP transports: stdio (M7) and streamable HTTP (M8).
 
 #### stdio transport
 
-MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your MCP client to launch the binary as a subprocess; see [README.md](../README.md) for setup snippets.
+MCP is served by the `notedthat-mcp-stdio` binary over **stdio**. Configure your MCP client to launch the binary as a subprocess; see [Connecting clients](CLIENTS.md) for setup snippets.
 
 #### Streamable HTTP transport
 

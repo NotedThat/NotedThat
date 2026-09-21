@@ -1,36 +1,91 @@
 # NotedThat
 
-A markdown-first knowledgebase system exposed as an HTTP API, MCP server, and WebDAV endpoint. NotedThat stores notes as plain Markdown files, indexes them for semantic search via Qdrant, and surfaces them through multiple access protocols so editors, AI agents, and WebDAV clients can all work with the same content.
+**A folder of Markdown files that every AI assistant, automation tool and file manager can
+open — and that decides, per caller, what each of them may touch.**
+
+NotedThat stores notes as plain Markdown, indexes them for hybrid semantic + keyword search, and
+serves the same files three ways at once: an [HTTP API](docs/API.md), an
+[MCP server](docs/CLIENTS.md) for anything that speaks the Model Context Protocol, and a
+[WebDAV share](docs/WEBDAV.md) you mount as a folder. One set of
+[access rules](#access-rules) per knowledge base governs all three.
 
 > **Status: pre-v1** — under active development. APIs and crate interfaces are unstable.
 
+## Why not Obsidian and a sync folder?
+
+Keep Obsidian. Point it at the mounted folder and nothing about writing notes changes. What a
+sync folder cannot do is the rest:
+
+- **Anything that speaks MCP is a client.** Claude Code, claude.ai, Claude Desktop, Cursor,
+  VS Code, Zed, n8n, Windmill, the MCP Inspector — ten tools (`search`, `read`, `write`, `edit`,
+  `append`, `replace`, `list`, `move`, `delete`, `list_knowledgebases`) over one HTTP endpoint
+  or a local stdio adapter. An assistant searches your notes for context and files what it
+  learned; a workflow appends the day's output to a journal. [Connecting clients →](docs/CLIENTS.md)
+- **Anything that opens a folder is a client.** GNOME Files, Dolphin, davfs2, rclone, WinSCP —
+  mount the share and interact with it like a human would. What you save is searchable moments
+  later; what an agent wrote is sitting in the folder. [Mounting →](docs/WEBDAV.md)
+- **Every caller gets its own rules.** A sync folder has one identity: whoever holds the folder
+  holds everything. Here a knowledge base carries rules naming who (`anyone`, `signed-in`,
+  `group:editors`, `user:agent-bot`) may do what (`list`, `read`, `write`, `delete`, `search`)
+  where (`inbox/**`). So a teammate can be given `research/**` and nothing else; an agent with its own identity
+  that you do not fully trust can read the vault and write only to `inbox/`; the public can read
+  `public/**` and search nothing. The same evaluator answers for the API, MCP, WebDAV and the browse pages.
+  [Access rules →](#access-rules)
+- **Search is a property of the store, not of an app.** Every write from every surface is
+  indexed; `search` is hybrid semantic + keyword across one or many knowledge bases, with
+  filters, from any client.
+- **Changes are a stream.** `GET …/events` streams every object change with replay, so a workflow
+  can react to a note a colleague or an agent just created.
+  [Events →](docs/API.md#get-apiv1knowledgebaseskb_slugevents)
+
+Identity comes from your own OpenID Connect provider — Authentik, Authelia and Zitadel are
+documented — and MCP clients that support OAuth sign in through it, so an assistant acts as the
+person using it, not as a shared super-user. NotedThat mints no tokens and keeps no sessions.
+
+## Plug it in
+
+The server is running (see [Running locally](#running-locally)). Then:
+
+**Claude Code** — one command:
+
+```sh
+claude mcp add --transport http notedthat https://notes.example.com/mcp \
+  --header "Authorization: Bearer $NOTEDTHAT_API_TOKEN"
+```
+
+**n8n** — an *MCP Client Tool* node on an AI Agent: endpoint `https://notes.example.com/mcp`,
+transport *HTTP Streamable*, *Bearer Auth* with the token.
+
+**claude.ai** — Settings → Connectors → *Add custom connector* with the same URL; it signs in
+through your OIDC provider.
+
+**A folder** — `davs://notes.example.com/webdav/` in GNOME Files, or
+
+```sh
+rclone config create notedthat webdav url=https://notes.example.com/webdav/ vendor=other \
+  user=webdav-user pass=webdav-pass --obscure
+rclone mount notedthat:notes ~/Notes --vfs-cache-mode writes
+```
+
+**Anything else** — `curl` against the [HTTP API](docs/API.md), or hand a model
+`https://notes.example.com/llms.txt` and let it work the API out itself.
+
+Every client that is not on the server's own machine needs the public hostname in
+`NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS`, and TLS at a reverse proxy in front. Full setup for
+Claude Desktop, Cursor, VS Code, Zed, Windmill and the stdio adapter: [docs/CLIENTS.md](docs/CLIENTS.md).
+Every mount option, including Windows and the `LOCK` caveat: [docs/WEBDAV.md](docs/WEBDAV.md).
+
 ## Documentation
 
+- [Connecting clients](docs/CLIENTS.md) — Claude Code, claude.ai, Claude Desktop, Cursor, VS Code, Zed, n8n, Windmill, and any other MCP client
+- [Mounting a knowledge base](docs/WEBDAV.md) — WebDAV on Linux, macOS, Windows; rclone; Obsidian
+- [API reference](docs/API.md) — HTTP, WebDAV, MCP, events, and anonymous-read behavior
+- [Configuration](docs/CONFIGURATION.md) — environment, manifest access rules, OIDC, storage and events backends
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
-- [API reference](docs/API.md) — HTTP, WebDAV, MCP, and anonymous-read behavior
-- [Configuration](docs/CONFIGURATION.md) — environment and manifest operations
-- [DEVELOPMENT.md](DEVELOPMENT.md) — developer commands and test conventions
 - [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
+- [DEVELOPMENT.md](DEVELOPMENT.md) — developer commands and test conventions
 - [RELEASING.md](RELEASING.md) — release runbook and Trusted Publishing setup
 - [LICENSE](LICENSE) — Mozilla Public License 2.0
-
-## Crate Map
-
-| Crate | Path | Role |
-| ----- | ---- | ---- |
-| `notedthat-core` | `crates/notedthat-core` | Shared domain types, path/range/error/auth primitives, config |
-| `notedthat-storage-s3` | `crates/notedthat-storage-s3` | S3 storage adapter |
-| `notedthat-storage-fs` | `crates/notedthat-storage-fs` | Local filesystem storage adapter |
-| `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, embedder client, Qdrant integration |
-| `notedthat-write` | `crates/notedthat-write` | Shared write path (`commit()`, `commit_delete()`, MIME sniff, 5 GiB limit) — used by HTTP API + WebDAV surfaces |
-| `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
-| `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
-| `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
-| `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
-| `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
-| `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs both. |
-
-All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Access rules
 
@@ -243,164 +298,55 @@ Verify the signature + provenance before running in production:
 gh attestation verify oci://ghcr.io/notedthat/server:0.2.0 --owner NotedThat
 ```
 
-### WebDAV
 
-With the server running, configure a WebDAV client with the credentials from your local `.env`:
+### WebDAV and MCP against the local stack
 
-```sh
-export NOTEDTHAT_WEBDAV_USERNAME=webdav-user-please-change
-export NOTEDTHAT_WEBDAV_PASSWORD=webdav-pass-please-change
-```
+With the server up, the WebDAV share is at `http://127.0.0.1:8080/webdav/` (Basic auth with the
+`NOTEDTHAT_WEBDAV_*` values from `.env`) and MCP at `POST http://127.0.0.1:8080/mcp` (Bearer with
+`NOTEDTHAT_API_TOKEN`). Smoke-test both without installing anything:
 
 ```sh
-# 7. PROPFIND root (list KBs)
-curl -X PROPFIND -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  -H 'Depth: 1' http://127.0.0.1:8080/webdav/
-
-# 8. PUT a markdown file via WebDAV
-echo "# Hello WebDAV" | curl -X PUT \
+set -a; . ./.env; set +a
+# List knowledge bases over WebDAV, write a note, read it back
+curl -X PROPFIND -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" -H 'Depth: 1' \
+  http://127.0.0.1:8080/webdav/
+echo "# Hello WebDAV" | curl --fail -X PUT --data-binary @- \
   -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  --data-binary @- \
   http://127.0.0.1:8080/webdav/notes/hello-webdav.md
-
-# 9. GET it back
 curl -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
   http://127.0.0.1:8080/webdav/notes/hello-webdav.md
 
-# 10. DELETE it
-curl -X DELETE -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
-  http://127.0.0.1:8080/webdav/notes/hello-webdav.md
+# Ask the MCP endpoint for its tool list
+curl --fail -X POST -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' http://127.0.0.1:8080/mcp
 ```
 
-### MCP (Claude Desktop, Cursor, Zed)
-
-With the server running, configure your MCP client to launch `notedthat-mcp-stdio` as a subprocess.
-
-#### Remote MCP hosting
-
-NotedThat also exposes an HTTP MCP endpoint for remote clients that support the MCP HTTP transport:
-
-- **Endpoint**: `POST /mcp` on the same listener as the API and WebDAV
-- **Auth**: `Authorization: Bearer <NOTEDTHAT_API_TOKEN>` (same token as the HTTP API)
-- **Note**: public deployments require HTTPS termination at a reverse proxy before exposing this listener
-
-See [`docs/API.md`](docs/API.md) for the full MCP transport and Resources protocol docs.
-
-#### Install options
-
-Three ways to get `notedthat-server` and `notedthat-mcp-stdio` onto your `PATH` — all equivalent, pick whichever fits your setup. Both binaries ship from the single `notedthat` crate, so every route below installs the pair. Installer scripts become available after the first tagged release.
-
-**Build or extract locally:**
-
-```sh
-make mcp-stdio                         # build from this checkout
-make mcp-stdio-from-image              # extract from notedthat-server:local
-# Override PREFIX=/some/dir or IMAGE=ghcr.io/notedthat/server:tag as needed.
-```
-
-**Shell installer** (macOS / Linux). Prebuilt binaries are not published for
-Windows at the moment — on Windows use `cargo install notedthat` below:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/NotedThat/NotedThat/releases/latest/download/notedthat-installer.sh | sh
-```
-
-**cargo install** (requires a Rust toolchain):
-
-```sh
-cargo install notedthat
-```
-
-Once installed, wire it into your MCP client:
-
-```json
-{
-  "mcpServers": {
-    "notedthat": {
-      "command": "notedthat-mcp-stdio",
-      "env": {
-        "NOTEDTHAT_URL": "http://localhost:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
-    }
-  }
-}
-```
-
-Every prebuilt binary is cosign-signed with a SLSA L2 build provenance attestation — verify before running:
-
-```sh
-cosign verify-blob \
-  --bundle notedthat-x86_64-unknown-linux-gnu.tar.xz.bundle \
-  --certificate-identity-regexp 'https://github.com/NotedThat/NotedThat/.+' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  notedthat-x86_64-unknown-linux-gnu.tar.xz
-```
-
-#### Claude Desktop
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "notedthat": {
-      "command": "notedthat-mcp-stdio",
-      "env": {
-        "NOTEDTHAT_URL": "http://localhost:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop after saving.
-
-#### Cursor
-
-Add to Cursor's settings (`.cursor/mcp.json` or via Settings → MCP):
-
-```json
-{
-  "mcpServers": {
-    "notedthat": {
-      "command": "notedthat-mcp-stdio",
-      "env": {
-        "NOTEDTHAT_URL": "http://localhost:8080",
-        "NOTEDTHAT_TOKEN": "your-token-here"
-      }
-    }
-  }
-}
-```
-
-#### Zed
-
-Add to Zed settings (`~/.config/zed/settings.json`):
-
-```json
-{
-  "assistant": {
-    "mcp_servers": {
-      "notedthat": {
-        "command": {
-          "path": "notedthat-mcp-stdio",
-          "env": {
-            "NOTEDTHAT_URL": "http://localhost:8080",
-            "NOTEDTHAT_TOKEN": "your-token-here"
-          }
-        }
-      }
-    }
-  }
-}
-```
+Then wire in a real client — [docs/CLIENTS.md](docs/CLIENTS.md) — or mount the share —
+[docs/WEBDAV.md](docs/WEBDAV.md). `docs/manual-qa/webdav-gvfs.sh` runs a fuller WebDAV walkthrough
+with cadaver or curl.
 
 Full configuration reference — every setting as an environment variable or as the flag that overrides it: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
 Full API documentation: [`docs/API.md`](docs/API.md)
+
+## Crate Map
+
+| Crate | Path | Role |
+| ----- | ---- | ---- |
+| `notedthat-core` | `crates/notedthat-core` | Shared domain types, path/range/error/auth primitives, config |
+| `notedthat-storage-s3` | `crates/notedthat-storage-s3` | S3 storage adapter |
+| `notedthat-storage-fs` | `crates/notedthat-storage-fs` | Local filesystem storage adapter |
+| `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, embedder client, Qdrant integration |
+| `notedthat-write` | `crates/notedthat-write` | Shared write path (`commit()`, `commit_delete()`, MIME sniff, 5 GiB limit) — used by HTTP API + WebDAV surfaces |
+| `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
+| `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
+| `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
+| `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
+| `notedthat-mcp-stdio` | `crates/notedthat-mcp-stdio` | MCP-over-stdio transport adapter |
+| `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` and `notedthat-mcp-stdio` binaries, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs both. |
+
+All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Contributing
 
