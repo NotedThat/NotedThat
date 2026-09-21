@@ -16,10 +16,48 @@ const MAX_UTF8_BYTES_PER_SCALAR: usize = 4;
 
 struct PreparedSnapshot {
     body: Arc<StagedBody>,
+    /// The `ETag` `HEAD` reported and the streamed body confirmed: the version
+    /// the points are stamped with, and the one `object.indexed` names.
+    etag: String,
     meta: ObjectMeta,
     facts: SnapshotFacts,
     metadata: Option<ConceptMetadata>,
     body_start: usize,
+}
+
+/// What an `Upsert` or `Refresh` did, for the outcome event (D64).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PipelineOutcome {
+    /// `chunks` points now carry the bytes stamped `etag`.
+    Indexed {
+        etag: String,
+        mime: String,
+        chunks: u32,
+    },
+    /// The index already held this `ETag` (D50); nothing was touched.
+    Skipped,
+    /// Nothing to index — missing on re-read, non-indexable or empty — and any
+    /// previous points are gone. Also what an explicit `Tombstone` maps to.
+    Tombstoned,
+}
+
+/// Why the pipeline stopped, with what `HEAD` had established by then.
+#[derive(Debug)]
+pub(super) struct PipelineFailure {
+    pub(super) message: String,
+    pub(super) etag: Option<String>,
+    pub(super) mime: Option<String>,
+}
+
+impl PipelineFailure {
+    /// A failure with no stamp: `HEAD` had not succeeded.
+    pub(super) fn before_head(message: String) -> Self {
+        Self {
+            message,
+            etag: None,
+            mime: None,
+        }
+    }
 }
 
 impl IndexerWorker {
@@ -33,7 +71,7 @@ impl IndexerWorker {
         object_key: ObjectPath,
         skip: Skip,
         announce: Option<EventSource>,
-    ) -> Result<(), String> {
+    ) -> Result<PipelineOutcome, PipelineFailure> {
         let head = match self
             .storage
             .head_object(&kb, &object_key, ConditionalHeaders::default())
@@ -54,9 +92,17 @@ impl IndexerWorker {
                     self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
                         .await;
                 }
-                return self.handle_tombstone(kb, object_key).await;
+                return self
+                    .handle_tombstone(kb, object_key)
+                    .await
+                    .map(|()| PipelineOutcome::Tombstoned)
+                    .map_err(PipelineFailure::before_head);
             }
-            Err(err) => return Err(format!("storage.head_object failed: {err}")),
+            Err(err) => {
+                return Err(PipelineFailure::before_head(format!(
+                    "storage.head_object failed: {err}"
+                )));
+            }
         };
         if let Some(source) = announce {
             self.announce(ObjectEvent::from_meta(
@@ -68,6 +114,26 @@ impl IndexerWorker {
             .await;
         }
 
+        // From here on a failure knows which version it was working on.
+        let (etag, mime) = (head.etag.clone(), head.content_type.clone());
+        self.index_head(kb, object_key, head, skip)
+            .await
+            .map_err(|message| PipelineFailure {
+                message,
+                etag,
+                mime,
+            })
+    }
+
+    /// Index the object `head` describes, or take it out of the index when it
+    /// is not something the index holds.
+    async fn index_head(
+        &self,
+        kb: KbSlug,
+        object_key: ObjectPath,
+        head: ObjectMeta,
+        skip: Skip,
+    ) -> Result<PipelineOutcome, String> {
         let mime = head.content_type.clone().unwrap_or_default();
         if !is_indexable(&mime) {
             tracing::debug!(
@@ -77,7 +143,8 @@ impl IndexerWorker {
                 mime,
                 "removing index entries for non-indexable content type"
             );
-            return self.handle_tombstone(kb, object_key).await;
+            self.handle_tombstone(kb, object_key).await?;
+            return Ok(PipelineOutcome::Tombstoned);
         }
         if head.size == 0 {
             tracing::debug!(
@@ -86,7 +153,8 @@ impl IndexerWorker {
                 path = %object_key.as_str(),
                 "empty object; removing previous index entries"
             );
-            return self.handle_tombstone(kb, object_key).await;
+            self.handle_tombstone(kb, object_key).await?;
+            return Ok(PipelineOutcome::Tombstoned);
         }
 
         if skip == Skip::IfUnchanged && self.already_indexed(&kb, &object_key, &head).await {
@@ -96,7 +164,7 @@ impl IndexerWorker {
                 path = %object_key.as_str(),
                 "unchanged since it was last indexed; skipping"
             );
-            return Ok(());
+            return Ok(PipelineOutcome::Skipped);
         }
 
         let max_input_tokens = self.embedder.max_input_tokens();
@@ -111,16 +179,22 @@ impl IndexerWorker {
         let new_count = self
             .upsert_batches(&kb, &object_key, &snapshot, cursor)
             .await?;
-        self.cleanup_obsolete(&kb, &object_key, new_count).await?;
+        let chunks = u32::try_from(new_count)
+            .map_err(|_| "chunk count exceeds supported numeric range".to_owned())?;
+        self.cleanup_obsolete(&kb, &object_key, chunks).await?;
 
         tracing::info!(
             target: "notedthat::indexing",
             kb = %kb.as_str(),
             path = %object_key.as_str(),
-            chunks = new_count,
+            chunks,
             "indexed"
         );
-        Ok(())
+        Ok(PipelineOutcome::Indexed {
+            etag: snapshot.etag,
+            mime,
+            chunks,
+        })
     }
 
     /// Whether `head`'s `ETag` is already the one recorded on this object's chunks.
@@ -230,6 +304,7 @@ impl IndexerWorker {
             });
         Ok(PreparedSnapshot {
             body: staged,
+            etag: head_etag,
             meta: object_meta,
             facts,
             metadata,
@@ -288,16 +363,14 @@ impl IndexerWorker {
         &self,
         kb: &KbSlug,
         object_key: &ObjectPath,
-        new_count: usize,
+        from_chunk_index: u32,
     ) -> Result<(), String> {
-        let threshold = u32::try_from(new_count)
-            .map_err(|_| "chunk count exceeds supported numeric range".to_owned())?;
         self.store
             .delete_points(
                 kb,
                 PointSelector::ObjectChunksFrom {
                     object_key: object_key.as_str().to_owned(),
-                    from_chunk_index: threshold,
+                    from_chunk_index,
                 },
             )
             .await
