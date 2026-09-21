@@ -190,14 +190,7 @@ impl Storage for InMemoryStorage {
 
     async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
         self.check_reachable()?;
-        let inner = self.inner.read().await;
-        if inner.buckets.contains(kb.as_str()) {
-            Ok(())
-        } else {
-            Err(StorageError::BucketNotFound {
-                bucket: kb.as_str().to_string(),
-            })
-        }
+        self.inner.read().await.require_bucket(kb)
     }
 
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
