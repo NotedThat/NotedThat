@@ -3,15 +3,24 @@
 # Runs once per model profile under .github/warden/. Each profile is a
 # complete, self-contained Warden config (shared review settings, models,
 # skills) and the lanes are fully independent: no merging, no cross-profile
-# dedup, each posts its own PR review. Three profiles today:
+# dedup, each posts its own PR review. Two profiles run today:
 #   - minimax: the cheap lane — the two built-in skills, four hunks at a
 #     time, the most the MiniMax Token Plan tolerates (see the profile);
-#   - thirdparty-gpt-oss: the wide lane — those two plus six more skills,
-#     on a third-party OpenAI-compatible endpoint with no plan quota, whose
-#     location is a secret;
 #   - thirdparty-deepseek: the two built-in skills again on DeepSeek V4
-#     Flash, same endpoint and secrets as the wide lane, two hunks at a
-#     time because the endpoint rate-limits that model.
+#     Flash, on a third-party OpenAI-compatible endpoint whose location is
+#     a secret, two hunks at a time because the endpoint rate-limits that
+#     model.
+# A third, thirdparty-gpt-oss (the wide lane: those two skills plus six
+# more, on the same endpoint), is kept under .github/warden/ but not run:
+# its chat route has been answering "Provider unavailable after 5
+# consecutive failures ... Runtime execution failed: list index out of
+# range" — a Python error relayed from the gateway, on every PR from #141
+# through #156 while the preflight `/models` call and the DeepSeek lane on
+# the same route both succeeded. The lane produced no tokens at all on
+# those PRs, and when one skill hits that error Warden stops the others
+# early and still reports them as "No issues", which is worse than no
+# review. Re-add its matrix entry (below, next to DeepSeek) once the route
+# is shown to answer a chat completion from a runner again.
 # (An OpenCode Go profile was tried and dropped because every model call
 # from a GitHub runner failed with "provider unavailable" while working
 # from a developer machine — see #131 before adding one.)
@@ -69,8 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     # Per profile: the MiniMax lane runs four hunks at a time and may queue
     # behind another PR at the proxy, so a large feature PR (~350 hunks,
-    # PR #130) can need hours; the wide lane is fast. Hitting the limit is a
-    # cancelled review, not a red X.
+    # PR #130) can need hours. Hitting the limit is a cancelled review, not
+    # a red X.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One subscription being down must not cancel the other profile's review.
@@ -106,15 +115,18 @@ jobs:
             app: MINIMAX
             preflight-path: /v1/models
             timeout: 300
-          # The provider is declared in .github/warden/pi.
-          - profile: thirdparty-gpt-oss
-            provider: THIRDPARTY
-            app: GPT_OSS
-            preflight-path: /models
-            timeout: 90
-          # Same provider and secrets as the lane above; its own GitHub App
-          # so the two lanes' check runs and reviews stay apart. Two hunks
-          # at a time at ~25 s each: a large PR (~350 hunks) needs hours.
+          # The provider is declared in .github/warden/pi. Its own GitHub
+          # App so this lane's check runs and reviews stay apart from
+          # MiniMax's. Two hunks at a time at ~25 s each: a large PR
+          # (~350 hunks) needs hours.
+          #
+          # The thirdparty-gpt-oss lane is switched off; see the header. To
+          # bring it back:
+          #   - profile: thirdparty-gpt-oss
+          #     provider: THIRDPARTY
+          #     app: GPT_OSS
+          #     preflight-path: /models
+          #     timeout: 90
           - profile: thirdparty-deepseek
             provider: THIRDPARTY
             app: DEEPSEEK
