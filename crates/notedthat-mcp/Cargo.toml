@@ -12,6 +12,10 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# The MCP session client the workspace's HTTP suites drive `/mcp` with.
+test-support = []
+
 [dependencies]
 rmcp = { workspace = true }
 axum = { workspace = true, features = ["http1", "json", "tokio"] }

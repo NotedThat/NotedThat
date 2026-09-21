@@ -335,20 +335,13 @@ async fn a_token_authelia_mints_is_bound_by_the_manifest_on_every_surface() {
     );
 
     // MCP acts as the caller.
-    let mcp: serde_json::Value = http
-        .post(format!("{base}/mcp"))
-        .bearer_auth(&ivan)
-        .header("accept", "application/json, text/event-stream")
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "read", "arguments": { "kb": "notes", "path": "hr/salaries.md" } },
-        }))
-        .send()
-        .await
-        .expect("mcp")
-        .json()
-        .await
-        .expect("json-rpc");
+    let mcp = notedthat_mcp::testing::McpSession::connect(&base, &ivan)
+        .call_tool(
+            1,
+            "read",
+            &serde_json::json!({ "kb": "notes", "path": "hr/salaries.md" }),
+        )
+        .await;
     assert!(mcp.to_string().contains("forbidden"), "{mcp}");
 
     server.abort();

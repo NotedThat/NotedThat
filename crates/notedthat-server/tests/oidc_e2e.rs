@@ -569,24 +569,9 @@ async fn mcp_call(
     tool: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": { "name": tool, "arguments": arguments },
-    });
-    let response = server
-        .client
-        .post(format!("{}/mcp", server.base))
-        .bearer_auth(token)
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
+    notedthat_mcp::testing::McpSession::connect(&server.base, token)
+        .call_tool(1, tool, &arguments)
         .await
-        .expect("mcp request");
-    assert_eq!(response.status(), 200, "MCP {tool}");
-    response.json().await.expect("json-rpc response")
 }
 
 #[tokio::test]

@@ -2400,6 +2400,7 @@ dependencies = [
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
+ "notedthat-mcp",
  "notedthat-server",
  "notedthat-storage-s3",
  "reqwest",
