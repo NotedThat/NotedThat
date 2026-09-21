@@ -1308,7 +1308,9 @@ Subscribe to object change events for one knowledge base as
 (`text/event-stream`). Every write made through NotedThat — the HTTP API, WebDAV and MCP — and,
 on the `fs` backend, every change the server detects in its tree, is published as one event once
 storage has acknowledged it, so a subscriber that `GET`s the key on receipt sees the bytes the
-event describes or something newer.
+event describes or something newer. Once the indexer has finished with the object, its verdict
+follows on the same stream — `object.indexed`, or `object.index_failed` — which is how a
+subscriber knows a write has become searchable (see [Indexing outcomes](#indexing-outcomes)).
 
 Requires an events backend: with the default `NOTEDTHAT_EVENTS_BACKEND=none` the route answers
 `404 not_found` (after the access checks below, so an undeclared or ungranted knowledge base
@@ -1332,8 +1334,8 @@ granted nothing answers `403`; an anonymous caller granted nothing is concealed 
 | Parameter | Description |
 |-----------|-------------|
 | `prefix` | Only keys starting with this string, e.g. `prefix=inbox/` |
-| `event` | `written` or `deleted`; anything else is `400` |
-| `mime` | Only writes whose stored content type matches — exactly (`audio/mpeg`) or by type (`audio/*`). Deletions carry no content type and are excluded whenever `mime` is set. |
+| `event` | `written`, `deleted`, `indexed` or `index_failed` (the `object.` prefix is accepted, so `event=object.indexed` works too); anything else is `400` |
+| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported. Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
 
 **Request headers:**
 
@@ -1370,6 +1372,10 @@ id: 4813
 event: object.deleted
 data: {"event":"object.deleted","kb":"notes","object_key":"inbox/old.md","source":"webdav","occurred_at":"2026-09-15T14:33:21Z"}
 
+id: 4814
+event: object.indexed
+data: {"event":"object.indexed","kb":"notes","object_key":"inbox/memo.mp3.md","etag":"\"b71c…\"","mime":"text/markdown","chunks":3,"source":"indexer","occurred_at":"2026-09-15T14:33:22Z"}
+
 : keep-alive
 ```
 
@@ -1378,17 +1384,20 @@ own.
 
 | Field | Present on | Description |
 |-------|------------|-------------|
-| `event` | both | `object.written` (create or modify — neither the API nor storage distinguish the two) or `object.deleted` |
-| `kb` | both | Knowledge base slug |
-| `object_key` | both | The key, without a leading slash |
-| `etag` | `object.written` | The `ETag` of the bytes the event describes, quoted as in `HEAD` |
+| `event` | all | `object.written` (create or modify — neither the API nor storage distinguish the two), `object.deleted`, `object.indexed` or `object.index_failed` |
+| `kb` | all | Knowledge base slug |
+| `object_key` | all | The key, without a leading slash |
+| `etag` | `object.written`, `object.indexed`; `object.index_failed` when known | The `ETag` of the version the event is about, quoted as in `HEAD`. On `object.indexed` it is the version now in the index — the one the indexer read and verified on the bytes it embedded — so it matches the `object.written` for that write |
 | `size` | `object.written` | Size in bytes |
-| `mime` | `object.written` | Stored content type |
+| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome |
 | `mtime` | `object.written` | Last-modified Unix timestamp, seconds |
-| `source` | both | Which surface made or detected the change — see below |
-| `occurred_at` | both | When the server published it, RFC 3339 UTC |
+| `chunks` | `object.indexed` | How many points now represent the object in the index |
+| `summary` | `object.index_failed` | The pipeline's own error, first line, at most 200 characters — the same string [`GET …/index`](#get-apiv1knowledgebaseskb_slugindex) reports as `last_failure.summary`. Present only for a subscriber whose `list` grant covers the whole knowledge base; everyone else receives the frame without it |
+| `source` | all | Which surface made or detected the change, or `indexer` for an outcome — see below |
+| `occurred_at` | all | When the server published it, RFC 3339 UTC |
 
-**Sources.** Every path that enqueues indexing work also publishes an event:
+**Sources.** Every path that enqueues indexing work also publishes an event, and the indexer
+reports what it did with that work:
 
 | `source` | Produced by |
 |----------|-------------|
@@ -1397,6 +1406,30 @@ own.
 | `mcp` | MCP tool calls, which write through the HTTP API. The MCP server marks its requests with `X-NotedThat-Source: mcp`; the header is informational, any client may send it, and nothing is granted or refused on its account |
 | `fs-watch` | The `fs` backend's watcher noticing a file written or removed in its tree by something other than NotedThat |
 | `reconcile` | The `fs` backend's comparison of its tree against the index: at startup, after a directory-level change (a new or renamed folder's files arrive this way), or on a rescan |
+| `indexer` | The indexer worker reporting the outcome of an upsert or refresh — `object.indexed` or `object.index_failed`. Never a change to the bytes |
+
+**Indexing outcomes.** Indexing is asynchronous: `object.written` says the bytes are stored, not
+that a search will find them. When the indexer finishes with the object it publishes
+`object.indexed` with the same `etag`, and from that moment the version is in the search
+results. The recipe for "write, then use the result":
+
+1. `PUT` the object; note the `ETag` in the response.
+2. On the stream, wait for `object.indexed` for that key with that `etag` — it always follows the
+   corresponding `object.written`, since the write is on the log before its indexing is even
+   queued. `?event=indexed` selects only these.
+3. Search. There is nothing to poll and no reason to retry.
+
+`object.index_failed` for the key means it will not come: the pipeline gave up on that version
+(the `summary` says why, to a subscriber allowed to see it) and the knowledge base's
+[index state](#get-apiv1knowledgebaseskb_slugindex) is `failed`. Writing the object again is
+the retry, and its success is reported as usual. On the `fs` backend the watcher's echo of the
+server's own write is one more attempt, so a failure there is usually reported twice.
+
+Nothing is published where the index gained nothing: an object the indexer does not index
+(anything but `text/markdown` and `text/plain` — an mp3, an image — or an empty body) gets its
+`object.written` and no verdict; a deletion gets `object.deleted` and nothing more; on the `fs`
+backend a detected change whose `ETag` the index already holds is skipped silently. A subscriber
+waiting on `object.indexed` should therefore look at the `mime` of the `object.written` first.
 
 **Ids and replay.** Ids are strictly increasing within a deployment and never reused. With the
 `memory` backend they are a process-local counter; with `nats` they are the JetStream stream
@@ -1412,7 +1445,9 @@ from "now".
 
 **Delivery is at least once.** A write that stored its bytes but could not publish its event
 answers `503 backend_unavailable` with `Retry-After: 5`; the write is idempotent, and the retry
-publishes. A retry may therefore publish the same change twice. On the `fs` backend the startup
+publishes and queues the indexing. The event is published before the indexing is queued, so a
+write refused with `503` because the indexing queue was full has already been announced; its
+retry announces it again. A retry may therefore publish the same change twice. On the `fs` backend the startup
 comparison re-announces objects the index does not track — anything non-indexable, such as
 audio — on every restart, since nothing records that they were announced before. Subscribers
 should be idempotent: compare `etag` with what they last processed, or check for the output they
@@ -1513,7 +1548,7 @@ the listing rule admits still learns that indexing failed, and when.
 | `queue` | The process-wide indexing queue (D38): events waiting, and the fixed capacity. `depth == capacity` means writers are being refused with `503` right now |
 | `worker` | `running`, or `stopped` once the indexer loop has ended (a crash, or shutdown in progress) |
 | `last_indexed_at` | When an event for this knowledge base last completed — an upsert, a tombstone, or a refresh that found the index current. `null` until one has |
-| `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a caller who may `list` the whole knowledge base the pipeline's own one-line error (`summary`, at most 200 characters); for a caller who may `list` it, the object key. `null` if none |
+| `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a caller who may `list` the whole knowledge base the pipeline's own one-line error (`summary`, at most 200 characters — the same string the stream's `object.index_failed` carries); for a caller who may `list` it, the object key. `null` if none |
 | `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` what it walked, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`, and is shown — `scope` and counts together — to a caller who may `list` that prefix; without `scope` the counts are the whole base's and go to a caller who may `list` the whole base. `null` on `s3`, and until the startup pass completes |
 
 **The state model, and what to do:**
@@ -1521,7 +1556,7 @@ the listing rule admits still learns that indexing failed, and when.
 | State | It means | What to do |
 |-------|----------|------------|
 | `healthy` | Nothing pending, the last outcome succeeded, nothing has gone unobserved | Nothing. Search reflects every write the indexer has been told about |
-| `indexing` | Events for this knowledge base are queued or in progress | Wait and poll; a search now may miss the newest writes. `pending` counts down as each event *finishes*, not as the worker picks it up |
+| `indexing` | Events for this knowledge base are queued or in progress | Wait and poll — or, for one specific write, subscribe to [`…/events`](#get-apiv1knowledgebaseskb_slugevents) and wait for its `object.indexed`; a search now may miss the newest writes. `pending` counts down as each event *finishes*, not as the worker picks it up |
 | `backpressured` | The queue was full within the last 30 s, or is full right now. Writers got `503 backend_unavailable` with `Retry-After: 5`; their bytes were stored but not indexed (D38) | Retry the refused writes — re-writing an object is what re-enqueues it. If it recurs, the embedder or Qdrant is slower than the write rate; the queue capacity is a fixed 1024 in v1 |
 | `stale` | `fs` backend: the watcher lost events (`FS_WATCH_LOST`, or the kernel's queue overflowed) and the rescan that repairs that has not completed yet — or the startup pass has not. Changes on disk may be unobserved | Wait for the pass; `last_reconcile` fills in when it completes. If `FS_WATCH_LOST` recurs in the log, raise `fs.inotify.max_user_watches` (see [Filesystem storage backend](CONFIGURATION.md#filesystem-storage-backend)). A knowledge base stuck `stale` with the log saying its pass was *skipped* has no search collection: check the provisioning warnings and restart once Qdrant is reachable |
 | `failed` | The most recent event for this knowledge base failed, or the indexer worker has stopped (`worker: "stopped"`) | Read `last_failure.summary`: it names the embedder or the vector store. Fix that, then re-write the affected object to reindex it (D42); there is no retry or dead-letter queue. A stopped worker means the process must be restarted |
@@ -1897,7 +1932,9 @@ One knowledge base's search-index health.
 [`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex), unchanged:
 `state`, `pending`, `queue`, `worker`, `last_indexed_at`, `last_failure`, `last_reconcile`. Check
 it when search results look incomplete or out of date; a `failed` or `stale` knowledge base may
-not reflect recent writes. Refused like the route: `forbidden` for a credential holding no grant,
+not reflect recent writes. For one specific write, the `object.indexed` event on the
+[events stream](#get-apiv1knowledgebaseskb_slugevents) is the precise completion signal. Refused
+like the route: `forbidden` for a credential holding no grant,
 not found for a knowledge base the caller cannot see.
 
 #### `search`
@@ -1909,6 +1946,10 @@ Hybrid semantic + keyword search across one or more knowledge bases in a single 
 - `kb` is always a list, even for one knowledge base: `["whatwg"]`. A bare string is rejected. Slugs come from `list_knowledgebases`; listing a slug twice is `invalid_request`.
 - Omit `kb` (or pass `[]`) to search every knowledge base the caller can see — the same set `list_knowledgebases` returns.
 - `limit` is **per knowledge base** (default 10, maximum 50), not a cap on the whole request.
+- Indexing is asynchronous. An object written moments ago is in the results once the knowledge
+  base's [events stream](#get-apiv1knowledgebaseskb_slugevents) has reported `object.indexed`
+  for its `etag` — and never if it reported `object.index_failed`. Wait for that rather than
+  retrying the search; `index_status` reports the knowledge base as a whole.
 
 The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, at most 8 in flight at once, as the calling identity; the HTTP route itself stays single-slug.
 

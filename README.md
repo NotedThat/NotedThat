@@ -35,7 +35,8 @@ sync folder cannot do is the rest:
   indexed; `search` is hybrid semantic + keyword across one or many knowledge bases, with
   filters, from any client.
 - **Changes are a stream.** `GET …/events` streams every object change with replay, so a workflow
-  can react to a note a colleague or an agent just created.
+  can react to a note a colleague or an agent just created — and the indexer's verdict follows
+  on the same stream, so it knows the moment the note is searchable.
   [Events →](docs/API.md#get-apiv1knowledgebaseskb_slugevents)
 
 Identity comes from your own OpenID Connect provider — Authentik, Authelia and Zitadel are
