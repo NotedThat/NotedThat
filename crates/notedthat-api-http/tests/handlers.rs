@@ -224,7 +224,10 @@ async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
     }))
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["status"], "ok");
+    assert_eq!(
+        json["status"], "degraded",
+        "the top-level word mirrors the worst check: {json}"
+    );
     assert_eq!(
         json["checks"]["storage"],
         serde_json::json!({ "backend": "fs", "status": "degraded", "reason": "not_found" })

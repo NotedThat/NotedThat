@@ -515,6 +515,7 @@ but is logged once when a check fails (`READINESS_LOST`) and once when it recove
 | Status | Body |
 |--------|------|
 | 200 OK | `{"status": "ok", "checks": {…}}` — every check `ok` |
+| 200 OK | `{"status": "degraded", "checks": {…}}` — every backend answered, but a check is `degraded` (its bucket or directory is gone); the replica keeps serving |
 | 503 Service Unavailable | `{"status": "unavailable", "checks": {…}}` — at least one check `unavailable` |
 
 **Example:**

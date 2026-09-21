@@ -46,10 +46,19 @@ pub(super) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+    // The top-level word mirrors the worst check, so a reader keying on it
+    // alone still learns of a `degraded` check; only an outage costs the `200`.
+    let word = if !ready {
+        "unavailable"
+    } else if snapshot.is_degraded() {
+        "degraded"
+    } else {
+        "ok"
+    };
     (
         status,
         Json(serde_json::json!({
-            "status": if ready { "ok" } else { "unavailable" },
+            "status": word,
             "checks": checks,
         })),
     )

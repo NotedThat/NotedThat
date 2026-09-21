@@ -95,6 +95,13 @@ impl Check {
         }
     }
 
+    /// Whether the last probe answered but found the probed thing gone: the
+    /// replica stays ready, and the body says so at the top as well.
+    #[must_use]
+    pub fn is_degraded(&self) -> bool {
+        matches!(self.outcome, Err(reason) if !reason.is_outage())
+    }
+
     /// The `{"backend", "status", "reason"?}` object the route renders:
     /// `ok`, `degraded` (answered, but the probed thing is gone) or
     /// `unavailable`.
@@ -135,6 +142,12 @@ impl ReadinessSnapshot {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.storage.is_ready() && self.search.is_ready()
+    }
+
+    /// Whether any check is degraded (see [`Check::is_degraded`]).
+    #[must_use]
+    pub fn is_degraded(&self) -> bool {
+        self.storage.is_degraded() || self.search.is_degraded()
     }
 }
 
@@ -181,6 +194,9 @@ mod tests {
     fn a_not_found_check_is_degraded_and_still_ready() {
         let check = Check::unready("fs", Unready::NotFound);
         assert!(check.is_ready());
+        assert!(check.is_degraded());
+        assert!(!Check::ok("fs").is_degraded());
+        assert!(!Check::unready("fs", Unready::Timeout).is_degraded());
         assert_eq!(
             check.to_json(),
             serde_json::json!({ "backend": "fs", "status": "degraded", "reason": "not_found" })
@@ -195,6 +211,11 @@ mod tests {
             search: Check::ok("qdrant"),
         };
         assert!(witness_gone.is_ready(), "the backend answered; it is up");
+        assert!(
+            witness_gone.is_degraded(),
+            "and the body says so at the top"
+        );
+        assert!(!ReadinessSnapshot::ok("fs", "qdrant").is_degraded());
         for reason in [Unready::Timeout, Unready::Unreachable] {
             let storage_down = ReadinessSnapshot {
                 storage: Check::unready("s3", reason),
