@@ -1,6 +1,6 @@
 # NotedThat MCP-over-stdio
 
-Bridges an MCP client (Claude Desktop, Cursor, Zed, …) to a `notedthat-server` over its HTTP API. Reads the target server URL and bearer token from the environment (`NOTEDTHAT_URL`, `NOTEDTHAT_TOKEN`), then serves MCP tools over stdio JSON-RPC. Stdout is reserved for the JSON-RPC protocol; all log output goes to stderr.
+Bridges an MCP client (Claude Desktop, Cursor, Zed, …) to a `notedthat-server` over its HTTP API. Reads the target server URL and bearer token from the environment (`NOTEDTHAT_URL`, `NOTEDTHAT_TOKEN`; optionally a read budget, `NOTEDTHAT_MCP_MAX_READ_BYTES`, default 16 MiB), then serves MCP tools over stdio JSON-RPC. Stdout is reserved for the JSON-RPC protocol; all log output goes to stderr.
 
 This crate is library-only — it exposes `run()`, the whole transport. The `notedthat-mcp-stdio` executable that calls it ships from the [`notedthat`](../notedthat) crate, so that one published crate owns every installed binary name.
 

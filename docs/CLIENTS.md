@@ -290,5 +290,6 @@ adapter cannot read a newer server's knowledge-base listing (entries are objects
 descriptions were added, not bare slugs). The other way round works.
 
 The adapter takes `--url`/`--token` flags as well as the `NOTEDTHAT_URL`/`NOTEDTHAT_TOKEN`
-variables, which helps with client configs that pass arguments more easily than environment. See
+variables, which helps with client configs that pass arguments more easily than environment, and an
+optional `--mcp-max-read-bytes`/`NOTEDTHAT_MCP_MAX_READ_BYTES` read budget (default 16 MiB). See
 [MCP stdio client](CONFIGURATION.md#mcp-stdio-client-notedthat-mcp-stdio).
