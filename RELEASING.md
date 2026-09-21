@@ -122,3 +122,10 @@ The Trusted Publishing config on crates.io may not match the workflow filename o
 
 **`CARGO_REGISTRY_TOKEN` missing or wrong scope**
 The bootstrap token needs the `publish-new` scope. Rotate it in your crates.io account settings and update the repo secret.
+
+**`release-plz-pr` fails with `failed to check package equality for <crate> at commit <sha>` … `error while running cargo package`**
+To decide whether a crate changed since its last publish, release-plz walks the commits that touched the crate's directory, newest first, and at each one compares the checkout with the published package — running `cargo package --list` in that historical tree whenever the manifests match. It stops at the first commit whose checkout equals the published crate, or that is an ancestor of the commit the crate was published from. A commit in between where Cargo cannot resolve the workspace (typically a branch rebased across a release, carrying intra-workspace pins at the old version until a trailing commit fixes them: #141, commits 4d12462–088dae1) aborts the whole job rather than counting as "different", and it keeps doing so on every push until a publish moves the stopping point past it.
+
+The way out is a hand-carried release PR (#148, with the crate touch following before the affected crates published): bump the workspace version the way release-plz would, and make sure that, before the publish, a commit touches every crate whose last-touching commit sits inside the unresolvable range — after the publish, that last-touching commit is exactly where the walk for the crate stops, so it has to be one Cargo can resolve. `release-plz update` generates the bump and the CHANGELOG entry faithfully when run on a scratch clone whose history has the pins repaired (`git filter-branch --tree-filter` over the range); copy its diff over.
+
+To avoid it: when rebasing a branch across a release, fix the intra-workspace pins in the commit that introduces them, not in a follow-up, so every commit on the branch resolves; `cargo package --workspace --locked` in CI only checks the branch tip.
