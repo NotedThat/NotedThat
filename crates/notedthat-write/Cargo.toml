@@ -19,7 +19,7 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-notedthat-core = { workspace = true, features = ["test-support"] }
+notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lib]
