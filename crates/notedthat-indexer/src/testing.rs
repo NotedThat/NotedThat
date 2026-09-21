@@ -34,6 +34,7 @@ use qdrant_client::qdrant::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 /// Rank constant for Reciprocal Rank Fusion, matching Qdrant's default.
@@ -76,6 +77,9 @@ struct Collection {
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryVectorStore {
     inner: Arc<RwLock<HashMap<String, Collection>>>,
+    /// Set by [`InMemoryVectorStore::set_reachable`]; every operation fails
+    /// with a backend error while it is on, the way a real outage would.
+    unreachable: Arc<AtomicBool>,
 }
 
 impl InMemoryVectorStore {
@@ -83,6 +87,22 @@ impl InMemoryVectorStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Simulate the backend going away (`false`) or coming back (`true`).
+    ///
+    /// Shared by every clone, so a test can flip the store a server holds.
+    pub fn set_reachable(&self, reachable: bool) {
+        self.unreachable.store(!reachable, Ordering::SeqCst);
+    }
+
+    fn check_reachable(&self) -> Result<(), VectorStoreError> {
+        if self.unreachable.load(Ordering::SeqCst) {
+            return Err(VectorStoreError::backend(
+                "in-memory vector store marked unreachable",
+            ));
+        }
+        Ok(())
     }
 
     /// Number of points currently stored for `kb`, or `None` if it has no collection.
@@ -394,12 +414,18 @@ fn bm25_scores(query: &str, candidates: &[(u64, &StoredPoint)]) -> Vec<(u64, f64
 
 #[async_trait]
 impl VectorStore for InMemoryVectorStore {
+    async fn probe(&self) -> Result<(), VectorStoreError> {
+        self.check_reachable()
+    }
+
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         Ok(state.contains_key(kb.as_str()))
     }
 
     async fn create_collection(&self, kb: &KbSlug, dense_dim: u64) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         state
             .entry(kb.as_str().to_string())
@@ -414,6 +440,7 @@ impl VectorStore for InMemoryVectorStore {
         field: &str,
         _kind: PayloadFieldKind,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -430,6 +457,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         points: Vec<PointStruct>,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -498,6 +526,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         selector: PointSelector,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -530,6 +559,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         object_key: &str,
     ) -> Result<Option<String>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state
@@ -556,6 +586,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         prefix: Option<&str>,
     ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state
@@ -590,6 +621,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         query: HybridQuery,
     ) -> Result<Vec<ScoredPoint>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state

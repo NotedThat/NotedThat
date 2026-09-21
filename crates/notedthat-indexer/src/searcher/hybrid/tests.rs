@@ -265,6 +265,10 @@ mod search {
 
     #[async_trait]
     impl VectorStore for ScriptedStore {
+        async fn probe(&self) -> Result<(), VectorStoreError> {
+            Ok(())
+        }
+
         async fn collection_exists(&self, _: &KbSlug) -> Result<bool, VectorStoreError> {
             unimplemented!()
         }
