@@ -8,6 +8,7 @@ use axum::{
 };
 use bytes::Bytes;
 use notedthat_core::{Error as CoreError, KbSlug, Verb, search::SearchRequest};
+use notedthat_indexer::KeyPredicate;
 
 use crate::{
     error::{ApiError, ApiErrorResponse},
@@ -71,16 +72,31 @@ pub async fn search_kb(
         .validate()
         .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
 
-    let mut response = state
-        .searcher
-        .search(&kb, validated)
-        .await
-        .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
     // Hits are filtered by the `search` grant's own patterns, never by `read`.
     // That is what keeps the two independently grantable — and it means broad
     // `search` with narrow `read` publishes previews of keys the caller cannot
     // fetch, which the documentation has to say in those words.
+    //
+    // The grant goes into the searcher, which applies it over the whole fused
+    // window before cutting the page (D56): filtered afterwards, a narrow grant
+    // would shorten the page to whatever survived of the top `limit`, often
+    // nothing (#68). Only the service token holding the whole knowledge base
+    // has nothing to filter.
     let filter = access.filter(Verb::Search);
+    let allows = |key: &str| filter.allows(key);
+    let key_filter: Option<KeyPredicate<'_>> = if filter.is_allow_all() {
+        None
+    } else {
+        Some(&allows)
+    };
+    let mut response = state
+        .searcher
+        .search(&kb, validated, key_filter)
+        .await
+        .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
+    // The searcher is trusted to have applied the grant; this pass is the
+    // backstop that turns a searcher which ignores it into a short page rather
+    // than a leak. It costs at most `limit` pattern matches.
     response
         .hits
         .retain(|hit| filter.allows(hit.object_key.as_str()));

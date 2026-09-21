@@ -893,3 +893,79 @@ async fn object_key_prefix_diverges_because_it_is_a_post_filter() {
         "the substitute evaluates object_key_prefix itself"
     );
 }
+
+/// Twelve points with one text and distinct dense vectors, for
+/// `fused_window_is_bounded_by_both_prefetch_arms`.
+async fn seed_twelve(store: &dyn VectorStore, kb: &KbSlug) {
+    store
+        .create_collection(kb, DENSE_DIM)
+        .await
+        .expect("create_collection");
+    let points: Vec<PointStruct> = (1..=12_u64)
+        .map(|id| {
+            let mut payload = HashMap::<String, Value>::new();
+            payload.insert("object_key".to_string(), format!("doc/{id:02}.md").into());
+            payload.insert("chunk_index".to_string(), 0_i64.into());
+            payload.insert("text".to_string(), "shared words".to_string().into());
+            #[allow(clippy::cast_precision_loss)]
+            let dense = vec![1.0, id as f32 / 12.0, 0.0];
+            let vectors = HashMap::from([
+                ("dense".to_string(), Vector::from(dense)),
+                (
+                    "sparse_bm25".to_string(),
+                    Vector::from(Document::new("shared words".to_string(), "qdrant/bm25")),
+                ),
+            ]);
+            PointStruct::new(id, vectors, payload)
+        })
+        .collect();
+    store
+        .upsert_points(kb, points)
+        .await
+        .expect("upsert_points");
+}
+
+/// The size of the fused set two arms of depth 2 produce, asked for far more.
+async fn fused_count(store: &dyn VectorStore, kb: &KbSlug) -> usize {
+    store
+        .hybrid_search(
+            kb,
+            HybridQuery {
+                text: "shared".to_string(),
+                dense: vec![1.0, 1.0, 0.0],
+                filter: None,
+                prefetch_limit: 2,
+                limit: 100,
+            },
+        )
+        .await
+        .expect("hybrid_search")
+        .len()
+}
+
+#[tokio::test]
+#[ignore = "requires a Qdrant testcontainer"]
+async fn fused_window_is_bounded_by_both_prefetch_arms() {
+    // D56 rests on one property of fusion: the fused set is the union of the
+    // two prefetch arms, so it holds at most `2 * prefetch_limit` points, and
+    // a backend asked for exactly that many never truncates — which is what
+    // leaves tie-breaking to `HybridSearcher`. Pin it on both backends with a
+    // corpus larger than the arms: an arm depth of 2 can surface at most 4 of
+    // the 12 points however large the fused `limit` is.
+    let (_container, qdrant) = start_qdrant().await;
+    let kb = slug("fusedwindow");
+
+    seed_twelve(&qdrant, &kb).await;
+    let memory = InMemoryVectorStore::new();
+    seed_twelve(&memory, &kb).await;
+
+    for (name, count) in [
+        ("qdrant", fused_count(&qdrant, &kb).await),
+        ("memory", fused_count(&memory, &kb).await),
+    ] {
+        assert!(
+            (1..=4).contains(&count),
+            "{name}: two arms of depth 2 must fuse to between 1 and 4 points, got {count}"
+        );
+    }
+}

@@ -152,7 +152,9 @@ holds any grant in it. There is no separate discovery capability.
 `read`.** That is deliberate, and it has a consequence worth stating plainly: a broad `search` grant
 combined with a narrow `read` grant returns object paths, heading paths and preview text for keys
 the caller cannot fetch. Previews are content. An operator choosing that combination is publishing
-excerpts.
+excerpts. The `search` patterns are applied inside the searcher, over the whole candidate window and
+before the page is cut to `limit`, so a narrow grant does not shorten the page: a caller granted
+`search` under `public/**` gets `limit` hits from `public/` when that many match.
 
 **The rules bind the credential holder too.** A manifest can narrow what the configured token may
 do, so a read-only deployment is expressible — and a manifest mistake can lock an operator out of
@@ -1195,6 +1197,8 @@ curl -sSf -X POST \
 
 - **Score semantics**: Search returns top-`limit` hits ordered by descending RRF fusion score. Scores are RRF rank values — higher is better. They are **NOT** probabilities or cosine similarities, are **NOT** comparable across queries or knowledge bases, and should **not** be displayed to users as confidence values.
 
+- **Ordering is deterministic** (D56): equal scores are the normal case with RRF, so hits are ordered by `score` descending, then `object_key` ascending (byte order), then `byte_start` ascending — a total order, since `(object_key, byte_start)` names one chunk. The server retrieves the whole fused candidate set from the vector backend (both retrieval arms in full, at most 500 points) and ranks it itself, so the backend never decides a tie, at the `limit` boundary or anywhere else. For an unchanged index, the same `query`, `limit`, `filter` and credential return a byte-identical `hits` array on every call. The one residual: each retrieval arm is itself a top-k, and a tie *exactly at an arm's edge* can change which candidate enters the set — a much rarer event than a tie among the fused scores, and one that only reaches the response when the arm is shallower than the corpus of near-equal candidates.
+
 - **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results. **Exception**: if the indexing queue is full, the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` (not ordinary async lag) — the object is stored but not yet searchable, and the client should retry to re-enqueue the indexing event.
 
 - **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
@@ -1203,7 +1207,7 @@ curl -sSf -X POST \
 
 - **`content_hash`**: Stored in the Qdrant payload for idempotent reindex detection but is **not** exposed in `SearchHit`.
 
-- **`object_key_prefix` filter**: Applied **client-side** by the Searcher after Qdrant returns its top-k fused hits. (qdrant-client 1.15 does not expose a native keyword-index prefix matcher.) When this filter is set, the server over-fetches internally (up to 10x your `limit`, capped at 500 hits) and then retains only hits matching your prefix. In the pathological case where your prefix is highly selective and none of the top-500 fused hits match it, the response may contain fewer than `limit` hits (possibly zero). Widen the query or the prefix to recover coverage.
+- **`object_key_prefix` filter**: Applied **client-side** by the Searcher, together with the caller's `search` grant, after the vector backend has fused its candidates and before the page is cut to `limit`. (qdrant-client 1.15 does not expose a native keyword-index prefix matcher.) When either applies, both retrieval arms are deepened to 10× your `limit` (at most 250 per arm, 500 fused) and only hits inside the prefix and the grant are kept. A response shorter than `limit` means fewer than `limit` matching chunks ranked inside that window; a narrower query or a wider prefix recovers coverage.
 
 #### Upgrade notes (M4 → M5)
 

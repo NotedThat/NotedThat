@@ -29,12 +29,18 @@ impl notedthat_indexer::Searcher for NoopSearcher {
         &self,
         _kb: &KbSlug,
         _request: notedthat_core::search::ValidatedRequest,
+        _key_filter: Option<notedthat_indexer::KeyPredicate<'_>>,
     ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
         Ok(notedthat_core::search::SearchResponse::empty())
     }
 }
 
 /// A scriptable `Searcher` for unit tests. Pre-load responses via `push_response`.
+///
+/// It honours the key predicate it is handed the way `HybridSearcher` does —
+/// a scripted hit outside the caller's grant is withheld — and counts the
+/// calls that carried one, so a test can tell "the route filtered the
+/// response" from "the route delegated the grant to the searcher".
 #[cfg(feature = "test-support")]
 pub struct MockSearcher {
     responses: std::sync::Mutex<
@@ -43,6 +49,7 @@ pub struct MockSearcher {
         >,
     >,
     calls: std::sync::atomic::AtomicUsize,
+    scoped_calls: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(feature = "test-support")]
@@ -52,6 +59,7 @@ impl MockSearcher {
         Self {
             responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
             calls: std::sync::atomic::AtomicUsize::new(0),
+            scoped_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -62,6 +70,15 @@ impl MockSearcher {
     /// embedding round-trip".
     pub fn call_count(&self) -> usize {
         self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many of those calls carried a key predicate.
+    ///
+    /// The route hands the caller's `search` grant to the searcher so that it
+    /// is applied before the page is cut (D56); this is how a test proves the
+    /// hand-over happened rather than only that the response came out right.
+    pub fn scoped_calls(&self) -> usize {
+        self.scoped_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Push a response to the queue. Responses are returned in FIFO order.
@@ -88,13 +105,23 @@ impl notedthat_indexer::Searcher for MockSearcher {
         &self,
         _kb: &KbSlug,
         _request: notedthat_core::search::ValidatedRequest,
+        key_filter: Option<notedthat_indexer::KeyPredicate<'_>>,
     ) -> Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.responses
+        if key_filter.is_some() {
+            self.scoped_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let mut response = self
+            .responses
             .lock()
             .unwrap()
             .pop_front()
-            .unwrap_or_else(|| Ok(notedthat_core::search::SearchResponse::empty()))
+            .unwrap_or_else(|| Ok(notedthat_core::search::SearchResponse::empty()))?;
+        if let Some(allows) = key_filter {
+            response.hits.retain(|hit| allows(hit.object_key.as_str()));
+        }
+        Ok(response)
     }
 }
 
