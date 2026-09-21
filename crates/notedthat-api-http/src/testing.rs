@@ -152,6 +152,7 @@ pub fn test_app_state_with_default_channel(
         indexer_tx,
         searcher: Arc::new(NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }
 }
 
@@ -179,6 +180,7 @@ pub fn test_app_state_with_channel(
             indexer_tx,
             searcher: Arc::new(NoopSearcher),
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         },
         rx,
     )

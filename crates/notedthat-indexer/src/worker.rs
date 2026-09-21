@@ -11,6 +11,7 @@ mod snapshot;
 use crate::{
     embedder::Embedder,
     event::IndexEvent,
+    health::IndexHealth,
     vector_store::{PointSelector, VectorStore},
 };
 use last_seen::LastSeen;
@@ -63,6 +64,8 @@ pub struct IndexerWorker {
     /// The last stamp this worker saw for each key, so the `fs` watcher's echo
     /// of a write the server made itself is not announced a second time.
     last_seen: Mutex<LastSeen>,
+    /// Where each event's outcome is recorded for the health view (#97).
+    health: Arc<IndexHealth>,
 }
 
 impl IndexerWorker {
@@ -85,7 +88,16 @@ impl IndexerWorker {
             staging: StagingConfig::default(),
             events: None,
             last_seen: Mutex::new(LastSeen::default()),
+            health: Arc::new(IndexHealth::new()),
         }
+    }
+
+    /// Record outcomes on a health record shared with the surfaces that
+    /// report it.
+    #[must_use]
+    pub fn with_health(mut self, health: Arc<IndexHealth>) -> Self {
+        self.health = health;
+        self
     }
 
     /// Announce changes this worker detects on the given event log.
@@ -104,6 +116,13 @@ impl IndexerWorker {
 
     /// Run until the channel closes or shutdown is requested.
     pub async fn run(mut self) {
+        self.run_loop().await;
+        // Whatever ended the loop, nothing drains the queue from here on, and
+        // the health view says so rather than reporting `indexing` forever.
+        self.health.worker_stopped();
+    }
+
+    async fn run_loop(&mut self) {
         loop {
             tokio::select! {
                 biased;
@@ -138,6 +157,7 @@ impl IndexerWorker {
         let kb = event.kb().clone();
         let object_key = event.object_key().clone();
         let kind = event.kind();
+        self.health.started(kb.as_str());
         tracing::info!(
             target: "notedthat::indexing",
             kb = %kb.as_str(),
@@ -170,8 +190,19 @@ impl IndexerWorker {
             }
         };
 
-        if let Err(message) = result {
-            tracing::error!(target: "notedthat::indexing", error = %message, "INDEXING_FAILED");
+        match result {
+            Ok(()) => self.health.succeeded(kb.as_str()),
+            Err(message) => {
+                tracing::error!(
+                    target: "notedthat::indexing",
+                    kb = %kb.as_str(),
+                    path = %object_key.as_str(),
+                    error = %message,
+                    "INDEXING_FAILED"
+                );
+                self.health
+                    .failed(kb.as_str(), object_key.as_str(), &message);
+            }
         }
     }
 

@@ -73,6 +73,7 @@ pub(super) fn state_with_policies(
         indexer_tx,
         staging_config: notedthat_core::StagingConfig::default(),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }
 }
 

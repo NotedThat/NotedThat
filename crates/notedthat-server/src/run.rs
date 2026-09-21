@@ -16,7 +16,7 @@ use notedthat_indexer::{
 use notedthat_storage_fs::{FsStorage, RootLock};
 use notedthat_storage_s3::S3Storage;
 use notedthat_webdav::{router::build_router as build_dav_router, state::WebDavState};
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::mpsc;
@@ -162,6 +162,9 @@ async fn build_infrastructure(
 
     let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
     let indexer_shutdown = CancellationToken::new();
+    // One health record for the process: the write paths, the worker and the
+    // `fs` bridge stamp it, the API reports it (#97).
+    let index_health = Arc::new(notedthat_indexer::IndexHealth::new());
     let declared_kbs = Arc::new(config.kbs.clone());
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
@@ -179,8 +182,77 @@ async fn build_infrastructure(
     let access_policies = Arc::new(snapshot.access_policies);
     let kb_details = Arc::new(snapshot.details);
 
-    // One authenticator for every surface. The API, the browse pages and MCP
-    // accept its bearer credentials; WebDAV additionally accepts the Basic pair.
+    let authenticator = build_authenticator(&config, &access_policies).await?;
+
+    let dav_state = WebDavState {
+        authenticator: authenticator.clone(),
+        storage: storage.clone(),
+        declared_kbs: declared_kbs.clone(),
+        access_policies: access_policies.clone(),
+        indexer_tx: indexer_tx.clone(),
+        staging_config: config.staging.clone(),
+        events: events.clone(),
+        index_health: index_health.clone(),
+    };
+
+    // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
+    // Using separate instances risks model or endpoint drift between write and query paths.
+    let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
+        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embedder.clone()),
+    );
+
+    let state = AppState {
+        storage: storage.clone(),
+        declared_kbs,
+        access_policies,
+        kb_details,
+        authenticator: authenticator.clone(),
+        max_body_size: MAX_BODY_BYTES,
+        max_patchable_size: config.max_patchable_size,
+        indexer_tx,
+        searcher,
+        events: events.clone(),
+        index_health: index_health.clone(),
+    };
+
+    let worker_handle = tokio::spawn(
+        IndexerWorker::new(
+            storage.clone(),
+            embedder.clone(),
+            store.clone(),
+            indexer_rx,
+            indexer_shutdown.clone(),
+            config.embedder.batch_size,
+        )
+        .with_staging_config(config.staging.clone())
+        .with_event_publisher(events)
+        .with_health(index_health.clone())
+        .run(),
+    );
+
+    // After provisioning, so every knowledge base's directory exists to be watched, and
+    // after the worker is spawned, so the first reconciliation has somewhere to send.
+    let watch = match &config.storage {
+        StorageConfig::S3(_) => None,
+        StorageConfig::Fs(fs) => fs_watch::start(
+            fs,
+            config.tenant_slug.clone(),
+            kb_list,
+            store.clone(),
+            state.indexer_tx.clone(),
+            index_health,
+        )?,
+    };
+
+    Ok((state, dav_state, indexer_shutdown, worker_handle, watch))
+}
+
+/// One authenticator for every surface. The API, the browse pages and MCP
+/// accept its bearer credentials; `WebDAV` additionally accepts the Basic pair.
+async fn build_authenticator(
+    config: &Config,
+    access_policies: &BTreeMap<String, Arc<notedthat_core::AccessPolicy>>,
+) -> anyhow::Result<Arc<Authenticator>> {
     let mut authenticator = Authenticator::new(config.api_token.clone()).with_basic(
         config.webdav_username.clone(),
         config.webdav_password.clone(),
@@ -201,7 +273,7 @@ async fn build_infrastructure(
             });
         }
     } else {
-        for (slug, policy) in access_policies.iter() {
+        for (slug, policy) in access_policies {
             if policy.names_an_identity() {
                 // Not a refusal: manifests live in buckets that outlive one
                 // deployment's configuration. But such a rule can only ever
@@ -211,65 +283,7 @@ async fn build_infrastructure(
             }
         }
     }
-    let authenticator = Arc::new(authenticator);
-
-    let dav_state = WebDavState {
-        authenticator: authenticator.clone(),
-        storage: storage.clone(),
-        declared_kbs: declared_kbs.clone(),
-        access_policies: access_policies.clone(),
-        indexer_tx: indexer_tx.clone(),
-        staging_config: config.staging.clone(),
-        events: events.clone(),
-    };
-
-    // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
-    // Using separate instances risks model or endpoint drift between write and query paths.
-    let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
-        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embedder.clone()),
-    );
-
-    let state = AppState {
-        storage: storage.clone(),
-        declared_kbs,
-        access_policies,
-        kb_details,
-        authenticator: authenticator.clone(),
-        max_body_size: MAX_BODY_BYTES,
-        max_patchable_size: config.max_patchable_size,
-        indexer_tx,
-        searcher,
-        events: events.clone(),
-    };
-
-    let worker_handle = tokio::spawn(
-        IndexerWorker::new(
-            storage.clone(),
-            embedder.clone(),
-            store.clone(),
-            indexer_rx,
-            indexer_shutdown.clone(),
-            config.embedder.batch_size,
-        )
-        .with_staging_config(config.staging.clone())
-        .with_event_publisher(events)
-        .run(),
-    );
-
-    // After provisioning, so every knowledge base's directory exists to be watched, and
-    // after the worker is spawned, so the first reconciliation has somewhere to send.
-    let watch = match &config.storage {
-        StorageConfig::S3(_) => None,
-        StorageConfig::Fs(fs) => fs_watch::start(
-            fs,
-            config.tenant_slug.clone(),
-            kb_list,
-            store.clone(),
-            state.indexer_tx.clone(),
-        )?,
-    };
-
-    Ok((state, dav_state, indexer_shutdown, worker_handle, watch))
+    Ok(Arc::new(authenticator))
 }
 
 /// Start the HTTP server with the provided configuration.

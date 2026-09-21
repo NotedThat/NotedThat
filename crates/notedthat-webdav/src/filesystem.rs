@@ -995,6 +995,7 @@ mod tests {
             declared_kbs: Arc::new(declared_kbs),
             indexer_tx,
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         })
     }
 
