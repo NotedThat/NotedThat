@@ -48,6 +48,7 @@ macro_rules! storage_integration_scenarios {
     ($emit:ident) => {
         $emit!(round_trip_put_get_head_delete_list);
         $emit!(ensure_bucket_is_idempotent);
+        $emit!(probe_reflects_bucket_existence);
         $emit!(manifest_read_write);
         $emit!(get_full_returns_etag);
         $emit!(get_range_returns_partial);
@@ -259,6 +260,27 @@ pub async fn ensure_bucket_is_idempotent(store: &dyn Storage, kb: &KbSlug) {
         .ensure_bucket(kb)
         .await
         .expect("second ensure_bucket is idempotent");
+}
+
+/// `probe` is `/readyz`'s storage check: it must say "not found" for a bucket that was
+/// never provisioned and "ok" once it exists, without creating it as a side effect.
+pub async fn probe_reflects_bucket_existence(store: &dyn Storage, kb: &KbSlug) {
+    assert!(
+        matches!(
+            store.probe(kb).await,
+            Err(StorageError::BucketNotFound { .. })
+        ),
+        "probe before ensure_bucket should be BucketNotFound"
+    );
+    assert!(
+        matches!(
+            store.probe(kb).await,
+            Err(StorageError::BucketNotFound { .. })
+        ),
+        "probe must not create the bucket it looked for"
+    );
+    store.ensure_bucket(kb).await.expect("ensure_bucket");
+    store.probe(kb).await.expect("probe after ensure_bucket");
 }
 
 pub async fn manifest_read_write(store: &dyn Storage, kb: &KbSlug) {

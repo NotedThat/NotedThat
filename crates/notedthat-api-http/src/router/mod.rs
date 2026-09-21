@@ -483,6 +483,10 @@ mod patch_route {
 
         #[async_trait]
         impl Storage for PutPreconditionFailedStorage {
+            async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+                Ok(())
+            }
+
             async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
                 self.inner.ensure_bucket(kb).await
             }

@@ -98,6 +98,14 @@ pub trait Storage: Send + Sync {
     /// Returns `Ok(())` if the bucket already exists (owned by this account).
     async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError>;
 
+    /// Confirm the backend is reachable and `kb`'s bucket still exists.
+    ///
+    /// A read-only check for `/readyz`: it never creates or lists anything.
+    /// Returns `Err(StorageError::BucketNotFound)` when the bucket is gone and
+    /// `Err(StorageError::BackendUnavailable)` when the backend cannot answer.
+    /// Callers bound it with a timeout; the probe itself carries none.
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError>;
+
     /// Read the KB manifest from `.notedthat/manifest.json` in the KB's bucket.
     ///
     /// Returns `Err(StorageError::NotFound)` if no manifest exists yet.

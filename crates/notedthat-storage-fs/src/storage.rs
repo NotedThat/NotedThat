@@ -311,6 +311,21 @@ impl Storage for FsStorage {
         .await
     }
 
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        let bucket = self.bucket(kb);
+        self.blocking(
+            move |inner| match std::fs::metadata(inner.layout.bucket_dir(&bucket)) {
+                Ok(meta) if meta.is_dir() => Ok(()),
+                Ok(_) => Err(StorageError::BucketNotFound { bucket }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Err(StorageError::BucketNotFound { bucket })
+                }
+                Err(error) => Err(errors::backend_at(&format!("probing {bucket}"), &error)),
+            },
+        )
+        .await
+    }
+
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let bucket = self.bucket(kb);
         self.blocking(move |inner| {

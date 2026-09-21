@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
@@ -51,6 +52,27 @@ struct StoredObject {
 #[derive(Default, Clone)]
 pub struct InMemoryStorage {
     inner: Arc<RwLock<InMemoryInner>>,
+    /// Set by [`InMemoryStorage::set_reachable`]; every operation fails with
+    /// `BackendUnavailable` while it is on, the way a real outage would.
+    unreachable: Arc<AtomicBool>,
+}
+
+impl InMemoryStorage {
+    /// Simulate the backend going away (`false`) or coming back (`true`).
+    ///
+    /// Shared by every clone, so a test can flip the store a server holds.
+    pub fn set_reachable(&self, reachable: bool) {
+        self.unreachable.store(!reachable, Ordering::SeqCst);
+    }
+
+    fn check_reachable(&self) -> Result<(), StorageError> {
+        if self.unreachable.load(Ordering::SeqCst) {
+            return Err(StorageError::BackendUnavailable {
+                message: "in-memory storage marked unreachable".to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -71,6 +93,7 @@ impl InMemoryStorage {
         };
         Self {
             inner: Arc::new(RwLock::new(inner)),
+            unreachable: Arc::default(),
         }
     }
 }
@@ -159,12 +182,26 @@ fn object_meta(path: &ObjectPath, stored: &StoredObject, size: u64) -> ObjectMet
 #[async_trait]
 impl Storage for InMemoryStorage {
     async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        self.check_reachable()?;
         let mut inner = self.inner.write().await;
         inner.buckets.insert(kb.as_str().to_string());
         Ok(())
     }
 
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        self.check_reachable()?;
+        let inner = self.inner.read().await;
+        if inner.buckets.contains(kb.as_str()) {
+            Ok(())
+        } else {
+            Err(StorageError::BucketNotFound {
+                bucket: kb.as_str().to_string(),
+            })
+        }
+    }
+
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
+        self.check_reachable()?;
         let inner = self.inner.read().await;
         inner.require_bucket(kb)?;
         let stored = inner
@@ -188,6 +225,7 @@ impl Storage for InMemoryStorage {
     }
 
     async fn write_manifest(&self, kb: &KbSlug, manifest: &KbManifest) -> Result<(), StorageError> {
+        self.check_reachable()?;
         let bytes = serde_json::to_vec_pretty(manifest).map_err(|error| {
             StorageError::BackendUnavailable {
                 message: format!("serializing the manifest: {error}"),
@@ -214,6 +252,7 @@ impl Storage for InMemoryStorage {
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
+        self.check_reachable()?;
         let inner = self.inner.read().await;
         inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
@@ -234,6 +273,7 @@ impl Storage for InMemoryStorage {
         range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
+        self.check_reachable()?;
         let inner = self.inner.read().await;
         inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
@@ -270,6 +310,7 @@ impl Storage for InMemoryStorage {
         range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
+        self.check_reachable()?;
         let read = self.get_object(kb, path, range, conditionals).await?;
         Ok(ObjectStream {
             chunks: Box::pin(futures::stream::once(async move { Ok(read.bytes) })),
@@ -286,6 +327,7 @@ impl Storage for InMemoryStorage {
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
+        self.check_reachable()?;
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
@@ -312,6 +354,7 @@ impl Storage for InMemoryStorage {
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
+        self.check_reachable()?;
         let bytes = if let Some(bytes) = body.memory_bytes() {
             bytes.clone()
         } else {
@@ -341,6 +384,7 @@ impl Storage for InMemoryStorage {
         destination: &ObjectPath,
         options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError> {
+        self.check_reachable()?;
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
         let source_key = (kb.as_str().to_string(), source.as_str().to_string());
@@ -387,6 +431,7 @@ impl Storage for InMemoryStorage {
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
     ) -> Result<(), StorageError> {
+        self.check_reachable()?;
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
@@ -410,6 +455,7 @@ impl Storage for InMemoryStorage {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError> {
+        self.check_reachable()?;
         let inner = self.inner.read().await;
         inner.require_bucket(kb)?;
         let kb_str = kb.as_str();
@@ -602,6 +648,34 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn probe_reports_a_missing_bucket_and_an_unreachable_backend() {
+        let storage = InMemoryStorage::default();
+        let kb = kb();
+        assert!(matches!(
+            storage.probe(&kb).await,
+            Err(StorageError::BucketNotFound { .. })
+        ));
+
+        storage.ensure_bucket(&kb).await.unwrap();
+        storage.probe(&kb).await.unwrap();
+
+        // The switch is shared by clones, so the one a server holds flips too.
+        let held_by_server = storage.clone();
+        storage.set_reachable(false);
+        assert!(matches!(
+            held_by_server.probe(&kb).await,
+            Err(StorageError::BackendUnavailable { .. })
+        ));
+        assert!(matches!(
+            held_by_server.read_manifest(&kb).await,
+            Err(StorageError::BackendUnavailable { .. })
+        ));
+
+        storage.set_reachable(true);
+        held_by_server.probe(&kb).await.unwrap();
     }
 
     #[tokio::test]

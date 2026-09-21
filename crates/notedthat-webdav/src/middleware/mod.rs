@@ -213,6 +213,10 @@ mod basic_auth {
 
         #[async_trait]
         impl Storage for MockStorage {
+            async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+                Ok(())
+            }
+
             async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
                 Err(unavailable())
             }
@@ -776,6 +780,10 @@ mod intercept_write_methods {
 
         #[async_trait]
         impl Storage for MockStorage {
+            async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+                Ok(())
+            }
+
             async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
                 Err(unavailable())
             }
