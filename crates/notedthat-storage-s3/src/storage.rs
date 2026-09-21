@@ -72,6 +72,7 @@ fn extract_complete_length_from_content_range(raw: &HttpResponse) -> Option<u64>
 
 fn map_get_error(
     err: &SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
+    bucket: &str,
     key: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err {
@@ -87,6 +88,9 @@ fn map_get_error(
         }
     }
 
+    if is_no_such_bucket_sdk(err) {
+        return bucket_not_found(bucket);
+    }
     if is_not_found_sdk(err) {
         StorageError::NotFound {
             key: key.to_string(),
@@ -96,8 +100,12 @@ fn map_get_error(
     }
 }
 
+/// `HeadObject` carries no error body, so a missing bucket and a missing key both
+/// arrive as a bare `404 NotFound` and are reported as [`StorageError::NotFound`].
+/// The `NoSuchBucket` check is kept for a backend that does say which it was.
 fn map_head_error(
     err: &SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>,
+    bucket: &str,
     key: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err {
@@ -108,6 +116,9 @@ fn map_head_error(
         }
     }
 
+    if is_no_such_bucket_sdk(err) {
+        return bucket_not_found(bucket);
+    }
     if is_not_found_sdk(err) {
         StorageError::NotFound {
             key: key.to_string(),
@@ -119,11 +130,15 @@ fn map_head_error(
 
 fn map_put_error(
     err: &SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
+    bucket: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err
         && inner.raw().status().as_u16() == 412
     {
         return StorageError::PreconditionFailed;
+    }
+    if is_no_such_bucket_sdk(err) {
+        return bucket_not_found(bucket);
     }
 
     storage_other(format!("S3 put_object error: {err}"))
@@ -131,11 +146,15 @@ fn map_put_error(
 
 fn map_delete_error(
     err: &SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>,
+    bucket: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err
         && inner.raw().status().as_u16() == 412
     {
         return StorageError::PreconditionFailed;
+    }
+    if is_no_such_bucket_sdk(err) {
+        return bucket_not_found(bucket);
     }
 
     storage_other(format!("S3 delete_object error: {err}"))
@@ -143,12 +162,16 @@ fn map_delete_error(
 
 fn map_copy_error(
     err: &SdkError<aws_sdk_s3::operation::copy_object::CopyObjectError>,
+    bucket: &str,
     source_key: &str,
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err
         && inner.raw().status().as_u16() == 412
     {
         return StorageError::PreconditionFailed;
+    }
+    if is_no_such_bucket_sdk(err) {
+        return bucket_not_found(bucket);
     }
     // A missing copy source is a 404, not a 500. Without this the surfaces above
     // reported an internal error for a client asking to copy something that is not
@@ -164,6 +187,14 @@ fn map_copy_error(
 fn storage_other(message: String) -> StorageError {
     StorageError::Other {
         source: Box::new(std::io::Error::other(message)),
+    }
+}
+
+/// The knowledge base's bucket is gone: a `404` for every surface, never a `5xx`
+/// (D43). Reachable for a declared KB whose bucket was removed after provisioning.
+fn bucket_not_found(bucket: &str) -> StorageError {
+    StorageError::BucketNotFound {
+        bucket: bucket.to_string(),
     }
 }
 
@@ -208,7 +239,9 @@ impl Storage for S3Storage {
             .send()
             .await
             .map_err(|e| {
-                if is_not_found_sdk(&e) {
+                if is_no_such_bucket_sdk(&e) {
+                    bucket_not_found(&bucket)
+                } else if is_not_found_sdk(&e) {
                     StorageError::NotFound {
                         key: MANIFEST_KEY.into(),
                     }
@@ -257,8 +290,14 @@ impl Storage for S3Storage {
             .body(ByteStream::from(Bytes::from(json)))
             .send()
             .await
-            .map_err(|e| StorageError::BackendUnavailable {
-                message: format!("put_object(manifest) failed for {bucket}: {e}"),
+            .map_err(|e| {
+                if is_no_such_bucket_sdk(&e) {
+                    bucket_not_found(&bucket)
+                } else {
+                    StorageError::BackendUnavailable {
+                        message: format!("put_object(manifest) failed for {bucket}: {e}"),
+                    }
+                }
             })?;
 
         info!(bucket = %bucket, kb = %kb.as_str(), "manifest written");
@@ -289,7 +328,10 @@ impl Storage for S3Storage {
             req = req.if_unmodified_since(parse_http_date_to_smithy(v)?);
         }
 
-        let resp = req.send().await.map_err(|e| map_head_error(&e, key))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_head_error(&e, &bucket, key))?;
 
         Ok(ObjectMeta {
             key: key.to_string(),
@@ -328,7 +370,10 @@ impl Storage for S3Storage {
             req = req.if_unmodified_since(parse_http_date_to_smithy(v)?);
         }
 
-        let resp = req.send().await.map_err(|e| map_get_error(&e, key))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_get_error(&e, &bucket, key))?;
 
         let content_type = resp.content_type().map(str::to_string);
         let last_modified = resp.last_modified().map(aws_smithy_types::DateTime::secs);
@@ -386,7 +431,7 @@ impl Storage for S3Storage {
         let resp = req
             .send()
             .await
-            .map_err(|error| map_get_error(&error, key))?;
+            .map_err(|error| map_get_error(&error, &bucket, key))?;
         let meta = ObjectMeta {
             key: key.to_string(),
             size: u64::try_from(resp.content_length().unwrap_or(0)).unwrap_or(0),
@@ -444,7 +489,7 @@ impl Storage for S3Storage {
             debug!("if_unmodified_since ignored on PUT (not supported by S3 API)");
         }
 
-        let resp = req.send().await.map_err(|e| map_put_error(&e))?;
+        let resp = req.send().await.map_err(|e| map_put_error(&e, &bucket))?;
 
         info!(bucket = %bucket, key = %key, "object stored");
         Ok(PutOutcome {
@@ -489,7 +534,10 @@ impl Storage for S3Storage {
         if let Some(value) = conditionals.if_none_match {
             req = req.if_none_match(value);
         }
-        let resp = req.send().await.map_err(|error| map_put_error(&error))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|error| map_put_error(&error, &bucket))?;
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
         })
@@ -530,7 +578,7 @@ impl Storage for S3Storage {
         let resp = req
             .send()
             .await
-            .map_err(|error| map_copy_error(&error, source.as_str()))?;
+            .map_err(|error| map_copy_error(&error, &bucket, source.as_str()))?;
         Ok(PutOutcome {
             etag: resp
                 .copy_object_result()
@@ -573,7 +621,7 @@ impl Storage for S3Storage {
                 info!(bucket = %bucket, key = %key, "delete_object: object not found (idempotent Ok)");
                 Ok(())
             }
-            Err(e) => Err(map_delete_error(&e)),
+            Err(e) => Err(map_delete_error(&e, &bucket)),
         }
     }
 
@@ -616,12 +664,15 @@ impl Storage for S3Storage {
             req = req.continuation_token(token);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| StorageError::BackendUnavailable {
-                message: format!("list_objects_v2 failed for {bucket}: {e}"),
-            })?;
+        let resp = req.send().await.map_err(|e| {
+            if is_no_such_bucket_sdk(&e) {
+                bucket_not_found(&bucket)
+            } else {
+                StorageError::BackendUnavailable {
+                    message: format!("list_objects_v2 failed for {bucket}: {e}"),
+                }
+            }
+        })?;
 
         let truncated = resp.is_truncated().unwrap_or(false);
         let next_cursor = if truncated {
@@ -672,4 +723,13 @@ where
     R: std::fmt::Debug,
 {
     matches!(err.code(), Some("NoSuchKey" | "NotFound"))
+}
+
+/// Check whether an SDK error says the bucket itself does not exist.
+fn is_no_such_bucket_sdk<E, R>(err: &SdkError<E, R>) -> bool
+where
+    E: ProvideErrorMetadata,
+    R: std::fmt::Debug,
+{
+    matches!(err.code(), Some("NoSuchBucket"))
 }

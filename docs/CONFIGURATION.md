@@ -185,6 +185,12 @@ The tree is meant to be read. Open it in an editor, `grep` it, `rsync` it, put i
 control. Nothing but objects appears inside a knowledge base directory — metadata and the lock
 live above them.
 
+The knowledge base directories themselves are created at startup and are expected to stay. Remove
+one while the server runs and that knowledge base answers `404 not_found` on every surface — reads,
+listings and writes alike; a write that finds it gone refuses rather than recreating it — until the directory is put back or the
+server is restarted, which provisions it again. This is the same answer the `s3` backend gives for a
+bucket deleted out from under it.
+
 **Editing files in place works.** An object changed outside the server is detected on the next
 request and its `ETag` recomputed from content, so clients are never served stale validators — and
 the search index keeps up as well. NotedThat watches each knowledge base's directory and re-indexes

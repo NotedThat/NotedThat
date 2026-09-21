@@ -67,6 +67,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(content_range_reflects_object_size);
         $emit!(copy_enforces_both_preconditions);
         $emit!(list_objects_pagination_walks_cursor);
+        $emit!(missing_bucket_is_bucket_not_found);
     };
 }
 
@@ -183,6 +184,72 @@ pub async fn round_trip_put_get_head_delete_list(store: &dyn Storage, kb: &KbSlu
             Err(StorageError::NotFound { .. })
         ),
         "HEAD after DELETE should be NotFound"
+    );
+}
+
+/// A declared knowledge base whose bucket is gone is `BucketNotFound` — a `404` for every
+/// surface (D43), never a `5xx` — on every operation that every backend can tell apart:
+/// reads, listing, deletion and the manifest read.
+///
+/// Three operations are deliberately *not* asserted here and are pinned per backend in
+/// `conformance.rs` instead: `head_object` (an S3 `HeadObject` refusal carries no body, so a
+/// missing bucket and a missing key are the same bare `404`), `copy_object` (`SeaweedFS`
+/// answers with its usual COPY quirk), and the writes — `put_object` and `write_manifest` —
+/// because `SeaweedFS` 4.18 creates the bucket on the spot rather than refusing, where AWS
+/// answers `NoSuchBucket`. HEAD is asserted to be not-found of either kind, which is what
+/// every consumer maps it to.
+///
+/// This is the one scenario that deliberately never calls `ensure_bucket`.
+pub async fn missing_bucket_is_bucket_not_found(store: &dyn Storage, kb: &KbSlug) {
+    // The bucket name is the backend's to derive; every backend ends it with the slug.
+    let assert_bucket_not_found = |result: Result<(), StorageError>, op: &str| match result {
+        Err(StorageError::BucketNotFound { bucket }) => assert!(
+            bucket.ends_with(kb.as_str()),
+            "{op}: BucketNotFound should name the bucket, got {bucket}"
+        ),
+        Err(other) => panic!("{op} on a missing bucket should be BucketNotFound, got {other}"),
+        Ok(()) => panic!("{op} on a missing bucket should fail"),
+    };
+
+    assert_bucket_not_found(
+        store
+            .get_object(kb, &path("a.md"), None, ConditionalHeaders::default())
+            .await
+            .map(drop),
+        "get_object",
+    );
+    assert_bucket_not_found(
+        store
+            .get_object_stream(kb, &path("a.md"), None, ConditionalHeaders::default())
+            .await
+            .map(drop),
+        "get_object_stream",
+    );
+    assert_bucket_not_found(
+        store
+            .delete_object(kb, &path("a.md"), ConditionalHeaders::default())
+            .await,
+        "delete_object",
+    );
+    assert_bucket_not_found(
+        store.list_objects(kb, None, 10, None).await.map(drop),
+        "list_objects",
+    );
+    assert_bucket_not_found(store.read_manifest(kb).await.map(drop), "read_manifest");
+
+    let head = store
+        .head_object(kb, &path("a.md"), ConditionalHeaders::default())
+        .await;
+    match head {
+        Err(error) if error.is_not_found() => {}
+        Err(other) => panic!("head_object on a missing bucket should be not-found, got {other}"),
+        Ok(_) => panic!("head_object on a missing bucket should fail"),
+    }
+
+    // None of the above may have brought the bucket into being.
+    assert_bucket_not_found(
+        store.list_objects(kb, None, 10, None).await.map(drop),
+        "list_objects afterwards",
     );
 }
 

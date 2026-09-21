@@ -103,7 +103,7 @@ async fn app_with(
 ) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
-    let storage = Arc::new(InMemoryStorage::default());
+    let storage = Arc::new(InMemoryStorage::with_kbs([&notes, &private]));
 
     for (key, body, content_type) in [
         ("public.md", "public body", "text/markdown"),

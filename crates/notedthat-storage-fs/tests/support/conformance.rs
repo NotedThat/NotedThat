@@ -740,6 +740,46 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
               requests. Same family as `SeaweedFS` omitting the ETag on some PUTs, which the \
               S3 container suite already works around in five places.",
     },
+    Divergence {
+        name: "head_missing_bucket",
+        s3: "NotFound",
+        fs: "BucketNotFound",
+        memory: "BucketNotFound",
+        why: "An S3 `HeadObject` refusal carries no body — that is the protocol, not a \
+              quirk — so a missing bucket and a missing key both arrive as a bare 404 and \
+              the adapter has nothing to tell them apart by. Disambiguating with a \
+              `HeadBucket` would add a round trip to every HEAD that misses, and HEAD \
+              misses are the normal case on the write path and on every WebDAV PROPFIND \
+              of a virtual directory. Both variants are `404` to every consumer.",
+    },
+    Divergence {
+        name: "copy_missing_bucket",
+        s3: "Other",
+        fs: "BucketNotFound",
+        memory: "BucketNotFound",
+        why: "`SeaweedFS` 4.18 answers a COPY whose bucket is gone the way it answers one \
+              whose source is gone — see `copy_missing_source`. AWS S3 answers \
+              NoSuchBucket, which `map_copy_error` maps to BucketNotFound.",
+    },
+    Divergence {
+        name: "put_missing_bucket",
+        s3: "ok",
+        fs: "BucketNotFound",
+        memory: "BucketNotFound",
+        why: "`SeaweedFS` 4.18 creates the bucket on a PutObject to one that does not \
+              exist, where AWS S3 refuses with NoSuchBucket (mapped to BucketNotFound and \
+              pinned on the wire by the S3 crate's `missing_bucket.rs`). Checking \
+              `HeadBucket` before every PUT to match AWS on `SeaweedFS` would tax every \
+              write for one backend's leniency; `fs` and the substitute keep the strict \
+              answer, which is also what an operator who removed the directory expects.",
+    },
+    Divergence {
+        name: "write_manifest_missing_bucket",
+        s3: "ok",
+        fs: "BucketNotFound",
+        memory: "BucketNotFound",
+        why: "The same PutObject leniency as `put_missing_bucket`, on the manifest key.",
+    },
 ];
 
 /// Observe the pinned divergences, so each backend's actual behaviour stays recorded.
@@ -778,6 +818,63 @@ pub async fn observe_pinned_divergences(store: &dyn Storage, kb: &KbSlug) -> Obs
                         &path("absent.md"),
                         &path("nowhere.md"),
                         CopyObjectOptions::default(),
+                    )
+                    .await,
+            ),
+        ),
+        // On a bucket that was never provisioned. Reads first: on `SeaweedFS` the writes
+        // bring the bucket into being, so anything observed after them sees a bucket.
+        (
+            "head_missing_bucket",
+            outcome(
+                &store
+                    .head_object(
+                        &unprovisioned(kb),
+                        &path("a.md"),
+                        ConditionalHeaders::default(),
+                    )
+                    .await,
+            ),
+        ),
+        (
+            "copy_missing_bucket",
+            outcome(
+                &store
+                    .copy_object(
+                        &unprovisioned(kb),
+                        &path("a.md"),
+                        &path("b.md"),
+                        CopyObjectOptions::default(),
+                    )
+                    .await,
+            ),
+        ),
+        (
+            "put_missing_bucket",
+            outcome(
+                &store
+                    .put_object(
+                        &unprovisioned(kb),
+                        &path("a.md"),
+                        Bytes::from_static(b"x"),
+                        MARKDOWN,
+                        ConditionalHeaders::default(),
+                    )
+                    .await,
+            ),
+        ),
+        (
+            "write_manifest_missing_bucket",
+            outcome(
+                &store
+                    .write_manifest(
+                        &unprovisioned(kb),
+                        &KbManifest::new_v1(
+                            &TenantSlug::default(),
+                            &unprovisioned(kb),
+                            "Gone",
+                            1_700_000_000,
+                        ),
                     )
                     .await,
             ),
@@ -1142,6 +1239,55 @@ pub async fn observe_manifest(store: &dyn Storage, kb: &KbSlug) -> Observations 
     out
 }
 
+/// A sibling knowledge base that no fixture ever provisions.
+///
+/// The one place where the thing under test is the *absence* of a bucket, so it cannot be
+/// the group's own KB — every driver ensures that one before handing it over.
+fn unprovisioned(kb: &KbSlug) -> KbSlug {
+    KbSlug::try_new(format!("{}-gone", kb.as_str())).expect("unprovisioned sibling slug")
+}
+
+/// A declared knowledge base whose bucket is gone (issue #69): the operations every backend
+/// can recognise as such. HEAD, COPY and the writes are in `PINNED_DIVERGENCES`.
+pub async fn observe_missing_bucket(store: &dyn Storage, kb: &KbSlug) -> Observations {
+    let gone = unprovisioned(kb);
+    vec![
+        (
+            "get",
+            outcome(
+                &store
+                    .get_object(&gone, &path("a.md"), None, ConditionalHeaders::default())
+                    .await,
+            ),
+        ),
+        (
+            "get_stream",
+            outcome(
+                &store
+                    .get_object_stream(&gone, &path("a.md"), None, ConditionalHeaders::default())
+                    .await,
+            ),
+        ),
+        (
+            "delete",
+            outcome(
+                &store
+                    .delete_object(&gone, &path("a.md"), ConditionalHeaders::default())
+                    .await,
+            ),
+        ),
+        (
+            "list",
+            outcome(&store.list_objects(&gone, None, 10, None).await),
+        ),
+        ("read_manifest", outcome(&store.read_manifest(&gone).await)),
+        (
+            "list_afterwards",
+            outcome(&store.list_objects(&gone, None, 10, None).await),
+        ),
+    ]
+}
+
 pub async fn observe_streaming(store: &dyn Storage, kb: &KbSlug) -> Observations {
     let mut ledger = EtagLedger::default();
     let mut out = Observations::new();
@@ -1263,6 +1409,7 @@ where
     group!("lifecycle", observe_delete_and_lifecycle);
     group!("manifest", observe_manifest);
     group!("stream", observe_streaming);
+    group!("missing", observe_missing_bucket);
 
     all
 }

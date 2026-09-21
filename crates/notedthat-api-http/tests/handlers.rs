@@ -27,10 +27,10 @@ fn app_with(
     max_body_size: u64,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
 ) -> axum::Router {
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
@@ -887,9 +887,9 @@ async fn delete_missing_object() {
 async fn delete_enqueues_tombstone_on_success() {
     use notedthat_indexer::IndexEvent;
 
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
@@ -943,9 +943,9 @@ async fn delete_enqueues_tombstone_on_success() {
 async fn delete_enqueues_tombstone_on_not_found() {
     use notedthat_indexer::IndexEvent;
 
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
@@ -1418,6 +1418,65 @@ async fn head_non_existent_object_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// A declared knowledge base whose bucket is gone — deleted after provisioning, or a
+/// backend where provisioning silently failed — is `404 not_found` on every route, not
+/// the `500`/`503` that reads as a server fault (#69, D43).
+#[tokio::test]
+async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
+    // Declared, but never provisioned in storage.
+    let mut kbs = BTreeMap::new();
+    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let app = build_router(AppState {
+        storage: Arc::new(InMemoryStorage::default()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        declared_kbs: Arc::new(kbs),
+        authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
+        max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
+        indexer_tx,
+        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
+    });
+
+    for (method, uri, body) in [
+        // The listing route — where the `fs` backend used to answer `503`.
+        ("GET", format!("/api/v1/knowledgebases/{KB}"), Body::empty()),
+        (
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::empty(),
+        ),
+        (
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::from("x"),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::empty(),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(authed_request(method, uri.clone(), body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        let json = response_json(resp).await;
+        assert_eq!(json["error"], "not_found", "{method} {uri}");
+        // The body names neither the bucket nor the tenant: how buckets are
+        // named is the operator's business, and this `404` must not stand out
+        // from the concealed denial or the undeclared slug on the wire.
+        let message = json["message"].as_str().expect("message");
+        assert!(
+            !message.contains("nt-") && !message.contains("bucket"),
+            "{method} {uri}: the message must not disclose the bucket: {message}"
+        );
+    }
 }
 
 #[tokio::test]

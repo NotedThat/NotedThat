@@ -239,7 +239,7 @@ All error responses use the same JSON envelope:
 | 400 | `invalid_request` | Malformed path, invalid KB slug, or other bad input |
 | 400 | `malformed_range` | Unparseable `Range` header, or a `bytes=` range set naming more than one range |
 | 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
-| 404 | `not_found` | KB slug not declared, object does not exist, or an anonymous caller the access rules do not grant |
+| 404 | `not_found` | KB slug not declared, object does not exist, the KB's bucket or directory no longer exists in storage, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
@@ -1877,7 +1877,7 @@ All MCP errors carry one of these codes:
 |------|-------------|---------|
 | `invalid_request` | 400 | Bad arguments or validation failure |
 | `unauthorized` | 401 | Missing or invalid bearer token |
-| `not_found` | 404 | Knowledge base or object not found |
+| `not_found` | 404 | Knowledge base or object not found, including a declared knowledge base whose bucket is gone |
 | `precondition_failed` | 412 | ETag mismatch (If-Match / If-None-Match) |
 | `payload_too_large` | 413 | Content exceeds server limit (16 MiB) |
 | `range_not_satisfiable` | 416 | Byte range beyond object size |

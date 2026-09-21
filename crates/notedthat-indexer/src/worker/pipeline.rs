@@ -40,6 +40,9 @@ impl IndexerWorker {
             .await
         {
             Ok(meta) => meta,
+            // Only the object's own absence is a tombstone. `BucketNotFound` — the whole
+            // knowledge base gone from storage — falls through to the failure arm below:
+            // an index must not be emptied because its bucket is temporarily missing.
             Err(StorageError::NotFound { .. }) => {
                 tracing::debug!(
                     target: "notedthat::indexing",

@@ -50,8 +50,13 @@ pub enum ApiError {
         message: String,
     },
     /// A domain error from `notedthat-core`.
+    ///
+    /// Built through the manual `From<CoreError>` rather than `#[from]`, so a
+    /// `CoreError::Storage(BucketNotFound)` — which core's own `From<StorageError>`
+    /// produces — is caught on the way in and answered like every other missing
+    /// bucket, with no bucket name on the wire.
     #[error(transparent)]
-    Core(#[from] CoreError),
+    Core(CoreError),
     /// A storage-layer error not otherwise promoted to a top-level variant.
     ///
     /// Note: `StorageError::NotModified`, `StorageError::PreconditionFailed`, and
@@ -108,6 +113,17 @@ pub enum ApiError {
 
 /// Promote specific `StorageError` variants to top-level `ApiError` variants so
 /// that `IntoResponse` can emit the RFC-mandated response headers.
+impl From<CoreError> for ApiError {
+    fn from(e: CoreError) -> Self {
+        match e {
+            CoreError::Storage(StorageError::BucketNotFound { bucket }) => {
+                Self::bucket_not_found(&bucket)
+            }
+            other => Self::Core(other),
+        }
+    }
+}
+
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         match e {
@@ -116,7 +132,43 @@ impl From<StorageError> for ApiError {
             StorageError::RangeNotSatisfiable { complete_length } => {
                 Self::RangeNotSatisfiable { complete_length }
             }
+            StorageError::BucketNotFound { bucket } => Self::bucket_not_found(&bucket),
             other => Self::Storage(other),
+        }
+    }
+}
+
+impl ApiError {
+    /// A declared knowledge base whose bucket is gone: `404 not_found` (D43) with a
+    /// message that names neither the bucket nor the tenant.
+    ///
+    /// `StorageError::BucketNotFound`'s own text is `bucket not found: nt-default-notes`,
+    /// which would tell every caller who reaches storage — an anonymous one on a
+    /// public knowledge base included — how buckets are named, and would make this
+    /// `404` distinguishable from the others on the wire. The bucket name goes to the
+    /// log, where the operator who has to put it back will look; the response stays
+    /// as uninformative as the concealed denial and the undeclared slug.
+    pub(crate) fn bucket_not_found(bucket: &str) -> Self {
+        tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
+        Self::Core(CoreError::NotFound {
+            resource: "knowledge base storage".to_string(),
+        })
+    }
+
+    /// The `message` of the JSON body: the error's own text, except for a
+    /// `BucketNotFound` that was built by hand around either wrapper rather than
+    /// through [`Self::bucket_not_found`] — that one still says only what the
+    /// helper would have said. Belt and braces: every `From` funnels the variant
+    /// through the helper, and this keeps a future `ApiError::Core(…)` literal
+    /// from undoing it.
+    fn message(&self) -> String {
+        match self {
+            Self::Core(CoreError::Storage(StorageError::BucketNotFound { bucket }))
+            | Self::Storage(StorageError::BucketNotFound { bucket }) => {
+                tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
+                "not found: knowledge base storage".to_string()
+            }
+            other => other.to_string(),
         }
     }
 }
@@ -124,7 +176,7 @@ impl From<StorageError> for ApiError {
 impl From<notedthat_write::WriteError> for ApiError {
     fn from(e: notedthat_write::WriteError) -> Self {
         match e {
-            notedthat_write::WriteError::Storage(e) => Self::Storage(e),
+            notedthat_write::WriteError::Storage(e) => Self::from(e),
             notedthat_write::WriteError::TooLarge { size, limit }
             | notedthat_write::WriteError::PatchTooLarge { size, limit } => {
                 Self::Core(CoreError::PayloadTooLarge { size, limit })
@@ -386,7 +438,7 @@ impl IntoResponse for ApiErrorResponse {
 
         // All other variants return a JSON error body.
         let (status, code) = self.error.status_and_code();
-        let message = self.error.to_string();
+        let message = self.error.message();
         let body = ErrorBody {
             error: code,
             message,
@@ -434,7 +486,7 @@ mod tests {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         crate::router::build_router(crate::state::AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
@@ -994,7 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn replace_indexer_backpressure_returns_503_with_retry_after() {
         let kb = KbSlug::try_new(KB).unwrap();
-        let storage = crate::testing::InMemoryStorage::default();
+        let storage = crate::testing::InMemoryStorage::with_kbs([&kb]);
         let etag = object_with_etag(&storage, &kb, "hello.md", b"hello world").await;
         let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         indexer_tx
@@ -1145,6 +1197,57 @@ mod tests {
         assert!(matches!(api_err, ApiError::Storage(_)));
     }
 
+    /// Core's own `From<StorageError>` yields `CoreError::Storage(BucketNotFound)`;
+    /// one `.map_err(CoreError::from)` in a handler must not reopen the bucket name
+    /// that `From<StorageError>` closes.
+    #[test]
+    fn test_from_core_error_bucket_not_found_is_sanitised() {
+        let api_err = ApiError::from(CoreError::from(StorageError::BucketNotFound {
+            bucket: "nt-default-notes".to_string(),
+        }));
+        assert!(
+            matches!(&api_err, ApiError::Core(CoreError::NotFound { resource }) if resource == "knowledge base storage"),
+            "{api_err:?}"
+        );
+        // Every other core error is wrapped as it is.
+        let api_err = ApiError::from(CoreError::from(StorageError::NotFound {
+            key: "a.md".to_string(),
+        }));
+        assert!(matches!(
+            api_err,
+            ApiError::Core(CoreError::Storage(StorageError::NotFound { .. }))
+        ));
+    }
+
+    /// Even a `BucketNotFound` built by hand around either wrapper renders the
+    /// fixed message: `404 not_found`, and neither the bucket nor the tenant naming
+    /// scheme in the body.
+    #[tokio::test]
+    async fn a_bucket_not_found_reached_through_core_error_names_no_bucket() {
+        for error in [
+            ApiError::Core(CoreError::Storage(StorageError::BucketNotFound {
+                bucket: "nt-acme-notes".to_string(),
+            })),
+            ApiError::Storage(StorageError::BucketNotFound {
+                bucket: "nt-acme-notes".to_string(),
+            }),
+        ] {
+            let resp = ApiErrorResponse {
+                error,
+                request_id: "req-1".into(),
+            }
+            .into_response();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["error"], "not_found");
+            assert_eq!(json["message"], "not found: knowledge base storage");
+            assert!(!text.contains("nt-"), "{text}");
+            assert!(!text.contains("bucket"), "{text}");
+        }
+    }
+
     mod line_range_error {
         use super::*;
         use axum::body::Body;
@@ -1174,7 +1277,7 @@ mod tests {
             tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
             crate::router::build_router(crate::state::AppState {
-                storage: Arc::new(crate::testing::InMemoryStorage::default()),
+                storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                 access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
                 declared_kbs: Arc::new(kbs),
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),

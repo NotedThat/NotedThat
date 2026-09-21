@@ -64,7 +64,7 @@ pub(super) async fn app(policy: AccessPolicy) -> axum::Router {
 pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
-    let storage = Arc::new(InMemoryStorage::default());
+    let storage = Arc::new(InMemoryStorage::with_kbs([&notes, &private]));
 
     for key in keys {
         storage

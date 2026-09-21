@@ -200,7 +200,7 @@ mod patch_route {
     ) -> (axum::Router, String) {
         let kb = KbSlug::try_new(KB).unwrap();
         let object_path = ObjectPath::try_from_str(OBJECT_PATH).unwrap();
-        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        let storage = Arc::new(crate::testing::InMemoryStorage::with_kbs([&kb]));
         let outcome = storage
             .put_object(
                 &kb,
@@ -669,7 +669,7 @@ mod patch_route {
         async fn if_match_mismatch_after_retries_returns_precondition_failed_without_content_range()
         {
             let kb = KbSlug::try_new(KB).unwrap();
-            let inner = crate::testing::InMemoryStorage::default();
+            let inner = crate::testing::InMemoryStorage::with_kbs([&kb]);
             let etag = object_with_etag(&inner, &kb, b"0123456789").await;
             let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
             let router = router_with_storage(
@@ -703,7 +703,7 @@ mod patch_route {
         #[tokio::test]
         async fn indexer_queue_full_returns_backend_unavailable_with_retry_after() {
             let kb = KbSlug::try_new(KB).unwrap();
-            let storage = crate::testing::InMemoryStorage::default();
+            let storage = crate::testing::InMemoryStorage::with_kbs([&kb]);
             let etag = object_with_etag(&storage, &kb, b"one\n").await;
             let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
             indexer_tx
@@ -764,7 +764,7 @@ mod line_range_get {
     async fn router_with_markdown_object(body: String) -> axum::Router {
         let kb = KbSlug::try_new(KB).unwrap();
         let object_path = ObjectPath::try_from_str("ranges.md").unwrap();
-        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        let storage = Arc::new(crate::testing::InMemoryStorage::with_kbs([&kb]));
         storage
             .put_object(
                 &kb,
@@ -940,7 +940,7 @@ mod tests {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         build_router(AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
@@ -1139,7 +1139,7 @@ mod tests {
     async fn test_conditional_put_503_then_naive_retry_412_keeps_object_stored() {
         let kb = KbSlug::try_new(KB).unwrap();
         let object_path = ObjectPath::try_from_str("cond.md").unwrap();
-        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        let storage = Arc::new(crate::testing::InMemoryStorage::with_kbs([&kb]));
 
         let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         indexer_tx
@@ -1220,7 +1220,7 @@ mod tests {
     async fn test_delete_returns_delete_specific_503_body_when_indexer_backpressure() {
         let kb = KbSlug::try_new(KB).unwrap();
         let object_path = ObjectPath::try_from_str("to-delete.md").unwrap();
-        let storage = Arc::new(crate::testing::InMemoryStorage::default());
+        let storage = Arc::new(crate::testing::InMemoryStorage::with_kbs([&kb]));
         storage
             .put_object(
                 &kb,

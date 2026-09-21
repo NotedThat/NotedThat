@@ -25,7 +25,7 @@ fn declared_kbs() -> BTreeMap<String, KbSlug> {
 fn make_app() -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
-        storage: Arc::new(InMemoryStorage::default()),
+        storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
         declared_kbs: Arc::new(declared_kbs()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
@@ -41,7 +41,7 @@ fn make_app() -> axum::Router {
 fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
-        storage: Arc::new(InMemoryStorage::default()),
+        storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
         declared_kbs: Arc::new(declared_kbs()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),

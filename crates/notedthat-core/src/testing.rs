@@ -42,6 +42,10 @@ struct StoredObject {
 ///
 /// Mirrors the semantics of `notedthat_storage_s3::S3Storage`:
 /// - `ensure_bucket` is idempotent
+/// - every other operation on a knowledge base that was never `ensure_bucket`ed is
+///   [`StorageError::BucketNotFound`], as a missing bucket is on S3 and a missing
+///   directory is on `fs` — so a fixture seeds a knowledge base the way the server
+///   provisions one, and a test cannot pass here on a KB the real backends would refuse
 /// - `delete_object` is idempotent (returns `Ok` if the object does not exist)
 /// - `list_objects` returns a hard-capped subset, sorted lexicographically by key
 #[derive(Default, Clone)]
@@ -54,6 +58,34 @@ struct InMemoryInner {
     /// (`kb_slug`, `object_key`) → stored object
     objects: HashMap<(String, String), StoredObject>,
     buckets: HashSet<String>,
+}
+
+impl InMemoryStorage {
+    /// A store with these knowledge bases already provisioned, for a fixture that
+    /// seeds objects directly instead of running the server's startup provisioning.
+    #[must_use]
+    pub fn with_kbs<'a>(kbs: impl IntoIterator<Item = &'a KbSlug>) -> Self {
+        let inner = InMemoryInner {
+            objects: HashMap::new(),
+            buckets: kbs.into_iter().map(|kb| kb.as_str().to_string()).collect(),
+        };
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+        }
+    }
+}
+
+impl InMemoryInner {
+    /// The bucket a real backend would have looked up first.
+    fn require_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        if self.buckets.contains(kb.as_str()) {
+            Ok(())
+        } else {
+            Err(StorageError::BucketNotFound {
+                bucket: crate::derive_bucket_name(&crate::TenantSlug::default(), kb),
+            })
+        }
+    }
 }
 
 pub use crate::etag::compute_etag;
@@ -134,6 +166,7 @@ impl Storage for InMemoryStorage {
 
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let inner = self.inner.read().await;
+        inner.require_bucket(kb)?;
         let stored = inner
             .objects
             .get(&(kb.as_str().to_string(), MANIFEST_KEY.to_string()))
@@ -162,6 +195,7 @@ impl Storage for InMemoryStorage {
         })?;
         let bytes = Bytes::from(bytes);
         let mut inner = self.inner.write().await;
+        inner.require_bucket(kb)?;
         inner.objects.insert(
             (kb.as_str().to_string(), MANIFEST_KEY.to_string()),
             StoredObject {
@@ -181,6 +215,7 @@ impl Storage for InMemoryStorage {
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
         let inner = self.inner.read().await;
+        inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         let stored = inner
             .objects
@@ -200,6 +235,7 @@ impl Storage for InMemoryStorage {
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         let inner = self.inner.read().await;
+        inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         let stored = inner
             .objects
@@ -251,6 +287,7 @@ impl Storage for InMemoryStorage {
         conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
         let mut inner = self.inner.write().await;
+        inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         evaluate_write_preconditions(inner.objects.get(&key).map(object_state), &conditionals)?;
 
@@ -305,6 +342,7 @@ impl Storage for InMemoryStorage {
         options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError> {
         let mut inner = self.inner.write().await;
+        inner.require_bucket(kb)?;
         let source_key = (kb.as_str().to_string(), source.as_str().to_string());
         let destination_key = (kb.as_str().to_string(), destination.as_str().to_string());
         let source_object =
@@ -350,6 +388,7 @@ impl Storage for InMemoryStorage {
         conditionals: ConditionalHeaders,
     ) -> Result<(), StorageError> {
         let mut inner = self.inner.write().await;
+        inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
         if let Some(if_match) = &conditionals.if_match
             && !inner
@@ -372,6 +411,7 @@ impl Storage for InMemoryStorage {
         cursor: Option<&str>,
     ) -> Result<ListResponse, StorageError> {
         let inner = self.inner.read().await;
+        inner.require_bucket(kb)?;
         let kb_str = kb.as_str();
         let mut matching: Vec<ObjectMeta> = inner
             .objects
@@ -486,13 +526,17 @@ mod tests {
         KbSlug::try_new("test-kb").unwrap()
     }
 
+    fn storage() -> InMemoryStorage {
+        InMemoryStorage::with_kbs([&kb()])
+    }
+
     fn path(s: &str) -> ObjectPath {
         ObjectPath::try_from_str(s).unwrap()
     }
 
     #[tokio::test]
     async fn test_round_trip_put_get() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         storage
             .put_object(
@@ -513,8 +557,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_idempotent() {
+    async fn an_unprovisioned_kb_is_bucket_not_found() {
         let storage = InMemoryStorage::default();
+        let kb = kb();
+        let error = storage
+            .get_object(&kb, &path("hello.md"), None, ConditionalHeaders::default())
+            .await
+            .err()
+            .expect("an unprovisioned KB is refused");
+        assert!(
+            matches!(&error, StorageError::BucketNotFound { bucket } if bucket == "nt-default-test-kb"),
+            "expected BucketNotFound, got {error}"
+        );
+        let result = storage
+            .put_object(
+                &kb,
+                &path("hello.md"),
+                Bytes::from_static(b"# Hello"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::BucketNotFound { .. })));
+        storage.ensure_bucket(&kb).await.unwrap();
+        storage
+            .put_object(
+                &kb,
+                &path("hello.md"),
+                Bytes::from_static(b"# Hello"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_idempotent() {
+        let storage = storage();
         let kb = kb();
         assert!(
             storage
@@ -526,7 +606,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_sorted_and_truncated() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         for i in 0..5 {
             storage
@@ -549,8 +629,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_invalid_or_expired_cursor_is_backend_unavailable() {
-        let storage = InMemoryStorage::default();
         let kb = KbSlug::try_new("test").expect("valid slug");
+        let storage = InMemoryStorage::with_kbs([&kb]);
         // Seed a few objects
         for i in 0..5u32 {
             let path = ObjectPath::try_from_str(&format!("doc-{i:04}.md")).expect("valid path");
@@ -583,8 +663,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_cursor_collects_1500_without_duplicates() {
         use std::collections::HashSet;
-        let storage = InMemoryStorage::default();
         let kb = KbSlug::try_new("test").expect("valid slug");
+        let storage = InMemoryStorage::with_kbs([&kb]);
         // Seed 1500 objects with lexicographically-sortable keys
         for i in 0..1500u32 {
             let path = ObjectPath::try_from_str(&format!("doc-{i:04}.md")).expect("valid path");
@@ -631,7 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn etag_deterministic() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         let expected = compute_etag(b"hello world");
 
@@ -656,7 +736,7 @@ mod tests {
 
     #[tokio::test]
     async fn if_match_multi() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         let object_path = path("conditional.md");
         let etag = storage
@@ -704,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn if_none_match_get_304() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         let object_path = path("not-modified.md");
         let etag = storage
@@ -739,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn range_slice() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         let object_path = path("range.bin");
         storage
@@ -775,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn range_416() {
-        let storage = InMemoryStorage::default();
+        let storage = storage();
         let kb = kb();
         let object_path = path("range-416.bin");
         storage

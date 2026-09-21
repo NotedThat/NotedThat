@@ -139,6 +139,35 @@ impl FsStorage {
 }
 
 impl Inner {
+    /// The knowledge base's directory, or [`StorageError::BucketNotFound`] when it is
+    /// gone.
+    ///
+    /// Every operation but `ensure_bucket` starts here, so a directory removed after
+    /// provisioning is a `404` on every surface (D43) rather than a `5xx` from `list`,
+    /// a `NotFound` for the object from a read, or — worst — a write that quietly
+    /// recreates the directory. One `stat`, next to the object's own that follows.
+    ///
+    /// Only *absent* is gone. A directory the process cannot stat — `EACCES` after a
+    /// `chown` gone wrong, a mount back under the wrong user — is
+    /// [`StorageError::BackendUnavailable`] (`errors::bucket`), so the operator is sent
+    /// to the store and not to look for a deleted directory that is right there.
+    ///
+    /// Best-effort, not a lock: the `stat` and the write that follows are two
+    /// filesystem operations, and a directory removed between them is recreated by
+    /// `store` as before, in a window of microseconds. A write that *finds* the
+    /// directory gone is refused; that is the operator scenario (`rm -rf` by hand)
+    /// and enough for it.
+    fn require_bucket(&self, bucket: &str) -> Result<PathBuf, StorageError> {
+        let dir = self.layout.bucket_dir(bucket);
+        match std::fs::metadata(&dir) {
+            Ok(meta) if meta.is_dir() => Ok(dir),
+            Ok(_) => Err(StorageError::BucketNotFound {
+                bucket: bucket.to_string(),
+            }),
+            Err(error) => Err(errors::bucket(bucket, &error)),
+        }
+    }
+
     /// Stat an object, treating anything that is not a regular file as absent.
     ///
     /// A directory is not an object. `WebDAV` depends on this: it distinguishes a resource
@@ -198,7 +227,9 @@ impl Inner {
     ) -> Result<Option<(Metadata, ObjectAttrs)>, StorageError> {
         match self.resolve(bucket, key) {
             Ok((_, metadata, attrs)) => Ok(Some((metadata, attrs))),
-            Err(error) if error.is_not_found() => Ok(None),
+            // Only the object's own absence: a missing bucket must never read as
+            // "nothing there, go ahead and write".
+            Err(StorageError::NotFound { .. }) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -283,6 +314,7 @@ impl Storage for FsStorage {
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let bucket = self.bucket(kb);
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let path = inner.layout.object_path(&bucket, MANIFEST_KEY)?;
             let bytes = std::fs::read(&path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
@@ -324,6 +356,7 @@ impl Storage for FsStorage {
         // against the other's file — a stamp that matches, and so reads as fresh.
         let _guard = self.inner.locks.key(&bucket, MANIFEST_KEY).await;
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             inner
                 .store(
                     &bucket,
@@ -356,6 +389,7 @@ impl Storage for FsStorage {
         let bucket = self.bucket(kb);
         let key = key_of(path).to_string();
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let (_, metadata, attrs) = inner.resolve(&bucket, &key)?;
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
             Ok(Inner::object_meta(&key, metadata.len(), &metadata, &attrs))
@@ -373,6 +407,7 @@ impl Storage for FsStorage {
         let bucket = self.bucket(kb);
         let key = key_of(path).to_string();
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let (file_path, metadata, attrs) = inner.resolve(&bucket, &key)?;
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
@@ -417,6 +452,7 @@ impl Storage for FsStorage {
         // ETag we just reported rather than splicing two versions together.
         let (file, meta, content_range) = self
             .blocking(move |inner| {
+                inner.require_bucket(&bucket)?;
                 let (file_path, metadata, attrs) = inner.resolve(&bucket, &key)?;
                 evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
@@ -467,6 +503,7 @@ impl Storage for FsStorage {
 
         let _guard = self.inner.locks.key(&bucket, &key).await;
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let current = inner.current(&bucket, &key)?;
             evaluate_write_preconditions(
                 current
@@ -496,6 +533,7 @@ impl Storage for FsStorage {
 
         let _guard = self.inner.locks.key(&bucket, &key).await;
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let current = inner.current(&bucket, &key)?;
             evaluate_write_preconditions(
                 current
@@ -545,6 +583,7 @@ impl Storage for FsStorage {
             .pair(&bucket, &source_key, &destination_key)
             .await;
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let (source_path, _, source_attrs) = inner.resolve(&bucket, &source_key)?;
 
             if let Some(expected) = &options.source_if_match
@@ -604,6 +643,7 @@ impl Storage for FsStorage {
 
         let _guard = self.inner.locks.key(&bucket, &key).await;
         self.blocking(move |inner| {
+            inner.require_bucket(&bucket)?;
             let Some((_, attrs)) = inner.current(&bucket, &key)? else {
                 // Idempotent, as on S3.
                 return Ok(());
@@ -648,13 +688,7 @@ impl Storage for FsStorage {
                 None => None,
             };
 
-            let bucket_dir = inner.layout.bucket_dir(&bucket);
-            if !bucket_dir.is_dir() {
-                // Matches S3, where a missing bucket is a blanket list failure.
-                return Err(StorageError::BackendUnavailable {
-                    message: format!("no storage directory for {bucket}"),
-                });
-            }
+            let bucket_dir = inner.require_bucket(&bucket)?;
 
             let capped = limit.min(MAX_LIST_LIMIT);
             let mut walk = OrderedWalk::new(bucket_dir);
