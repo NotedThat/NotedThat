@@ -1453,9 +1453,13 @@ answers `503 backend_unavailable` with `Retry-After: 5`; the write is idempotent
 publishes and queues the indexing. The event is published before the indexing is queued, so a
 write refused with `503` because the indexing queue was full has already been announced; its
 retry announces it again. A retry may therefore publish the same change twice. The other side
-of that order: a write whose event the log refused is *not* queued for indexing either, so its
-bytes are stored but unsearchable until the client retries — on `s3` nothing else re-detects
-them; on `fs` the watcher's reconcile does, eventually. The `503` is the instruction to retry. On the `fs` backend the startup
+of that order: a write whose event the log refused is queued for indexing all the same — the
+index is what search depends on and the broker is the optional component — so its bytes become
+searchable without waiting for the retry, and the `503` is only about the announcement. The
+retry then announces the version and indexes it again, so a subscriber may see an
+`object.indexed` with no `object.written` before it, followed by both; that is the same class of
+thing as a duplicate, and is tolerated the same way. A deletion whose event was refused is
+likewise taken out of the index at once. On the `fs` backend the startup
 comparison re-announces objects the index does not track — anything non-indexable, such as
 audio — on every restart, since nothing records that they were announced before. Subscribers
 should be idempotent: compare `etag` with what they last processed, or check for the output they
