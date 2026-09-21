@@ -12,6 +12,10 @@
 //! Note what is deliberately *not* `BackendUnavailable`: a failure on the object data
 //! path. `S3Storage` maps a 500 or a timeout on GET/PUT/DELETE to `Other`, and matching
 //! that keeps the two backends' error contracts identical.
+//!
+//! Nor is a missing knowledge-base directory: that is `StorageError::BucketNotFound`, a
+//! `404` on every surface, exactly as `S3Storage` reports `NoSuchBucket` (D43). It is
+//! checked up front in `storage.rs` rather than mapped from an `io::Error` here.
 
 use std::io::ErrorKind;
 
