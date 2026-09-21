@@ -186,6 +186,17 @@ pub struct ServerCli {
     )]
     pub s3_force_path_style: Option<String>,
 
+    /// Compare every knowledge base's bucket against the search index once at startup,
+    /// re-indexing what changed outside NotedThat [default: true].
+    #[arg(
+        long,
+        env = "NOTEDTHAT_S3_RECONCILE",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = BOOL_FLAG,
+    )]
+    pub s3_reconcile: Option<String>,
+
     /// Absolute path of the storage root. Required with the `fs` backend.
     #[arg(long, env = "NOTEDTHAT_FS_ROOT", value_name = "DIR")]
     pub fs_root: Option<OsString>,

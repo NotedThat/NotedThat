@@ -133,6 +133,7 @@ async fn fixture(scenario: &str) -> Fixture {
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
             force_path_style: true,
+            reconcile_on_startup: true,
         }
         .build_client(),
         TenantSlug::default(),

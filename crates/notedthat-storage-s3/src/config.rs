@@ -8,13 +8,34 @@ use notedthat_core::{Error, setting};
 ///
 /// `notedthat-server` uses this to reject variables belonging to the backend that is not
 /// selected, so the list must stay in step with [`S3Config::from_env`].
-pub const S3_ENV_VARS: [&str; 5] = [
+pub const S3_ENV_VARS: [&str; 6] = [
     "NOTEDTHAT_S3_REGION",
     "NOTEDTHAT_S3_ACCESS_KEY_ID",
     "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
     "NOTEDTHAT_S3_ENDPOINT_URL",
     "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+    S3_RECONCILE_ENV,
 ];
+
+/// Whether every knowledge base's bucket is compared against the search index once at
+/// startup (D66). `"true"` or `"false"`; default `"true"`.
+pub const S3_RECONCILE_ENV: &str = "NOTEDTHAT_S3_RECONCILE";
+
+/// A switch that is exactly `true` or `false`, the way the `fs` backend's are: a value
+/// that is neither is a configuration mistake to report, not a `false` to guess.
+fn parse_bool(var: &str, supplied: Option<&str>, default: bool) -> Result<bool, Error> {
+    match supplied.map(str::trim) {
+        None => Ok(default),
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(value) => Err(Error::Config {
+            message: format!(
+                "{} is invalid: expected \"true\" or \"false\", got \"{value}\"",
+                setting(var)
+            ),
+        }),
+    }
+}
 
 /// S3 client config parsed from `NOTEDTHAT_S3_*` env vars.
 ///
@@ -34,6 +55,10 @@ pub struct S3Config {
     /// Whether to use path-style addressing (required for SeaweedFS/MinIO/Ceph).
     /// Default: `false`.
     pub force_path_style: bool,
+    /// Whether to compare every knowledge base's bucket against the search index once
+    /// at startup, re-indexing what changed out of band (D66). Default: `true`. The
+    /// on-demand pass (`POST …/index/reconcile`) is available either way.
+    pub reconcile_on_startup: bool,
 }
 
 /// The raw, unvalidated value of every setting this backend reads.
@@ -55,6 +80,8 @@ pub struct S3Settings {
     pub endpoint_url: Option<String>,
     /// `NOTEDTHAT_S3_FORCE_PATH_STYLE`.
     pub force_path_style: Option<String>,
+    /// `NOTEDTHAT_S3_RECONCILE`.
+    pub reconcile: Option<String>,
 }
 
 impl S3Settings {
@@ -67,6 +94,7 @@ impl S3Settings {
             secret_access_key: std::env::var("NOTEDTHAT_S3_SECRET_ACCESS_KEY").ok(),
             endpoint_url: std::env::var("NOTEDTHAT_S3_ENDPOINT_URL").ok(),
             force_path_style: std::env::var("NOTEDTHAT_S3_FORCE_PATH_STYLE").ok(),
+            reconcile: std::env::var(S3_RECONCILE_ENV).ok(),
         }
     }
 }
@@ -82,6 +110,7 @@ impl S3Config {
     /// # Optional environment variables
     /// - `NOTEDTHAT_S3_ENDPOINT_URL` — defaults to AWS endpoint
     /// - `NOTEDTHAT_S3_FORCE_PATH_STYLE` — `true` or `false`, defaults to `false`
+    /// - `NOTEDTHAT_S3_RECONCILE` — `true` or `false`, defaults to `true`
     pub fn from_env() -> Result<Self, Error> {
         Self::from_settings(S3Settings::from_env())
     }
@@ -90,7 +119,8 @@ impl S3Config {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` when a required setting is absent.
+    /// Returns `Err(Error::Config { .. })` when a required setting is absent, or when
+    /// `NOTEDTHAT_S3_RECONCILE` is neither `true` nor `false`.
     pub fn from_settings(settings: S3Settings) -> Result<Self, Error> {
         let region = settings.region.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_S3_REGION")),
@@ -105,6 +135,8 @@ impl S3Config {
             .force_path_style
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
+        let reconcile_on_startup =
+            parse_bool(S3_RECONCILE_ENV, settings.reconcile.as_deref(), true)?;
 
         Ok(Self {
             endpoint_url: settings.endpoint_url,
@@ -112,6 +144,7 @@ impl S3Config {
             access_key_id,
             secret_access_key,
             force_path_style,
+            reconcile_on_startup,
         })
     }
 
@@ -200,6 +233,52 @@ mod tests {
                 assert!(cfg.force_path_style);
             },
         );
+    }
+
+    fn with_reconcile(value: Option<&str>, check: impl FnOnce(Result<S3Config, Error>)) {
+        temp_env::with_vars(
+            [
+                ("NOTEDTHAT_S3_REGION", Some("us-east-1")),
+                ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("test-key")),
+                ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("test-secret")),
+                ("NOTEDTHAT_S3_ENDPOINT_URL", None),
+                ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
+                (S3_RECONCILE_ENV, value),
+            ],
+            || check(S3Config::from_env()),
+        );
+    }
+
+    #[test]
+    fn reconcile_defaults_to_on() {
+        with_reconcile(None, |cfg| {
+            assert!(cfg.expect("parses").reconcile_on_startup);
+        });
+    }
+
+    #[test]
+    fn reconcile_can_be_switched_off() {
+        with_reconcile(Some("false"), |cfg| {
+            assert!(!cfg.expect("parses").reconcile_on_startup);
+        });
+        with_reconcile(Some(" true "), |cfg| {
+            assert!(cfg.expect("parses").reconcile_on_startup);
+        });
+    }
+
+    #[test]
+    fn reconcile_refuses_anything_but_true_or_false() {
+        for value in ["yes", "1", "", "TRUE"] {
+            with_reconcile(Some(value), |cfg| {
+                let error = cfg.expect_err("refused").to_string();
+                assert!(
+                    error.contains("NOTEDTHAT_S3_RECONCILE")
+                        && error.contains("--s3-reconcile")
+                        && error.contains("expected \"true\" or \"false\""),
+                    "{value:?}: {error}"
+                );
+            });
+        }
     }
 
     #[test]

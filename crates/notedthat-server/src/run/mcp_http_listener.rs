@@ -31,6 +31,7 @@ fn test_config() -> Config {
             access_key_id: "any".to_string(),
             secret_access_key: "any".to_string(),
             force_path_style: true,
+            reconcile_on_startup: true,
         }),
         events: crate::config::EventsConfig::None,
         log_format: LogFormat::Pretty,

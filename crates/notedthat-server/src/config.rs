@@ -200,6 +200,7 @@ fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendK
             S3,
             cli.s3_force_path_style.is_some(),
         ),
+        ("NOTEDTHAT_S3_RECONCILE", S3, cli.s3_reconcile.is_some()),
         ("NOTEDTHAT_FS_ROOT", Fs, cli.fs_root.is_some()),
         ("NOTEDTHAT_FS_METADATA", Fs, cli.fs_metadata.is_some()),
         ("NOTEDTHAT_FS_FILE_MODE", Fs, cli.fs_file_mode.is_some()),
@@ -396,6 +397,7 @@ pub fn unroutable_storage_placeholder() -> StorageConfig {
         access_key_id: "any".to_string(),
         secret_access_key: "any".to_string(),
         force_path_style: true,
+        reconcile_on_startup: true,
     })
 }
 
@@ -607,6 +609,7 @@ impl Config {
                     secret_access_key: cli.s3_secret_access_key,
                     endpoint_url: cli.s3_endpoint_url,
                     force_path_style: cli.s3_force_path_style,
+                    reconcile: cli.s3_reconcile,
                 })?)
             }
             StorageBackendKind::Fs => {
@@ -1098,7 +1101,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 53] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 54] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1116,6 +1119,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_LOG_FORMAT",
         "NOTEDTHAT_S3_ENDPOINT_URL",
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+        "NOTEDTHAT_S3_RECONCILE",
         "NOTEDTHAT_EVENTS_BACKEND",
         "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
         "NOTEDTHAT_NATS_URL",
@@ -1181,6 +1185,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_LOG_FORMAT", None),
             ("NOTEDTHAT_S3_ENDPOINT_URL", None),
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
+            ("NOTEDTHAT_S3_RECONCILE", None),
             ("NOTEDTHAT_EVENTS_BACKEND", None),
             ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", None),
             ("NOTEDTHAT_NATS_URL", None),
@@ -1416,7 +1421,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 53);
+        assert_eq!(ALL_ENV_KEYS.len(), 54);
     }
 
     #[test]
@@ -1990,6 +1995,59 @@ pub(crate) mod tests {
                     assert!(error.contains("NOTEDTHAT_S3_ACCESS_KEY_ID"), "{error}");
                     assert!(error.contains("NOTEDTHAT_S3_SECRET_ACCESS_KEY"), "{error}");
                     assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=s3"), "{error}");
+                },
+            );
+        }
+
+        #[test]
+        fn s3_reconcile_defaults_on_and_is_parsed() {
+            let cfg = run_with_env(&[("NOTEDTHAT_S3_RECONCILE", None)], Config::from_env).unwrap();
+            let StorageConfig::S3(s3) = &cfg.storage else {
+                panic!("the placeholder selects s3")
+            };
+            assert!(s3.reconcile_on_startup);
+
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_S3_RECONCILE", Some("false"))],
+                Config::from_env,
+            )
+            .unwrap();
+            let StorageConfig::S3(s3) = &cfg.storage else {
+                panic!("the placeholder selects s3")
+            };
+            assert!(!s3.reconcile_on_startup);
+
+            let error = run_with_env(
+                &[("NOTEDTHAT_S3_RECONCILE", Some("sometimes"))],
+                Config::from_env,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                names_setting(
+                    &error,
+                    "NOTEDTHAT_S3_RECONCILE",
+                    "expected \"true\" or \"false\""
+                ),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn s3_reconcile_under_fs_is_refused() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
+                    ("NOTEDTHAT_S3_REGION", None),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
+                    ("NOTEDTHAT_S3_RECONCILE", Some("true")),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("belong to the s3 backend"), "{error}");
+                    assert!(error.contains("NOTEDTHAT_S3_RECONCILE"), "{error}");
                 },
             );
         }
