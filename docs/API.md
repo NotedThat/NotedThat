@@ -478,10 +478,32 @@ curl http://localhost:8080/healthz
 
 ### GET /readyz
 
-Readiness probe. Returns `200 OK` unless a configured object change event backend
-(`NOTEDTHAT_EVENTS_BACKEND=nats`) reports that it is not connected, in which case it
-returns `503`. Storage and Qdrant are not probed in v1. For the state of one knowledge
-base's search index, see [`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex).
+Readiness probe. Returns `200 OK` while every backend the server needs is there, and
+`503 Service Unavailable` otherwise. Use this for an orchestrator's readiness check; keep
+`/healthz` for liveness. For the state of one knowledge base's search index, see
+[`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex).
+
+What it covers:
+
+- **`storage`** — the selected backend (`s3` or `fs`) is reachable and the first declared
+  knowledge base's bucket (or directory) still exists.
+- **`search`** — Qdrant answers its health check.
+- **`events`** — present only when an event backend is configured
+  (`NOTEDTHAT_EVENTS_BACKEND`); its connection is up.
+
+Storage and search are probed by a background task every `NOTEDTHAT_READY_PROBE_INTERVAL_MS`
+(default `5000`), each probe bounded by that same interval; the route reads the latest result
+and never probes inline, so polling it often costs the backends nothing. An outage is reported
+within twice the interval and recovery within one, without a restart. Not covered: the `fs`
+change watcher (a lost watch is logged as `FS_WATCH_LOST`), the embedding endpoint, and how
+fresh the index is.
+
+Each check carries the backend's selector value and, when it is not `ok`, one of a fixed set of
+reasons: `timeout` (the probe did not answer in time), `unreachable` (it answered with an error
+or could not be reached), `not_found` (the probed bucket or directory is gone), `disconnected`
+(events only). The backend's own error message is never returned — the route is unauthenticated —
+but is logged once when a check fails (`READINESS_LOST`) and once when it recovers
+(`READINESS_RESTORED`).
 
 **Authentication:** Not required.
 
@@ -489,8 +511,8 @@ base's search index, see [`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-api
 
 | Status | Body |
 |--------|------|
-| 200 OK | `{"status": "ok"}` |
-| 503 Service Unavailable | `{"status": "unavailable", "events": "nats", "reason": "event backend not connected"}` |
+| 200 OK | `{"status": "ok", "checks": {…}}` — every check `ok` |
+| 503 Service Unavailable | `{"status": "unavailable", "checks": {…}}` — at least one check `unavailable` |
 
 **Example:**
 
@@ -498,10 +520,30 @@ base's search index, see [`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-api
 curl http://localhost:8080/readyz
 ```
 
-**Response body:**
+**Response body (ready):**
 
 ```json
-{"status": "ok"}
+{
+  "status": "ok",
+  "checks": {
+    "storage": {"backend": "fs", "status": "ok"},
+    "search": {"backend": "qdrant", "status": "ok"},
+    "events": {"backend": "nats", "status": "ok"}
+  }
+}
+```
+
+**Response body (Qdrant not answering):**
+
+```json
+{
+  "status": "unavailable",
+  "checks": {
+    "storage": {"backend": "fs", "status": "ok"},
+    "search": {"backend": "qdrant", "status": "unavailable", "reason": "timeout"},
+    "events": {"backend": "nats", "status": "ok"}
+  }
+}
 ```
 
 ---
