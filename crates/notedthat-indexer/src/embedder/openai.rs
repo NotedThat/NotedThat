@@ -54,9 +54,44 @@ struct EmbeddingsResponse {
 
 #[derive(Deserialize)]
 struct EmbeddingItem {
-    #[allow(dead_code)]
     index: usize,
     embedding: Vec<f32>,
+}
+
+/// Place every returned embedding at the input position its `index` names, checking each
+/// vector's dimension on the way. The caller has already established `data.len() == sent`, so
+/// "every index in range and none repeated" implies every input slot is filled.
+fn align_embeddings(
+    data: Vec<EmbeddingItem>,
+    sent: usize,
+    dim: usize,
+) -> Result<Vec<Vec<f32>>, EmbedderError> {
+    let mut slots: Vec<Option<Vec<f32>>> = std::iter::repeat_with(|| None).take(sent).collect();
+    for item in data {
+        if item.index >= sent {
+            return Err(EmbedderError::IndexOutOfRange {
+                index: item.index,
+                sent,
+            });
+        }
+        if item.embedding.len() != dim {
+            return Err(EmbedderError::DimensionMismatch {
+                expected: dim,
+                actual: item.embedding.len(),
+            });
+        }
+        let slot = &mut slots[item.index];
+        if slot.is_some() {
+            return Err(EmbedderError::DuplicateIndex { index: item.index });
+        }
+        *slot = Some(item.embedding);
+    }
+    slots
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            EmbedderError::Malformed("embedding batch left an input without a vector".into())
+        })
 }
 
 #[async_trait]
@@ -99,15 +134,7 @@ impl Embedder for OpenAiCompatibleEmbedder {
                                 returned: parsed.data.len(),
                             });
                         }
-                        if let Some(first) = parsed.data.first()
-                            && first.embedding.len() != self.config.dim
-                        {
-                            return Err(EmbedderError::DimensionMismatch {
-                                expected: self.config.dim,
-                                actual: first.embedding.len(),
-                            });
-                        }
-                        return Ok(parsed.data.into_iter().map(|d| d.embedding).collect());
+                        return align_embeddings(parsed.data, texts.len(), self.config.dim);
                     }
                     let retriable = status.as_u16() == 429 || status.is_server_error();
                     let body_text = resp.text().await.unwrap_or_default();
@@ -173,12 +200,27 @@ mod tests {
     }
 
     fn make_response(embeddings: Vec<Vec<f32>>) -> serde_json::Value {
-        let data: Vec<serde_json::Value> = embeddings
+        make_response_indexed(embeddings.into_iter().enumerate().collect())
+    }
+
+    /// Like `make_response`, but the test names each item's `index` itself.
+    fn make_response_indexed(items: Vec<(usize, Vec<f32>)>) -> serde_json::Value {
+        let data: Vec<serde_json::Value> = items
             .into_iter()
-            .enumerate()
             .map(|(i, emb)| serde_json::json!({ "index": i, "embedding": emb, "object": "embedding" }))
             .collect();
         serde_json::json!({ "object": "list", "data": data, "model": "test-model", "usage": { "prompt_tokens": 1, "total_tokens": 1 } })
+    }
+
+    async fn embed_two(response: serde_json::Value) -> Result<Vec<Vec<f32>>, EmbedderError> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&server)
+            .await;
+        let embedder = OpenAiCompatibleEmbedder::new(make_config(&server.uri())).unwrap();
+        embedder.embed(&["a".to_string(), "b".to_string()]).await
     }
 
     #[tokio::test]
@@ -366,6 +408,68 @@ mod tests {
                 expected: 3,
                 actual: 2
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn out_of_order_indices_are_realigned() {
+        let result = embed_two(make_response_indexed(vec![
+            (1, vec![0.0, 1.0, 0.0]),
+            (0, vec![1.0, 0.0, 0.0]),
+        ]))
+        .await
+        .unwrap();
+        assert_eq!(
+            result[0],
+            vec![1.0_f32, 0.0, 0.0],
+            "index 0 belongs to input 0"
+        );
+        assert_eq!(
+            result[1],
+            vec![0.0_f32, 1.0, 0.0],
+            "index 1 belongs to input 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn dimension_mismatch_on_later_vector() {
+        let err = embed_two(make_response_indexed(vec![
+            (0, vec![1.0, 0.0, 0.0]),
+            (1, vec![0.0, 1.0]),
+        ]))
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            EmbedderError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_index_rejected() {
+        let err = embed_two(make_response_indexed(vec![
+            (0, vec![1.0, 0.0, 0.0]),
+            (0, vec![0.0, 1.0, 0.0]),
+        ]))
+        .await
+        .unwrap_err();
+        assert!(matches!(err, EmbedderError::DuplicateIndex { index: 0 }));
+    }
+
+    #[tokio::test]
+    async fn out_of_range_index_rejected() {
+        let err = embed_two(make_response_indexed(vec![
+            (0, vec![1.0, 0.0, 0.0]),
+            (2, vec![0.0, 1.0, 0.0]),
+        ]))
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            EmbedderError::IndexOutOfRange { index: 2, sent: 2 }
         ));
     }
 

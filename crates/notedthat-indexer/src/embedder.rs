@@ -41,6 +41,20 @@ pub enum EmbedderError {
         /// Actual dimensionality returned.
         actual: usize,
     },
+    /// An embedding carried an `index` at or beyond the number of inputs sent.
+    #[error("embedder returned embedding index {index} for {sent} inputs")]
+    IndexOutOfRange {
+        /// The offending `index` from the response.
+        index: usize,
+        /// Number of inputs sent.
+        sent: usize,
+    },
+    /// Two embeddings in one response claimed the same `index`.
+    #[error("embedder returned embedding index {index} more than once")]
+    DuplicateIndex {
+        /// The `index` that appeared more than once.
+        index: usize,
+    },
     /// Retry budget exhausted (HTTP 429 or 5xx repeated).
     #[error("embedder retry budget exhausted after {attempts} attempts")]
     RetriesExhausted {
@@ -109,6 +123,18 @@ mod tests {
             actual: 512,
         };
         assert!(e.to_string().contains("1024") && e.to_string().contains("512"));
+    }
+
+    #[test]
+    fn error_display_index_out_of_range() {
+        let e = EmbedderError::IndexOutOfRange { index: 5, sent: 2 };
+        assert!(e.to_string().contains('5') && e.to_string().contains('2'));
+    }
+
+    #[test]
+    fn error_display_duplicate_index() {
+        let e = EmbedderError::DuplicateIndex { index: 1 };
+        assert!(e.to_string().contains("index 1") && e.to_string().contains("more than once"));
     }
 
     #[test]
