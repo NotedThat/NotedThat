@@ -20,7 +20,7 @@ pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::{IndexEvent, RefreshOrigin};
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
-pub use searcher::Searcher;
+pub use searcher::{KeyPredicate, Searcher};
 pub use vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };

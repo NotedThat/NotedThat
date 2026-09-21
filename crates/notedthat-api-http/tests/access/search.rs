@@ -85,7 +85,7 @@ async fn a_prefix_scoped_search_grant_withholds_hits_outside_its_scope() {
     let searcher = searcher_returning(&["public/index.md", "internal/secret.md"]);
     let app = app_with_searcher(
         notes([grant_under(Who::Anyone, [Verb::Search], &["public/**"])]),
-        searcher as Arc<dyn notedthat_indexer::Searcher>,
+        Arc::clone(&searcher) as Arc<dyn notedthat_indexer::Searcher>,
     )
     .await;
 
@@ -101,6 +101,13 @@ async fn a_prefix_scoped_search_grant_withholds_hits_outside_its_scope() {
         .map(|hit| hit["object_key"].as_str().expect("key").to_string())
         .collect();
     assert_eq!(keys, vec!["public/index.md".to_string()]);
+    // The grant has to reach the searcher, not only the response: applied
+    // after the searcher has cut the page, a narrow grant empties it (#68).
+    assert_eq!(
+        searcher.scoped_calls(),
+        1,
+        "the search grant must be handed to the searcher"
+    );
 }
 
 #[tokio::test]

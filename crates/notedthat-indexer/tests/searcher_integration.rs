@@ -20,8 +20,8 @@ use notedthat_core::{
 use notedthat_indexer::testing::InMemoryVectorStore;
 use notedthat_indexer::vector_store::VectorStore;
 use notedthat_indexer::{
-    Embedder, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner, Searcher,
-    searcher::HybridSearcher,
+    Embedder, KeyPredicate, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner,
+    Searcher, searcher::HybridSearcher,
 };
 use std::{sync::Arc, time::Duration};
 use wiremock::{
@@ -181,7 +181,10 @@ async fn search_returns_upserted_chunks() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
     let hits = &response.hits;
 
     assert!(!hits.is_empty(), "expected at least one hit, got 0");
@@ -260,7 +263,10 @@ async fn filter_by_mime_excludes_non_matching() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
 
     for hit in &response.hits {
         assert_eq!(
@@ -336,7 +342,10 @@ async fn filter_by_heading_path_prefix() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
 
     for hit in &response.hits {
         assert!(
@@ -412,7 +421,10 @@ async fn filter_by_updated_after() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
 
     for hit in &response.hits {
         assert_ne!(
@@ -450,7 +462,7 @@ async fn empty_collection_returns_empty_hits() {
     .unwrap();
 
     let response = searcher
-        .search(&kb, request)
+        .search(&kb, request, None)
         .await
         .expect("empty collection search should return Ok, not Err");
 
@@ -484,7 +496,7 @@ async fn missing_collection_returns_unknown_kb() {
     .unwrap();
 
     let err = searcher
-        .search(&kb, request)
+        .search(&kb, request, None)
         .await
         .expect_err("expected Err for missing collection");
 
@@ -534,7 +546,10 @@ async fn preview_truncates_multi_byte() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
 
     assert!(!response.hits.is_empty(), "expected at least one hit");
     let preview_len = response.hits[0].preview.chars().count();
@@ -585,7 +600,10 @@ async fn limit_capped_by_request() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
     assert!(
         response.hits.len() <= 3,
         "expected ≤3 hits for limit=3, got {}",
@@ -645,7 +663,10 @@ async fn object_key_prefix_post_filter() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
 
     assert!(!response.hits.is_empty(), "expected at least one docs/ hit");
     for hit in &response.hits {
@@ -696,7 +717,10 @@ async fn sparse_only_query_finds_bm25_match() {
     .validate()
     .unwrap();
 
-    let response = searcher.search(&kb, request).await.expect("search failed");
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
     assert!(
         !response.hits.is_empty(),
         "expected ≥1 hit for 'anaconda' — sparse_bm25 must be populated at upsert (T1 fix)"
@@ -705,5 +729,125 @@ async fn sparse_only_query_finds_bm25_match() {
         response.hits[0].object_key.as_str(),
         "anaconda.md",
         "expected 'anaconda.md' as top hit"
+    );
+}
+
+/// Every point shares one text and one dense vector, so both arms tie
+/// throughout and the store's own tie-break — point id, ascending — decides
+/// which candidates each arm hands to fusion. Keys the caller may see are
+/// given the highest ids, which is what starved under the old window (#68).
+async fn seed_identical_points(store: &InMemoryVectorStore, kb: &KbSlug, keys: &[String]) {
+    for (offset, key) in keys.iter().enumerate() {
+        let id = u64::try_from(offset).unwrap() + 1;
+        upsert_point(
+            store,
+            kb,
+            id,
+            "the same words in every chunk",
+            key,
+            "text/markdown",
+            vec![],
+            1_000,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_key_filter_is_served_from_the_over_fetched_window() {
+    let (store, provisioner) = make_store();
+    let kb = kb();
+    provisioner
+        .ensure_collection(&kb, 4)
+        .await
+        .expect("ensure_collection failed");
+
+    let keys: Vec<String> = (1..=45)
+        .map(|i| format!("private/{i:02}.md"))
+        .chain((1..=5).map(|i| format!("public/{i}.md")))
+        .collect();
+    seed_identical_points(&store, &kb, &keys).await;
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_server)
+        .await;
+
+    let embedder = make_embedder(&mock_server.uri(), 4);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
+
+    let request = SearchRequest {
+        query: "same words".to_string(),
+        filter: None,
+        limit: Some(5),
+    }
+    .validate()
+    .unwrap();
+    let public: KeyPredicate<'_> = &|key| key.starts_with("public/");
+
+    let response = searcher
+        .search(&kb, request, Some(public))
+        .await
+        .expect("search failed");
+
+    let keys: Vec<&str> = response
+        .hits
+        .iter()
+        .map(|hit| hit.object_key.as_str())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "public/1.md",
+            "public/2.md",
+            "public/3.md",
+            "public/4.md",
+            "public/5.md"
+        ],
+        "a grant covering keys the backend ranks last must still fill the page"
+    );
+}
+
+#[tokio::test]
+async fn unfiltered_limit_fifty_can_return_fifty_hits() {
+    let (store, provisioner) = make_store();
+    let kb = kb();
+    provisioner
+        .ensure_collection(&kb, 4)
+        .await
+        .expect("ensure_collection failed");
+
+    let keys: Vec<String> = (1..=60).map(|i| format!("doc/{i:02}.md")).collect();
+    seed_identical_points(&store, &kb, &keys).await;
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_server)
+        .await;
+
+    let embedder = make_embedder(&mock_server.uri(), 4);
+    let searcher = HybridSearcher::new(Arc::new(store.clone()), embedder);
+
+    let request = SearchRequest {
+        query: "same words".to_string(),
+        filter: None,
+        limit: Some(50),
+    }
+    .validate()
+    .unwrap();
+
+    let response = searcher
+        .search(&kb, request, None)
+        .await
+        .expect("search failed");
+
+    assert_eq!(
+        response.hits.len(),
+        50,
+        "the maximum limit must be reachable when the corpus has that many chunks"
     );
 }

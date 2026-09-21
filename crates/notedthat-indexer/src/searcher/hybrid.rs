@@ -10,8 +10,66 @@ use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse, 
 use qdrant_client::qdrant::ScoredPoint;
 use std::sync::Arc;
 
+/// Each prefetch arm's depth when nothing narrows the candidates.
+const PREFETCH_FLOOR: u64 = 20;
+/// Each arm's depth under a Qdrant-native payload filter, which Qdrant applies
+/// after its own top-k and would otherwise starve fusion (§8.6).
+const FILTERED_PREFETCH_FLOOR: u64 = 100;
+/// Over-fetch factor when a key filter is applied client-side, after fusion:
+/// the request's `object_key_prefix`, or the caller's grant.
 const POST_FILTER_OVER_FETCH_MULTIPLIER: u64 = 10;
-const POST_FILTER_OVER_FETCH_CAP: u64 = 500;
+/// Cap on each arm's depth; the fused window is at most twice this.
+const PREFETCH_CAP: u64 = 250;
+
+/// How deep the backend looks for one request (D56).
+///
+/// Fusion can only rank what the two prefetch arms returned, so the arm depth
+/// is what decides how many candidates exist — a fused `limit` above twice the
+/// arm depth is inert, which is how #68 happened. Both numbers are derived
+/// here from one computation so they cannot drift apart again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FetchWindow {
+    /// Candidates each prefetch arm contributes to fusion.
+    prefetch_limit: u64,
+    /// Fused points asked of the backend: always `2 * prefetch_limit`, the
+    /// whole fused set (the union of both arms), so the backend never
+    /// truncates and therefore never resolves a tie — the searcher's own
+    /// order does (#128).
+    limit: u64,
+}
+
+fn fetch_window(limit: u32, native_filter: bool, post_filter: bool) -> FetchWindow {
+    let wanted = if post_filter {
+        u64::from(limit) * POST_FILTER_OVER_FETCH_MULTIPLIER
+    } else {
+        u64::from(limit)
+    };
+    let floor = if native_filter {
+        FILTERED_PREFETCH_FLOOR
+    } else {
+        PREFETCH_FLOOR
+    };
+    let prefetch_limit = wanted.max(floor).min(PREFETCH_CAP);
+    FetchWindow {
+        prefetch_limit,
+        limit: prefetch_limit * 2,
+    }
+}
+
+/// The documented order of hits (D56): RRF score descending, then
+/// `object_key` byte-lexicographic ascending, then `byte_start` ascending.
+///
+/// `(object_key, byte_start)` is unique per chunk, so the order is total and
+/// one query against one index yields byte-identical hits between calls,
+/// whatever order the backend handed equal scores back in (#128).
+fn sort_hits(hits: &mut [SearchHit]) {
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.object_key.as_str().cmp(b.object_key.as_str()))
+            .then_with(|| a.byte_start.cmp(&b.byte_start))
+    });
+}
 
 /// Hybrid searcher that combines dense (cosine) + sparse (BM25) prefetches
 /// with Qdrant's server-side RRF fusion.
@@ -44,19 +102,23 @@ impl HybridSearcher {
 #[async_trait]
 impl super::Searcher for HybridSearcher {
     #[tracing::instrument(
-        skip(self),
+        skip(self, key_filter),
         fields(
             kb = %kb,
             query_len = request.query.len(),
             limit = request.limit,
             qdrant_filter_present = tracing::field::Empty,
             post_filter_present = tracing::field::Empty,
+            key_filter_present = key_filter.is_some(),
+            prefetch_limit = tracing::field::Empty,
+            fetch_limit = tracing::field::Empty,
         )
     )]
     async fn search(
         &self,
         kb: &KbSlug,
         request: ValidatedRequest,
+        key_filter: Option<super::KeyPredicate<'_>>,
     ) -> Result<SearchResponse, SearchError> {
         let collection = collection_name(kb);
         let query_text = request.query.clone();
@@ -82,22 +144,16 @@ impl super::Searcher for HybridSearcher {
             .as_ref()
             .map(super::filter::translate_filter)
             .unwrap_or_default();
+        let window = fetch_window(
+            request.limit,
+            translated.qdrant.is_some(),
+            !translated.post.is_empty() || key_filter.is_some(),
+        );
         tracing::Span::current()
             .record("qdrant_filter_present", translated.qdrant.is_some())
-            .record("post_filter_present", !translated.post.is_empty());
-
-        let prefetch_limit: u64 = if translated.qdrant.is_some() {
-            100 // §9.6: bump prefetch limit under selective filters.
-        } else {
-            20
-        };
-
-        let outer_limit = if translated.post.is_empty() {
-            u64::from(request.limit)
-        } else {
-            (u64::from(request.limit) * POST_FILTER_OVER_FETCH_MULTIPLIER)
-                .min(POST_FILTER_OVER_FETCH_CAP)
-        };
+            .record("post_filter_present", !translated.post.is_empty())
+            .record("prefetch_limit", window.prefetch_limit)
+            .record("fetch_limit", window.limit);
 
         let points = self
             .store
@@ -107,8 +163,8 @@ impl super::Searcher for HybridSearcher {
                     text: query_text,
                     dense: dense_vec,
                     filter: request.filter.clone(),
-                    prefetch_limit,
-                    limit: outer_limit,
+                    prefetch_limit: window.prefetch_limit,
+                    limit: window.limit,
                 },
             )
             .await
@@ -119,7 +175,15 @@ impl super::Searcher for HybridSearcher {
             .map(point_to_hit)
             .collect::<Result<Vec<_>, _>>()?;
 
-        hits.retain(|hit| translated.post.matches(hit.object_key.as_str()));
+        // Both client-side key filters run over the whole fused window, and
+        // the window is ordered before it is cut: the page is then the first
+        // `limit` acceptable hits in the documented order, not whatever the
+        // backend happened to return first.
+        hits.retain(|hit| {
+            let key = hit.object_key.as_str();
+            translated.post.matches(key) && key_filter.is_none_or(|allows| allows(key))
+        });
+        sort_hits(&mut hits);
         hits.truncate(request.limit as usize);
 
         Ok(SearchResponse::new(hits))
