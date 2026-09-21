@@ -81,7 +81,9 @@ jobs:
       # has just written the normalised manifest Cargo would upload for every
       # crate, and a dev-dependency Cargo kept is one it will resolve at publish
       # time, whatever spelling put it there (`version = "*"` reads as `*` in
-      # `cargo metadata` too, and would slip past an intent check).
+      # `cargo metadata` too, and would slip past an intent check; one renamed
+      # with `package = "notedthat-…"` keeps the crate under another key, so the
+      # crate name is what is compared, not the key).
       - name: Packaged manifests name no workspace crate as a dev-dependency
         run: |
           set -euo pipefail
@@ -97,7 +99,11 @@ jobs:
           for path in sys.argv[1:]:
               with open(path, "rb") as f:
                   manifest = tomllib.load(f)
-              kept = [name for name in manifest.get("dev-dependencies", {}) if name in members]
+              kept = []
+              for name, spec in manifest.get("dev-dependencies", {}).items():
+                  crate = spec.get("package", name) if isinstance(spec, dict) else name
+                  if crate in members:
+                      kept.append(name if crate == name else f"{name} (package = {crate})")
               if kept:
                   bad.append(f"{manifest['package']['name']}: {', '.join(kept)}")
           if bad:
