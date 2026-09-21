@@ -1420,6 +1420,60 @@ async fn head_non_existent_object_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+/// A declared knowledge base whose bucket is gone — deleted after provisioning, or a
+/// backend where provisioning silently failed — is `404 not_found` on every route, not
+/// the `500`/`503` that reads as a server fault (#69, D43).
+#[tokio::test]
+async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
+    // Declared, but never provisioned in storage.
+    let mut kbs = BTreeMap::new();
+    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let app = build_router(AppState {
+        storage: Arc::new(InMemoryStorage::default()),
+        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        declared_kbs: Arc::new(kbs),
+        authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
+        max_body_size: 16 * 1024 * 1024,
+        max_patchable_size: 16 * 1024 * 1024,
+        indexer_tx,
+        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
+        events: None,
+    });
+
+    for (method, uri, body) in [
+        (
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/objects"),
+            Body::empty(),
+        ),
+        (
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::empty(),
+        ),
+        (
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::from("x"),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/knowledgebases/{KB}/a.md"),
+            Body::empty(),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(authed_request(method, uri.clone(), body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        let json = response_json(resp).await;
+        assert_eq!(json["error"], "not_found", "{method} {uri}");
+    }
+}
+
 #[tokio::test]
 async fn put_with_path_traversal_returns_400_or_404() {
     let resp = app()

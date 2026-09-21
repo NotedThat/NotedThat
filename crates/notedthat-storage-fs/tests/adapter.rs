@@ -621,6 +621,48 @@ async fn ensure_bucket_is_idempotent() {
     assert!(env.root.join("nt-default-notes").is_dir());
 }
 
+/// An operator who removes a knowledge base's directory while the server runs gets a
+/// `404` for it on every surface until the directory is back — not a write that quietly
+/// recreates it, and not a `503` that reads as an outage (#69).
+#[tokio::test]
+async fn a_removed_knowledge_base_directory_is_bucket_not_found_and_is_not_recreated() {
+    let env = env().await;
+    put(&env, "hello.md", "# Hello").await;
+    let dir = env.root.join("nt-default-notes");
+    std::fs::remove_dir_all(&dir).expect("remove the KB directory out of band");
+
+    let listed = env.storage.list_objects(&env.kb, None, 10, None).await;
+    assert!(
+        matches!(listed, Err(StorageError::BucketNotFound { ref bucket }) if bucket == "nt-default-notes"),
+        "list after removal should be BucketNotFound, got {listed:?}"
+    );
+    let written = env
+        .storage
+        .put_object(
+            &env.kb,
+            &path("hello.md"),
+            Bytes::from_static(b"again"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await;
+    assert!(
+        matches!(written, Err(StorageError::BucketNotFound { .. })),
+        "put after removal should be BucketNotFound, got {written:?}"
+    );
+    assert!(
+        !dir.exists(),
+        "a refused write must not bring the directory back"
+    );
+
+    // Re-provisioning is what brings it back, exactly as at startup.
+    env.storage
+        .ensure_bucket(&env.kb)
+        .await
+        .expect("re-provision");
+    put(&env, "hello.md", "# Hello again").await;
+}
+
 /// Sidecars live outside the bucket directories, so no key can name one and listings
 /// need no exclusion rules.
 #[tokio::test]
