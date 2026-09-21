@@ -1910,6 +1910,11 @@ Move/rename an object within a knowledge base. **Non-atomic** in v1: implemented
 
 **Response**: text confirmation or partial-failure error
 
+The copy runs through the MCP process, so the [read budget](#read) bounds a move as well: an object
+over `NOTEDTHAT_MCP_MAX_READ_BYTES` is refused (`invalid params`, message `move: …`) before anything is
+written or deleted, and the message says what to do — raise the budget, or move it over WebDAV,
+whose `MOVE` is server-side. (Sliced reads are no help here; there is no sliced move.)
+
 ### Resources
 
 NotedThat exposes MCP Resources so clients can browse and read objects without calling tools directly. Resources are advertised in the `initialize` response under `capabilities.resources`. There is no `subscribe` or `listChanged` support in v1.
