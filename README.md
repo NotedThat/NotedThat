@@ -347,7 +347,7 @@ Full API documentation: [`docs/API.md`](docs/API.md)
 | `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` binary, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs it. |
 
-All 12 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Contributing
 

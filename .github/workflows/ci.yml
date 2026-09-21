@@ -271,7 +271,7 @@ jobs:
                          | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
             # `|| true`: under `set -e` a curl that could not connect would
             # otherwise exit the script here; `--max-time` so a stalled
-            # connection cannot hang the job twelve times over.
+            # connection cannot hang the job eleven times over.
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
                      -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
                      "https://crates.io/api/v1/crates/${crate}" || true)

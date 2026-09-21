@@ -112,7 +112,7 @@ field names as of 2026-09, check against the crates.io API if it rejects them):
 
 ## Removing a Crate from the Workspace
 
-The mirror image, first done for `notedthat-mcp-stdio` (last published at 0.7.2):
+The mirror image, first done for `notedthat-mcp-stdio` (last published at 0.7.1; 0.7.2 never reached it):
 
 1. Take it out of `[workspace] members` in the root `Cargo.toml`, out of `release-plz.toml`'s
    package list and the crate dropdown in `.github/workflows/publish-crate-manual.yml`, and out
