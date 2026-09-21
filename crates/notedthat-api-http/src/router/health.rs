@@ -2,7 +2,8 @@
 //!
 //! `/readyz` covers the storage backend, the vector store and a configured
 //! event broker (D39, D55, D64). It does not cover the `fs` watcher (a lost
-//! watch is logged, D50), the embedder, or how fresh the index is.
+//! watch is logged, D50), the embedder, or how fresh the index is — that is
+//! per knowledge base, at `GET /api/v1/knowledgebases/{kb}/index` (D62).
 
 use axum::Json;
 use axum::extract::State;

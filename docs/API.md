@@ -496,7 +496,9 @@ Storage and search are probed by a background task every `NOTEDTHAT_READY_PROBE_
 and never probes inline, so polling it often costs the backends nothing. An outage is reported
 within twice the interval and recovery within one, without a restart. Not covered: the `fs`
 change watcher (a lost watch is logged as `FS_WATCH_LOST`), the embedding endpoint, and how
-fresh the index is.
+fresh the index is — that is per knowledge base, at
+[`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex) (D62):
+when readiness says `ok` but search looks stale, look there.
 
 Each check carries the backend's selector value, a `status` of `ok`, `degraded` or
 `unavailable`, and, when it is not `ok`, one of a fixed set of reasons: `timeout` (the probe

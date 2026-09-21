@@ -806,7 +806,8 @@ deleted; nothing re-creates it while the process runs, so restart to re-provisio
 keep serving, and `/readyz` stays `200` rather than pulling the replica out of the load balancer
 for a data problem a restart fixes. Not covered:
 the `fs` change watcher (a lost watch is [`FS_WATCH_LOST`](#operating-it) and a rescan), the
-embedding endpoint, and how fresh the index is.
+embedding endpoint, and how fresh the index is — that is per knowledge base, at
+`GET /api/v1/knowledgebases/{kb_slug}/index` (see [`docs/API.md`](API.md#get-apiv1knowledgebaseskb_slugindex)).
 
 ## Startup validation
 
