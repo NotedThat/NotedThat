@@ -50,8 +50,13 @@ pub enum ApiError {
         message: String,
     },
     /// A domain error from `notedthat-core`.
+    ///
+    /// Built through the manual `From<CoreError>` rather than `#[from]`, so a
+    /// `CoreError::Storage(BucketNotFound)` — which core's own `From<StorageError>`
+    /// produces — is caught on the way in and answered like every other missing
+    /// bucket, with no bucket name on the wire.
     #[error(transparent)]
-    Core(#[from] CoreError),
+    Core(CoreError),
     /// A storage-layer error not otherwise promoted to a top-level variant.
     ///
     /// Note: `StorageError::NotModified`, `StorageError::PreconditionFailed`, and
@@ -108,6 +113,17 @@ pub enum ApiError {
 
 /// Promote specific `StorageError` variants to top-level `ApiError` variants so
 /// that `IntoResponse` can emit the RFC-mandated response headers.
+impl From<CoreError> for ApiError {
+    fn from(e: CoreError) -> Self {
+        match e {
+            CoreError::Storage(StorageError::BucketNotFound { bucket }) => {
+                Self::bucket_not_found(&bucket)
+            }
+            other => Self::Core(other),
+        }
+    }
+}
+
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         match e {
@@ -137,6 +153,23 @@ impl ApiError {
         Self::Core(CoreError::NotFound {
             resource: "knowledge base storage".to_string(),
         })
+    }
+
+    /// The `message` of the JSON body: the error's own text, except for a
+    /// `BucketNotFound` that was built by hand around either wrapper rather than
+    /// through [`Self::bucket_not_found`] — that one still says only what the
+    /// helper would have said. Belt and braces: every `From` funnels the variant
+    /// through the helper, and this keeps a future `ApiError::Core(…)` literal
+    /// from undoing it.
+    fn message(&self) -> String {
+        match self {
+            Self::Core(CoreError::Storage(StorageError::BucketNotFound { bucket }))
+            | Self::Storage(StorageError::BucketNotFound { bucket }) => {
+                tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
+                "not found: knowledge base storage".to_string()
+            }
+            other => other.to_string(),
+        }
     }
 }
 
@@ -405,7 +438,7 @@ impl IntoResponse for ApiErrorResponse {
 
         // All other variants return a JSON error body.
         let (status, code) = self.error.status_and_code();
-        let message = self.error.to_string();
+        let message = self.error.message();
         let body = ErrorBody {
             error: code,
             message,
@@ -1162,6 +1195,57 @@ mod tests {
             key: "foo".to_string(),
         });
         assert!(matches!(api_err, ApiError::Storage(_)));
+    }
+
+    /// Core's own `From<StorageError>` yields `CoreError::Storage(BucketNotFound)`;
+    /// one `.map_err(CoreError::from)` in a handler must not reopen the bucket name
+    /// that `From<StorageError>` closes.
+    #[test]
+    fn test_from_core_error_bucket_not_found_is_sanitised() {
+        let api_err = ApiError::from(CoreError::from(StorageError::BucketNotFound {
+            bucket: "nt-default-notes".to_string(),
+        }));
+        assert!(
+            matches!(&api_err, ApiError::Core(CoreError::NotFound { resource }) if resource == "knowledge base storage"),
+            "{api_err:?}"
+        );
+        // Every other core error is wrapped as it is.
+        let api_err = ApiError::from(CoreError::from(StorageError::NotFound {
+            key: "a.md".to_string(),
+        }));
+        assert!(matches!(
+            api_err,
+            ApiError::Core(CoreError::Storage(StorageError::NotFound { .. }))
+        ));
+    }
+
+    /// Even a `BucketNotFound` built by hand around either wrapper renders the
+    /// fixed message: `404 not_found`, and neither the bucket nor the tenant naming
+    /// scheme in the body.
+    #[tokio::test]
+    async fn a_bucket_not_found_reached_through_core_error_names_no_bucket() {
+        for error in [
+            ApiError::Core(CoreError::Storage(StorageError::BucketNotFound {
+                bucket: "nt-acme-notes".to_string(),
+            })),
+            ApiError::Storage(StorageError::BucketNotFound {
+                bucket: "nt-acme-notes".to_string(),
+            }),
+        ] {
+            let resp = ApiErrorResponse {
+                error,
+                request_id: "req-1".into(),
+            }
+            .into_response();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["error"], "not_found");
+            assert_eq!(json["message"], "not found: knowledge base storage");
+            assert!(!text.contains("nt-"), "{text}");
+            assert!(!text.contains("bucket"), "{text}");
+        }
     }
 
     mod line_range_error {
