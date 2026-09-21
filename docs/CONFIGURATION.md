@@ -248,6 +248,10 @@ Two log codes on the `notedthat::watch` target are worth alerting on:
 | `FS_WATCH_LOST` | A watch could not be kept. Changes below newly created directories may go unnoticed until the next comparison. Usually the watch limit. |
 | `FS_WATCH_RESCAN` | Events were dropped — by the kernel, or because more changed at once than was worth tracking individually — so the affected knowledge base is being compared against the index in full. Informational unless it repeats. |
 
+Both are also visible without the log: while a rescan is pending the knowledge base reports
+`"state": "stale"` at `GET /api/v1/knowledgebases/{kb}/index`, and every completed pass is
+its `last_reconcile` (see [the API's state model](API.md#get-apiv1knowledgebaseskb_slugindex)).
+
 Turning watching off with `NOTEDTHAT_FS_WATCH=false` restores the older behaviour, where only
 writes through the API, WebDAV or MCP update the search index.
 
