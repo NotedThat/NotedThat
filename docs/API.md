@@ -1829,7 +1829,7 @@ Every field but `bytes_returned` is `null` when the backend did not say — noth
 
 **Constraints**: `byte_end` requires `byte_start`; `byte_start >= byte_end` is rejected with `invalid_request`. `line_end` requires `line_start`; `line_start` is at least 1; `line_end < line_start - 1` is rejected. Byte and line arguments together are rejected.
 
-**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB — the API's own body cap, so anything written through the API reads back whole) is refused with `response_too_large`, whose message states the object's size and the budget and names the slice arguments to use instead. A slice within the budget is served. Objects that large arrive over WebDAV or straight into an `fs` tree, never through the API.
+**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB — the API's own body cap, so anything written through the API reads back whole) is refused with `response_too_large`, whose message states the object's size and the budget and names the slice arguments to use instead. A slice within the budget is served. Objects that large arrive over WebDAV or straight into an `fs` tree, never through the API. The budget bounds what one read *fetches*; the text then goes out twice — in `content[0]` and in `structuredContent.text` — so a text read's response is up to about twice the budget, plus JSON escaping: 16 MiB fetched, ~32 MiB out at the default. Size a proxy's response limit against that; the knob is the budget itself.
 
 #### `write`
 
@@ -1962,7 +1962,7 @@ MIME detection by extension:
 
 **Byte ranges** are not available through `resources/read` (which takes only `{ uri }`). Use the `read` tool with `byte_start` and `byte_end` arguments to fetch a slice of an object.
 
-**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB) is refused with `response_too_large`, which points at the `read` tool's slice arguments. The budget is on the bytes fetched; a binary resource is base64-encoded on top of that, so its `blob` is about four thirds of the budget at most.
+**Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB) is refused with `response_too_large`, which points at the `read` tool's slice arguments. The budget is on the bytes fetched; a binary resource is base64-encoded on top of that, so its `blob` is about four thirds of the budget at most. A resource carries its body once (unlike the `read` tool, which carries the text in both halves of its result), so that is the only expansion here.
 
 ### Path Encoding
 
