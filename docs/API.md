@@ -507,7 +507,9 @@ curl http://localhost:8080/readyz
 
 ### GET /api/v1/knowledgebases
 
-List all knowledge bases declared in `NOTEDTHAT_KBS`. Returns their slugs in sorted order.
+List the knowledge bases the caller can see, in slug order. Each entry carries the slug every
+other route takes, the manifest's `display_name`, and — when the manifest says what the knowledge
+base is for — its `description`, so an agent can choose where to search before it searches.
 
 **Authentication:** The response lists the knowledge bases the caller can see — those whose access
 rules grant them anything at all. A valid Bearer token sees every declared knowledge base. If an
@@ -521,10 +523,16 @@ name one answers `404` instead. `HEAD` follows `GET`. A supplied invalid credent
 
 | Status | Body |
 |--------|------|
-| 200 OK | `{"knowledgebases": ["slug1", "slug2"]}` |
+| 200 OK | `{"knowledgebases": [{"kb_slug": "slug1", "display_name": "…", "description": "…"}, …]}` |
 
-The array contains the slug strings exactly as declared in `NOTEDTHAT_KBS`, sorted
-lexicographically.
+| Field | Always present | Meaning |
+|-------|----------------|---------|
+| `kb_slug` | yes | The slug as declared in `NOTEDTHAT_KBS`; entries are sorted by it |
+| `display_name` | yes | The manifest's `display_name`; the slug itself until an operator sets one |
+| `description` | no | The manifest's `description`: one line, at most 500 characters, set by an operator (see [Knowledge base description](CONFIGURATION.md#knowledge-base-description)). Omitted, never `null`, when the manifest has none |
+
+A description is shown exactly when its knowledge base is listed: a knowledge base the caller
+cannot see contributes no entry, so nothing about it is described.
 
 **Example:**
 
@@ -537,7 +545,14 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ```json
 {
-  "knowledgebases": ["notes", "scratch"]
+  "knowledgebases": [
+    {
+      "kb_slug": "notes",
+      "display_name": "Engineering notes",
+      "description": "Design notes, ADRs and meeting minutes of the platform team."
+    },
+    { "kb_slug": "scratch", "display_name": "scratch" }
+  ]
 }
 ```
 
@@ -1726,13 +1741,15 @@ All 10 tools are exposed:
 
 #### `list_knowledgebases`
 
-List all knowledge bases declared on the server.
+List the knowledge bases visible to the caller, with what each one is for.
 
 **Arguments**: none
 
-**Response**: `[{ "kb_slug": string }]`
+**Response**: `[{ "kb_slug": string, "display_name": string, "description"?: string }]` — the
+entries of [`GET /api/v1/knowledgebases`](#get-apiv1knowledgebases), unchanged. `description` is
+present only when the manifest sets one; read it before choosing which knowledge base to `search`.
 
-Note: `display_name`, `description`, and `perms` are post-v1 (HTTP list endpoint does not return them yet).
+Note: `perms` (§6.10) is post-v1.
 
 #### `search`
 
