@@ -23,7 +23,7 @@ from your OIDC provider; the rules that apply are the caller's, so an agent hold
 identity sees a restricted knowledge base. A knowledge base that is public — its manifest grants
 `anyone` `read` or `search` — needs no credential over MCP either: leave the header out and the
 client is the anonymous caller, with exactly what `anyone` may do and nothing more
-([D57](../SPECIFICATIONS.md#2-decisions-log)).
+([D59](../SPECIFICATIONS.md#2-decisions-log)).
 
 **Reaching `/mcp` from another host.** The MCP endpoint answers only to `Host` values it is told
 to expect — the default is loopback. Any client that is not on the same machine needs the public

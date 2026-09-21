@@ -132,7 +132,7 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
         );
     }
 
-    // MCP is bound by the same snapshot (D57): with one knowledge base
+    // MCP is bound by the same snapshot (D59): with one knowledge base
     // granting anyone `read`, an anonymous MCP client is admitted and sees
     // exactly what anonymous discovery shows.
     let mcp = wire(

@@ -1349,7 +1349,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     server_handle.abort();
 }
 
-// ─── Anonymous MCP (D57) ─────────────────────────────────────────────────────
+// ─── Anonymous MCP (D59) ─────────────────────────────────────────────────────
 
 /// A `POST /mcp` with no `Authorization` header at all.
 async fn anonymous_mcp(
@@ -1473,11 +1473,16 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(
-        mcp_json_content(&listed),
-        serde_json::json!([{ "kb_slug": "public" }]),
-        "{listed}"
-    );
+    // Slugs only: an entry may carry more fields (#155 adds `display_name`
+    // and `description`); what matters here is which knowledge bases appear.
+    let entries = mcp_json_content(&listed);
+    let slugs: Vec<&str> = entries
+        .as_array()
+        .expect("an array of entries")
+        .iter()
+        .map(|entry| entry["kb_slug"].as_str().expect("kb_slug"))
+        .collect();
+    assert_eq!(slugs, ["public"], "{listed}");
 
     // Then: read and list succeed where `anyone` holds the verb …
     let read = anonymous_tool_call(

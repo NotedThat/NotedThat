@@ -475,7 +475,7 @@ scheme and host exactly as it will use them.
 
 The `401` is the trigger, and on a deployment where some knowledge base grants `anyone` a verb
 there is none: `/mcp` admits a request with no credential as the anonymous caller
-([D57](../SPECIFICATIONS.md#2-decisions-log)), so an OAuth client that connects without a token
+([D59](../SPECIFICATIONS.md#2-decisions-log)), so an OAuth client that connects without a token
 is served the public knowledge bases and is never prompted to sign in. Either sign the client in
 explicitly (Claude Code: `/mcp` → *Authenticate*) or set `NOTEDTHAT_MCP_ANONYMOUS=never`, which
 keeps the `401` on `/mcp` — and gives up anonymous MCP — while the HTTP API, WebDAV and the browse

@@ -99,7 +99,7 @@ document names the authorization server a client can obtain a token from.
 Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
 public. An installation may additionally grant verbs to `anyone` through a knowledge base's
 manifest, and such a grant is honoured on every surface — the HTTP API, WebDAV, the browse pages
-and, since D57, MCP. A client must omit `Authorization` only when it knows the requested verb is
+and, since D59, MCP. A client must omit `Authorization` only when it knows the requested verb is
 granted: a supplied malformed or invalid credential always returns `401 unauthorized` and never
 falls back to anonymous access.
 
@@ -1391,7 +1391,7 @@ location /api/v1/ {
 | POST | `/api/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
 | POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 | GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
-| POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D57) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
+| POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
 | any | `/webdav/`… | Basic or Bearer, or anonymous where granted | WebDAV Class 1 share, one directory per knowledge base |
 
 
@@ -1665,7 +1665,7 @@ carry, so a tool call is bound by exactly the rules a direct request would be, a
 surfaces as a `forbidden` tool error. An unverifiable bearer — or a `Basic` credential, which is
 WebDAV's — is `401` with a JSON body and never a quiet downgrade to anonymous access.
 
-**Anonymous callers (D57).** A request with no `Authorization` header at all is admitted as the
+**Anonymous callers (D59).** A request with no `Authorization` header at all is admitted as the
 anonymous caller when at least one declared knowledge base grants `anyone` some verb, unless the
 operator set [`NOTEDTHAT_MCP_ANONYMOUS=never`](CONFIGURATION.md#mcp-http-listener). The loopback
 API call then carries no credential either, so the manifests' `anyone` rules decide exactly as they
