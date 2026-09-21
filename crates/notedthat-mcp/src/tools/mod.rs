@@ -112,8 +112,8 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Read an object, whole or by range: byte_start/byte_end (byte_end exclusive) or line_start/line_end (1-based, inclusive; mutually exclusive with bytes). The text is in content; structuredContent carries the etag of the version read, the content type, bytes_returned, total_bytes and, for line reads, total_lines with the slice's bounds. Pass that etag as if_match to edit or replace. An object over the server's read budget is refused with the slice arguments to use instead.",
-        output_schema = rmcp::handler::server::common::schema_for_type::<read::ReadMeta>()
+        description = "Read an object, whole or by range: byte_start/byte_end (byte_end exclusive) or line_start/line_end (1-based, inclusive; mutually exclusive with bytes). The text is in content and, with the metadata, in structuredContent, which carries the etag of the version read, the content type, bytes_returned, total_bytes and, for line reads, total_lines with the slice's bounds. Pass that etag as if_match to edit or replace. An object over the server's read budget is refused with the slice arguments to use instead.",
+        output_schema = rmcp::handler::server::common::schema_for_type::<read::ReadResult>()
     )]
     async fn read(
         &self,
@@ -478,6 +478,7 @@ mod resources_shared {
             .and_then(|p| p.as_object())
             .expect("object schema");
         for field in [
+            "text",
             "etag",
             "content_type",
             "bytes_returned",

@@ -25,12 +25,29 @@ pub struct ReadArgs {
     pub line_end: Option<u64>,
 }
 
+/// The tool's `structuredContent`: the text **and** what the read returned about
+/// it, so a host that hands the model only the structured half (some do, once a
+/// tool declares an output schema) still hands it the document. `content[0]` is
+/// the same text as plain `TextContent`, for hosts that show only that.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ReadResult {
+    /// The text read — identical to the tool's `content[0]`.
+    pub text: String,
+    /// Which version the text belongs to, and how much of the object it is.
+    #[serde(flatten)]
+    pub meta: ReadMeta,
+}
+
 /// What the read returned and which version it belongs to, from the same HTTP
 /// response as the text — never from a separate `list` or `HEAD`, whose answer
 /// may describe a newer version than the text in hand.
 ///
-/// Every field but `bytes_returned` is `null` when the API did not say: nothing
-/// here is invented. `byte_end` is exclusive, like the argument of the same name.
+/// `byte_end` is exclusive, like the argument of the same name, and is derived
+/// from the body (`byte_start + bytes_returned`) rather than read off the
+/// header, whose inclusive end cannot spell the empty slice at offset 0. A
+/// header that is missing or malformed leaves its fields `null`; nothing here
+/// is invented — except that a `200` *is* the whole object, so its totals are
+/// known without a header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReadMeta {
     /// The `ETag` of the version this text was read from, verbatim (quoted) — pass
@@ -86,20 +103,29 @@ impl ReadMeta {
         };
 
         if status != reqwest::StatusCode::PARTIAL_CONTENT {
-            if let Some(total) = header("content-length").and_then(|v| v.parse::<u64>().ok()) {
-                meta.total_bytes = Some(total);
-                meta.byte_start = Some(0);
-                meta.byte_end = Some(total);
-            }
+            // A `200` is the whole object: the body in hand is the size, with
+            // or without a `Content-Length` (a chunked body has none).
+            meta.total_bytes = Some(bytes_returned);
+            meta.byte_start = Some(0);
+            meta.byte_end = Some(bytes_returned);
             return meta;
         }
 
+        // For a `206` the header says where the slice starts and how big the
+        // object is; where the slice *ends* is the body's to say. The header's
+        // inclusive end cannot express the empty slice at offset 0 — an insert
+        // point before line 1 arrives as `0-0/N`, byte-identical to a one-byte
+        // slice — and a backend whose header disagreed with its body must not
+        // be believed over the body.
+        let slice = |start: u64, total: u64, meta: &mut Self| {
+            meta.byte_start = Some(start);
+            meta.byte_end = Some(start.saturating_add(bytes_returned));
+            meta.total_bytes = Some(total);
+        };
         match header("content-range").and_then(|v| v.split_once(' ')) {
             Some(("bytes", spec)) => {
-                if let Some((start, end_inclusive, total)) = parse_range_spec(spec) {
-                    meta.byte_start = Some(start);
-                    meta.byte_end = Some(exclusive_end(start, end_inclusive));
-                    meta.total_bytes = Some(total);
+                if let Some((start, _end_inclusive, total)) = parse_range_spec(spec) {
+                    slice(start, total, &mut meta);
                 }
             }
             Some(("lines", spec)) => {
@@ -108,12 +134,10 @@ impl ReadMeta {
                     meta.line_end = Some(end);
                     meta.total_lines = Some(total);
                 }
-                if let Some((start, end_inclusive, total)) =
+                if let Some((start, _end_inclusive, total)) =
                     header("x-content-range-bytes").and_then(parse_range_spec)
                 {
-                    meta.byte_start = Some(start);
-                    meta.byte_end = Some(exclusive_end(start, end_inclusive));
-                    meta.total_bytes = Some(total);
+                    slice(start, total, &mut meta);
                 }
             }
             _ => {}
@@ -127,16 +151,6 @@ fn parse_range_spec(spec: &str) -> Option<(u64, u64, u64)> {
     let (range, total) = spec.trim().split_once('/')?;
     let (start, end) = range.split_once('-')?;
     Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
-}
-
-/// An inclusive header end as the exclusive end the tool speaks in. An insert point
-/// arrives as `end = start - 1`, which is the empty slice `[start, start)`.
-fn exclusive_end(start: u64, end_inclusive: u64) -> u64 {
-    if end_inclusive < start {
-        start
-    } else {
-        end_inclusive + 1
-    }
 }
 
 pub(super) async fn run(
@@ -222,11 +236,16 @@ pub(super) async fn run(
 
     let meta = ReadMeta::from_response(status, &headers, bytes.len() as u64);
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    // Text and metadata side by side, on purpose: `CallToolResult::structured`
-    // would copy the JSON into `content` as well, and a client would then have
-    // to tell the object's text from its own description.
-    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
-    result.structured_content = Some(serde_json::to_value(meta).map_err(McpToolError::from)?);
+    // The text goes in both halves. MCP asks that `structuredContent` and
+    // `content` be functionally equivalent: a host that prefers the structured
+    // half once a tool declares an output schema would otherwise receive the
+    // ETag and byte counts and never the document. `CallToolResult::structured`
+    // is not used because it would put the *JSON* in `content`, and a host that
+    // shows only `content` would then show the document wrapped in its own
+    // description.
+    let mut result = CallToolResult::success(vec![ContentBlock::text(text.clone())]);
+    result.structured_content =
+        Some(serde_json::to_value(ReadResult { text, meta }).map_err(McpToolError::from)?);
     Ok(result)
 }
 
@@ -323,7 +342,8 @@ mod tests {
                 ResponseTemplate::new(206)
                     .insert_header("ETag", "\"v1\"")
                     .insert_header("Content-Range", "lines 1-5/20")
-                    .insert_header("X-Content-Range-Bytes", "0-149/400")
+                    // The header agrees with the body: 24 bytes, offsets 0–23.
+                    .insert_header("X-Content-Range-Bytes", "0-23/400")
                     .set_body_string("one\ntwo\nthree\nfour\nfive\n"),
             )
             .expect(1)
@@ -343,7 +363,7 @@ mod tests {
                 bytes_returned: 24,
                 total_bytes: Some(400),
                 byte_start: Some(0),
-                byte_end: Some(150),
+                byte_end: Some(24),
                 total_lines: Some(20),
                 line_start: Some(1),
                 line_end: Some(5),
@@ -421,6 +441,102 @@ mod tests {
             }
         );
         server.verify().await;
+    }
+
+    /// An insert point before line 1 arrives as `X-Content-Range-Bytes: 0-0/N`,
+    /// byte-identical to a one-byte slice at offset 0. The body says which it
+    /// is: empty, so `byte_end == byte_start`.
+    #[tokio::test]
+    async fn an_insert_point_before_line_one_is_the_empty_slice_at_zero() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
+            .and(header("range", "lines=1-0"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("Content-Range", "lines 1-0/20")
+                    .insert_header("X-Content-Range-Bytes", "0-0/400")
+                    .set_body_string(""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let args = ReadArgs {
+            line_start: Some(1),
+            line_end: Some(0),
+            ..file_args()
+        };
+        let result = run(&client(&server.uri()), args).await.unwrap();
+        let meta = meta_of(&result);
+        assert_eq!(meta.bytes_returned, 0);
+        assert_eq!((meta.byte_start, meta.byte_end), (Some(0), Some(0)));
+        assert_eq!((meta.line_start, meta.line_end), (Some(1), Some(0)));
+        assert_eq!(meta.total_bytes, Some(400));
+        server.verify().await;
+    }
+
+    /// A `200` is the whole object whether or not the response says how long
+    /// it is: a chunked body has no `Content-Length`, and the size is still
+    /// known exactly — it was just read.
+    #[tokio::test]
+    async fn a_full_read_without_content_length_still_knows_the_object_size() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("twelve bytes"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // wiremock always declares a length; the assertion is on the derivation
+        // being independent of it, which `from_response` makes by construction.
+        let headers = HeaderMap::new();
+        let meta = ReadMeta::from_response(reqwest::StatusCode::OK, &headers, 12);
+        assert_eq!(meta.total_bytes, Some(12));
+        assert_eq!((meta.byte_start, meta.byte_end), (Some(0), Some(12)));
+
+        let result = run(&client(&server.uri()), file_args()).await.unwrap();
+        assert_eq!(meta_of(&result).total_bytes, Some(12));
+        server.verify().await;
+    }
+
+    /// A header end the body contradicts — or one no `u64` arithmetic could
+    /// honour — never reaches the client: the end is `start + bytes_returned`.
+    #[test]
+    fn the_slice_end_comes_from_the_body_not_the_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-range", "bytes 10-99999/500".parse().unwrap());
+        let meta = ReadMeta::from_response(reqwest::StatusCode::PARTIAL_CONTENT, &headers, 5);
+        assert_eq!((meta.byte_start, meta.byte_end), (Some(10), Some(15)));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-range",
+            "bytes 0-18446744073709551615/18446744073709551615"
+                .parse()
+                .unwrap(),
+        );
+        let meta = ReadMeta::from_response(reqwest::StatusCode::PARTIAL_CONTENT, &headers, 3);
+        assert_eq!((meta.byte_start, meta.byte_end), (Some(0), Some(3)));
+    }
+
+    /// `structuredContent` carries the text too, so a host that hands the model
+    /// only the structured half still hands it the document.
+    #[tokio::test]
+    async fn structured_content_carries_the_text_as_well_as_the_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Hello\n"))
+            .mount(&server)
+            .await;
+        let result = run(&client(&server.uri()), file_args()).await.unwrap();
+        let structured = result
+            .structured_content
+            .clone()
+            .expect("structuredContent");
+        assert_eq!(structured["text"], "# Hello\n");
+        assert_eq!(structured["text"], text_of(&result));
+        assert_eq!(structured["bytes_returned"], 8);
     }
 
     #[tokio::test]
