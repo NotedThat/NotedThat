@@ -263,10 +263,10 @@ pub async fn get_range_returns_partial(store: &dyn Storage, kb: &KbSlug) {
         .get_object(
             kb,
             &path(key),
-            Some(vec![ByteRange::FromStart {
+            Some(ByteRange::FromStart {
                 first: 10,
                 last: 19,
-            }]),
+            }),
             ConditionalHeaders::default(),
         )
         .await
@@ -391,10 +391,10 @@ pub async fn get_range_unsatisfiable(store: &dyn Storage, kb: &KbSlug) {
         .get_object(
             kb,
             &path(key),
-            Some(vec![ByteRange::FromStart {
+            Some(ByteRange::FromStart {
                 first: 200,
                 last: 300,
-            }]),
+            }),
             ConditionalHeaders::default(),
         )
         .await
@@ -480,7 +480,7 @@ pub async fn get_suffix_range_larger_than_object(store: &dyn Storage, kb: &KbSlu
         .get_object(
             kb,
             &path(key),
-            Some(vec![ByteRange::Suffix { length: 9999 }]),
+            Some(ByteRange::Suffix { length: 9999 }),
             ConditionalHeaders::default(),
         )
         .await
@@ -634,10 +634,10 @@ pub async fn content_range_reflects_object_size(store: &dyn Storage, kb: &KbSlug
         .get_object(
             kb,
             &path(key),
-            Some(vec![ByteRange::FromStart {
+            Some(ByteRange::FromStart {
                 first: 100,
                 last: 199,
-            }]),
+            }),
             ConditionalHeaders::default(),
         )
         .await

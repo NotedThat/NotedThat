@@ -59,7 +59,7 @@ impl Storage for MockStorage {
         &self,
         _kb: &KbSlug,
         path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         _conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         Ok(ObjectRead {
@@ -79,7 +79,7 @@ impl Storage for MockStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         let read = self.get_object(kb, path, range, conditionals).await?;

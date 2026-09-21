@@ -107,11 +107,8 @@ pub(in crate::router) async fn get_object(
                     &request_id,
                 )
                 .await;
-            } else if parsed.unit == "bytes" && !parsed.ranges.is_empty() {
-                Some(parsed.ranges)
-            } else {
-                None
             }
+            parsed.range
         }
     };
 

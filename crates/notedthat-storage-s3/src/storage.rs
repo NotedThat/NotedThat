@@ -175,27 +175,6 @@ fn normalize_etag(etag: &str) -> String {
     }
 }
 
-/// Build the `Range` header for a read, honouring only the first requested range.
-///
-/// [`ByteRange::to_http_string`] already emits the `bytes=` prefix, so joining several
-/// of them produced `bytes=0-9, bytes=20-29` — not a valid `Range` value. S3 answered a
-/// malformed header by ignoring it and returning the whole object with a 200, while
-/// every other backend returned a 206 of the first range, for the same client request.
-///
-/// Only the first range is served. [`notedthat_core::ObjectRead`] carries a single
-/// `content_range`, so no surface above this one can render `multipart/byteranges`
-/// anyway; serving the first range is what the rest of the stack already assumes.
-fn range_header(ranges: &[ByteRange]) -> Option<String> {
-    let first = ranges.first()?;
-    if ranges.len() > 1 {
-        tracing::debug!(
-            requested = ranges.len(),
-            "multi-range read: serving only the first range"
-        );
-    }
-    Some(first.to_http_string())
-}
-
 #[async_trait]
 impl Storage for S3Storage {
     async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
@@ -325,7 +304,7 @@ impl Storage for S3Storage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         let bucket = self.bucket_name(kb);
@@ -333,10 +312,8 @@ impl Storage for S3Storage {
 
         let mut req = self.client.get_object().bucket(&bucket).key(key);
 
-        if let Some(ranges) = &range
-            && let Some(header) = range_header(ranges)
-        {
-            req = req.range(header);
+        if let Some(range) = &range {
+            req = req.range(range.to_http_string());
         }
         if let Some(v) = conditionals.if_match {
             req = req.if_match(v);
@@ -385,16 +362,14 @@ impl Storage for S3Storage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
         let mut req = self.client.get_object().bucket(&bucket).key(key);
-        if let Some(ranges) = &range
-            && let Some(header) = range_header(ranges)
-        {
-            req = req.range(header);
+        if let Some(range) = &range {
+            req = req.range(range.to_http_string());
         }
         if let Some(value) = conditionals.if_match {
             req = req.if_match(value);

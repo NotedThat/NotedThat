@@ -260,15 +260,24 @@ impl LineIndex {
 
 /// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedRanges {
+pub struct ParsedRange {
     /// Range unit token, such as `bytes`.
     pub unit: String,
-    /// Parsed byte ranges. Empty when `unit` is not `bytes`.
-    pub ranges: Vec<ByteRange>,
+    /// The requested byte range. `None` when `unit` is not `bytes`.
+    pub range: Option<ByteRange>,
 }
 
-/// Parse an RFC 7233 §2.1 `Range:` header value.
-pub fn parse_range_header(value: &str) -> Result<ParsedRanges, RangeParseError> {
+/// Parse an RFC 7233 §2.1 `Range:` header value carrying a single range.
+///
+/// A comma-separated range set is rejected: a `206` for several ranges would have
+/// to be `multipart/byteranges` (RFC 7233 §4.1), which no surface renders, and
+/// serving only the first range is a silent short read.
+///
+/// # Errors
+///
+/// Returns [`RangeParseError`] when the value is empty, misses `=`, has no range
+/// set, names more than one range, or contains an invalid byte range component.
+pub fn parse_range_header(value: &str) -> Result<ParsedRange, RangeParseError> {
     if value.is_empty() {
         return Err(RangeParseError::Empty);
     }
@@ -282,18 +291,20 @@ pub fn parse_range_header(value: &str) -> Result<ParsedRanges, RangeParseError> 
 
     let unit = unit.to_string();
     if unit != "bytes" {
-        return Ok(ParsedRanges {
-            unit,
-            ranges: Vec::new(),
-        });
+        return Ok(ParsedRange { unit, range: None });
     }
 
-    let ranges = range_set
-        .split(',')
-        .map(|spec| parse_byte_range_spec(spec.trim()))
-        .collect::<Result<Vec<_>, _>>()?;
+    if range_set.contains(',') {
+        return Err(RangeParseError::InvalidSpec(
+            "multi-range bytes= not supported".into(),
+        ));
+    }
 
-    Ok(ParsedRanges { unit, ranges })
+    let range = parse_byte_range_spec(range_set.trim())?;
+    Ok(ParsedRange {
+        unit,
+        range: Some(range),
+    })
 }
 
 /// Parse a single `lines=` `Range:` header value into a line range.
@@ -639,12 +650,12 @@ mod tests {
     fn parse_closed_range() {
         assert_eq!(
             parse_range_header("bytes=0-499"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "bytes".into(),
-                ranges: vec![ByteRange::FromStart {
+                range: Some(ByteRange::FromStart {
                     first: 0,
                     last: 499,
-                }],
+                }),
             })
         );
     }
@@ -653,9 +664,9 @@ mod tests {
     fn parse_open_ended_range() {
         assert_eq!(
             parse_range_header("bytes=500-"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "bytes".into(),
-                ranges: vec![ByteRange::FromStartOpen { first: 500 }],
+                range: Some(ByteRange::FromStartOpen { first: 500 }),
             })
         );
     }
@@ -664,9 +675,9 @@ mod tests {
     fn parse_suffix_range() {
         assert_eq!(
             parse_range_header("bytes=-500"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "bytes".into(),
-                ranges: vec![ByteRange::Suffix { length: 500 }],
+                range: Some(ByteRange::Suffix { length: 500 }),
             })
         );
     }
@@ -675,60 +686,47 @@ mod tests {
     fn parse_single_byte_range() {
         assert_eq!(
             parse_range_header("bytes=0-0"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "bytes".into(),
-                ranges: vec![ByteRange::FromStart { first: 0, last: 0 }],
+                range: Some(ByteRange::FromStart { first: 0, last: 0 }),
             })
         );
     }
 
     #[test]
-    fn parse_multiple_ranges() {
-        let parsed = parse_range_header("bytes=0-499,1000-1499").unwrap();
-        assert_eq!(parsed.unit, "bytes");
-        assert_eq!(
-            parsed.ranges,
-            vec![
-                ByteRange::FromStart {
-                    first: 0,
-                    last: 499,
-                },
-                ByteRange::FromStart {
-                    first: 1000,
-                    last: 1499,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_multiple_ranges_with_space_after_comma() {
-        let parsed = parse_range_header("bytes=0-499, 1000-1499").unwrap();
-        assert_eq!(parsed.unit, "bytes");
-        assert_eq!(parsed.ranges.len(), 2);
+    fn parse_multiple_ranges_is_invalid_spec() {
+        for value in ["bytes=0-499,1000-1499", "bytes=0-499, 1000-1499"] {
+            assert_eq!(
+                parse_range_header(value),
+                Err(RangeParseError::InvalidSpec(
+                    "multi-range bytes= not supported".into()
+                )),
+                "{value}"
+            );
+        }
     }
 
     #[test]
     fn parse_start_greater_than_end() {
         assert_eq!(
             parse_range_header("bytes=100-50"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "bytes".into(),
-                ranges: vec![ByteRange::FromStart {
+                range: Some(ByteRange::FromStart {
                     first: 100,
                     last: 50,
-                }],
+                }),
             })
         );
     }
 
     #[test]
-    fn parse_unknown_unit_as_empty_ranges() {
+    fn parse_unknown_unit_as_no_range() {
         assert_eq!(
             parse_range_header("items=0-10"),
-            Ok(ParsedRanges {
+            Ok(ParsedRange {
                 unit: "items".into(),
-                ranges: vec![],
+                range: None,
             })
         );
     }

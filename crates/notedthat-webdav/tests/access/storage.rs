@@ -102,7 +102,7 @@ impl Storage for MemoryStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         _conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         self.record("get");
@@ -127,7 +127,7 @@ impl Storage for MemoryStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        range: Option<Vec<ByteRange>>,
+        range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         let read = self.get_object(kb, path, range, conditionals).await?;

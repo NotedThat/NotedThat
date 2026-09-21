@@ -278,10 +278,7 @@ async fn range_reads_report_an_inclusive_content_range() {
         .get_object(
             &env.kb,
             &path("a.md"),
-            Some(vec![notedthat_core::ByteRange::FromStart {
-                first: 2,
-                last: 5,
-            }]),
+            Some(notedthat_core::ByteRange::FromStart { first: 2, last: 5 }),
             ConditionalHeaders::default(),
         )
         .await
@@ -295,10 +292,10 @@ async fn range_reads_report_an_inclusive_content_range() {
         .get_object(
             &env.kb,
             &path("a.md"),
-            Some(vec![notedthat_core::ByteRange::FromStart {
+            Some(notedthat_core::ByteRange::FromStart {
                 first: 50,
                 last: 60,
-            }]),
+            }),
             ConditionalHeaders::default(),
         )
         .await;

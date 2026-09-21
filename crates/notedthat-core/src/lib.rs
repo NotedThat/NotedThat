@@ -50,7 +50,7 @@ pub use preconditions::{
     matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds, unix_seconds_i64,
 };
 pub use range::{
-    ByteRange, LineIndex, LineRange, ParsedRanges, RangeParseError, parse_line_range_header,
+    ByteRange, LineIndex, LineRange, ParsedRange, RangeParseError, parse_line_range_header,
     parse_range_header,
 };
 pub use setting::{flag_for, setting};

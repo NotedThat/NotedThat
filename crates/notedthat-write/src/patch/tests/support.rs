@@ -68,7 +68,7 @@ impl Storage for TestStorage {
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
         self.calls.lock().expect("mutex not poisoned").get += 1;
@@ -91,7 +91,7 @@ impl Storage for TestStorage {
         &self,
         _kb: &KbSlug,
         _path: &ObjectPath,
-        _range: Option<Vec<ByteRange>>,
+        _range: Option<ByteRange>,
         _conditionals: ConditionalHeaders,
     ) -> Result<notedthat_core::ObjectStream, StorageError> {
         unimplemented!()

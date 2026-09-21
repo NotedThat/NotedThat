@@ -1102,6 +1102,35 @@ async fn get_range_malformed() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+/// A comma-separated range set is refused outright: a `206` for several ranges
+/// would have to be `multipart/byteranges` (RFC 7233 §4.1), and serving only the
+/// first range was a silent short read (#63).
+#[tokio::test]
+async fn get_multi_range_rejected() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "multi-range.txt", "0123456789ABCDEFGHIJ").await,
+        StatusCode::CREATED
+    );
+
+    let resp = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/knowledgebases/{KB}/multi-range.txt"))
+                .header(auth().0, auth().1)
+                .header("range", "bytes=0-4, 10-14")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(!resp.headers().contains_key("content-range"));
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "malformed_range");
+}
+
 #[tokio::test]
 async fn get_range_unknown_unit() {
     let a = app();
