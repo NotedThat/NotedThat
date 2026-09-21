@@ -1,4 +1,4 @@
-//! Knowledge base domain structs: `KbManifest`, `Kb`, `ObjectMeta`.
+//! Knowledge base domain structs: `KbManifest`, `ObjectMeta`.
 
 use crate::access::AccessPolicy;
 use crate::error::Error;
@@ -57,6 +57,8 @@ pub struct KbManifest {
 impl KbManifest {
     /// The only supported manifest schema version in M2.
     pub const CURRENT_VERSION: u32 = 1;
+    /// Maximum length of `display_name` in Unicode code points (§6.8).
+    pub const DISPLAY_NAME_MAX_CHARS: usize = 128;
 
     /// Construct a v1 manifest for a newly provisioned KB.
     pub fn new_v1(tenant: &TenantSlug, kb: &KbSlug, display_name: &str, created_at: i64) -> Self {
@@ -81,7 +83,8 @@ impl KbManifest {
     pub const KEY: &'static str = ".notedthat/manifest.json";
 
     /// Validate that this manifest's `manifest_version` is supported, its
-    /// `description` fits the limits, and its access rules are sound.
+    /// `display_name` fits §6.8, its `description` fits the limits, and its
+    /// access rules are sound.
     pub fn validate(&self) -> Result<(), Error> {
         if self.manifest_version != Self::CURRENT_VERSION {
             return Err(Error::InvalidInput {
@@ -92,6 +95,7 @@ impl KbManifest {
                 ),
             });
         }
+        validate_display_name(&self.display_name)?;
         if let Some(description) = &self.description {
             validate_description(description)?;
         }
@@ -109,30 +113,14 @@ impl KbManifest {
     }
 }
 
-/// A `description` is an inline label an agent reads before choosing where to
-/// search, so it is one line, non-empty, and bounded. Control characters —
-/// newlines and tabs included — are refused rather than normalised, so the
-/// manifest an operator wrote is exactly what clients see.
+/// The manifest's `description` (D60): one line, not blank, at most
+/// [`KbManifest::DESCRIPTION_MAX_CHARS`] code points.
 fn validate_description(description: &str) -> Result<(), Error> {
-    if description.trim().is_empty() {
-        return Err(Error::InvalidInput {
-            message: "description must not be empty; omit the field instead".into(),
-        });
-    }
-    if description.chars().count() > KbManifest::DESCRIPTION_MAX_CHARS {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "description exceeds {} characters",
-                KbManifest::DESCRIPTION_MAX_CHARS
-            ),
-        });
-    }
-    if description.chars().any(char::is_control) {
-        return Err(Error::InvalidInput {
-            message: "description must be a single line without control characters".into(),
-        });
-    }
-    Ok(())
+    validate_manifest_text(
+        "description",
+        description,
+        KbManifest::DESCRIPTION_MAX_CHARS,
+    )
 }
 
 /// What a listing shows about a knowledge base besides its slug: the
@@ -171,34 +159,39 @@ pub fn slug_kb_details(
         .collect()
 }
 
-/// A knowledge base as seen by the API layer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Kb {
-    /// The unique slug identifying this KB.
-    pub slug: KbSlug,
-    /// Human-readable name (≤ 128 Unicode code points per §6.8).
-    pub display_name: String,
+/// §6.8: a `display_name` is a Unicode string that is not blank, carries no
+/// control characters, and is at most [`KbManifest::DISPLAY_NAME_MAX_CHARS`]
+/// code points. Provisioning writes the slug (≤ 40 chars), so only a
+/// hand-edited manifest can fail here.
+fn validate_display_name(display_name: &str) -> Result<(), Error> {
+    validate_manifest_text(
+        "display_name",
+        display_name,
+        KbManifest::DISPLAY_NAME_MAX_CHARS,
+    )
 }
 
-impl Kb {
-    /// Maximum length of `display_name` in Unicode code points (§6.8).
-    pub const DISPLAY_NAME_MAX: usize = 128;
-
-    /// Construct a [`Kb`], validating the display name.
-    pub fn new(slug: KbSlug, display_name: impl Into<String>) -> Result<Self, Error> {
-        let display_name = display_name.into();
-        if display_name.is_empty() {
-            return Err(Error::InvalidInput {
-                message: "display_name must not be empty".into(),
-            });
-        }
-        if display_name.chars().count() > Self::DISPLAY_NAME_MAX {
-            return Err(Error::InvalidInput {
-                message: format!("display_name exceeds {} characters", Self::DISPLAY_NAME_MAX),
-            });
-        }
-        Ok(Self { slug, display_name })
+/// The one rule for the manifest's free-text fields, so the two cannot
+/// drift: not blank, no control characters (so one line), at most
+/// `max_chars` Unicode code points. The message names the field, as a
+/// refused boot or a refused `PUT` prints it.
+fn validate_manifest_text(field: &str, value: &str, max_chars: usize) -> Result<(), Error> {
+    if value.trim().is_empty() {
+        return Err(Error::InvalidInput {
+            message: format!("{field} must not be blank"),
+        });
     }
+    if value.chars().any(char::is_control) {
+        return Err(Error::InvalidInput {
+            message: format!("{field} must be a single line without control characters"),
+        });
+    }
+    if value.chars().count() > max_chars {
+        return Err(Error::InvalidInput {
+            message: format!("{field} exceeds {max_chars} code points"),
+        });
+    }
+    Ok(())
 }
 
 /// Metadata about a single stored object, returned by HEAD and LIST responses.
@@ -282,30 +275,71 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_kb_new_valid() {
-        let slug = KbSlug::try_new("my-kb").unwrap();
-        assert!(Kb::new(slug, "My KB").is_ok());
+    fn manifest_with_display_name(display_name: &str) -> KbManifest {
+        KbManifest::new_v1(
+            &TenantSlug::try_new("default").unwrap(),
+            &KbSlug::try_new("my-kb").unwrap(),
+            display_name,
+            1_700_000_000_i64,
+        )
     }
 
     #[test]
-    fn test_kb_new_empty_display_name() {
-        let slug = KbSlug::try_new("my-kb").unwrap();
-        assert!(Kb::new(slug, "").is_err());
+    fn test_kb_manifest_validate_display_name_valid() {
+        assert!(manifest_with_display_name("My KB").validate().is_ok());
     }
 
     #[test]
-    fn test_kb_new_display_name_exactly_128_chars() {
-        let slug = KbSlug::try_new("my-kb").unwrap();
+    fn test_kb_manifest_validate_empty_display_name() {
+        assert!(manifest_with_display_name("").validate().is_err());
+    }
+
+    #[test]
+    fn test_kb_manifest_validate_blank_display_name() {
+        for blank in ["   ", "\t", "\n"] {
+            assert!(
+                manifest_with_display_name(blank).validate().is_err(),
+                "{blank:?} is blank"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kb_manifest_validate_display_name_with_control_characters() {
+        for name in ["My\nKB", "My\u{7f}KB", "\u{1}"] {
+            let error = manifest_with_display_name(name)
+                .validate()
+                .expect_err("control characters are refused");
+            assert!(
+                error.to_string().contains("control characters"),
+                "{name:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kb_manifest_validate_display_name_exactly_128_chars() {
         let name = "a".repeat(128);
-        assert!(Kb::new(slug, name).is_ok());
+        assert!(manifest_with_display_name(&name).validate().is_ok());
     }
 
     #[test]
-    fn test_kb_new_display_name_129_chars() {
-        let slug = KbSlug::try_new("my-kb").unwrap();
+    fn test_kb_manifest_validate_display_name_129_chars() {
         let name = "a".repeat(129);
-        assert!(Kb::new(slug, name).is_err());
+        let error = manifest_with_display_name(&name)
+            .validate()
+            .expect_err("129 code points is over the limit");
+        assert!(
+            error.to_string().contains("exceeds 128 code points"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_kb_manifest_validate_display_name_counts_code_points_not_bytes() {
+        // 128 three-byte code points: over the byte count, within the §6.8 limit.
+        let name = "中".repeat(128);
+        assert!(manifest_with_display_name(&name).validate().is_ok());
     }
 
     #[test]
