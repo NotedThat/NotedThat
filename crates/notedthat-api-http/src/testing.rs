@@ -132,6 +132,25 @@ impl Default for MockSearcher {
     }
 }
 
+/// A readiness receiver reporting every backend ok, with no poller behind it.
+///
+/// The sender is dropped, which a `watch` receiver survives: `borrow()` keeps
+/// answering with this snapshot for the state's whole life.
+#[must_use]
+pub fn ready_receiver() -> crate::readiness::ReadinessReceiver {
+    receiver_for(crate::readiness::ReadinessSnapshot::ok("memory", "memory"))
+}
+
+/// A readiness receiver pinned to `snapshot`, for a route test that needs a
+/// backend to look unavailable.
+#[must_use]
+pub fn receiver_for(
+    snapshot: crate::readiness::ReadinessSnapshot,
+) -> crate::readiness::ReadinessReceiver {
+    let (_sender, receiver) = tokio::sync::watch::channel(snapshot);
+    receiver
+}
+
 /// Build a test [`crate::state::AppState`] discarding the indexer receiver.
 pub fn test_app_state_with_default_channel(
     storage: Arc<dyn Storage>,
@@ -153,6 +172,7 @@ pub fn test_app_state_with_default_channel(
         searcher: Arc::new(NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: crate::testing::ready_receiver(),
     }
 }
 
@@ -181,6 +201,7 @@ pub fn test_app_state_with_channel(
             searcher: Arc::new(NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         },
         rx,
     )

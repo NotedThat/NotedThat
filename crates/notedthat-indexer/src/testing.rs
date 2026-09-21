@@ -34,7 +34,7 @@ use qdrant_client::qdrant::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 /// Rank constant for Reciprocal Rank Fusion, matching Qdrant's default.
@@ -80,6 +80,9 @@ pub struct InMemoryVectorStore {
     /// Set by [`InMemoryVectorStore::set_reachable`]; every operation fails
     /// with a backend error while it is on, the way a real outage would.
     unreachable: Arc<AtomicBool>,
+    /// Set by [`InMemoryVectorStore::set_probe_latency`]: how long `probe`
+    /// takes to answer, in milliseconds, for a test that needs a slow backend.
+    probe_latency_ms: Arc<AtomicU64>,
 }
 
 impl InMemoryVectorStore {
@@ -94,6 +97,15 @@ impl InMemoryVectorStore {
     /// Shared by every clone, so a test can flip the store a server holds.
     pub fn set_reachable(&self, reachable: bool) {
         self.unreachable.store(!reachable, Ordering::SeqCst);
+    }
+
+    /// Make `probe` take `latency` to answer, the way a backend that is up
+    /// but struggling would. Shared by every clone.
+    pub fn set_probe_latency(&self, latency: std::time::Duration) {
+        self.probe_latency_ms.store(
+            u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
     }
 
     fn check_reachable(&self) -> Result<(), VectorStoreError> {
@@ -415,6 +427,10 @@ fn bm25_scores(query: &str, candidates: &[(u64, &StoredPoint)]) -> Vec<(u64, f64
 #[async_trait]
 impl VectorStore for InMemoryVectorStore {
     async fn probe(&self) -> Result<(), VectorStoreError> {
+        let latency = self.probe_latency_ms.load(Ordering::SeqCst);
+        if latency > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(latency)).await;
+        }
         self.check_reachable()
     }
 

@@ -213,6 +213,7 @@ async fn build(
         searcher,
         events,
         index_health,
+        readiness: notedthat_api_http::testing::ready_receiver(),
     })
 }
 

@@ -115,6 +115,7 @@ fn test_config(
         mcp_anonymous: McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         mcp_max_read_bytes: 16 * 1024 * 1024,
+        ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: Some(oidc),
     }

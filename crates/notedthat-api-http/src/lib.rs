@@ -4,6 +4,7 @@
 pub(crate) mod authz;
 pub mod error;
 pub mod middleware;
+pub mod readiness;
 pub mod router;
 pub mod search_route;
 pub mod state;

@@ -437,6 +437,10 @@ pub struct Config {
     /// Most bytes one MCP object read may fetch (`NOTEDTHAT_MCP_MAX_READ_BYTES`; default 16 MiB,
     /// the API body cap). Larger objects are read in slices.
     pub mcp_max_read_bytes: u64,
+    /// How often `/readyz`'s poller probes the storage backend and Qdrant, in
+    /// milliseconds; also each probe's deadline (`NOTEDTHAT_READY_PROBE_INTERVAL_MS`;
+    /// default 5000).
+    pub ready_probe_interval_ms: u64,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
     /// Identity-provider settings (`NOTEDTHAT_OIDC_*`); `None` when no issuer is set.
@@ -734,6 +738,11 @@ impl Config {
                 message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_READ_BYTES")),
             });
         }
+        let ready_probe_interval_ms = parse_millis(
+            "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
+            cli.ready_probe_interval_ms.as_deref(),
+            5_000,
+        )?;
 
         let staging =
             StagingConfig::from_setting(cli.upload_tmp_dir).map_err(|error| Error::Config {
@@ -757,6 +766,7 @@ impl Config {
             mcp_anonymous,
             max_patchable_size,
             mcp_max_read_bytes,
+            ready_probe_interval_ms,
             staging,
             oidc,
         })
@@ -1088,7 +1098,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 52] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 53] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1125,6 +1135,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_ANONYMOUS",
         "NOTEDTHAT_MCP_MAX_READ_BYTES",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+        "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
         "NOTEDTHAT_OIDC_ISSUER",
         "NOTEDTHAT_OIDC_AUDIENCE",
@@ -1189,6 +1200,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_ANONYMOUS", None),
             ("NOTEDTHAT_MCP_MAX_READ_BYTES", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
+            ("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
             ("NOTEDTHAT_OIDC_ISSUER", None),
             ("NOTEDTHAT_OIDC_AUDIENCE", None),
@@ -1404,7 +1416,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 52);
+        assert_eq!(ALL_ENV_KEYS.len(), 53);
     }
 
     #[test]
@@ -1453,6 +1465,45 @@ pub(crate) mod tests {
                 "NOTEDTHAT_MCP_MAX_READ_BYTES",
                 fragment
             ));
+        }
+    }
+
+    #[test]
+    fn ready_probe_interval_defaults_to_five_seconds() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None)],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.ready_probe_interval_ms, 5_000);
+    }
+
+    #[test]
+    fn ready_probe_interval_is_parsed() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some("250"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.ready_probe_interval_ms, 250);
+    }
+
+    #[test]
+    fn ready_probe_interval_rejects_zero_and_nonsense() {
+        for (value, complaint) in [("0", "must be > 0"), ("soon", "must be a valid u64")] {
+            let error = run_with_env(
+                &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some(value))],
+                Config::from_env,
+            )
+            .unwrap_err();
+            assert!(
+                names_setting(
+                    &error.to_string(),
+                    "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
+                    complaint
+                ),
+                "{value}: {error}"
+            );
         }
     }
 

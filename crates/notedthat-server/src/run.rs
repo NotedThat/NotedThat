@@ -26,6 +26,7 @@ use tracing::info;
 mod events;
 mod fs_watch;
 mod mcp_http;
+mod readiness;
 
 #[cfg(test)]
 #[path = "run/mcp_http_listener.rs"]
@@ -143,16 +144,49 @@ fn backends_from_config(
 ///
 /// Assumes `config.staging` has already been validated; [`serve`] does that
 /// before anything else so the check cannot be shadowed by a backend failure.
+/// Everything `serve` runs: the two states, the background tasks and their
+/// shutdown handles.
+struct Infrastructure {
+    state: AppState,
+    dav_state: WebDavState,
+    indexer_shutdown: CancellationToken,
+    worker_handle: tokio::task::JoinHandle<()>,
+    fs_watch: Option<fs_watch::FsWatch>,
+    /// Not yet running: `serve` spawns it under its own shutdown token.
+    readiness: readiness::ReadinessPoller,
+}
+
+/// The `/readyz` prober, after provisioning: it starts from "ready" because
+/// provisioning just reached both backends, so the first request can be
+/// answered before its first probe returns (D64).
+fn readiness_poller(
+    config: &Config,
+    kb_list: &[notedthat_core::KbSlug],
+    storage: &Arc<dyn notedthat_core::Storage>,
+    store: &Arc<dyn VectorStore>,
+) -> anyhow::Result<(
+    readiness::ReadinessPoller,
+    notedthat_api_http::readiness::ReadinessReceiver,
+)> {
+    // `config.kbs` is a `BTreeMap`, so this is the knowledge base whose slug sorts first;
+    // its bucket stands in for "storage is reachable". The docs say so in those words.
+    let witness = kb_list
+        .first()
+        .cloned()
+        .context("at least one knowledge base is declared")?;
+    Ok(readiness::ReadinessPoller::new(
+        storage.clone(),
+        store.clone(),
+        witness,
+        config.storage.kind().as_str(),
+        Duration::from_millis(config.ready_probe_interval_ms),
+    ))
+}
+
 async fn build_infrastructure(
     config: Config,
     backends: backends::Backends,
-) -> anyhow::Result<(
-    AppState,
-    WebDavState,
-    CancellationToken,
-    tokio::task::JoinHandle<()>,
-    Option<fs_watch::FsWatch>,
-)> {
+) -> anyhow::Result<Infrastructure> {
     let backends::Backends {
         storage,
         store,
@@ -184,6 +218,8 @@ async fn build_infrastructure(
 
     let authenticator = build_authenticator(&config, &access_policies).await?;
 
+    let (readiness, readiness_rx) = readiness_poller(&config, &kb_list, &storage, &store)?;
+
     let dav_state = WebDavState {
         authenticator: authenticator.clone(),
         storage: storage.clone(),
@@ -213,6 +249,7 @@ async fn build_infrastructure(
         searcher,
         events: events.clone(),
         index_health: index_health.clone(),
+        readiness: readiness_rx,
     };
 
     let worker_handle = tokio::spawn(
@@ -244,7 +281,14 @@ async fn build_infrastructure(
         )?,
     };
 
-    Ok((state, dav_state, indexer_shutdown, worker_handle, watch))
+    Ok(Infrastructure {
+        state,
+        dav_state,
+        indexer_shutdown,
+        worker_handle,
+        fs_watch: watch,
+        readiness,
+    })
 }
 
 /// One authenticator for every surface. The API, the browse pages and MCP
@@ -383,9 +427,16 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 /// Both callers validate `config.staging` before constructing or accepting
 /// backends, so this body may assume it is already valid.
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
-    let (state, dav_state, indexer_shutdown, worker_handle, fs_watch) =
-        build_infrastructure(config.clone(), backends).await?;
+    let Infrastructure {
+        state,
+        dav_state,
+        indexer_shutdown,
+        worker_handle,
+        fs_watch,
+        readiness,
+    } = build_infrastructure(config.clone(), backends).await?;
     let shutdown_token = CancellationToken::new();
+    let readiness_handle = tokio::spawn(readiness.run(shutdown_token.child_token()));
     let serve_result = async {
         let listener = TcpListener::bind(config.listen_addr)
             .await
@@ -421,6 +472,10 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
     }
     .await;
     shutdown_token.cancel();
+    // Cancelled with everything else; it holds no queue, so nothing waits on it but us.
+    if let Err(e) = readiness_handle.await {
+        tracing::error!(error = %e, "readiness poller panicked");
+    }
     // Before the drain, not after: the watcher holds a sender on the indexing queue, so
     // draining while it still runs would chase a live producer and never see the queue
     // close — thirty seconds of every shutdown, spent waiting for work that keeps arriving.

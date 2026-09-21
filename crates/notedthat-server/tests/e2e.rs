@@ -74,6 +74,7 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         mcp_max_read_bytes: 16 * 1024 * 1024,
+        ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }
@@ -216,6 +217,82 @@ async fn e2e_list_and_delete() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 204);
+
+    server_handle.abort();
+}
+
+/// Poll `/readyz` until it answers `status`, or fail with the last body seen.
+async fn wait_for_readyz(base: &str, status: u16) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = client.get(format!("{base}/readyz")).send().await.unwrap();
+        let seen = response.status().as_u16();
+        let body: serde_json::Value = response.json().await.unwrap();
+        if seen == status {
+            return body;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "readyz stayed {seen} instead of {status}: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn readyz_follows_the_backends_without_a_restart() {
+    let bound_addr = notedthat_api_http::testing::reserve_addr();
+    let mut config = test_config(bound_addr);
+    config.ready_probe_interval_ms = 20;
+    let storage = InMemoryStorage::default();
+    let store = InMemoryVectorStore::new();
+    let backends = Backends {
+        storage: Arc::new(storage.clone()),
+        store: Arc::new(store.clone()),
+        embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
+        events: None,
+    };
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run_with(config, backends)
+            .await
+            .expect("server run failed");
+    });
+    wait_for_health(bound_addr).await;
+    let base = format!("http://{bound_addr}");
+
+    // The labels come from the configuration, not the injected doubles: the
+    // placeholder config selects `s3`, and the vector store is always Qdrant.
+    let body = wait_for_readyz(&base, 200).await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "status": "ok",
+            "checks": {
+                "storage": { "backend": "s3", "status": "ok" },
+                "search": { "backend": "qdrant", "status": "ok" },
+            }
+        })
+    );
+
+    store.set_reachable(false);
+    let body = wait_for_readyz(&base, 503).await;
+    assert_eq!(body["status"], "unavailable");
+    assert_eq!(body["checks"]["search"]["status"], "unavailable");
+    assert_eq!(body["checks"]["search"]["reason"], "unreachable");
+    assert_eq!(body["checks"]["storage"]["status"], "ok");
+
+    store.set_reachable(true);
+    let body = wait_for_readyz(&base, 200).await;
+    assert_eq!(body["checks"]["search"]["status"], "ok");
+
+    storage.set_reachable(false);
+    let body = wait_for_readyz(&base, 503).await;
+    assert_eq!(body["checks"]["storage"]["reason"], "unreachable");
+    assert_eq!(body["checks"]["search"]["status"], "ok");
+
+    storage.set_reachable(true);
+    wait_for_readyz(&base, 200).await;
 
     server_handle.abort();
 }

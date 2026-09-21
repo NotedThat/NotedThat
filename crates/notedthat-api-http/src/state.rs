@@ -4,6 +4,8 @@ use notedthat_core::{
     AccessPolicy, Authenticator, EventPublisher, EventSource, KbDetails, KbSlug, Storage,
 };
 use notedthat_indexer::{IndexHealth, Searcher};
+
+use crate::readiness::ReadinessReceiver;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -41,6 +43,9 @@ pub struct AppState {
     /// The per-knowledge-base index health record, shared with the indexer
     /// worker and every write path (#97).
     pub index_health: Arc<IndexHealth>,
+    /// The latest background probe of the storage and vector backends.
+    /// `/readyz` reads it and never probes inline.
+    pub readiness: ReadinessReceiver,
 }
 
 impl AppState {
@@ -76,6 +81,7 @@ mod tests {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         }
     }
 

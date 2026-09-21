@@ -1,4 +1,8 @@
 //! Liveness and readiness probes. Not auth-gated (see router build).
+//!
+//! `/readyz` covers the storage backend, the vector store and a configured
+//! event broker (D39, D55, D57). It does not cover the `fs` watcher (a lost
+//! watch is logged, D50), the embedder, or how fresh the index is.
 
 use axum::Json;
 use axum::extract::State;
@@ -11,20 +15,42 @@ pub(super) async fn healthz() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// Ready unless a configured event log says it cannot take or serve events —
-/// the one backend with a cheap, connection-state answer today (D39, D55).
+/// Ready when every backend's latest check is ok.
+///
+/// Storage and search come from the snapshot the server's poller publishes;
+/// this handler never probes a backend itself, so a probe storm costs the
+/// backends nothing. The event log is the one backend with a cheap
+/// connection-state answer, read inline as it always was.
 pub(super) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
-    if let Some(events) = &state.events
-        && !events.ready()
-    {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
+    let snapshot = state.readiness.borrow().clone();
+    let mut ready = snapshot.is_ready();
+    let mut checks = serde_json::Map::new();
+    checks.insert("storage".to_string(), snapshot.storage.to_json());
+    checks.insert("search".to_string(), snapshot.search.to_json());
+    if let Some(events) = &state.events {
+        let connected = events.ready();
+        ready &= connected;
+        let check = if connected {
+            serde_json::json!({ "backend": events.backend_name(), "status": "ok" })
+        } else {
+            serde_json::json!({
+                "backend": events.backend_name(),
                 "status": "unavailable",
-                "events": events.backend_name(),
-                "reason": "event backend not connected",
-            })),
-        );
+                "reason": "disconnected",
+            })
+        };
+        checks.insert("events".to_string(), check);
     }
-    (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "status": if ready { "ok" } else { "unavailable" },
+            "checks": checks,
+        })),
+    )
 }
