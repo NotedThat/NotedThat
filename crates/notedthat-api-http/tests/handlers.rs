@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::InMemoryStorage;
@@ -1582,6 +1582,7 @@ async fn a_manifest_startup_would_refuse_is_refused_at_put() {
 
     // The manifest startup would accept is stored.
     let resp = a
+        .clone()
         .oneshot(authed_request(
             "PUT",
             format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
@@ -1590,6 +1591,118 @@ async fn a_manifest_startup_would_refuse_is_refused_at_put() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+/// The check lives in the shared write path, not in the `PUT` route, so the
+/// other ways of writing the same key are refused the same way (#98).
+#[tokio::test]
+async fn a_manifest_startup_would_refuse_is_refused_on_every_write_path() {
+    let a = app();
+    let manifest = serde_json::json!({
+        "notedthat_version": "0.7.2",
+        "manifest_version": 1,
+        "tenant_slug": "default",
+        "kb_slug": KB,
+        "display_name": "Notes",
+        "description": "Engineering notes and ADRs.",
+        "created_at": 1_700_000_000,
+        "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+    })
+    .to_string();
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let etag = resp
+        .headers()
+        .get(header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("the stored manifest has an ETag")
+        .to_string();
+
+    // A `PATCH` that lands bytes after the closing brace …
+    let resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"
+                ))
+                .header(auth().0, auth().1)
+                .header("NT-Patch-Mode", "append")
+                .header(header::IF_MATCH, &etag)
+                .body(Body::from("\ntrailing"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("manifest")),
+        "{json}"
+    );
+
+    // … and a replace that puts the description outside the limits.
+    let resp = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/knowledgebases/{KB}/replace/.notedthat/manifest.json"
+                ))
+                .header(auth().0, auth().1)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::IF_MATCH, &etag)
+                .body(Body::from(
+                    serde_json::json!({
+                        "old_string": "Engineering notes and ADRs.",
+                        "new_string": "two\\nlines",
+                        "replace_all": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("description")),
+        "{json}"
+    );
+
+    // Neither refused write touched the stored manifest.
+    let resp = a
+        .oneshot(authed_request(
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok()),
+        Some(etag.as_str())
+    );
 }
 
 #[tokio::test]

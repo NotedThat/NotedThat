@@ -253,6 +253,105 @@ async fn test_put_creates_object_and_returns_etag() {
 }
 
 // ---------------------------------------------------------------------------
+// 6b. PUT / MOVE onto .notedthat/manifest.json is checked like startup (#98)
+// ---------------------------------------------------------------------------
+
+fn manifest(description: &str) -> String {
+    serde_json::json!({
+        "notedthat_version": "0.7.2",
+        "manifest_version": 1,
+        "tenant_slug": "default",
+        "kb_slug": "notes",
+        "display_name": "Notes",
+        "description": description,
+        "created_at": 1_700_000_000,
+        "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+    })
+    .to_string()
+}
+
+/// The Basic credential is the service token's principal, which alone reaches
+/// `.notedthat`, so `WebDAV` is a way to write the manifest — and the check lives
+/// in the shared write path, so it refuses here what startup would refuse.
+#[tokio::test]
+async fn test_put_of_a_manifest_startup_would_refuse_is_400() {
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .put(format!("{url}/webdav/notes/.notedthat/manifest.json"))
+        .header("Authorization", basic_auth(&username, &password))
+        .header("Content-Type", "application/json")
+        .body(manifest("two\nlines"))
+        .send()
+        .await
+        .expect("PUT a bad manifest");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let reason = resp.text().await.unwrap();
+    assert!(reason.contains("description"), "{reason}");
+
+    let resp = client
+        .put(format!("{url}/webdav/notes/.notedthat/manifest.json"))
+        .header("Authorization", basic_auth(&username, &password))
+        .header("Content-Type", "application/json")
+        .body(manifest("Engineering notes and ADRs."))
+        .send()
+        .await
+        .expect("PUT the manifest startup would accept");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_move_onto_the_manifest_key_is_checked_against_the_source() {
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+
+    client
+        .put(format!("{url}/webdav/notes/manifest.new.json"))
+        .header("Authorization", basic_auth(&username, &password))
+        .header("Content-Type", "application/json")
+        .body(manifest("two\nlines"))
+        .send()
+        .await
+        .expect("PUT the candidate");
+
+    let resp = client
+        .request(
+            webdav_method(b"MOVE"),
+            format!("{url}/webdav/notes/manifest.new.json"),
+        )
+        .header("Authorization", basic_auth(&username, &password))
+        .header(
+            "Destination",
+            format!("{url}/webdav/notes/.notedthat/manifest.json"),
+        )
+        .send()
+        .await
+        .expect("MOVE onto the manifest key");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Nothing moved: the source is still there and the manifest is not.
+    let source = client
+        .get(format!("{url}/webdav/notes/manifest.new.json"))
+        .header("Authorization", basic_auth(&username, &password))
+        .send()
+        .await
+        .expect("GET the source");
+    assert_eq!(source.status(), StatusCode::OK);
+    let manifest = client
+        .get(format!("{url}/webdav/notes/.notedthat/manifest.json"))
+        .header("Authorization", basic_auth(&username, &password))
+        .send()
+        .await
+        .expect("GET the manifest");
+    assert_eq!(manifest.status(), StatusCode::NOT_FOUND);
+
+    handle.abort();
+}
+
+// ---------------------------------------------------------------------------
 // 7. PUT .md with Content-Type: application/octet-stream → MIME sniff
 // ---------------------------------------------------------------------------
 
