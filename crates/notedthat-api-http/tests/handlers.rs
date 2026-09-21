@@ -1478,6 +1478,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
         indexer_tx,
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events: None,
+        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     });
 
     for (method, uri, body) in [
