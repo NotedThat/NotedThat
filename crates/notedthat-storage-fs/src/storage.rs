@@ -147,6 +147,11 @@ impl Inner {
     /// a `NotFound` for the object from a read, or — worst — a write that quietly
     /// recreates the directory. One `stat`, next to the object's own that follows.
     ///
+    /// Only *absent* is gone. A directory the process cannot stat — `EACCES` after a
+    /// `chown` gone wrong, a mount back under the wrong user — is
+    /// [`StorageError::BackendUnavailable`] (`errors::bucket`), so the operator is sent
+    /// to the store and not to look for a deleted directory that is right there.
+    ///
     /// Best-effort, not a lock: the `stat` and the write that follows are two
     /// filesystem operations, and a directory removed between them is recreated by
     /// `store` as before, in a window of microseconds. A write that *finds* the
@@ -154,12 +159,12 @@ impl Inner {
     /// and enough for it.
     fn require_bucket(&self, bucket: &str) -> Result<PathBuf, StorageError> {
         let dir = self.layout.bucket_dir(bucket);
-        if dir.is_dir() {
-            Ok(dir)
-        } else {
-            Err(StorageError::BucketNotFound {
+        match std::fs::metadata(&dir) {
+            Ok(meta) if meta.is_dir() => Ok(dir),
+            Ok(_) => Err(StorageError::BucketNotFound {
                 bucket: bucket.to_string(),
-            })
+            }),
+            Err(error) => Err(errors::bucket(bucket, &error)),
         }
     }
 

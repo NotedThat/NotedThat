@@ -663,6 +663,67 @@ async fn a_removed_knowledge_base_directory_is_bucket_not_found_and_is_not_recre
     put(&env, "hello.md", "# Hello again").await;
 }
 
+/// A knowledge-base directory the process cannot look at is the store being unusable,
+/// not the knowledge base being deleted: `503` rather than `404`, with the `stat`
+/// failure in the message, so the operator is sent to the mount or the ownership and
+/// not to look for a directory that is right there. `stat` of a mode-000 directory
+/// itself still succeeds — it is search permission on the *parent* that fails it — so
+/// the root is what gets closed here.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_knowledge_base_directory_is_backend_unavailable_not_gone() {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Reopens the root on the way out, so the tempdir is removable whatever the
+    /// assertions did.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let env = env().await;
+    put(&env, "hello.md", "# Hello").await;
+    let dir = env.root.join("nt-default-notes");
+    std::fs::set_permissions(&env.root, std::fs::Permissions::from_mode(0o000))
+        .expect("close the root");
+    let reopen = Reopen(env.root.clone());
+    if std::fs::metadata(&dir).is_ok() {
+        eprintln!("skipped: this process ignores permission bits (root)");
+        return;
+    }
+
+    let listed = env.storage.list_objects(&env.kb, None, 10, None).await;
+    assert!(
+        matches!(listed, Err(StorageError::BackendUnavailable { ref message }) if message.starts_with("stat nt-default-notes: ")),
+        "list on an unreadable KB directory should be BackendUnavailable, got {listed:?}"
+    );
+    let written = env
+        .storage
+        .put_object(
+            &env.kb,
+            &path("hello.md"),
+            Bytes::from_static(b"again"),
+            Some("text/markdown"),
+            ConditionalHeaders::default(),
+        )
+        .await;
+    assert!(
+        matches!(written, Err(StorageError::BackendUnavailable { .. })),
+        "put on an unreadable KB directory should be BackendUnavailable, got {written:?}"
+    );
+
+    // Reopened, the knowledge base is exactly as it was — nothing was recreated.
+    drop(reopen);
+    let listed = env
+        .storage
+        .list_objects(&env.kb, None, 10, None)
+        .await
+        .expect("list once the root is readable again");
+    assert_eq!(listed.objects.len(), 1);
+}
+
 /// Sidecars live outside the bucket directories, so no key can name one and listings
 /// need no exclusion rules.
 #[tokio::test]

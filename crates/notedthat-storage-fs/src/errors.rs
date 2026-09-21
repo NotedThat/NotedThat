@@ -15,7 +15,11 @@
 //!
 //! Nor is a missing knowledge-base directory: that is `StorageError::BucketNotFound`, a
 //! `404` on every surface, exactly as `S3Storage` reports `NoSuchBucket` (D43). It is
-//! checked up front in `storage.rs` rather than mapped from an `io::Error` here.
+//! checked up front in `storage.rs`, and [`bucket`] maps the `stat` that checks it:
+//! only *absent* is gone; a directory that cannot be stat'ed at all — permissions, a
+//! mount that came back for the wrong user — is the store being unusable, not the
+//! knowledge base being deleted, and answers `BackendUnavailable` as `S3Storage`
+//! answers `AccessDenied`.
 
 use std::io::ErrorKind;
 
@@ -39,6 +43,21 @@ pub(crate) fn backend_at(context: &str, error: &std::io::Error) -> StorageError 
 pub(crate) fn other(error: std::io::Error) -> StorageError {
     StorageError::Other {
         source: Box::new(error),
+    }
+}
+
+/// Map the `stat` of a knowledge base's directory, given the bucket it concerns.
+///
+/// `NotFound` is the one answer that means "gone"; anything else is a directory
+/// that is there, or may be there, and cannot be looked at — an `EACCES` read as
+/// `BucketNotFound` would send the operator looking for a deleted directory that
+/// is right where they left it, while every route answered `404`.
+pub(crate) fn bucket(bucket: &str, error: &std::io::Error) -> StorageError {
+    match error.kind() {
+        ErrorKind::NotFound => StorageError::BucketNotFound {
+            bucket: bucket.to_string(),
+        },
+        _ => backend_at(&format!("stat {bucket}"), error),
     }
 }
 
@@ -69,9 +88,29 @@ pub(crate) fn object(key: &str, error: std::io::Error) -> StorageError {
 
 #[cfg(test)]
 mod tests {
-    use super::object;
+    use super::{bucket, object};
     use notedthat_core::StorageError;
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn a_missing_bucket_directory_is_bucket_not_found_with_its_name() {
+        let mapped = bucket("nt-default-notes", &Error::from(ErrorKind::NotFound));
+        assert!(
+            matches!(mapped, StorageError::BucketNotFound { bucket } if bucket == "nt-default-notes")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_bucket_directory_is_backend_unavailable_not_gone() {
+        let mapped = bucket(
+            "nt-default-notes",
+            &Error::from(ErrorKind::PermissionDenied),
+        );
+        assert!(
+            matches!(mapped, StorageError::BackendUnavailable { ref message } if message.starts_with("stat nt-default-notes: ")),
+            "{mapped:?}"
+        );
+    }
 
     #[test]
     fn a_missing_file_is_not_found_with_its_key() {
