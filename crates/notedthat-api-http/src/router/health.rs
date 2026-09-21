@@ -1,7 +1,7 @@
 //! Liveness and readiness probes. Not auth-gated (see router build).
 //!
 //! `/readyz` covers the storage backend, the vector store and a configured
-//! event broker (D39, D55, D57). It does not cover the `fs` watcher (a lost
+//! event broker (D39, D55, D64). It does not cover the `fs` watcher (a lost
 //! watch is logged, D50), the embedder, or how fresh the index is.
 
 use axum::Json;

@@ -1,8 +1,8 @@
-//! The background prober behind `/readyz` (D57).
+//! The background prober behind `/readyz` (D64).
 //!
 //! Every `NOTEDTHAT_READY_PROBE_INTERVAL_MS` the storage backend and the vector
-//! store are asked whether they are there — `Storage::probe` on the first
-//! declared knowledge base's bucket, `VectorStore::probe` — with each answer
+//! store are asked whether they are there — `Storage::probe` on the bucket of
+//! the knowledge base whose slug sorts first, `VectorStore::probe` — with each answer
 //! bounded by that same interval, and the result is published as a
 //! [`ReadinessSnapshot`] on a `watch` channel the HTTP state holds. The route
 //! only ever reads the latest value, so a probe storm from an orchestrator
@@ -29,7 +29,8 @@ const SEARCH_BACKEND: &str = "qdrant";
 pub(super) struct ReadinessPoller {
     storage: Arc<dyn Storage>,
     store: Arc<dyn VectorStore>,
-    /// The knowledge base whose bucket stands in for "storage is reachable".
+    /// The knowledge base whose bucket stands in for "storage is reachable":
+    /// the one whose slug sorts first, since `Config::kbs` is a `BTreeMap`.
     witness: KbSlug,
     interval: Duration,
     tx: watch::Sender<ReadinessSnapshot>,
@@ -82,6 +83,10 @@ impl ReadinessPoller {
     }
 
     /// Probe until `shutdown` is cancelled. The first probe runs at once.
+    ///
+    /// Cancellation interrupts a probe in flight, not only the wait between
+    /// probes: `serve` joins this task on the way down, and a hung backend must
+    /// not add an interval to every shutdown.
     pub(super) async fn run(self, shutdown: CancellationToken) {
         let mut ticker = tokio::time::interval(self.interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -90,8 +95,11 @@ impl ReadinessPoller {
                 biased;
                 () = shutdown.cancelled() => break,
                 _ = ticker.tick() => {
-                    let (next, details) = self.probe_once().await;
-                    self.publish(next, &details);
+                    tokio::select! {
+                        biased;
+                        () = shutdown.cancelled() => break,
+                        (next, details) = self.probe_once() => self.publish(next, &details),
+                    }
                 }
             }
         }
@@ -143,17 +151,32 @@ impl ReadinessPoller {
                     backend = after.backend,
                     "READINESS_RESTORED"
                 ),
-                (before, Err(reason)) if before.as_ref().err() != Some(reason) => warn!(
-                    target: "notedthat::readiness",
-                    check = name,
-                    backend = after.backend,
-                    reason = reason.as_str(),
-                    error = details
+                (before, Err(reason)) if before.as_ref().err() != Some(reason) => {
+                    let error = details
                         .iter()
                         .find(|d| d.check == name)
-                        .map_or("", |d| d.error.as_str()),
-                    "READINESS_LOST: /readyz answers 503 until this backend answers again"
-                ),
+                        .map_or("", |d| d.error.as_str());
+                    if reason.is_outage() {
+                        warn!(
+                            target: "notedthat::readiness",
+                            check = name,
+                            backend = after.backend,
+                            reason = reason.as_str(),
+                            error,
+                            "READINESS_LOST: /readyz answers 503 until this backend answers again"
+                        );
+                    } else {
+                        warn!(
+                            target: "notedthat::readiness",
+                            check = name,
+                            backend = after.backend,
+                            reason = reason.as_str(),
+                            error,
+                            "READINESS_DEGRADED: the backend answered, but what /readyz probes for is \
+                             gone; /readyz stays 200 and nothing re-creates it while the process runs"
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -271,10 +294,14 @@ mod tests {
         let storage = InMemoryStorage::default();
         let (mut rx, shutdown, handle) =
             start(Arc::new(storage), Arc::new(InMemoryVectorStore::new()));
-        wait_for(&mut rx, "storage not_found", |s| {
+        let snapshot = wait_for(&mut rx, "storage not_found", |s| {
             s.storage.outcome == Err(Unready::NotFound)
         })
         .await;
+        assert!(
+            snapshot.is_ready(),
+            "a gone bucket is reported, not an outage"
+        );
         shutdown.cancel();
         handle.await.unwrap();
     }
@@ -294,12 +321,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stops_promptly_when_cancelled_mid_probe() {
+    async fn cancellation_interrupts_a_probe_in_flight() {
+        // A long interval, so the probe's own deadline cannot be what ends it,
+        // and a probe that outlasts the test; the first tick is immediate, so
+        // the probe is in flight by the time the poller has been polled once.
         let (storage, store) = provisioned().await;
         store.set_probe_latency(Duration::from_secs(60));
-        let (_rx, shutdown, handle) = start(Arc::new(storage), Arc::new(store));
-        // Give the first tick a moment to enter the hanging probe.
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        let (poller, _rx) = ReadinessPoller::new(
+            Arc::new(storage),
+            Arc::new(store.clone()),
+            kb(),
+            "fs",
+            Duration::from_secs(60),
+        );
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(poller.run(shutdown.child_token()));
+        let entered = async {
+            while store.probe_calls() == 0 {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(PATIENCE, entered)
+            .await
+            .expect("the first tick is immediate, so a probe is entered promptly");
+
         shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(1), handle)
             .await

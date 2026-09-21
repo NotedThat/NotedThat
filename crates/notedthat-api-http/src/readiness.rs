@@ -11,6 +11,11 @@
 //! unauthenticated, and a client error can quote an endpoint or a
 //! credential-bearing URL, so a check reports one of a fixed set of
 //! [`Unready`] reasons and the server logs the detail once per transition.
+//!
+//! Readiness is about the backend, not the data in it: a probe that the
+//! backend *answered* with "not found" leaves the replica ready, because it is
+//! up and every other knowledge base keeps serving. The check still says so
+//! (`degraded`, `not_found`), for the operator who deleted a bucket.
 
 use serde::Serialize;
 
@@ -24,11 +29,22 @@ pub enum Unready {
     /// The backend answered with an error, or could not be reached at all.
     Unreachable,
     /// The backend answered, and the thing probed for is gone: a knowledge
-    /// base's bucket or directory deleted after startup.
+    /// base's bucket or directory deleted after startup. Reported, but not a
+    /// readiness failure — the backend is up.
     NotFound,
 }
 
 impl Unready {
+    /// Whether this reason means the backend itself is unavailable, as opposed
+    /// to answering that the probed thing is gone.
+    #[must_use]
+    pub fn is_outage(self) -> bool {
+        match self {
+            Self::Timeout | Self::Unreachable => true,
+            Self::NotFound => false,
+        }
+    }
+
     /// The `reason` value the route renders.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -69,14 +85,26 @@ impl Check {
         }
     }
 
-    /// The `{"backend", "status", "reason"?}` object the route renders.
+    /// Whether this check leaves the replica ready: the last probe succeeded,
+    /// or failed in a way that is not the backend's outage.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        match self.outcome {
+            Ok(()) => true,
+            Err(reason) => !reason.is_outage(),
+        }
+    }
+
+    /// The `{"backend", "status", "reason"?}` object the route renders:
+    /// `ok`, `degraded` (answered, but the probed thing is gone) or
+    /// `unavailable`.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         match self.outcome {
             Ok(()) => serde_json::json!({ "backend": self.backend, "status": "ok" }),
             Err(reason) => serde_json::json!({
                 "backend": self.backend,
-                "status": "unavailable",
+                "status": if reason.is_outage() { "unavailable" } else { "degraded" },
                 "reason": reason.as_str(),
             }),
         }
@@ -103,10 +131,10 @@ impl ReadinessSnapshot {
         }
     }
 
-    /// Whether every check is ok.
+    /// Whether every check leaves the replica ready (see [`Check::is_ready`]).
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.storage.outcome.is_ok() && self.search.outcome.is_ok()
+        self.storage.is_ready() && self.search.is_ready()
     }
 }
 
@@ -150,17 +178,34 @@ mod tests {
     }
 
     #[test]
-    fn ready_only_when_every_check_is_ok() {
+    fn a_not_found_check_is_degraded_and_still_ready() {
+        let check = Check::unready("fs", Unready::NotFound);
+        assert!(check.is_ready());
+        assert_eq!(
+            check.to_json(),
+            serde_json::json!({ "backend": "fs", "status": "degraded", "reason": "not_found" })
+        );
+    }
+
+    #[test]
+    fn ready_unless_a_backend_is_out() {
         assert!(ReadinessSnapshot::ok("fs", "qdrant").is_ready());
-        let storage_down = ReadinessSnapshot {
+        let witness_gone = ReadinessSnapshot {
             storage: Check::unready("fs", Unready::NotFound),
             search: Check::ok("qdrant"),
         };
-        assert!(!storage_down.is_ready());
-        let search_down = ReadinessSnapshot {
-            storage: Check::ok("fs"),
-            search: Check::unready("qdrant", Unready::Unreachable),
-        };
-        assert!(!search_down.is_ready());
+        assert!(witness_gone.is_ready(), "the backend answered; it is up");
+        for reason in [Unready::Timeout, Unready::Unreachable] {
+            let storage_down = ReadinessSnapshot {
+                storage: Check::unready("s3", reason),
+                search: Check::ok("qdrant"),
+            };
+            assert!(!storage_down.is_ready());
+            let search_down = ReadinessSnapshot {
+                storage: Check::ok("fs"),
+                search: Check::unready("qdrant", reason),
+            };
+            assert!(!search_down.is_ready());
+        }
     }
 }

@@ -83,6 +83,9 @@ pub struct InMemoryVectorStore {
     /// Set by [`InMemoryVectorStore::set_probe_latency`]: how long `probe`
     /// takes to answer, in milliseconds, for a test that needs a slow backend.
     probe_latency_ms: Arc<AtomicU64>,
+    /// How many times `probe` has been entered, for a test that needs to know a
+    /// probe is in flight rather than guess with a sleep.
+    probe_calls: Arc<AtomicU64>,
 }
 
 impl InMemoryVectorStore {
@@ -106,6 +109,12 @@ impl InMemoryVectorStore {
             u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
             Ordering::SeqCst,
         );
+    }
+
+    /// How many times `probe` has been entered so far.
+    #[must_use]
+    pub fn probe_calls(&self) -> u64 {
+        self.probe_calls.load(Ordering::SeqCst)
     }
 
     fn check_reachable(&self) -> Result<(), VectorStoreError> {
@@ -427,6 +436,7 @@ fn bm25_scores(query: &str, candidates: &[(u64, &StoredPoint)]) -> Vec<(u64, f64
 #[async_trait]
 impl VectorStore for InMemoryVectorStore {
     async fn probe(&self) -> Result<(), VectorStoreError> {
+        self.probe_calls.fetch_add(1, Ordering::SeqCst);
         let latency = self.probe_latency_ms.load(Ordering::SeqCst);
         if latency > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(latency)).await;

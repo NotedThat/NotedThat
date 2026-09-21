@@ -215,6 +215,23 @@ async fn readyz_is_unavailable_while_search_times_out() {
 }
 
 #[tokio::test]
+async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
+    // The backend answered — it is up, and every other knowledge base keeps
+    // serving — so the replica stays in the load balancer; the check says why.
+    let (status, json) = readyz(app_reporting(ReadinessSnapshot {
+        storage: Check::unready("fs", Unready::NotFound),
+        search: Check::ok("qdrant"),
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(
+        json["checks"]["storage"],
+        serde_json::json!({ "backend": "fs", "status": "degraded", "reason": "not_found" })
+    );
+}
+
+#[tokio::test]
 async fn readyz_says_nothing_about_a_failure_beyond_its_reason() {
     // The route is unauthenticated: a check carries a fixed reason and never
     // the backend's own message, which could quote an endpoint or a credential.
