@@ -113,30 +113,14 @@ impl KbManifest {
     }
 }
 
-/// A `description` is an inline label an agent reads before choosing where to
-/// search, so it is one line, non-empty, and bounded. Control characters —
-/// newlines and tabs included — are refused rather than normalised, so the
-/// manifest an operator wrote is exactly what clients see.
+/// The manifest's `description` (D60): one line, not blank, at most
+/// [`KbManifest::DESCRIPTION_MAX_CHARS`] code points.
 fn validate_description(description: &str) -> Result<(), Error> {
-    if description.trim().is_empty() {
-        return Err(Error::InvalidInput {
-            message: "description must not be empty; omit the field instead".into(),
-        });
-    }
-    if description.chars().count() > KbManifest::DESCRIPTION_MAX_CHARS {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "description exceeds {} characters",
-                KbManifest::DESCRIPTION_MAX_CHARS
-            ),
-        });
-    }
-    if description.chars().any(char::is_control) {
-        return Err(Error::InvalidInput {
-            message: "description must be a single line without control characters".into(),
-        });
-    }
-    Ok(())
+    validate_manifest_text(
+        "description",
+        description,
+        KbManifest::DESCRIPTION_MAX_CHARS,
+    )
 }
 
 /// What a listing shows about a knowledge base besides its slug: the
@@ -177,26 +161,34 @@ pub fn slug_kb_details(
 
 /// §6.8: a `display_name` is a Unicode string that is not blank, carries no
 /// control characters, and is at most [`KbManifest::DISPLAY_NAME_MAX_CHARS`]
-/// code points — the same shape as the manifest's other free-text field.
-/// Provisioning writes the slug (≤ 40 chars), so only a hand-edited manifest
-/// can fail here.
+/// code points. Provisioning writes the slug (≤ 40 chars), so only a
+/// hand-edited manifest can fail here.
 fn validate_display_name(display_name: &str) -> Result<(), Error> {
-    if display_name.trim().is_empty() {
+    validate_manifest_text(
+        "display_name",
+        display_name,
+        KbManifest::DISPLAY_NAME_MAX_CHARS,
+    )
+}
+
+/// The one rule for the manifest's free-text fields, so the two cannot
+/// drift: not blank, no control characters (so one line), at most
+/// `max_chars` Unicode code points. The message names the field, as a
+/// refused boot or a refused `PUT` prints it.
+fn validate_manifest_text(field: &str, value: &str, max_chars: usize) -> Result<(), Error> {
+    if value.trim().is_empty() {
         return Err(Error::InvalidInput {
-            message: "display_name must not be blank".into(),
+            message: format!("{field} must not be blank"),
         });
     }
-    if display_name.chars().any(char::is_control) {
+    if value.chars().any(char::is_control) {
         return Err(Error::InvalidInput {
-            message: "display_name must not contain control characters".into(),
+            message: format!("{field} must be a single line without control characters"),
         });
     }
-    if display_name.chars().count() > KbManifest::DISPLAY_NAME_MAX_CHARS {
+    if value.chars().count() > max_chars {
         return Err(Error::InvalidInput {
-            message: format!(
-                "display_name exceeds {} code points",
-                KbManifest::DISPLAY_NAME_MAX_CHARS
-            ),
+            message: format!("{field} exceeds {max_chars} code points"),
         });
     }
     Ok(())
