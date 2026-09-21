@@ -15,7 +15,9 @@ use notedthat_core::{
 use notedthat_events::MemoryPublisher;
 use tower::ServiceExt;
 
-use super::fixture::{BOB_TOKEN, TOKEN, app, app_with_events, grant, grant_under, json, policy};
+use super::fixture::{
+    ALICE_TOKEN, BOB_TOKEN, TOKEN, app, app_with_events, grant, grant_under, json, policy,
+};
 
 const EVENTS: &str = "/api/v1/knowledgebases/notes/events";
 
@@ -120,6 +122,24 @@ fn written(k: &str, mime: &str) -> ObjectEvent {
 
 fn deleted(k: &str) -> ObjectEvent {
     ObjectEvent::deleted(kb(), key(k), EventSource::Webdav)
+}
+
+fn indexed(k: &str, mime: &str) -> ObjectEvent {
+    ObjectEvent::indexed(kb(), key(k), format!("\"{k}\""), mime.into(), 2)
+}
+
+fn index_failed(k: &str, mime: &str, summary: &str) -> ObjectEvent {
+    ObjectEvent::index_failed(
+        kb(),
+        key(k),
+        Some(format!("\"{k}\"")),
+        Some(mime.into()),
+        summary.into(),
+    )
+}
+
+fn data_of(frame: &Frame) -> serde_json::Value {
+    serde_json::from_str(frame.data.as_deref().expect("an event frame")).unwrap()
 }
 
 async fn publish_all(publisher: &MemoryPublisher, events: Vec<ObjectEvent>) {
@@ -333,8 +353,10 @@ async fn prefix_event_and_mime_filters_apply_after_the_access_filter() {
         vec![
             written("inbox/memo.mp3", "audio/mpeg"),
             written("inbox/memo.mp3.md", "text/markdown"),
+            indexed("inbox/memo.mp3.md", "text/markdown"),
             written("archive/talk.mp3", "audio/mpeg"),
             deleted("inbox/memo.mp3"),
+            index_failed("inbox/notes.md", "text/markdown", "embedder.embed failed"),
             written("inbox/voice.wav", "audio/wav"),
         ],
     )
@@ -365,7 +387,62 @@ async fn prefix_event_and_mime_filters_apply_after_the_access_filter() {
     let only: Vec<&Frame> = frames.iter().filter(|f| f.data.is_some()).collect();
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].event.as_deref(), Some("object.deleted"));
-    assert_eq!(only[0].id.as_deref(), Some("4"));
+    assert_eq!(only[0].id.as_deref(), Some("5"));
+
+    // The indexer's outcomes are selected the same way, under either spelling.
+    let response = app_with_events(everything(), publisher.clone())
+        .await
+        .oneshot(get(
+            &format!("{EVENTS}?event=indexed"),
+            Some(TOKEN),
+            Some("0"),
+        ))
+        .await
+        .unwrap();
+    let frames = read_events(response, 1).await;
+    let only: Vec<&Frame> = frames.iter().filter(|f| f.data.is_some()).collect();
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0].event.as_deref(), Some("object.indexed"));
+    assert_eq!(only[0].id.as_deref(), Some("3"));
+    let data = data_of(only[0]);
+    assert_eq!(data["object_key"], "inbox/memo.mp3.md");
+    assert_eq!(data["etag"], "\"inbox/memo.mp3.md\"");
+    assert_eq!(data["mime"], "text/markdown");
+    assert_eq!(data["chunks"], 2);
+    assert_eq!(data["source"], "indexer");
+
+    let response = app_with_events(everything(), publisher.clone())
+        .await
+        .oneshot(get(
+            &format!("{EVENTS}?event=object.index_failed"),
+            Some(TOKEN),
+            Some("0"),
+        ))
+        .await
+        .unwrap();
+    let frames = read_events(response, 1).await;
+    let only: Vec<&Frame> = frames.iter().filter(|f| f.data.is_some()).collect();
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0].event.as_deref(), Some("object.index_failed"));
+    assert_eq!(only[0].id.as_deref(), Some("6"));
+    let data = data_of(only[0]);
+    assert_eq!(data["object_key"], "inbox/notes.md");
+    assert_eq!(
+        data["summary"], "embedder.embed failed",
+        "the service token may list the whole base"
+    );
+
+    // `mime=` applies to an outcome by the content type HEAD reported.
+    let response = app_with_events(everything(), publisher.clone())
+        .await
+        .oneshot(get(
+            &format!("{EVENTS}?event=indexed&mime=audio/*"),
+            Some(TOKEN),
+            Some("0"),
+        ))
+        .await
+        .unwrap();
+    read_nothing(response).await;
 
     let response = app_with_events(everything(), publisher)
         .await
@@ -373,6 +450,100 @@ async fn prefix_event_and_mime_filters_apply_after_the_access_filter() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The failure summary names endpoints and, as often, the key the pipeline
+/// was working on; it goes to whoever may `list` the whole knowledge base —
+/// the bar `GET …/index` sets for the same string — and nobody else. The rest
+/// of the frame follows the ordinary per-key rule.
+#[tokio::test]
+async fn an_index_failure_summary_goes_only_to_a_subscriber_who_may_list_the_whole_base() {
+    let publisher = Arc::new(MemoryPublisher::new(16));
+    let policies = BTreeMap::from([(
+        "notes".to_string(),
+        policy([
+            grant_under(Who::Anyone, [Verb::Read, Verb::List], &["public/**"]),
+            grant(Who::SignedIn, [Verb::Read]),
+            grant_under(Who::User("bob".into()), [Verb::List], &["public/**"]),
+            grant(Who::User("alice".into()), [Verb::List]),
+        ]),
+    )]);
+    publish_all(
+        &publisher,
+        vec![
+            index_failed(
+                "public/a.md",
+                "text/markdown",
+                "embedder.embed failed: connection refused",
+            ),
+            index_failed(
+                "internal/b.md",
+                "text/markdown",
+                "storage.head_object failed: internal/b.md",
+            ),
+        ],
+    )
+    .await;
+
+    // Anonymous: the public failure without its summary; the internal one not at all.
+    let response = app_with_events(policies.clone(), publisher.clone())
+        .await
+        .oneshot(get(EVENTS, None, Some("0")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let frames = read_events(response, 1).await;
+    let events: Vec<&Frame> = frames.iter().filter(|f| f.data.is_some()).collect();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].event.as_deref(), Some("object.index_failed"));
+    let data = data_of(events[0]);
+    assert_eq!(data["object_key"], "public/a.md");
+    assert_eq!(data["etag"], "\"public/a.md\"");
+    assert_eq!(data["mime"], "text/markdown");
+    assert!(data.get("summary").is_none(), "{data}");
+
+    // Bob may list `public/` only: same view as anonymous.
+    let response = app_with_events(policies.clone(), publisher.clone())
+        .await
+        .oneshot(get(EVENTS, Some(BOB_TOKEN), Some("0")))
+        .await
+        .unwrap();
+    let frames = read_events(response, 1).await;
+    let events: Vec<&Frame> = frames.iter().filter(|f| f.data.is_some()).collect();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(data_of(events[0]).get("summary").is_none());
+
+    // Alice may list everything: both failures, summaries included.
+    let response = app_with_events(policies, publisher)
+        .await
+        .oneshot(get(EVENTS, Some(ALICE_TOKEN), Some("0")))
+        .await
+        .unwrap();
+    let frames = read_events(response, 2).await;
+    let seen: Vec<(String, String)> = frames
+        .iter()
+        .filter(|f| f.data.is_some())
+        .map(|f| {
+            let data = data_of(f);
+            (
+                data["object_key"].as_str().unwrap().to_owned(),
+                data["summary"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                "public/a.md".to_owned(),
+                "embedder.embed failed: connection refused".to_owned()
+            ),
+            (
+                "internal/b.md".to_owned(),
+                "storage.head_object failed: internal/b.md".to_owned()
+            ),
+        ]
+    );
 }
 
 #[tokio::test]

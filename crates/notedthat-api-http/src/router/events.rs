@@ -1,9 +1,13 @@
-//! `GET /api/v1/knowledgebases/{kb_slug}/events` — object change events as
-//! server-sent events (SPECIFICATIONS.md §6.14, D55).
+//! `GET /api/v1/knowledgebases/{kb_slug}/events` — object change events and
+//! the indexer's outcomes as server-sent events (SPECIFICATIONS.md §6.14, D55,
+//! D64).
 //!
 //! The stream is filtered per event by the same evaluator every other surface
 //! uses: a subscriber sees a key's events only if it may `list` that key, and
 //! a deletion reveals as much as a listing would, so it is filtered the same.
+//! One field is held back inside a visible frame: the `summary` on
+//! `object.index_failed` follows the rule `GET …/index` applies to the same
+//! string (D62) and goes only to a subscriber who may `list` the whole base.
 //! The ordering below is load-bearing — resolve, then `list` on anything, then
 //! "is there a log at all" — so an undeclared or ungranted knowledge base
 //! answers exactly as it does everywhere else, whether or not events are on.
@@ -55,19 +59,46 @@ pub(crate) struct EventFilter {
 enum Kind {
     Written,
     Deleted,
+    Indexed,
+    IndexFailed,
+}
+
+impl Kind {
+    /// `written`, `deleted`, `indexed` or `index_failed`; the wire name's
+    /// `object.` prefix is accepted so `?event=object.indexed` works as the
+    /// event is documented.
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.strip_prefix("object.").unwrap_or(raw) {
+            "written" => Some(Self::Written),
+            "deleted" => Some(Self::Deleted),
+            "indexed" => Some(Self::Indexed),
+            "index_failed" => Some(Self::IndexFailed),
+            _ => None,
+        }
+    }
+
+    fn of(kind: &ObjectEventKind) -> Self {
+        match kind {
+            ObjectEventKind::Written { .. } => Self::Written,
+            ObjectEventKind::Deleted => Self::Deleted,
+            ObjectEventKind::Indexed { .. } => Self::Indexed,
+            ObjectEventKind::IndexFailed { .. } => Self::IndexFailed,
+        }
+    }
 }
 
 impl EventFilter {
     pub(crate) fn parse(query: EventsQuery) -> Result<Self, ApiError> {
         let kind = match query.event.as_deref() {
             None => None,
-            Some("written") => Some(Kind::Written),
-            Some("deleted") => Some(Kind::Deleted),
-            Some(other) => {
-                return Err(ApiError::Core(CoreError::InvalidInput {
-                    message: format!("event must be \"written\" or \"deleted\", got \"{other}\""),
-                }));
-            }
+            Some(raw) => Some(Kind::parse(raw).ok_or_else(|| {
+                ApiError::Core(CoreError::InvalidInput {
+                    message: format!(
+                        "event must be one of \"written\", \"deleted\", \"indexed\" or \
+                         \"index_failed\" (an \"object.\" prefix is accepted), got \"{raw}\""
+                    ),
+                })
+            })?),
         };
         Ok(Self {
             prefix: query.prefix.filter(|p| !p.is_empty()),
@@ -76,18 +107,18 @@ impl EventFilter {
         })
     }
 
-    /// `mime` matches a write exactly or by `type/*`; a deletion carries no
-    /// mime and so never matches a `mime` filter.
+    /// `mime` matches the content type an event carries, exactly or by
+    /// `type/*`: a write's, or the one the indexer's `HEAD` reported. A
+    /// deletion carries none, nor does an `object.index_failed` whose failure
+    /// came before `HEAD`, so neither ever matches a `mime` filter.
     pub(crate) fn matches(&self, event: &ObjectEvent) -> bool {
         if let Some(prefix) = &self.prefix
             && !event.object_key.as_str().starts_with(prefix.as_str())
         {
             return false;
         }
-        match (self.kind, &event.kind) {
-            (Some(Kind::Written), ObjectEventKind::Deleted)
-            | (Some(Kind::Deleted), ObjectEventKind::Written { .. }) => return false,
-            _ => {}
+        if self.kind.is_some_and(|kind| kind != Kind::of(&event.kind)) {
+            return false;
         }
         match (&self.mime, event.kind.mime()) {
             (None, _) => true,
@@ -144,6 +175,7 @@ pub(super) async fn subscribe_events(
     };
     let filter = EventFilter::parse(query).map_err(&err)?;
     let after = parse_last_event_id(&req).map_err(&err)?;
+    let summary_visible = access.filter(Verb::List).covers_whole_kb();
 
     let stream = events
         .subscribe(access.kb(), after)
@@ -174,9 +206,12 @@ pub(super) async fn subscribe_events(
         })
         .filter_map(move |item| {
             let frame = match item {
-                Ok((id, event)) => {
+                Ok((id, mut event)) => {
                     let visible = access.allows(Verb::List, event.object_key.as_str())
                         && filter.matches(&event);
+                    if visible && !summary_visible {
+                        withhold_summary(&mut event);
+                    }
                     visible.then(|| frame_for(id, &event))
                 }
                 Err(error) => Some(ended(&error)),
@@ -196,6 +231,21 @@ pub(super) async fn subscribe_events(
         HeaderValue::from_static("no"),
     );
     Ok(response)
+}
+
+/// Strip the failure summary from an `object.index_failed` frame.
+///
+/// The summary is the pipeline's own first line: it names the embedder or
+/// vector-store endpoint it could not reach, and as often the key it was
+/// working on, so it can carry what the per-key gate holds back elsewhere in
+/// the base. `GET …/index` gives it only to a caller whose `list` grant spans
+/// the whole knowledge base (`index_health::failure_view`); the stream applies
+/// the same bar, per frame. Everyone who may see the key still learns that
+/// indexing it failed, and which version.
+fn withhold_summary(event: &mut ObjectEvent) {
+    if let ObjectEventKind::IndexFailed { summary, .. } = &mut event.kind {
+        *summary = None;
+    }
 }
 
 fn frame_for(id: EventId, event: &ObjectEvent) -> Event {
@@ -239,6 +289,26 @@ mod tests {
         )
     }
 
+    fn indexed(key: &str, mime: &str) -> ObjectEvent {
+        ObjectEvent::indexed(
+            KbSlug::try_new("notes").unwrap(),
+            ObjectPath::try_from(key).unwrap(),
+            "\"e\"".into(),
+            mime.into(),
+            1,
+        )
+    }
+
+    fn index_failed(key: &str, mime: Option<&str>) -> ObjectEvent {
+        ObjectEvent::index_failed(
+            KbSlug::try_new("notes").unwrap(),
+            ObjectPath::try_from(key).unwrap(),
+            mime.map(|_| "\"e\"".to_owned()),
+            mime.map(str::to_owned),
+            "embedder.embed failed: connection refused".into(),
+        )
+    }
+
     fn filter(prefix: Option<&str>, event: Option<&str>, mime: Option<&str>) -> EventFilter {
         EventFilter::parse(EventsQuery {
             prefix: prefix.map(str::to_owned),
@@ -253,6 +323,8 @@ mod tests {
         let f = filter(None, None, None);
         assert!(f.matches(&written("a.md", "text/markdown")));
         assert!(f.matches(&deleted("a.md")));
+        assert!(f.matches(&indexed("a.md", "text/markdown")));
+        assert!(f.matches(&index_failed("a.md", None)));
     }
 
     #[test]
@@ -266,24 +338,46 @@ mod tests {
 
     #[test]
     fn event_selects_one_kind() {
-        assert!(filter(None, Some("written"), None).matches(&written("a", "text/plain")));
-        assert!(!filter(None, Some("written"), None).matches(&deleted("a")));
-        assert!(filter(None, Some("deleted"), None).matches(&deleted("a")));
-        assert!(!filter(None, Some("deleted"), None).matches(&written("a", "text/plain")));
+        let all = [
+            written("a", "text/plain"),
+            deleted("a"),
+            indexed("a", "text/plain"),
+            index_failed("a", Some("text/plain")),
+        ];
+        for (name, wanted) in [
+            ("written", 0),
+            ("deleted", 1),
+            ("indexed", 2),
+            ("index_failed", 3),
+        ] {
+            for spelling in [name.to_owned(), format!("object.{name}")] {
+                let f = filter(None, Some(&spelling), None);
+                for (i, event) in all.iter().enumerate() {
+                    assert_eq!(
+                        f.matches(event),
+                        i == wanted,
+                        "?event={spelling} against {}",
+                        event.kind.name()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn an_unknown_event_kind_is_a_bad_request() {
-        let err = EventFilter::parse(EventsQuery {
-            prefix: None,
-            event: Some("renamed".into()),
-            mime: None,
-        })
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            ApiError::Core(CoreError::InvalidInput { .. })
-        ));
+        for raw in ["renamed", "object.renamed", "object.", "indexed_failed"] {
+            let err = EventFilter::parse(EventsQuery {
+                prefix: None,
+                event: Some(raw.into()),
+                mime: None,
+            })
+            .unwrap_err();
+            assert!(
+                matches!(err, ApiError::Core(CoreError::InvalidInput { .. })),
+                "{raw}: {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -299,6 +393,36 @@ mod tests {
         assert!(wild.matches(&written("a.wav", "audio/wav")));
         assert!(!wild.matches(&written("a.md", "text/markdown")));
         assert!(!wild.matches(&deleted("a.mp3")));
+    }
+
+    #[test]
+    fn mime_applies_to_the_indexers_outcomes_when_they_know_one() {
+        let text = filter(None, None, Some("text/*"));
+        assert!(text.matches(&indexed("a.md", "text/markdown")));
+        assert!(!text.matches(&indexed("a.txt", "application/json")));
+        assert!(text.matches(&index_failed("a.md", Some("text/plain"))));
+        assert!(
+            !text.matches(&index_failed("a.md", None)),
+            "a failure before HEAD has no content type to match"
+        );
+    }
+
+    #[test]
+    fn withholding_the_summary_leaves_the_rest_of_the_failure_intact() {
+        let mut event = index_failed("a.md", Some("text/plain"));
+        withhold_summary(&mut event);
+        assert_eq!(
+            event.kind,
+            ObjectEventKind::IndexFailed {
+                etag: Some("\"e\"".into()),
+                mime: Some("text/plain".into()),
+                summary: None,
+            }
+        );
+        let mut write = written("a.md", "text/plain");
+        let before = write.clone();
+        withhold_summary(&mut write);
+        assert_eq!(write, before);
     }
 
     #[test]
