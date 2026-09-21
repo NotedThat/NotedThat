@@ -1467,6 +1467,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     let app = build_router(AppState {
         storage: Arc::new(InMemoryStorage::default()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
+        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
         declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size: 16 * 1024 * 1024,
