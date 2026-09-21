@@ -18,7 +18,7 @@ This page is setup snippets, one client at a time. The tools themselves are docu
 | Credential | `Authorization: Bearer …` header, or OAuth via your identity provider | `NOTEDTHAT_TOKEN` (and `NOTEDTHAT_URL`) in the client's config |
 | Use it when | The client runs somewhere else (n8n, Windmill, claude.ai), or supports OAuth | The client runs on your machine and only knows how to spawn a command |
 
-Both present the same ten tools. The bearer can be `NOTEDTHAT_API_TOKEN` or an identity token
+Both present the same eleven tools. The bearer can be `NOTEDTHAT_API_TOKEN` or an identity token
 from your OIDC provider; the rules that apply are the caller's, so an agent holding a restricted
 identity sees a restricted knowledge base. A knowledge base that is public — its manifest grants
 `anyone` `read` or `search` — needs no credential over MCP either: leave the header out and the
@@ -128,7 +128,7 @@ a workflow that reacts to every note someone else creates.
 ## Windmill
 
 Windmill's AI agent step takes MCP servers as tools: give it the `/mcp` URL and a bearer header
-and the agent has the same ten tools an assistant would. For a plain script step, the HTTP API is a
+and the agent has the same eleven tools an assistant would. For a plain script step, the HTTP API is a
 few lines in any language Windmill runs:
 
 ```ts

@@ -17,8 +17,8 @@ Keep Obsidian. Point it at the mounted folder and nothing about writing notes ch
 sync folder cannot do is the rest:
 
 - **Anything that speaks MCP is a client.** Claude Code, claude.ai, Claude Desktop, Cursor,
-  VS Code, Zed, n8n, Windmill, the MCP Inspector — ten tools (`search`, `read`, `write`, `edit`,
-  `append`, `replace`, `list`, `move`, `delete`, `list_knowledgebases`) over one HTTP endpoint
+  VS Code, Zed, n8n, Windmill, the MCP Inspector — eleven tools (`search`, `read`, `write`, `edit`,
+  `append`, `replace`, `list`, `move`, `delete`, `list_knowledgebases`, `index_status`) over one HTTP endpoint
   or a local stdio adapter. An assistant searches your notes for context and files what it
   learned; a workflow appends the day's output to a journal. [Connecting clients →](docs/CLIENTS.md)
 - **Anything that opens a folder is a client.** GNOME Files, Dolphin, davfs2, rclone, WinSCP —

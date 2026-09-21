@@ -30,6 +30,9 @@ pub struct WebDavState {
     pub staging_config: StagingConfig,
     /// The object change event log, when `NOTEDTHAT_EVENTS_BACKEND` selects one.
     pub events: Option<Arc<dyn EventPublisher>>,
+    /// The per-knowledge-base index health record, shared with the indexer
+    /// worker and every write path (#97).
+    pub index_health: Arc<notedthat_indexer::IndexHealth>,
 }
 
 impl WebDavState {
@@ -38,6 +41,7 @@ impl WebDavState {
         notedthat_write::WriteSinks::new(
             &self.indexer_tx,
             self.events.as_deref(),
+            &self.index_health,
             EventSource::Webdav,
         )
     }

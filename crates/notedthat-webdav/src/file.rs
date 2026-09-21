@@ -320,6 +320,7 @@ mod tests {
             access_policies: Arc::new(BTreeMap::new()),
             indexer_tx,
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         })
     }
 

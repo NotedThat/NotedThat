@@ -34,6 +34,7 @@ const EVERY_ROUTE: &[(&str, &str)] = &[
     ("POST", "/api/v1/knowledgebases/notes/replace/public.md"),
     ("POST", "/api/v1/knowledgebases/notes/search"),
     ("GET", "/api/v1/knowledgebases/notes/events"),
+    ("GET", "/api/v1/knowledgebases/notes/index"),
 ];
 
 #[tokio::test]
@@ -72,11 +73,14 @@ async fn every_route_refuses_a_credentialed_principal_holding_no_grant() {
     for (method, uri) in EVERY_ROUTE {
         let response = request(&policies, method, uri, Some(TOKEN)).await;
 
-        if INDEX_ROUTES.contains(&(method, uri)) {
+        if INDEX_ROUTES.contains(&(method, uri)) || LISTING_RULE_ROUTES.contains(&(method, uri)) {
             // The knowledge-base index is not key-scoped and has no verb to
             // check: the credential holder can always reach `.notedthat` in
             // every declared knowledge base, so they are listed. What it must
             // not do is disclose anything beyond the slugs it is asked for.
+            // The same holds for a view that follows the listing rule: the
+            // service token sees every declared knowledge base listed, so it
+            // sees each one's index health.
             assert_eq!(
                 response.status(),
                 StatusCode::OK,
@@ -131,6 +135,11 @@ const INDEX_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/v1/knowledgebases"),
     ("HEAD", "/api/v1/knowledgebases"),
 ];
+
+/// The routes gated by the listing rule (D51) rather than by a verb on a key:
+/// open to the service token, which is always listed, and shut (`403`) to an
+/// identity holding no grant, which is not.
+const LISTING_RULE_ROUTES: &[(&str, &str)] = &[("GET", "/api/v1/knowledgebases/notes/index")];
 
 async fn request(
     policies: &BTreeMap<String, notedthat_core::AccessPolicy>,

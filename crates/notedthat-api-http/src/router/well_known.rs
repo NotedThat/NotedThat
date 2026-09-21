@@ -44,6 +44,7 @@ mod tests {
             indexer_tx,
             searcher: Arc::new(NoopSearcher),
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         })
     }
 

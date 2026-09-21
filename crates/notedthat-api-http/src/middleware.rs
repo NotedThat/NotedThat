@@ -2,7 +2,8 @@
 
 use crate::error::ApiErrorResponse;
 use crate::router::{
-    MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS,
+    MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_INDEX, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH,
+    MATCHED_KBS,
 };
 use crate::state::AppState;
 use axum::body::Body;
@@ -35,6 +36,7 @@ const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
     (&Method::HEAD, MATCHED_KB_OBJECT),
     (&Method::POST, MATCHED_KB_SEARCH),
     (&Method::GET, MATCHED_KB_EVENTS),
+    (&Method::GET, MATCHED_KB_INDEX),
 ];
 
 /// Axum middleware that establishes the request's [`Principal`].
@@ -155,6 +157,7 @@ mod tests {
             indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         }
     }
 

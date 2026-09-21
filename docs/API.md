@@ -480,7 +480,8 @@ curl http://localhost:8080/healthz
 
 Readiness probe. Returns `200 OK` unless a configured object change event backend
 (`NOTEDTHAT_EVENTS_BACKEND=nats`) reports that it is not connected, in which case it
-returns `503`. Storage and Qdrant are not probed in v1.
+returns `503`. Storage and Qdrant are not probed in v1. For the state of one knowledge
+base's search index, see [`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex).
 
 **Authentication:** Not required.
 
@@ -1406,6 +1407,91 @@ location /api/v1/ {
 
 ---
 
+### GET /api/v1/knowledgebases/{kb_slug}/index
+
+One knowledge base's search-index health: is what `search` returns complete, still catching
+up, refused new work, possibly missing changes, or broken — and what to do about it. This is the
+per-knowledge-base counterpart of `/readyz`.
+
+**Authentication:** The listing rule (D51): whoever would see the knowledge base in
+`GET /api/v1/knowledgebases` may ask. An anonymous caller holding no grant gets `404`, a
+credentialed caller holding none gets `403`, exactly as on every other route.
+
+The view is **one process's record**. A deployment running several replicas behind one address
+(the `nats` events backend exists for exactly that) answers from whichever replica took the
+request: its queue depth, its `pending`, its last failure, its worker. Two polls can disagree, and
+a replica whose worker died reports `failed` while its siblings say `healthy`. Unlike the events
+sequence, which is global across replicas, this is per process — query each replica, or read one
+answer as advisory.
+
+The view is aggregate state only. It never carries document bytes, credentials, queue contents
+or job identifiers (D4, D38). What names or counts keys follows the `list` grant: `last_failure`'s
+object key is shown only to a caller who could `list` that key, and its `summary` — the
+pipeline's own first line, which names the embedder or vector-store endpoint it could not reach
+and as often the key it was working on — only to a caller who may `list` the whole knowledge
+base; `last_reconcile`'s counts, which describe every key, likewise only to a caller who may
+`list` every key, and a pass over one prefix (`scope`) — counts included — only to a caller who
+may `list` that prefix. A caller granted `public/**` alone gets every pass's time, the passes over
+`public/`, and nothing that says what lies outside `public/` or how much of it is moving. Everyone
+the listing rule admits still learns that indexing failed, and when.
+
+**Response:** `200 OK`, `Cache-Control: no-store`.
+
+```json
+{
+  "kb_slug": "notes",
+  "state": "healthy",
+  "pending": 0,
+  "queue": { "depth": 0, "capacity": 1024 },
+  "worker": "running",
+  "last_indexed_at": "2026-09-21T01:02:03Z",
+  "last_failure": {
+    "at": "2026-09-21T00:58:41Z",
+    "object_key": "drafts/big.md",
+    "summary": "embedder.embed failed: connection refused"
+  },
+  "last_reconcile": {
+    "at": "2026-09-21T00:55:00Z",
+    "objects_on_disk": 412,
+    "unchanged": 410,
+    "changed": 2,
+    "orphaned": 0
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `state` | One of `failed`, `stale`, `backpressured`, `indexing`, `healthy` — see the table below. When more than one applies, the first in that order wins |
+| `pending` | Events for this knowledge base queued or being indexed — an object is counted until its embed and upsert have finished, or failed |
+| `queue` | The process-wide indexing queue (D38): events waiting, and the fixed capacity. `depth == capacity` means writers are being refused with `503` right now |
+| `worker` | `running`, or `stopped` once the indexer loop has ended (a crash, or shutdown in progress) |
+| `last_indexed_at` | When an event for this knowledge base last completed — an upsert, a tombstone, or a refresh that found the index current. `null` until one has |
+| `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a caller who may `list` the whole knowledge base the pipeline's own one-line error (`summary`, at most 200 characters); for a caller who may `list` it, the object key. `null` if none |
+| `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` what it walked, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`, and is shown — `scope` and counts together — to a caller who may `list` that prefix; without `scope` the counts are the whole base's and go to a caller who may `list` the whole base. `null` on `s3`, and until the startup pass completes |
+
+**The state model, and what to do:**
+
+| State | It means | What to do |
+|-------|----------|------------|
+| `healthy` | Nothing pending, the last outcome succeeded, nothing has gone unobserved | Nothing. Search reflects every write the indexer has been told about |
+| `indexing` | Events for this knowledge base are queued or in progress | Wait and poll; a search now may miss the newest writes. `pending` counts down as each event *finishes*, not as the worker picks it up |
+| `backpressured` | The queue was full within the last 30 s, or is full right now. Writers got `503 backend_unavailable` with `Retry-After: 5`; their bytes were stored but not indexed (D38) | Retry the refused writes — re-writing an object is what re-enqueues it. If it recurs, the embedder or Qdrant is slower than the write rate; the queue capacity is a fixed 1024 in v1 |
+| `stale` | `fs` backend: the watcher lost events (`FS_WATCH_LOST`, or the kernel's queue overflowed) and the rescan that repairs that has not completed yet — or the startup pass has not. Changes on disk may be unobserved | Wait for the pass; `last_reconcile` fills in when it completes. If `FS_WATCH_LOST` recurs in the log, raise `fs.inotify.max_user_watches` (see [Filesystem storage backend](CONFIGURATION.md#filesystem-storage-backend)). A knowledge base stuck `stale` with the log saying its pass was *skipped* has no search collection: check the provisioning warnings and restart once Qdrant is reachable |
+| `failed` | The most recent event for this knowledge base failed, or the indexer worker has stopped (`worker: "stopped"`) | Read `last_failure.summary`: it names the embedder or the vector store. Fix that, then re-write the affected object to reindex it (D42); there is no retry or dead-letter queue. A stopped worker means the process must be restarted |
+
+An object keyed exactly `index` cannot be read at this path, as one keyed `search` or `events`
+cannot at theirs; every other key under the knowledge base is unaffected.
+
+**Example:**
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8080/api/v1/knowledgebases/notes/index
+```
+
+---
+
 ## Full route summary
 
 | Method | Path | Auth | Description |
@@ -1425,6 +1511,7 @@ location /api/v1/ {
 | POST | `/api/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
 | POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 | GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
+| GET | `/api/v1/knowledgebases/{kb_slug}/index` | Yes | Search-index health of one knowledge base: state, queue, last failure, last reconciliation |
 | POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
 | any | `/webdav/`… | Basic or Bearer, or anonymous where granted | WebDAV Class 1 share, one directory per knowledge base |
 
@@ -1743,7 +1830,7 @@ loopback or private trusted links (e.g., `127.0.0.1` in a local dev setup).
 
 ### Tools
 
-All 10 tools are exposed:
+All 11 tools are exposed:
 
 #### `list_knowledgebases`
 
@@ -1756,6 +1843,19 @@ entries of [`GET /api/v1/knowledgebases`](#get-apiv1knowledgebases), unchanged. 
 present only when the manifest sets one; read it before choosing which knowledge base to `search`.
 
 Note: `perms` (§6.10) is post-v1.
+
+#### `index_status`
+
+One knowledge base's search-index health.
+
+**Arguments**: `kb` (string, required)
+
+**Response**: the body of
+[`GET /api/v1/knowledgebases/{kb_slug}/index`](#get-apiv1knowledgebaseskb_slugindex), unchanged:
+`state`, `pending`, `queue`, `worker`, `last_indexed_at`, `last_failure`, `last_reconcile`. Check
+it when search results look incomplete or out of date; a `failed` or `stale` knowledge base may
+not reflect recent writes. Refused like the route: `forbidden` for a credential holding no grant,
+not found for a knowledge base the caller cannot see.
 
 #### `search`
 

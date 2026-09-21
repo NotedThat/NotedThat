@@ -3,7 +3,7 @@
 use notedthat_core::{
     AccessPolicy, Authenticator, EventPublisher, EventSource, KbDetails, KbSlug, Storage,
 };
-use notedthat_indexer::Searcher;
+use notedthat_indexer::{IndexHealth, Searcher};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -38,13 +38,21 @@ pub struct AppState {
     /// `None` is the default: writes are not announced and the events route
     /// answers 404.
     pub events: Option<Arc<dyn EventPublisher>>,
+    /// The per-knowledge-base index health record, shared with the indexer
+    /// worker and every write path (#97).
+    pub index_health: Arc<IndexHealth>,
 }
 
 impl AppState {
     /// Where a write made through this surface is reported, attributed to
     /// `source` — the HTTP API itself, or MCP when the request says so.
     pub(crate) fn sinks(&self, source: EventSource) -> notedthat_write::WriteSinks<'_> {
-        notedthat_write::WriteSinks::new(&self.indexer_tx, self.events.as_deref(), source)
+        notedthat_write::WriteSinks::new(
+            &self.indexer_tx,
+            self.events.as_deref(),
+            &self.index_health,
+            source,
+        )
     }
 }
 
@@ -67,6 +75,7 @@ mod tests {
             indexer_tx: tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         }
     }
 

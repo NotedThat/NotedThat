@@ -24,8 +24,8 @@ use notedthat_indexer::vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use notedthat_indexer::{
-    Embedder, EmbedderError, IndexEvent, IndexerWorker, OpenAiCompatibleConfig,
-    OpenAiCompatibleEmbedder, QdrantProvisioner, RefreshOrigin,
+    Embedder, EmbedderError, IndexEvent, IndexHealth, IndexState, IndexerWorker,
+    OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner, RefreshOrigin,
 };
 use qdrant_client::qdrant::{
     RetrievedPoint, VectorsOutput, value::Kind, vectors_output::VectorsOptions,
@@ -1936,4 +1936,141 @@ mod announcing {
 
         assert!(count_points(&store, &kb(), "note.md").await > 0);
     }
+}
+
+// ─── Index health (#97) ─────────────────────────────────────────────────────
+
+/// Drive one event through a worker that records on `health`, the way the
+/// server wires it, and return once the worker has drained and stopped.
+async fn run_one_with_health(
+    storage: Arc<MockStorage>,
+    embedder: Arc<dyn Embedder>,
+    store: Arc<dyn VectorStore>,
+    event: IndexEvent,
+    health: Arc<IndexHealth>,
+) {
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(event).await.unwrap();
+    health.enqueued("test-kb");
+    drop(tx);
+    make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
+        .with_health(health)
+        .run()
+        .await;
+}
+
+#[tokio::test]
+async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "ok.md", "# Fine\n\nindexed", "text/markdown");
+    let health = Arc::new(IndexHealth::new());
+
+    // `run_one_with_health` records the enqueue itself; the worker's own
+    // completion is what brings `pending` back to zero.
+    run_one_with_health(
+        Arc::clone(&storage),
+        Arc::new(ScriptedEmbedder::new(None, None)),
+        Arc::new(store.clone()),
+        IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("ok.md"),
+            etag: "etag-ok".into(),
+            mtime: 0,
+        },
+        Arc::clone(&health),
+    )
+    .await;
+
+    let snapshot = health.snapshot("test-kb");
+    assert_eq!(snapshot.pending, 0, "the worker finished what was queued");
+    assert!(snapshot.last_indexed_at.is_some());
+    assert_eq!(snapshot.last_failure, None);
+    // The channel closed, so the loop ended: nothing drains the queue any more,
+    // and the record says so rather than staying healthy forever.
+    assert!(!snapshot.worker_alive);
+    assert_eq!(snapshot.state, IndexState::Failed);
+}
+
+#[tokio::test]
+async fn the_worker_records_a_failure_with_the_key_and_the_pipelines_error() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        "test-kb",
+        "broken.md",
+        "# Broken\n\nwill not embed",
+        "text/markdown",
+    );
+    let health = Arc::new(IndexHealth::new());
+
+    run_one_with_health(
+        Arc::clone(&storage),
+        Arc::new(ScriptedEmbedder::new(Some(1), None)),
+        Arc::new(store.clone()),
+        IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("broken.md"),
+            etag: "etag-broken".into(),
+            mtime: 0,
+        },
+        Arc::clone(&health),
+    )
+    .await;
+
+    let snapshot = health.snapshot("test-kb");
+    assert_eq!(snapshot.pending, 0);
+    assert_eq!(snapshot.last_indexed_at, None);
+    let failure = snapshot.last_failure.expect("the failure is on record");
+    assert_eq!(failure.object_key, "broken.md");
+    assert!(
+        failure.summary.contains("embed"),
+        "the summary is the pipeline's own error: {}",
+        failure.summary
+    );
+    assert_eq!(snapshot.state, IndexState::Failed);
+}
+
+#[tokio::test]
+async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "same.md", "# Same\n\nunchanged", "text/markdown");
+    let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+    index_once(
+        Arc::clone(&storage),
+        Arc::clone(&embedder),
+        Arc::new(store.clone()),
+        &kb,
+        "same.md",
+        32,
+    )
+    .await;
+
+    let health = Arc::new(IndexHealth::new());
+    run_one_with_health(
+        Arc::clone(&storage),
+        embedder,
+        Arc::new(store.clone()),
+        IndexEvent::Refresh {
+            kb: kb.clone(),
+            object_key: opath("same.md"),
+            origin: RefreshOrigin::Watch,
+        },
+        Arc::clone(&health),
+    )
+    .await;
+
+    let snapshot = health.snapshot("test-kb");
+    assert!(
+        snapshot.last_indexed_at.is_some(),
+        "a skipped refresh confirmed the index is current, which is a success"
+    );
+    assert_eq!(snapshot.last_failure, None);
 }

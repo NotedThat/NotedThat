@@ -5,6 +5,7 @@
 pub mod chunker;
 pub mod embedder;
 pub mod event;
+pub mod health;
 pub mod okf;
 pub mod provisioner;
 pub mod qdrant;
@@ -18,6 +19,9 @@ pub use chunker::{Chunk, SOFT_CHAR_CAP, chunk};
 pub use embedder::{Embedder, EmbedderError};
 pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::{IndexEvent, RefreshOrigin};
+pub use health::{
+    BACKPRESSURE_WINDOW, IndexFailure, IndexHealth, IndexState, KbHealthSnapshot, ReconcileSummary,
+};
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
 pub use searcher::{KeyPredicate, Searcher};

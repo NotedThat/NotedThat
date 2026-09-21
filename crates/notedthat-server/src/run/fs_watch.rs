@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use notedthat_core::KbSlug;
-use notedthat_indexer::{IndexEvent, RefreshOrigin, VectorStore};
+use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
 use notedthat_storage_fs::{
     FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag, reconcile,
 };
@@ -55,6 +55,7 @@ pub(super) fn start(
     kbs: Vec<KbSlug>,
     store: Arc<dyn VectorStore>,
     indexer_tx: mpsc::Sender<IndexEvent>,
+    health: Arc<IndexHealth>,
 ) -> anyhow::Result<Option<FsWatch>> {
     if !config.watch {
         info!(
@@ -83,30 +84,56 @@ pub(super) fn start(
         "watching the storage tree for changes made outside NotedThat"
     );
 
-    let bridge = tokio::spawn(run_bridge(storage, store, indexer_tx, signals_rx, kbs));
+    let sink = IndexSink {
+        tx: indexer_tx,
+        health,
+    };
+    let bridge = tokio::spawn(run_bridge(storage, store, sink, signals_rx, kbs));
 
     Ok(Some(FsWatch { watcher, bridge }))
+}
+
+/// The indexing queue as the bridge sees it: every event it enqueues is also
+/// counted on the health record, like a write's is (#97).
+#[derive(Clone)]
+struct IndexSink {
+    tx: mpsc::Sender<IndexEvent>,
+    health: Arc<IndexHealth>,
+}
+
+impl IndexSink {
+    /// Enqueue, blocking rather than dropping (D50). `Err` means the worker is
+    /// gone and there is nothing left to bridge to.
+    async fn send(&self, event: IndexEvent) -> Result<(), ()> {
+        let kb = event.kb().as_str().to_string();
+        self.tx.send(event).await.map_err(|_| ())?;
+        self.health.enqueued(&kb);
+        Ok(())
+    }
 }
 
 /// Drain signals until the watcher stops, reconciling everything once first.
 async fn run_bridge(
     storage: FsStorage,
     store: Arc<dyn VectorStore>,
-    indexer_tx: mpsc::Sender<IndexEvent>,
+    sink: IndexSink,
     mut signals: mpsc::Receiver<FsSignal>,
     kbs: Vec<KbSlug>,
 ) {
     // Changes made while the server was not running are invisible to a watcher, so every
     // knowledge base is compared against the index once at startup. On a store that has
-    // not moved this reads no file content and embeds nothing.
+    // not moved this reads no file content and embeds nothing. Until its pass completes
+    // a knowledge base is `stale`: whatever moved while the server was down is exactly
+    // what has not been observed yet (#97).
     for kb in &kbs {
-        reconcile_into(&storage, store.as_ref(), &indexer_tx, kb, None, "startup").await;
+        sink.health.mark_stale(kb.as_str());
+        reconcile_into(&storage, store.as_ref(), &sink, kb, None, "startup").await;
     }
 
     while let Some(signal) = signals.recv().await {
         match signal {
             FsSignal::Changed { kb, key } => {
-                if indexer_tx
+                if sink
                     .send(IndexEvent::Refresh {
                         kb,
                         object_key: key,
@@ -122,7 +149,7 @@ async fn run_bridge(
                 reconcile_into(
                     &storage,
                     store.as_ref(),
-                    &indexer_tx,
+                    &sink,
                     &kb,
                     Some(prefix.as_str()),
                     "subtree changed",
@@ -130,7 +157,12 @@ async fn run_bridge(
                 .await;
             }
             FsSignal::Kb { kb } => {
-                reconcile_into(&storage, store.as_ref(), &indexer_tx, &kb, None, "rescan").await;
+                // A whole-base rescan is only ever asked for because the watcher lost
+                // events (a watch lost, the kernel's queue overflowed): until the pass
+                // completes, changes may have gone unobserved, and the health view
+                // says so (#97).
+                sink.health.mark_stale(kb.as_str());
+                reconcile_into(&storage, store.as_ref(), &sink, &kb, None, "rescan").await;
             }
         }
     }
@@ -140,7 +172,7 @@ async fn run_bridge(
 async fn reconcile_into(
     storage: &FsStorage,
     store: &dyn VectorStore,
-    indexer_tx: &mpsc::Sender<IndexEvent>,
+    sink: &IndexSink,
     kb: &KbSlug,
     prefix: Option<&str>,
     cause: &str,
@@ -185,10 +217,10 @@ async fn reconcile_into(
 
     let (changes_tx, mut changes_rx) = mpsc::channel::<FsChange>(RECONCILE_BUFFER);
     let forwarder = {
-        let indexer_tx = indexer_tx.clone();
+        let sink = sink.clone();
         tokio::spawn(async move {
             while let Some(FsChange { kb, key }) = changes_rx.recv().await {
-                if indexer_tx
+                if sink
                     .send(IndexEvent::Refresh {
                         kb,
                         object_key: key,
@@ -208,24 +240,43 @@ async fn reconcile_into(
     let _ = forwarder.await;
 
     match report {
-        Ok(report) if report.is_clean() => info!(
-            target: "notedthat::watch",
-            kb = %kb.as_str(),
-            prefix = prefix.unwrap_or(""),
-            cause,
-            objects = report.objects_on_disk,
-            "already in step with the index"
-        ),
-        Ok(report) => info!(
-            target: "notedthat::watch",
-            kb = %kb.as_str(),
-            prefix = prefix.unwrap_or(""),
-            cause,
-            objects = report.objects_on_disk,
-            changed = report.changed,
-            orphaned = report.orphaned,
-            "enqueued objects whose index entries are out of date"
-        ),
+        // A completed pass, whatever it found, has enqueued every difference: nothing
+        // is unobserved any more, and the report is worth showing (#97). An incomplete
+        // pass leaves the record as it was, `stale` included.
+        Ok(report) => {
+            sink.health.reconciled(
+                kb.as_str(),
+                ReconcileSummary {
+                    at: now_unix(),
+                    scope: prefix.map(str::to_string),
+                    objects_on_disk: report.objects_on_disk,
+                    unchanged: report.unchanged,
+                    changed: report.changed,
+                    orphaned: report.orphaned,
+                },
+            );
+            if report.is_clean() {
+                info!(
+                    target: "notedthat::watch",
+                    kb = %kb.as_str(),
+                    prefix = prefix.unwrap_or(""),
+                    cause,
+                    objects = report.objects_on_disk,
+                    "already in step with the index"
+                );
+            } else {
+                info!(
+                    target: "notedthat::watch",
+                    kb = %kb.as_str(),
+                    prefix = prefix.unwrap_or(""),
+                    cause,
+                    objects = report.objects_on_disk,
+                    changed = report.changed,
+                    orphaned = report.orphaned,
+                    "enqueued objects whose index entries are out of date"
+                );
+            }
+        }
         Err(error) => warn!(
             target: "notedthat::watch",
             kb = %kb.as_str(),
@@ -235,4 +286,10 @@ async fn reconcile_into(
             "FS_WATCH_RESCAN: could not read the tree, so this pass was incomplete"
         ),
     }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }

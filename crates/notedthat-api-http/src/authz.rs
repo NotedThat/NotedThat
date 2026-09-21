@@ -103,6 +103,20 @@ impl KbAccess {
         self.policy.allows(&self.principal, verb, key)
     }
 
+    /// Authorize seeing that the knowledge base exists at all: the listing
+    /// rule (D51), which a view about the knowledge base rather than about any
+    /// one key follows.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::denial`].
+    pub(crate) fn require_visible(&self) -> Result<(), ApiError> {
+        if self.policy.visible_in_listing(&self.principal) {
+            return Ok(());
+        }
+        Err(self.denial())
+    }
+
     /// A predicate over keys for this principal and verb, compiled once.
     pub(crate) fn filter(&self, verb: Verb) -> KeyFilter<'_> {
         self.policy.key_filter(&self.principal, verb)

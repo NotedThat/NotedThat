@@ -145,15 +145,25 @@ pub(crate) async fn after_write(
         mtime: current_unix_seconds(),
     };
     match sinks.indexer_tx.try_send(event) {
-        Ok(()) => {}
+        Ok(()) => {
+            if let Some(health) = sinks.index_health {
+                health.enqueued(kb.as_str());
+            }
+        }
         Err(TrySendError::Full(ev)) => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
             let _ = ev;
+            if let Some(health) = sinks.index_health {
+                health.backpressured(kb.as_str());
+            }
             return Err(WriteError::IndexerBackpressureUpsert);
         }
         Err(TrySendError::Closed(ev)) => {
             tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
             let _ = ev;
+            if let Some(health) = sinks.index_health {
+                health.worker_stopped();
+            }
             // Closed = indexer worker ended (shutdown OR panic). v1 preserves success-with-error-log
             // until post-v1 worker liveness detection is added.
         }
@@ -193,16 +203,26 @@ pub async fn commit_delete(
         object_key: path.clone(),
     };
     match sinks.indexer_tx.try_send(event) {
-        Ok(()) => {}
+        Ok(()) => {
+            if let Some(health) = sinks.index_health {
+                health.enqueued(kb.as_str());
+            }
+        }
         Err(TrySendError::Full(ev)) => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
             let _ = ev;
+            if let Some(health) = sinks.index_health {
+                health.backpressured(kb.as_str());
+            }
             return Err(WriteError::IndexerBackpressureTombstone);
         }
-        // Closed means the indexer worker task ended via shutdown OR panic; v1 deliberately preserves success-with-error-log so writes are not blocked by a crashed worker, and post-v1 worker liveness detection will revisit this.
+        // Closed means the indexer worker task ended via shutdown OR panic; v1 deliberately preserves success-with-error-log so writes are not blocked by a crashed worker. The health view reports the stopped worker instead (#97).
         Err(TrySendError::Closed(ev)) => {
             tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
             let _ = ev;
+            if let Some(health) = sinks.index_health {
+                health.worker_stopped();
+            }
         }
     }
 
@@ -731,7 +751,12 @@ mod tests {
         events: &'a RecordingPublisher,
         source: notedthat_core::EventSource,
     ) -> WriteSinks<'a> {
-        WriteSinks::new(indexer_tx, Some(events), source)
+        WriteSinks {
+            indexer_tx,
+            events: Some(events),
+            index_health: None,
+            source,
+        }
     }
 
     #[tokio::test]
