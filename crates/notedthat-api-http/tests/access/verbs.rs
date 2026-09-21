@@ -299,7 +299,21 @@ async fn the_credential_holder_can_always_rewrite_the_manifest_that_locked_it_ou
                 .uri("/api/v1/knowledgebases/notes/.notedthat%2Fmanifest.json")
                 .header("authorization", format!("Bearer {TOKEN}"))
                 .header("content-type", "application/json")
-                .body(Body::from("{}"))
+                // A manifest startup would accept: the write path validates
+                // what it stores under this key, so the repair has to be a
+                // real manifest, not a placeholder.
+                .body(Body::from(
+                    serde_json::json!({
+                        "notedthat_version": "0.7.2",
+                        "manifest_version": 1,
+                        "tenant_slug": "default",
+                        "kb_slug": "notes",
+                        "display_name": "notes",
+                        "created_at": 1_700_000_000,
+                        "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+                    })
+                    .to_string(),
+                ))
                 .expect("request"),
         )
         .await

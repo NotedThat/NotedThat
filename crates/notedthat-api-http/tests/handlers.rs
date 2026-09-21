@@ -1514,6 +1514,84 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     }
 }
 
+/// A manifest is checked when it is written (#98): the `PUT` this project
+/// documents as the way to set a description on the `s3` backend must refuse
+/// what startup would refuse, here and now, rather than store it with a `201`
+/// and stop the next boot.
+#[tokio::test]
+async fn a_manifest_startup_would_refuse_is_refused_at_put() {
+    let a = app();
+    let manifest = |description: &str| {
+        serde_json::json!({
+            "notedthat_version": "0.7.2",
+            "manifest_version": 1,
+            "tenant_slug": "default",
+            "kb_slug": KB,
+            "display_name": "Notes",
+            "description": description,
+            "created_at": 1_700_000_000,
+            "access": [{ "who": "signed-in", "may": ["list", "read", "write", "delete", "search"] }]
+        })
+        .to_string()
+    };
+
+    // A description outside the limits: refused, naming the problem.
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest("two\nlines")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(resp).await;
+    assert_eq!(json["error"], "invalid_request");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("description")),
+        "{json}"
+    );
+
+    // Not a manifest at all: refused the same way.
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from("# not json"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A manifest naming another knowledge base: refused.
+    let other = manifest("fine").replace(&format!("\"kb_slug\":\"{KB}\""), "\"kb_slug\":\"other\"");
+    let resp = a
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(other),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // The manifest startup would accept is stored.
+    let resp = a
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/.notedthat/manifest.json"),
+            Body::from(manifest("Engineering notes and ADRs.")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn put_with_path_traversal_returns_400_or_404() {
     let resp = app()

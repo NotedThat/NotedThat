@@ -77,6 +77,9 @@ impl KbManifest {
     /// Maximum length of `description` in Unicode code points.
     pub const DESCRIPTION_MAX_CHARS: usize = 500;
 
+    /// The object key the manifest lives under, in every knowledge base.
+    pub const KEY: &'static str = ".notedthat/manifest.json";
+
     /// Validate that this manifest's `manifest_version` is supported, its
     /// `description` fits the limits, and its access rules are sound.
     pub fn validate(&self) -> Result<(), Error> {
