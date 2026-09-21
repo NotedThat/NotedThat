@@ -16,7 +16,7 @@ use super::fixture::{grant_under, json, listed_keys, policy};
 /// scoped grant has to skip roughly half of everything it scans.
 async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
-    let storage = Arc::new(InMemoryStorage::default());
+    let storage = Arc::new(InMemoryStorage::with_kbs([&notes]));
     for index in 0..count {
         let prefix = if index % 2 == 0 { "public" } else { "internal" };
         let key = format!("{prefix}/{index:04}.md");
@@ -197,7 +197,7 @@ async fn a_page_may_come_back_short_while_still_reporting_a_cursor() {
 /// recognised as disjoint.
 async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
-    let storage = Arc::new(InMemoryStorage::default());
+    let storage = Arc::new(InMemoryStorage::with_kbs([&notes]));
     for index in 0..count {
         let key = format!("{prefix}/{index:06}.md");
         storage

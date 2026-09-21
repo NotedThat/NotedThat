@@ -184,7 +184,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
         .expect("embedder construction"),
     );
 
-    let storage = Arc::new(InMemoryStorage::default());
+    let storage = Arc::new(InMemoryStorage::with_kbs([&kb_slug]));
     let (indexer_tx, indexer_rx) = tokio::sync::mpsc::channel(1024);
     let shutdown = CancellationToken::new();
 
@@ -238,9 +238,9 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
 /// Build a lightweight router with `InMemoryStorage` + `NoopSearcher` for HTTP-layer
 /// tests that do not require a real search backend.
 fn simple_router_for(kb: &str) -> axum::Router {
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(kb.to_string(), KbSlug::try_new(kb).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage: storage as Arc<dyn Storage>,

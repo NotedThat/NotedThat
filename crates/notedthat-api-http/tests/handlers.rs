@@ -27,10 +27,10 @@ fn app_with(
     max_body_size: u64,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
 ) -> axum::Router {
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
@@ -887,9 +887,9 @@ async fn delete_missing_object() {
 async fn delete_enqueues_tombstone_on_success() {
     use notedthat_indexer::IndexEvent;
 
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,
@@ -943,9 +943,9 @@ async fn delete_enqueues_tombstone_on_success() {
 async fn delete_enqueues_tombstone_on_not_found() {
     use notedthat_indexer::IndexEvent;
 
-    let storage = Arc::new(InMemoryStorage::default());
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let state = AppState {
         storage,

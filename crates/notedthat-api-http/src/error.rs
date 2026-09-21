@@ -434,7 +434,7 @@ mod tests {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         crate::router::build_router(crate::state::AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::default()),
+            storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
             declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
@@ -994,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn replace_indexer_backpressure_returns_503_with_retry_after() {
         let kb = KbSlug::try_new(KB).unwrap();
-        let storage = crate::testing::InMemoryStorage::default();
+        let storage = crate::testing::InMemoryStorage::with_kbs([&kb]);
         let etag = object_with_etag(&storage, &kb, "hello.md", b"hello world").await;
         let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         indexer_tx
@@ -1174,7 +1174,7 @@ mod tests {
             tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
             crate::router::build_router(crate::state::AppState {
-                storage: Arc::new(crate::testing::InMemoryStorage::default()),
+                storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                 access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
                 declared_kbs: Arc::new(kbs),
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
