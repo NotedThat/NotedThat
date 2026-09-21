@@ -1612,6 +1612,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_seek_from_end_without_a_cached_size_asks_storage_once() {
+        // The branch the dead copy never had: no `metadata()` call first, so the
+        // size comes from a `head_object` of its own — and is cached for the next.
+        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let mut file = read_file(storage.clone());
+
+        let offset = file
+            .seek(SeekFrom::End(-2))
+            .await
+            .expect("seek should succeed");
+
+        assert_eq!(offset, 40);
+        assert_eq!(file.size_hint, Some(42));
+        assert_eq!(storage.calls(), vec!["head_object"]);
+
+        let offset = file
+            .seek(SeekFrom::End(0))
+            .await
+            .expect("second seek should succeed");
+        assert_eq!(offset, 42);
+        assert_eq!(
+            storage.calls(),
+            vec!["head_object"],
+            "the size learnt by the first seek is reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_bytes_past_the_end_is_empty_and_leaves_the_offset_alone() {
+        // The other divergence: the dead copy turned `RangeNotSatisfiable` into
+        // `NotFound`; the live path reads it as EOF and does not move.
+        let storage = Arc::new(MockStorage {
+            get_range_not_satisfiable: true,
+            ..MockStorage::with_object(object_meta("test.md"))
+        });
+        let mut file = read_file(storage.clone());
+        file.read_offset = 42;
+
+        let bytes = file.read_bytes(8).await.expect("EOF read succeeds");
+
+        assert!(bytes.is_empty());
+        assert_eq!(file.read_offset, 42);
+        assert_eq!(
+            storage.get_ranges(),
+            vec![Some(ByteRange::FromStart {
+                first: 42,
+                last: 49
+            })],
+            "the range past the end was asked for, and storage said so"
+        );
+    }
+
+    #[tokio::test]
     async fn test_seek_from_current() {
         let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
         let mut file = read_file(storage);

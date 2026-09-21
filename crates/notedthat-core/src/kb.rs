@@ -175,19 +175,26 @@ pub fn slug_kb_details(
         .collect()
 }
 
-/// §6.8: a `display_name` is a non-empty Unicode string of at most
-/// [`KbManifest::DISPLAY_NAME_MAX_CHARS`] code points. Provisioning writes the
-/// slug (≤ 40 chars), so only a hand-edited manifest can fail here.
+/// §6.8: a `display_name` is a Unicode string that is not blank, carries no
+/// control characters, and is at most [`KbManifest::DISPLAY_NAME_MAX_CHARS`]
+/// code points — the same shape as the manifest's other free-text field.
+/// Provisioning writes the slug (≤ 40 chars), so only a hand-edited manifest
+/// can fail here.
 fn validate_display_name(display_name: &str) -> Result<(), Error> {
-    if display_name.is_empty() {
+    if display_name.trim().is_empty() {
         return Err(Error::InvalidInput {
-            message: "display_name must not be empty".into(),
+            message: "display_name must not be blank".into(),
+        });
+    }
+    if display_name.chars().any(char::is_control) {
+        return Err(Error::InvalidInput {
+            message: "display_name must not contain control characters".into(),
         });
     }
     if display_name.chars().count() > KbManifest::DISPLAY_NAME_MAX_CHARS {
         return Err(Error::InvalidInput {
             message: format!(
-                "display_name exceeds {} characters",
+                "display_name exceeds {} code points",
                 KbManifest::DISPLAY_NAME_MAX_CHARS
             ),
         });
@@ -296,6 +303,29 @@ mod tests {
     }
 
     #[test]
+    fn test_kb_manifest_validate_blank_display_name() {
+        for blank in ["   ", "\t", "\n"] {
+            assert!(
+                manifest_with_display_name(blank).validate().is_err(),
+                "{blank:?} is blank"
+            );
+        }
+    }
+
+    #[test]
+    fn test_kb_manifest_validate_display_name_with_control_characters() {
+        for name in ["My\nKB", "My\u{7f}KB", "\u{1}"] {
+            let error = manifest_with_display_name(name)
+                .validate()
+                .expect_err("control characters are refused");
+            assert!(
+                error.to_string().contains("control characters"),
+                "{name:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn test_kb_manifest_validate_display_name_exactly_128_chars() {
         let name = "a".repeat(128);
         assert!(manifest_with_display_name(&name).validate().is_ok());
@@ -304,7 +334,13 @@ mod tests {
     #[test]
     fn test_kb_manifest_validate_display_name_129_chars() {
         let name = "a".repeat(129);
-        assert!(manifest_with_display_name(&name).validate().is_err());
+        let error = manifest_with_display_name(&name)
+            .validate()
+            .expect_err("129 code points is over the limit");
+        assert!(
+            error.to_string().contains("exceeds 128 code points"),
+            "{error}"
+        );
     }
 
     #[test]

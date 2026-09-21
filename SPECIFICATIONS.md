@@ -396,9 +396,9 @@ on the request hot path and is rebuildable if lost.
 | Name | Shape | Use | Stability |
 |---|---|---|---|
 | `kb_slug` | `[a-z0-9-]{1,40}` | S3 bucket name (D20), Qdrant collection name, WebDAV URL path, MCP `kb` arg, HTTP API URL | immutable in v1 |
-| `display_name` | Unicode string, non-empty, ≤ 128 code points | UI-friendly name, held in `.notedthat/manifest.json` (§6.7); not rendered by any surface yet | mutable |
+| `display_name` | Unicode string, not blank, no control characters, ≤ 128 code points | UI-friendly name, held in `.notedthat/manifest.json` (§6.7); not rendered by any surface yet | mutable |
 
-Slug supplied by the operator in `NOTEDTHAT_KBS` (D32). `display_name` is written as the slug when a KB is first provisioned (§6.12) and validated — non-empty, ≤ 128 code points — whenever the manifest is loaded; a manifest outside the limit refuses startup (D39). Uniqueness scope: per tenant.
+Slug supplied by the operator in `NOTEDTHAT_KBS` (D32). `display_name` is written as the slug when a KB is first provisioned (§6.12) and validated — not blank, no control characters, ≤ 128 code points — whenever the manifest is loaded; a manifest outside the limit refuses startup (D39). Uniqueness scope: per tenant.
 
 **No separate UUID identifier in v1.** The slug *is* the identifier. This is safe because v1 is single-tenant, slugs are immutable, and slugs are unique per tenant. If multi-tenant KB rename ever lands post-v1, an internal UUID may reappear then — not now.
 
