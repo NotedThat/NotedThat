@@ -15,7 +15,9 @@ use notedthat_core::{
     TenantSlug, Verb, Who,
 };
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
-use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use notedthat_server::config::{
+    Config, EmbedderConfig, LogFormat, McpAnonymous, ServerQdrantConfig,
+};
 use notedthat_server::oidc::test_support::{JWKS_JSON, claims, mint, settings};
 use notedthat_server::run::Backends;
 use std::collections::BTreeMap;
@@ -110,6 +112,7 @@ fn test_config(
         webdav_password: "oidc-e2e-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],
         mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
+        mcp_anonymous: McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: Some(oidc),
@@ -167,12 +170,29 @@ impl Server {
     }
 
     async fn start_with(resource: Option<String>) -> Self {
+        Self::start_as(resource, false, McpAnonymous::Auto).await
+    }
+
+    /// A server whose one knowledge base additionally grants `anyone`
+    /// `list` and `read` when `public`, under the given MCP anonymous mode.
+    async fn start_as(resource: Option<String>, public: bool, mcp_anonymous: McpAnonymous) -> Self {
         let issuer = issuer().await;
         let storage = Arc::new(InMemoryStorage::default());
         seed(&storage).await;
+        if public {
+            let mut manifest = storage.read_manifest(&kb()).await.expect("manifest");
+            let mut rules: Vec<AccessRule> = manifest.access.rules().to_vec();
+            rules.push(AccessRule::new(Who::Anyone, [Verb::List, Verb::Read]));
+            manifest.access = rules.into_iter().collect();
+            storage
+                .write_manifest(&kb(), &manifest)
+                .await
+                .expect("public manifest");
+        }
 
         let bound_addr = notedthat_api_http::testing::reserve_addr();
-        let config = test_config(bound_addr, &issuer.uri(), resource);
+        let mut config = test_config(bound_addr, &issuer.uri(), resource);
+        config.mcp_anonymous = mcp_anonymous;
         let backends = Backends {
             storage,
             store: Arc::new(InMemoryVectorStore::new()),
@@ -410,6 +430,88 @@ async fn the_protected_resource_document_and_challenge_are_served_when_configure
             expected
         );
     }
+}
+
+#[tokio::test]
+async fn never_keeps_the_challenge_on_a_public_deployment() {
+    // Given — a deployment with a public knowledge base and an identity
+    // provider, whose operator wants OAuth clients challenged on connect.
+    let server = Server::start_as(
+        Some("https://notes.example.com".to_string()),
+        true,
+        McpAnonymous::Never,
+    )
+    .await;
+
+    // When — an MCP client connects with nothing.
+    let mcp = server
+        .client
+        .post(format!("{}/mcp", server.base))
+        .header("content-type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+        .send()
+        .await
+        .expect("mcp");
+
+    // Then — 401 with the challenge that names the authorization server,
+    // although the HTTP API serves the same caller anonymously.
+    assert_eq!(mcp.status(), 401);
+    assert_eq!(
+        mcp.headers()
+            .get("www-authenticate")
+            .expect("challenge")
+            .to_str()
+            .expect("ascii"),
+        "Bearer resource_metadata=\"https://notes.example.com/.well-known/oauth-protected-resource\""
+    );
+    assert_eq!(
+        server
+            .get("/api/v1/knowledgebases/notes/handbook.md", None)
+            .await
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn auto_admits_anonymous_mcp_on_a_public_deployment_but_never_a_bad_token() {
+    // Given — the same public deployment under the default mode.
+    let server = Server::start_as(
+        Some("https://notes.example.com".to_string()),
+        true,
+        McpAnonymous::Auto,
+    )
+    .await;
+    let list = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
+    });
+
+    // When / Then — no credential is the anonymous caller, and gets the tools …
+    let anonymous = server
+        .client
+        .post(format!("{}/mcp", server.base))
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .json(&list)
+        .send()
+        .await
+        .expect("mcp");
+    assert_eq!(anonymous.status(), 200);
+
+    // … while a token the issuer did not sign is still refused with the
+    // challenge, never downgraded to that same anonymous caller.
+    let refused = server
+        .client
+        .post(format!("{}/mcp", server.base))
+        .bearer_auth("not.a.jwt")
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .json(&list)
+        .send()
+        .await
+        .expect("mcp");
+    assert_eq!(refused.status(), 401);
+    assert!(refused.headers().get("www-authenticate").is_some());
 }
 
 #[tokio::test]

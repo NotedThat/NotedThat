@@ -54,7 +54,8 @@ claude mcp add --transport http notedthat https://notes.example.com/mcp \
 ```
 
 **n8n** — an *MCP Client Tool* node on an AI Agent: endpoint `https://notes.example.com/mcp`,
-transport *HTTP Streamable*, *Bearer Auth* with the token.
+transport *HTTP Streamable*, *Bearer Auth* with the token — or no auth at all for a knowledge base
+that grants `anyone` `read` and `search`.
 
 **claude.ai** — Settings → Connectors → *Add custom connector* with the same URL; it signs in
 through your OIDC provider.
@@ -303,7 +304,8 @@ gh attestation verify oci://ghcr.io/notedthat/server:0.2.0 --owner NotedThat
 
 With the server up, the WebDAV share is at `http://127.0.0.1:8080/webdav/` (Basic auth with the
 `NOTEDTHAT_WEBDAV_*` values from `.env`) and MCP at `POST http://127.0.0.1:8080/mcp` (Bearer with
-`NOTEDTHAT_API_TOKEN`). Smoke-test both without installing anything:
+`NOTEDTHAT_API_TOKEN`; a knowledge base whose manifest grants `anyone` something needs neither).
+Smoke-test both without installing anything:
 
 ```sh
 set -a; . ./.env; set +a

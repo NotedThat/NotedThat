@@ -79,6 +79,7 @@ fn test_config_with_mcp_http(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
@@ -130,6 +131,7 @@ fn test_config_with_kbs_and_mcp_http(
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
@@ -1343,6 +1345,309 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
         updated_content, "hello planet",
         "content should be updated after MCP replace"
     );
+
+    server_handle.abort();
+}
+
+// ─── Anonymous MCP (D59) ─────────────────────────────────────────────────────
+
+/// A `POST /mcp` with no `Authorization` header at all.
+async fn anonymous_mcp(
+    client: &reqwest::Client,
+    mcp_url: &str,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> reqwest::Response {
+    client
+        .post(mcp_url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }))
+        .send()
+        .await
+        .expect("anonymous MCP request")
+}
+
+async fn anonymous_tool_call(
+    client: &reqwest::Client,
+    mcp_url: &str,
+    id: u64,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let response = anonymous_mcp(
+        client,
+        mcp_url,
+        id,
+        "tools/call",
+        serde_json::json!({ "name": tool, "arguments": arguments }),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK, "{tool}");
+    response.json().await.expect("JSON-RPC body")
+}
+
+/// Two knowledge bases whose manifests are written before the server starts,
+/// so they are its startup snapshot: `public` grants `anyone` `list`, `read`
+/// and `search`; `private` grants anonymous callers nothing.
+async fn seed_public_and_private(backends: &notedthat_server::run::Backends) {
+    use notedthat_core::{AccessRule, KbManifest, KbSlug, TenantSlug, Verb, Who};
+
+    for (slug, anonymous) in [("public", true), ("private", false)] {
+        let kb = KbSlug::try_new(slug).expect("valid slug");
+        backends.storage.ensure_bucket(&kb).await.expect("bucket");
+        let mut manifest = KbManifest::new_v1(&TenantSlug::default(), &kb, slug, 1_700_000_000);
+        let mut rules = vec![AccessRule::new(Who::SignedIn, Verb::ALL)];
+        if anonymous {
+            rules.push(AccessRule::new(
+                Who::Anyone,
+                [Verb::List, Verb::Read, Verb::Search],
+            ));
+        }
+        manifest.access = rules.into_iter().collect();
+        backends
+            .storage
+            .write_manifest(&kb, &manifest)
+            .await
+            .expect("manifest");
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
+    // Given: a deployment with one public and one private knowledge base
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let config = test_config_with_kbs_and_mcp_http(&["public", "private"], http_addr);
+    let backends = in_memory_backends();
+    seed_public_and_private(&backends).await;
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run_with(config, backends)
+            .await
+            .expect("server run failed");
+    });
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{http_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
+    let client = reqwest::Client::new();
+    // One note in each, written through the API so that it is indexed too.
+    for (kb, body) in [
+        ("public", "# Public\n\nreadable by anyone\n"),
+        ("private", "# Private\n\nsigned-in only\n"),
+    ] {
+        let response = client
+            .put(format!("{http_url}/api/v1/knowledgebases/{kb}/note.md"))
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Content-Type", "text/markdown")
+            .body(body)
+            .send()
+            .await
+            .expect("seed PUT");
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED, "{kb}");
+    }
+
+    // When / Then: capability discovery needs no credential
+    let response = anonymous_mcp(&client, &mcp_url, 1, "initialize", serde_json::json!({})).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK, "initialize");
+    let response = anonymous_mcp(&client, &mcp_url, 2, "tools/list", serde_json::json!({})).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK, "tools/list");
+    let tools: serde_json::Value = response.json().await.expect("tools/list body");
+    assert_eq!(
+        tools["result"]["tools"].as_array().map(Vec::len),
+        Some(EXPECTED_M7_TOOLS.split(',').count()),
+        "every tool is advertised; a mutating call fails instead: {tools}"
+    );
+
+    // Then: discovery names only the knowledge base that grants anyone something
+    let listed = anonymous_tool_call(
+        &client,
+        &mcp_url,
+        3,
+        "list_knowledgebases",
+        serde_json::json!({}),
+    )
+    .await;
+    // Slugs only: an entry may carry more fields (#155 adds `display_name`
+    // and `description`); what matters here is which knowledge bases appear.
+    let entries = mcp_json_content(&listed);
+    let slugs: Vec<&str> = entries
+        .as_array()
+        .expect("an array of entries")
+        .iter()
+        .map(|entry| entry["kb_slug"].as_str().expect("kb_slug"))
+        .collect();
+    assert_eq!(slugs, ["public"], "{listed}");
+
+    // Then: read and list succeed where `anyone` holds the verb …
+    let read = anonymous_tool_call(
+        &client,
+        &mcp_url,
+        4,
+        "read",
+        serde_json::json!({ "kb": "public", "path": "note.md" }),
+    )
+    .await;
+    assert!(
+        read["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("readable by anyone")),
+        "{read}"
+    );
+    let list = anonymous_tool_call(
+        &client,
+        &mcp_url,
+        5,
+        "list",
+        serde_json::json!({ "kb": "public" }),
+    )
+    .await;
+    assert_eq!(
+        mcp_json_content(&list)["objects"][0]["key"],
+        serde_json::json!("note.md"),
+        "{list}"
+    );
+
+    // … and are concealed as not_found where it does not — the private
+    // knowledge base is indistinguishable from one that was never declared
+    for (id, tool, arguments) in [
+        (
+            6,
+            "read",
+            serde_json::json!({ "kb": "private", "path": "note.md" }),
+        ),
+        (7, "list", serde_json::json!({ "kb": "private" })),
+        (
+            8,
+            "read",
+            serde_json::json!({ "kb": "undeclared", "path": "note.md" }),
+        ),
+    ] {
+        let denied = anonymous_tool_call(&client, &mcp_url, id, tool, arguments).await;
+        assert_eq!(
+            denied["error"]["code"],
+            serde_json::json!(-32002),
+            "{tool} on a knowledge base anyone may not touch is not_found: {denied}"
+        );
+        assert!(
+            !denied.to_string().contains("forbidden"),
+            "an anonymous denial never says forbidden: {denied}"
+        );
+    }
+
+    // Then: a search with `kb` omitted covers what anyone may search and
+    // never names the private knowledge base. Indexing is asynchronous, so
+    // poll until the public note is a hit.
+    let deadline = tokio::time::Instant::now() + SERVER_READY_TIMEOUT;
+    let searched = loop {
+        let answer = anonymous_tool_call(
+            &client,
+            &mcp_url,
+            9,
+            "search",
+            serde_json::json!({ "query": "readable by anyone", "limit": 5 }),
+        )
+        .await;
+        if answer.get("error").is_none() {
+            let content = mcp_json_content(&answer);
+            if content["results"][0]["hits"]
+                .as_array()
+                .is_some_and(|hits| !hits.is_empty())
+            {
+                break content;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "public note never became searchable anonymously: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(
+        searched["results"].as_array().map(Vec::len),
+        Some(1),
+        "{searched}"
+    );
+    assert_eq!(searched["results"][0]["kb"], "public", "{searched}");
+    assert!(
+        !searched.to_string().contains("private"),
+        "a knowledge base anyone may not see is never named, not even as skipped: {searched}"
+    );
+
+    // Then: a mutating tool is refused — its route admits no anonymous caller
+    let write = anonymous_tool_call(
+        &client,
+        &mcp_url,
+        10,
+        "write",
+        serde_json::json!({ "kb": "public", "path": "new.md", "content": "# no" }),
+    )
+    .await;
+    assert_eq!(write["error"]["message"], "unauthorized", "{write}");
+    let response = client
+        .get(format!("{http_url}/api/v1/knowledgebases/public/new.md"))
+        .send()
+        .await
+        .expect("GET");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "nothing was written"
+    );
+
+    // Then: a supplied credential that does not verify is refused outright,
+    // never quietly downgraded to the anonymous caller
+    let response = client
+        .post(&mcp_url)
+        .header("Authorization", "Bearer not-the-token")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":11,"method":"tools/list","params":{}}"#)
+        .send()
+        .await
+        .expect("POST /mcp (wrong bearer)");
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = response.json().await.expect("401 body");
+    assert_eq!(body["error"], "unauthorized");
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn never_keeps_mcp_credentialed_on_a_public_deployment() {
+    // Given: the same public knowledge base, and an operator who said never
+    let http_addr = notedthat_api_http::testing::reserve_addr();
+    let mut config = test_config_with_kbs_and_mcp_http(&["public", "private"], http_addr);
+    config.mcp_anonymous = notedthat_server::config::McpAnonymous::Never;
+    let backends = in_memory_backends();
+    seed_public_and_private(&backends).await;
+    let server_handle = tokio::spawn(async move {
+        notedthat_server::run::run_with(config, backends)
+            .await
+            .expect("server run failed");
+    });
+    let http_url = format!("http://{http_addr}");
+    let mcp_url = format!("http://{http_addr}/mcp");
+    wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
+    let client = reqwest::Client::new();
+
+    // When: an anonymous client tries to discover the tools
+    let response = anonymous_mcp(&client, &mcp_url, 1, "tools/list", serde_json::json!({})).await;
+
+    // Then: 401 — the challenge an OAuth-capable client needs — although the
+    // same request on the HTTP API succeeds, because the rules did not change
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let response = client
+        .get(format!("{http_url}/api/v1/knowledgebases"))
+        .send()
+        .await
+        .expect("GET /api/v1/knowledgebases");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     server_handle.abort();
 }

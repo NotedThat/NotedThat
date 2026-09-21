@@ -20,7 +20,10 @@ This page is setup snippets, one client at a time. The tools themselves are docu
 
 Both present the same ten tools. The bearer can be `NOTEDTHAT_API_TOKEN` or an identity token
 from your OIDC provider; the rules that apply are the caller's, so an agent holding a restricted
-identity sees a restricted knowledge base.
+identity sees a restricted knowledge base. A knowledge base that is public — its manifest grants
+`anyone` `read` or `search` — needs no credential over MCP either: leave the header out and the
+client is the anonymous caller, with exactly what `anyone` may do and nothing more
+([D59](../SPECIFICATIONS.md#2-decisions-log)).
 
 **Reaching `/mcp` from another host.** The MCP endpoint answers only to `Host` values it is told
 to expect — the default is loopback. Any client that is not on the same machine needs the public
@@ -68,7 +71,10 @@ With an [OIDC provider](CONFIGURATION.md#oidc-authentication) configured and
 authorization server and signs you in through the browser, and then acts as *you* — a
 `group:editors` rule that lets you write lets Claude Code write, and one that does not, does not.
 The provider has to know the client first; [MCP clients](CONFIGURATION.md#mcp-clients) says what to
-register.
+register. One caveat: on a deployment where some knowledge base is public, there is no `401` —
+a client with no token is simply admitted as the anonymous caller and sees the public knowledge
+bases. Sign in explicitly there (`/mcp` → *Authenticate*), or have the operator set
+`NOTEDTHAT_MCP_ANONYMOUS=never`.
 
 ## Claude.ai and Claude Desktop
 
@@ -81,7 +87,9 @@ URL above. Register a confidential client for Claude at the provider — the con
 the callback URL to allow — and paste its client id and secret into the connector's advanced
 settings. Once connected, Claude searches and edits notes as the signed-in user, and the server's
 access rules decide what that user may do. The server must be reachable from the internet over
-HTTPS.
+HTTPS. The same caveat as for Claude Code applies: a deployment with public knowledge bases does
+not answer `401`, so a connector that has not completed OAuth is served as the anonymous caller;
+`NOTEDTHAT_MCP_ANONYMOUS=never` makes the sign-in mandatory again.
 
 Claude Desktop can also spawn the stdio adapter for a server on your own machine. Edit
 `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or

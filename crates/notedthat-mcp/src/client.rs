@@ -29,7 +29,9 @@ pub enum ConfigError {
 pub struct NotedThatClient {
     pub(crate) http: reqwest::Client,
     base_url: Url,
-    pub(crate) token: String,
+    /// The bearer every request carries, or `None` for the anonymous caller,
+    /// whose requests carry no `Authorization` header at all.
+    pub(crate) token: Option<String>,
 }
 
 impl NotedThatClient {
@@ -63,7 +65,7 @@ impl NotedThatClient {
         Ok(Self {
             http,
             base_url: parsed,
-            token: token_trimmed.to_string(),
+            token: Some(token_trimmed.to_string()),
         })
     }
 
@@ -78,7 +80,22 @@ impl NotedThatClient {
         Self {
             http: self.http.clone(),
             base_url: self.base_url.clone(),
-            token: token.to_string(),
+            token: Some(token.to_string()),
+        }
+    }
+
+    /// The same client presenting no credential at all.
+    ///
+    /// How the MCP service acts as an anonymous caller: the loopback call
+    /// carries no `Authorization` header, the API resolves it to the anonymous
+    /// principal, and the manifests' `anyone` rules decide — exactly as they
+    /// would for an anonymous request made directly.
+    #[must_use]
+    pub fn anonymous(&self) -> Self {
+        Self {
+            http: self.http.clone(),
+            base_url: self.base_url.clone(),
+            token: None,
         }
     }
 
@@ -103,11 +120,15 @@ impl NotedThatClient {
         url
     }
 
-    /// Attach `Authorization: Bearer <token>` to a request, and name this
-    /// surface so a write's change event says `mcp` rather than `http`.
+    /// Attach `Authorization: Bearer <token>` to a request — nothing for the
+    /// anonymous caller — and name this surface so a write's change event says
+    /// `mcp` rather than `http`.
     pub(crate) fn authorized(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        req.bearer_auth(&self.token)
-            .header(SOURCE_HEADER, SOURCE_VALUE)
+        let req = match &self.token {
+            Some(token) => req.bearer_auth(token),
+            None => req,
+        };
+        req.header(SOURCE_HEADER, SOURCE_VALUE)
     }
 
     /// The slugs of the knowledge bases visible to this client's caller, in
@@ -165,6 +186,25 @@ mod tests {
             .build()
             .expect("request builds");
         assert_eq!(req.headers().get("authorization").unwrap(), "Bearer tok");
+        assert_eq!(req.headers().get(SOURCE_HEADER).unwrap(), SOURCE_VALUE);
+    }
+
+    #[test]
+    fn an_anonymous_client_sends_no_authorization_header() {
+        // Given: a client acting as the anonymous caller
+        let c = NotedThatClient::new("http://localhost:8080", "tok")
+            .unwrap()
+            .anonymous();
+
+        // When: it builds a request
+        let req = c
+            .authorized(c.http.get(c.api_v1_url(&["knowledgebases"])))
+            .build()
+            .expect("request builds");
+
+        // Then: no credential at all — the API must see an anonymous request,
+        // not the server's own token — while the surface is still named
+        assert!(req.headers().get("authorization").is_none());
         assert_eq!(req.headers().get(SOURCE_HEADER).unwrap(), SOURCE_VALUE);
     }
 

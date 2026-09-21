@@ -131,6 +131,31 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
             .await,
         );
     }
+
+    // MCP is bound by the same snapshot (D59): with one knowledge base
+    // granting anyone `read`, an anonymous MCP client is admitted and sees
+    // exactly what anonymous discovery shows.
+    let mcp = wire(
+        "MCP anonymous list_knowledgebases before restart",
+        client
+            .post(format!("{}/mcp", first.http_url))
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "list_knowledgebases", "arguments": {} },
+            }))
+            .send()
+            .await
+            .expect("anonymous MCP"),
+    )
+    .await;
+    assert_eq!(mcp.status, StatusCode::OK);
+    assert!(
+        mcp.text().contains(PUBLIC_KB) && !mcp.text().contains(PRIVATE_KB),
+        "anonymous MCP discovery matches anonymous HTTP discovery: {}",
+        mcp.text()
+    );
 }
 
 #[tokio::test]

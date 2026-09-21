@@ -58,6 +58,7 @@ fn test_config() -> Config {
             "localhost".to_string(),
             "::1".to_string(),
         ],
+        mcp_anonymous: crate::config::McpAnonymous::Auto,
         max_patchable_size: 100 * 1024 * 1024,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
@@ -177,6 +178,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
             build_router(
                 &config,
                 std::sync::Arc::new(notedthat_core::Authenticator::new(config.api_token.clone())),
+                &std::collections::BTreeMap::new(),
                 &internal_http_api_url(backend_addr),
                 mcp_shutdown,
             )

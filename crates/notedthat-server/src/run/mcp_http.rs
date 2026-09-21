@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, McpAnonymous};
 use anyhow::Context;
 use axum::{
     body::Body,
@@ -7,18 +7,23 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post_service},
 };
-use notedthat_core::Authenticator;
+use notedthat_core::{AccessPolicy, Authenticator, Principal};
 use notedthat_mcp::{
-    McpHttpService, McpHttpServiceConfig, auth::require_bearer_auth, client::NotedThatClient,
+    McpHttpService, McpHttpServiceConfig,
+    auth::{McpAuth, authenticate_caller},
+    client::NotedThatClient,
     sse_refusal::refusal_body,
 };
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 pub(crate) fn build_router(
     config: &Config,
     authenticator: Arc<Authenticator>,
+    access_policies: &BTreeMap<String, Arc<AccessPolicy>>,
     internal_api_url: &str,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<axum::Router> {
@@ -31,9 +36,13 @@ pub(crate) fn build_router(
     )
     .context("failed to build MCP HTTP service config")?;
     let mcp_service = McpHttpService::new(client, &mcp_config);
-    let authenticated_mcp = post_service(mcp_service.into_service()).route_layer(
-        middleware::from_fn_with_state(authenticator, require_bearer_auth),
-    );
+    let anonymous = anonymous_admitted(config.mcp_anonymous, access_policies);
+    let auth = Arc::new(McpAuth {
+        authenticator,
+        anonymous,
+    });
+    let authenticated_mcp = post_service(mcp_service.into_service())
+        .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
     Ok(axum::Router::new()
         .route(
             "/mcp",
@@ -47,6 +56,38 @@ pub(crate) fn build_router(
         )
         .route("/sse/", any(legacy_transport_refusal))
         .route("/sse/{*path}", any(legacy_transport_refusal)))
+}
+
+/// Whether `/mcp` lets a request with no credential through, decided once.
+///
+/// Policies are a startup snapshot, so this is exact for the life of the
+/// process. It is on when some declared knowledge base grants `anyone`
+/// something — the same test that makes a knowledge base appear in an
+/// anonymous listing — unless the operator said `never`. Off means a missing
+/// credential answers `401` with the bearer challenge, which is what an
+/// OAuth-capable MCP client needs to see before it signs in; that is why
+/// `never` exists for a deployment that has both public knowledge bases and
+/// an identity provider. Logged as `MCP_ANONYMOUS` so an operator can tell
+/// which of the three cases they are in.
+fn anonymous_admitted(
+    mode: McpAnonymous,
+    access_policies: &BTreeMap<String, Arc<AccessPolicy>>,
+) -> bool {
+    let granted = access_policies
+        .values()
+        .any(|policy| policy.visible_in_listing(&Principal::Anyone));
+    let (admitted, reason) = match (mode, granted) {
+        (McpAnonymous::Never, _) => (false, "disabled_by_setting"),
+        (McpAnonymous::Auto, false) => (false, "disabled_no_anonymous_grants"),
+        (McpAnonymous::Auto, true) => (true, "enabled"),
+    };
+    info!(
+        mode = %mode,
+        anonymous_grants = granted,
+        admitted,
+        "MCP_ANONYMOUS {reason}"
+    );
+    admitted
 }
 
 async fn legacy_transport_refusal() -> Response {
@@ -75,7 +116,29 @@ pub(crate) fn internal_http_api_url(addr: SocketAddr) -> String {
 mod tests {
     use super::*;
     use axum::http::Request;
+    use notedthat_core::{AccessRule, Verb, Who};
     use tower::ServiceExt as _;
+
+    fn policies(rules: Vec<AccessRule>) -> BTreeMap<String, Arc<AccessPolicy>> {
+        BTreeMap::from([(
+            "notes".to_string(),
+            Arc::new(rules.into_iter().collect::<AccessPolicy>()),
+        )])
+    }
+
+    #[test]
+    fn anonymous_is_admitted_only_under_auto_with_an_anonymous_grant() {
+        let public = policies(vec![
+            AccessRule::new(Who::SignedIn, Verb::ALL),
+            AccessRule::new(Who::Anyone, [Verb::Read]),
+        ]);
+        let private = policies(vec![AccessRule::new(Who::SignedIn, Verb::ALL)]);
+
+        assert!(anonymous_admitted(McpAnonymous::Auto, &public));
+        assert!(!anonymous_admitted(McpAnonymous::Auto, &private));
+        assert!(!anonymous_admitted(McpAnonymous::Auto, &BTreeMap::new()));
+        assert!(!anonymous_admitted(McpAnonymous::Never, &public));
+    }
 
     #[tokio::test]
     async fn trailing_slash_sse_path_refuses_every_method() {

@@ -77,6 +77,9 @@ assert "alice's access token is a JWT carrying groups" "editors" "$(printf '%s' 
 assert "a bogus bearer is 401" "401" "$(status -H 'Authorization: Bearer not-a-token' "$(obj handbook.md)")"
 CHALLENGE=$(curl -s -D - -o /dev/null -H 'Authorization: Bearer not-a-token' "$(obj handbook.md)" | grep -i '^www-authenticate:' | tr -d '\r\n')
 case "$CHALLENGE" in *resource_metadata=*) echo "PASS: 401 carries the resource_metadata challenge";; *) echo "FAIL: no challenge on 401: '$CHALLENGE'" >&2; exit 1;; esac
+# This holds because no knowledge base here grants `anyone` anything; with a public knowledge
+# base, `auto` (the default) admits a bare request as the anonymous caller (D59) and only
+# NOTEDTHAT_MCP_ANONYMOUS=never keeps the 401.
 MCP_STATUS=$(status -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' "$NT_URL/mcp")
 assert "MCP without a bearer is 401" "401" "$MCP_STATUS"
 

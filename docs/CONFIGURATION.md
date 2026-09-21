@@ -399,8 +399,10 @@ token — is the one its API calls carry, so a tool call inherits that principal
 any restriction placed on them.
 
 There are no built-in rate or burst settings. Before enabling anonymous `search`, set rate and burst
-controls at the reverse proxy for that route, tuned to the capacity of the embedding and search
-backends. Do not add an application configuration variable for this control.
+controls at the reverse proxy for that route **and for `/mcp`**, tuned to the capacity of the
+embedding and search backends: an anonymous MCP `search` with `kb` omitted fans out to every
+knowledge base anonymous callers may see, up to eight at a time. Do not add an application
+configuration variable for this control.
 
 `/healthz`, `/readyz` and `/llms.txt` are globally public.
 
@@ -470,6 +472,14 @@ redirect URI (the client documents it — `http://127.0.0.1:<port>/callback` or 
 the client that id. Add the id to `NOTEDTHAT_OIDC_AUDIENCE` if the provider puts the client id in
 `aud` (Authentik and Authelia do). Set `NOTEDTHAT_OIDC_RESOURCE` to the URL the client connects to,
 scheme and host exactly as it will use them.
+
+The `401` is the trigger, and on a deployment where some knowledge base grants `anyone` a verb
+there is none: `/mcp` admits a request with no credential as the anonymous caller
+([D59](../SPECIFICATIONS.md#2-decisions-log)), so an OAuth client that connects without a token
+is served the public knowledge bases and is never prompted to sign in. Either sign the client in
+explicitly (Claude Code: `/mcp` → *Authenticate*) or set `NOTEDTHAT_MCP_ANONYMOUS=never`, which
+keeps the `401` on `/mcp` — and gives up anonymous MCP — while the HTTP API, WebDAV and the browse
+pages keep honouring the `anyone` rules. See [MCP HTTP listener](#mcp-http-listener).
 
 ### Authentik
 
@@ -566,6 +576,10 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
 - `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` — a manifest names a `group:` or `user:` rule and no
   issuer is configured; the rule can never match, and the base is named. Not a refusal, because
   manifests live in buckets that outlive one deployment's configuration.
+- `MCP_ANONYMOUS enabled` / `MCP_ANONYMOUS disabled_no_anonymous_grants` /
+  `MCP_ANONYMOUS disabled_by_setting` — whether `/mcp` admits a request with no credential, with
+  the mode and whether any manifest grants `anyone` something. See
+  [MCP HTTP listener](#mcp-http-listener).
 
 ## Upload and index staging directory
 
@@ -967,9 +981,20 @@ the stdio transport. It is always mounted as streamable HTTP at `POST /mcp` on t
 |----------|------|------|---------|-------------|
 | `NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS` | `--mcp-http-allowed-origins` | comma-separated strings | (unset) | Allowed `Origin` header values. When unset or empty, defaults to `["null"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
 | `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | `--mcp-http-allowed-hosts` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
+| `NOTEDTHAT_MCP_ANONYMOUS` | `--mcp-anonymous` | `auto` or `never` | `auto` (unset or empty means `auto`) | Whether `POST /mcp` admits a request with no `Authorization` header. `auto`: yes, when at least one declared knowledge base grants `anyone` some verb; the tools then act as the anonymous caller and the `anyone` rules decide. `never`: always `401`, so an OAuth-capable client is challenged on connect even on a deployment with public knowledge bases. Any other value refuses startup. |
 
-`NOTEDTHAT_API_TOKEN` is reused for MCP HTTP Bearer authentication. Every request to `POST /mcp`
-must present this token in an `Authorization: Bearer` header.
+### Who may call `/mcp`
+
+`POST /mcp` accepts the same bearers as the HTTP API — `NOTEDTHAT_API_TOKEN`, or an identity
+token when an [OIDC issuer](#oidc-authentication) is configured — and acts as that caller on its
+loopback API call. A request with **no** credential is admitted as the anonymous caller when some
+declared knowledge base grants `anyone` a verb and `NOTEDTHAT_MCP_ANONYMOUS` is `auto`: the
+loopback call carries no credential either, so `list_knowledgebases` names only the knowledge
+bases anonymous callers may see, the read-only tools work where `anyone` holds the verb, a denial
+is a `not_found` tool error and a mutating tool is `unauthorized`. Otherwise a missing credential
+is `401` with the bearer challenge. A supplied credential that does not verify is `401` in every
+mode; it never becomes the anonymous caller. The decision is taken once at startup, as the access
+rules themselves are, and logged as `MCP_ANONYMOUS`.
 
 ### Origin and Host allow-list semantics
 

@@ -23,12 +23,12 @@ The default listen address is `0.0.0.0:8080`. Override it with `NOTEDTHAT_LISTEN
 ## LLM navigation document
 
 `GET /llms.txt` returns a public `text/plain; charset=utf-8` document that explains how an LLM can
-discover and navigate the API. It contains generic route and authentication guidance only: it never
-includes credentials, configured knowledge-base names, or deployment-specific details.
+discover and navigate the deployment: the access rules that govern every surface, the `/api/v1/`
+routes, the MCP endpoint with its transport, its auth rule and a copy-pasteable HTTP-transport
+client block, and the WebDAV share with its schemes. It contains generic guidance only: it never
+includes credentials, hostnames, configured knowledge-base names, or deployment-specific details.
 
 Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
-The document explains when `/api/v1/` discovery, object, and search operations require authentication
-and when a configured anonymous capability may be used without a header.
 
 ## Browse surface
 
@@ -97,10 +97,11 @@ When the deployment publishes RFC 9728 metadata (`NOTEDTHAT_OIDC_RESOURCE`), eve
 document names the authorization server a client can obtain a token from.
 
 Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
-public. An installation may additionally expose a per-knowledge-base anonymous read capability
-through its manifest. A client must omit `Authorization` only when it knows the requested
-capability is configured: a supplied malformed or invalid credential always returns `401
-unauthorized` and never falls back to anonymous access.
+public. An installation may additionally grant verbs to `anyone` through a knowledge base's
+manifest, and such a grant is honoured on every surface — the HTTP API, WebDAV, the browse pages
+and, since D59, MCP. A client must omit `Authorization` only when it knows the requested verb is
+granted: a supplied malformed or invalid credential always returns `401 unauthorized` and never
+falls back to anonymous access.
 
 ### Manifest access rules
 
@@ -1377,7 +1378,7 @@ location /api/v1/ {
 |--------|------|------|-------------|
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
-| GET | `/llms.txt` | No | Plain-text API navigation instructions for LLM clients |
+| GET | `/llms.txt` | No | Plain-text navigation instructions for LLM clients: access rules, API, MCP, WebDAV |
 | GET | `/.well-known/oauth-protected-resource` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
@@ -1390,6 +1391,8 @@ location /api/v1/ {
 | POST | `/api/v1/knowledgebases/{kb_slug}/replace/{path}` | Yes | String replace; exact UTF-8 substring find-and-replace under `If-Match` |
 | POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 | GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
+| POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
+| any | `/webdav/`… | Basic or Bearer, or anonymous where granted | WebDAV Class 1 share, one directory per knowledge base |
 
 
 ---
@@ -1398,7 +1401,7 @@ location /api/v1/ {
 
 NotedThat exposes a WebDAV read-write surface at `/webdav` on the same listener as the HTTP API
 and MCP. Authentication uses HTTP Basic auth (`NOTEDTHAT_WEBDAV_USERNAME` /
-`NOTEDTHAT_WEBDAV_PASSWORD`).
+`NOTEDTHAT_WEBDAV_PASSWORD`) or, as on every other surface, `Authorization: Bearer` (D53).
 
 WebDAV is governed by the same [access rules](#manifest-access-rules) as the HTTP API, mapped onto
 its own methods:
@@ -1609,9 +1612,10 @@ still set** (D39 fail-fast; the error names the replacement):
 Startup fails rather than ignoring these because ignoring them silently widens network exposure.
 An operator who bound WebDAV to `127.0.0.1` while the API listened on `0.0.0.0` would find WebDAV
 publicly reachable at `/webdav`, and an operator who set `NOTEDTHAT_MCP_HTTP_ENABLED=false` would
-find `/mcp` mounted. Authentication still applies to both surfaces — Basic for WebDAV, Bearer plus
-Host/Origin validation for MCP — but the reachable network surface changes, so the decision is
-returned to the operator instead of being made silently.
+find `/mcp` mounted. Authentication still applies to both surfaces — Basic or Bearer for WebDAV;
+Bearer, or the anonymous caller where the manifests admit one, plus Host/Origin validation for MCP
+— but the reachable network surface changes, so the decision is returned to the operator instead
+of being made silently.
 
 **Reverse proxies and containers.** Forward every route to the single application port; the
 container now exposes only `8080`. Terminate TLS once, in front of that port. Per-surface proxy
@@ -1658,10 +1662,30 @@ Authorization: Bearer <NOTEDTHAT_API_TOKEN or identity token>
 
 MCP acts as its caller: the bearer presented to `/mcp` is the bearer the server's own API calls
 carry, so a tool call is bound by exactly the rules a direct request would be, and a refusal
-surfaces as a `forbidden` tool error. A missing or unverifiable bearer is `401` with a JSON body,
-plus a `WWW-Authenticate: Bearer resource_metadata="…"` challenge when the deployment publishes
-RFC 9728 metadata — which is how an OAuth-capable MCP client finds the authorization server and
-runs the authorization-code flow against it.
+surfaces as a `forbidden` tool error. An unverifiable bearer — or a `Basic` credential, which is
+WebDAV's — is `401` with a JSON body and never a quiet downgrade to anonymous access.
+
+**Anonymous callers (D59).** A request with no `Authorization` header at all is admitted as the
+anonymous caller when at least one declared knowledge base grants `anyone` some verb, unless the
+operator set [`NOTEDTHAT_MCP_ANONYMOUS=never`](CONFIGURATION.md#mcp-http-listener). The loopback
+API call then carries no credential either, so the manifests' `anyone` rules decide exactly as they
+would for a direct anonymous request: `initialize` and `tools/list` succeed and advertise all ten
+tools; `list_knowledgebases` names only the knowledge bases in which `anyone` holds a grant; `list`,
+`read` and `search` work where `anyone` holds that verb under the matching patterns; a denial is a
+`not_found` tool error — the API's concealed `404`, so the answer cannot enumerate private
+knowledge bases; and a mutating tool (`write`, `edit`, `append`, `replace`, `move`, `delete`) is an
+`unauthorized` tool error, since no anonymous caller may ever write. `resources/list` needs `list`
+in every visible knowledge base and fails whole otherwise, for anonymous and signed-in callers
+alike.
+
+When no knowledge base grants `anyone` anything, or under `never`, a missing bearer is `401` with
+a JSON body plus a `WWW-Authenticate: Bearer resource_metadata="…"` challenge when the deployment
+publishes RFC 9728 metadata — which is how an OAuth-capable MCP client finds the authorization
+server and runs the authorization-code flow against it. That is the reason `never` exists: on a
+deployment with public knowledge bases *and* an identity provider, an OAuth client that connects
+without a token is simply admitted as anonymous and never prompted to sign in; `never` restores
+the prompt at the cost of anonymous MCP. The startup log line `MCP_ANONYMOUS` says which case a
+deployment is in.
 
 The server operates in **stateless JSON-response mode**: each `POST /mcp` request is a complete, self-contained JSON-RPC exchange. No session state is retained between requests.
 
@@ -1876,8 +1900,9 @@ All MCP errors carry one of these codes:
 | Code | HTTP Status | Meaning |
 |------|-------------|---------|
 | `invalid_request` | 400 | Bad arguments or validation failure |
-| `unauthorized` | 401 | Missing or invalid bearer token |
-| `not_found` | 404 | Knowledge base or object not found, including a declared knowledge base whose bucket is gone |
+| `unauthorized` | 401 | The API refused the call's credential — over HTTP, an anonymous caller invoking a mutating tool, since a bad bearer never reaches a tool |
+| `forbidden` | 403 | The credential is valid but the knowledge base's access rules do not grant this operation on this key |
+| `not_found` | 404 | Knowledge base or object not found (including a declared knowledge base whose bucket is gone) — or, for an anonymous caller, a knowledge base or key the `anyone` rules do not grant, concealed as the same `404` |
 | `precondition_failed` | 412 | ETag mismatch (If-Match / If-None-Match) |
 | `payload_too_large` | 413 | Content exceeds server limit (16 MiB) |
 | `range_not_satisfiable` | 416 | Byte range beyond object size |
@@ -1889,4 +1914,4 @@ All MCP errors carry one of these codes:
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
 - **No subscribe or listChanged**: Resources capability is advertised without these fields; clients must poll `resources/list` for updates
-- **No per-KB access control**: `NOTEDTHAT_API_TOKEN` is a single shared secret; there is no JWT or per-KB visibility in v1
+- **`tools/list` is static**: an anonymous caller is shown the mutating tools too and learns they are refused only by calling one; grants are per knowledge base and per path, so a filtered list would be a false signal anyway
