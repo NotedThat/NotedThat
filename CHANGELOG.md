@@ -10,6 +10,13 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/NotedThat/NotedThat/compare/v0.7.1...v0.7.2) - 2026-09-21
+
+### Other
+
+- Merge pull request #150 from NotedThat/chore/inherit-workspace-metadata
+- inherit homepage and authors from the workspace in every crate
+
 ## [0.7.1](https://github.com/NotedThat/NotedThat/compare/v0.7.0...v0.7.1) - 2026-09-21
 
 ### Added
