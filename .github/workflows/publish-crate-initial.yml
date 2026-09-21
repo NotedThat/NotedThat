@@ -17,6 +17,8 @@ name: Publish crate (initial)
 #   1. Validates the crate exists in this workspace and is publishable.
 #   2. Publishes it with CARGO_REGISTRY_TOKEN.
 #   3. Best-effort: registers two Trusted Publishing configs on crates.io
+#      (the API wants the fields wrapped in a `github_config` object — an
+#      unwrapped body is a 422 "missing field `github_config`")
 #      (ci.yml + release, and publish-crate-manual.yml + release) so future
 #      versions can publish via OIDC without web-UI steps. If the token
 #      lacks the `trusted-publishing` scope or the user is not a crate
@@ -125,7 +127,7 @@ jobs:
               -H "Content-Type: application/json" \
               -H "User-Agent: notedthat-publish-bot (release@notedthat.dev)" \
               "https://crates.io/api/v1/trusted_publishing/github_configs" \
-              -d "{\"github_owner\":\"NotedThat\",\"github_repo\":\"NotedThat\",\"workflow_filename\":\"${workflow}\",\"environment\":\"release\",\"crate_name\":\"${CRATE}\"}" \
+              -d "{\"github_config\":{\"crate\":\"${CRATE}\",\"repository_owner\":\"NotedThat\",\"repository_name\":\"NotedThat\",\"workflow_filename\":\"${workflow}\",\"environment\":\"release\"}}" \
               && echo "    OK: ${workflow}" \
               || echo "    WARNING: failed to register ${workflow} (configure manually at https://crates.io/crates/${CRATE}/settings)"
           done

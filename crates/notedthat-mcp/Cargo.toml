@@ -32,7 +32,7 @@ notedthat-core = { workspace = true }
 
 [dev-dependencies]
 # `test-support` carries the stub token verifier the auth middleware tests use.
-notedthat-core = { workspace = true, features = ["test-support"] }
+notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
 wiremock = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true }

@@ -23,8 +23,8 @@ tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 
 [dev-dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.7.2", features = ["test-support"] }
-notedthat-storage-s3 = { path = "../notedthat-storage-s3", version = "0.7.2" }
+notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
+notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
 temp-env = "0.3"
 httpdate.workspace = true
 testcontainers.workspace = true

@@ -32,6 +32,11 @@ Repo Settings → Environments → New environment → name it `release`. No app
 
 Repo Settings → Secrets and variables → Actions → New repository secret → `CARGO_REGISTRY_TOKEN`. This token is only needed for the initial bootstrap publish of each crate. Routine releases use OIDC Trusted Publishing.
 
+The secret is **not** set by default and is not required for routine releases, so it is easy to
+find it missing the day a new crate needs bootstrapping (that is what happened with
+`notedthat-events`, 2026-09-21). A crate owner can bootstrap from a workstation instead — see
+*Adding a Crate* below.
+
 ### 3. Bootstrap-Publish Each Crate (First Time Only)
 
 Trusted Publishing cannot create new crates on crates.io. Use the bootstrap workflow for each crate's first publish:
@@ -44,6 +49,13 @@ Trusted Publishing cannot create new crates on crates.io. Use the bootstrap work
 Bootstrap in dependency order, `notedthat` last: `cargo publish` strips the `path` from a
 `path` + `version` dependency and verifies the build against crates.io, so a crate cannot
 be bootstrapped until every crate it depends on is published at the same version.
+
+**Dev-dependencies on workspace crates carry `path` only, never `version`** (and never
+`workspace = true`, which inherits the version). Cargo drops a path-only dev-dependency from the
+published manifest; one with a version stays in and is resolved against crates.io during
+`cargo publish`. release-plz orders publishes by normal dependencies alone, so a versioned
+dev-dependency on a crate that is not on crates.io yet fails the *dependent* before release-plz
+reaches the new crate at all. CI's `package` job enforces the rule.
 
 ### 4. Verify Trusted Publishing Configs
 
@@ -67,7 +79,32 @@ A new publishable crate takes the shared workspace version, which is already on 
 
 1. `release-plz-release` fails on the merge push. `release_always = true` sees the new crate's version missing from crates.io and tries to publish it; `cargo publish` verifies the tarball against crates.io, where its sibling dependencies are still the *previous* publish and lack whatever the new crate imports from them. This repeats on every push to `main` until the version is bumped.
 2. `release-plz-pr` opens the release PR regardless. Merge it: the bump publishes the siblings first, at the new version, and the new crate builds against them.
-3. That release still stops at the new crate with `HTTP 403` — Trusted Publishing cannot create crates. By then its dependencies are on crates.io at the new version, so run **Publish crate (initial)** for the new crate (see Prerequisites, step 3), then push to `main` again (an empty commit will do) — `release_always` publishes the remaining crates, tags, and creates the GitHub Release.
+3. That release still stops at the new crate with `HTTP 403` — Trusted Publishing cannot create crates. By then its dependencies are on crates.io at the new version, so run **Publish crate (initial)** for the new crate (see Prerequisites, step 3), then push to `main` again (an empty commit will do, and so does *Re-run failed jobs* on the failed run) — `release_always` publishes the remaining crates, tags, and creates the GitHub Release.
+
+You do not have to wait for step 3 to fail: the bootstrap can run as soon as the new crate's
+*own* dependencies are on crates.io at the workspace version, which `release-plz-release`
+reports (`<crate> <version>: already published`) as it works down the dependency order. The
+release job also checks for never-published crates before it starts and names them.
+
+**Bootstrapping without the secret.** A crate owner with `cargo login` done can publish from a
+workstation, from a clean checkout of the commit `main` is at (a worktree, not a working tree
+with local changes — `cargo publish` refuses a dirty tree, and `--allow-dirty` would publish
+whatever is lying around):
+
+```sh
+git worktree add /tmp/notedthat-publish origin/main
+cd /tmp/notedthat-publish
+cargo publish -p <crate> --dry-run
+cargo publish -p <crate>
+```
+
+Then register Trusted Publishing for the crate by hand at
+`https://crates.io/crates/<crate>/settings` — two configs, `ci.yml` + environment `release` and
+`publish-crate-manual.yml` + environment `release`, both for `NotedThat/NotedThat` — or the
+*next* release fails on that crate with `HTTP 403`. The API form, if scripting it, wraps the
+fields in a `github_config` object (an unwrapped body is a `422 missing field github_config`;
+field names as of 2026-09, check against the crates.io API if it rejects them):
+`{"github_config":{"crate":"<crate>","repository_owner":"NotedThat","repository_name":"NotedThat","workflow_filename":"ci.yml","environment":"release"}}`.
 
 ## Emergency Manual Publish
 
@@ -116,6 +153,17 @@ The `release` environment may have a required reviewer configured. Grant approva
 
 **crates.io `HTTP 403` "Trusted Publishing tokens do not support creating new crates"**
 Use `publish-crate-initial.yml` for the first publish of each crate. TP only works for subsequent versions.
+
+**`release-plz-release` fails on `<sibling>` with `no matching package named <crate> found`**
+`<sibling>` names `<crate>` as a dev-dependency *with a version*, and `<crate>` has never been
+published. Cargo keeps a versioned dev-dependency in the published manifest and resolves it at
+publish time, but release-plz does not order publishes by dev-dependencies, so it reaches the
+sibling first. Bootstrap `<crate>` (see *Adding a Crate*), then drop `version` from that
+dev-dependency — CI's `package` job refuses the versioned form since 2026-09-21.
+
+**`release-plz-release` fails at its first step, "Every publishable crate exists on crates.io"**
+The named crate has never been published; nothing else in the job would have succeeded either.
+Bootstrap it (see *Adding a Crate*) and re-run the failed jobs.
 
 **TP `HTTP 403` on routine publish**
 The Trusted Publishing config on crates.io may not match the workflow filename or environment name. Verify at `https://crates.io/crates/<crate>/settings` that `ci.yml` + `release` is configured.

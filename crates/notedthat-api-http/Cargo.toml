@@ -33,10 +33,10 @@ thiserror.workspace = true
 [dev-dependencies]
 # `test-support` carries InMemoryVectorStore, which backs search_e2e.rs in place
 # of a Qdrant testcontainer.
-notedthat-indexer = { path = "../notedthat-indexer", version = "0.7.2", features = ["test-support"] }
+notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"] }
 notedthat-api-http = { path = ".", features = ["test-support"] }
 # The memory event log, for the events route's tests. Without the broker client.
-notedthat-events = { path = "../notedthat-events", version = "0.7.2", default-features = false }
+notedthat-events = { path = "../notedthat-events", default-features = false }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

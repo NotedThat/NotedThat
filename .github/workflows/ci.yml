@@ -66,6 +66,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo package --workspace --locked
+      # A dev-dependency on a workspace crate carries `path` only, never
+      # `version`. Cargo strips a path-only dev-dependency from the published
+      # manifest; one with a version stays in it and is resolved against
+      # crates.io when the crate is published. release-plz orders publishes by
+      # normal dependencies alone, so a versioned dev-dependency on a crate that
+      # is not on crates.io yet fails the *dependent* before release-plz ever
+      # reaches the crate itself — which is how notedthat-indexer blocked every
+      # release after notedthat-events was added (RELEASING.md, "Adding a
+      # crate"). `cargo metadata` reports a path-only dev-dependency's
+      # requirement as `*`.
+      - name: Workspace dev-dependencies carry no version
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --no-deps \
+          | jq -e '[.packages[] | .name as $p | .dependencies[]
+                    | select(.kind == "dev" and .path != null and .req != "*")
+                    | "\($p) -> \(.name) \(.req)"] as $bad
+                  | if ($bad | length) > 0 then
+                      "versioned dev-dependency on a workspace crate: " + ($bad | join(", "))
+                      + " — drop `version` (or `workspace = true`) and keep `path`; see RELEASING.md, Adding a crate" | error
+                    else true end' > /dev/null
 
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
@@ -206,6 +227,27 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # Trusted Publishing cannot create a crate, so a workspace member that has
+      # never been published fails this job every push until someone bootstraps
+      # it (RELEASING.md, "Adding a crate"). Say so up front, by name, instead of
+      # letting it surface minutes later as a `cargo publish` error on whichever
+      # sibling release-plz happened to reach first.
+      - name: Every publishable crate exists on crates.io
+        run: |
+          set -euo pipefail
+          missing=0
+          for crate in $(cargo metadata --format-version 1 --no-deps \
+                         | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+                     -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
+                     "https://crates.io/api/v1/crates/${crate}")
+            case "$status" in
+              200) ;;
+              404) echo "::error::${crate} has never been published; Trusted Publishing cannot create it. Bootstrap it first — RELEASING.md, \"Adding a crate\"."; missing=1 ;;
+              *)   echo "::warning::could not check ${crate} on crates.io (HTTP ${status}); continuing" ;;
+            esac
+          done
+          exit "${missing}"
       - name: Run release-plz (release)
         id: release-plz
         uses: release-plz/action@v0.5
