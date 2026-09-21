@@ -59,8 +59,13 @@ impl<'de> Deserialize<'de> for KbSlug {
     }
 }
 
-/// A tenant slug: `[a-z0-9-]{1,20}` (ASCII only, no leading/trailing hyphen).
-/// See SPECIFICATIONS.md §6.6 and decision D24.
+/// A tenant slug: `[a-z0-9]{1,20}` (ASCII only, no hyphen at all).
+///
+/// A knowledge-base slug may contain hyphens; a tenant slug may not. That asymmetry is
+/// what makes the derived bucket name `nt-{tenant}-{kb}` injective: the first hyphen
+/// after the prefix always ends the tenant, so `(acme, my-notes)` and `(acme-my, notes)`
+/// cannot both become `nt-acme-my-notes`. See SPECIFICATIONS.md §6.6 and decisions
+/// D24, D57.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct TenantSlug(String);
 
@@ -72,6 +77,13 @@ impl TenantSlug {
     pub fn try_new(input: impl Into<String>) -> Result<Self, Error> {
         let s = input.into();
         validate_slug(&s, Self::MAX_LEN)?;
+        if s.contains('-') {
+            return Err(Error::InvalidInput {
+                message: "tenant slug must not contain a hyphen: the first hyphen after the \
+                          prefix delimits the tenant from the knowledge base in bucket names"
+                    .into(),
+            });
+        }
         Ok(Self(s))
     }
 
@@ -246,6 +258,20 @@ mod tests {
     }
 
     #[test]
+    fn test_tenant_slug_valid_alphanumeric() {
+        assert!(TenantSlug::try_new("a1b2").is_ok());
+    }
+
+    #[test]
+    fn test_tenant_slug_err_internal_hyphen() {
+        let err = TenantSlug::try_new("acme-my").unwrap_err();
+        assert!(
+            err.to_string().contains("hyphen"),
+            "error should name the hyphen rule, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_kb_slug_as_ref_str() {
         let slug = KbSlug::try_new("my-notes").unwrap();
         assert_eq!(slug.as_ref(), "my-notes");
@@ -298,6 +324,15 @@ mod tests {
         assert!(
             result.is_err(),
             "Deserializing 21-char tenant slug should fail"
+        );
+    }
+
+    #[test]
+    fn test_tenant_slug_deserialize_rejects_hyphen() {
+        let result = serde_json::from_str::<TenantSlug>("\"acme-my\"");
+        assert!(
+            result.is_err(),
+            "Deserializing a hyphenated tenant slug should fail"
         );
     }
 

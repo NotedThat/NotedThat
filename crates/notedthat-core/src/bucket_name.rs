@@ -13,6 +13,11 @@ pub const BUCKET_NAME_PREFIX: &str = "nt-";
 ///
 /// The format is `nt-{tenant_slug}-{kb_slug}`. Call [`validate_bucket_name`]
 /// once at startup to confirm the name fits within 63 characters.
+///
+/// The encoding is injective: a [`TenantSlug`] contains no hyphen, so the first
+/// hyphen after the prefix always ends the tenant and the rest is the knowledge
+/// base. Two distinct `(tenant, kb)` pairs therefore never share a bucket — or,
+/// under the `fs` backend, a directory (D49, D57).
 #[must_use]
 pub fn derive_bucket_name(tenant: &TenantSlug, kb: &KbSlug) -> String {
     format!("{BUCKET_NAME_PREFIX}{}-{}", tenant.as_str(), kb.as_str())
@@ -68,6 +73,32 @@ mod tests {
         let first = derive_bucket_name(&tenant, &kb);
         let second = derive_bucket_name(&tenant, &kb);
         assert_eq!(first, second);
+    }
+
+    /// The collision from #70: `(acme, my-notes)` and `(acme-my, notes)` would both
+    /// derive `nt-acme-my-notes`. The second pair cannot be constructed, and every
+    /// pair that can be gets a name of its own.
+    #[test]
+    fn test_derive_bucket_name_is_injective() {
+        assert!(
+            TenantSlug::try_new("acme-my").is_err(),
+            "a hyphenated tenant slug is what would make the encoding ambiguous"
+        );
+
+        let tenants = ["a", "ab", "acme", "default"];
+        let kbs = ["b", "a-b", "ab-c", "b-a", "notes", "my-notes", "my--notes"];
+        let mut seen = std::collections::HashSet::new();
+        for tenant in tenants {
+            let tenant = TenantSlug::try_new(tenant).unwrap();
+            for kb in kbs {
+                let kb = KbSlug::try_new(kb).unwrap();
+                assert!(
+                    seen.insert(derive_bucket_name(&tenant, &kb)),
+                    "({tenant}, {kb}) collides with an earlier pair"
+                );
+            }
+        }
+        assert_eq!(seen.len(), tenants.len() * kbs.len());
     }
 
     #[test]
