@@ -23,7 +23,11 @@ token: `WARDEN_MINIMAX_API_KEY` and `WARDEN_THIRDPARTY_API_KEY`, which
 Warden mirrors to the env names pi expects (`$THIRDPARTY_API_KEY` is what
 this file references). The proxy holds the real provider keys.
 
-Two third-party models are listed, each with its own profile overlay. In the first
+Two third-party models are listed, each with its own profile overlay — though
+only the DeepSeek one runs today: the GPT-OSS lane is switched off in the
+workflow because its chat route kept failing with a gateway-side error (see
+`thirdparty-gpt-oss.toml`); its entry stays here so it can be re-enabled
+without re-declaring the model. In the first
 bake-off `openai/gpt-oss-120b` was the only model on that endpoint that
 investigated: on a 15-hunk PR it made 78 tool calls (reads, greps) before
 answering, while the others returned empty responses, never used tools, or
