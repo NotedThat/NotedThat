@@ -9,6 +9,14 @@
 //! costs the backends nothing, and an outage is reported within two intervals:
 //! one of waiting for the next tick, one for the probe to time out.
 //!
+//! Each backend has at most one probe in flight. A probe that outlasts the
+//! interval is reported as `timeout` and then *waited for*, not abandoned and
+//! restarted: the `fs` probe is a `spawn_blocking` `stat`, and dropping its
+//! future does not free the thread a hung mount is holding, so restarting it
+//! every tick would leak one blocked thread per interval until the pool was
+//! gone and every storage operation queued behind dead probes. This way a hung
+//! backend costs one thread, once, and readiness keeps saying `timeout`.
+//!
 //! A backend's own error is logged, once when a check fails and once when it
 //! recovers, and never published: the route is unauthenticated, and a client
 //! error can quote the endpoint it failed to reach.
@@ -36,27 +44,54 @@ pub(super) struct ReadinessPoller {
     tx: watch::Sender<ReadinessSnapshot>,
 }
 
-/// One probe's failure, for the log line and nothing else.
-struct Detail {
-    check: &'static str,
-    error: String,
-}
-
-/// Fold a bounded probe into its check, keeping the error text for the log.
+/// Fold a bounded probe into its check, with the error text for the log line
+/// and nothing else.
 fn settle<E: std::fmt::Display>(
-    check: &'static str,
     backend: &'static str,
     result: Result<Result<(), E>, tokio::time::error::Elapsed>,
     classify: impl FnOnce(&E) -> Unready,
-    details: &mut Vec<Detail>,
-) -> Check {
-    let (reason, error) = match result {
-        Ok(Ok(())) => return Check::ok(backend),
-        Ok(Err(error)) => (classify(&error), error.to_string()),
-        Err(elapsed) => (Unready::Timeout, elapsed.to_string()),
-    };
-    details.push(Detail { check, error });
-    Check::unready(backend, reason)
+) -> (Check, Option<String>) {
+    match result {
+        Ok(Ok(())) => (Check::ok(backend), None),
+        Ok(Err(error)) => (
+            Check::unready(backend, classify(&error)),
+            Some(error.to_string()),
+        ),
+        Err(elapsed) => (
+            Check::unready(backend, Unready::Timeout),
+            Some(elapsed.to_string()),
+        ),
+    }
+}
+
+/// Which half of the snapshot a probe loop owns.
+#[derive(Clone, Copy)]
+enum Slot {
+    Storage,
+    Search,
+}
+
+impl Slot {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Storage => "storage",
+            Self::Search => "search",
+        }
+    }
+
+    fn of(self, snapshot: &ReadinessSnapshot) -> &Check {
+        match self {
+            Self::Storage => &snapshot.storage,
+            Self::Search => &snapshot.search,
+        }
+    }
+
+    fn of_mut(self, snapshot: &mut ReadinessSnapshot) -> &mut Check {
+        match self {
+            Self::Storage => &mut snapshot.storage,
+            Self::Search => &mut snapshot.search,
+        }
+    }
 }
 
 impl ReadinessPoller {
@@ -82,105 +117,118 @@ impl ReadinessPoller {
         )
     }
 
-    /// Probe until `shutdown` is cancelled. The first probe runs at once.
-    ///
-    /// Cancellation interrupts a probe in flight, not only the wait between
-    /// probes: `serve` joins this task on the way down, and a hung backend must
-    /// not add an interval to every shutdown.
+    /// Probe until `shutdown` is cancelled. The first probe of each backend
+    /// runs at once; the two backends are probed independently, so one that
+    /// hangs never delays the other's answer.
     pub(super) async fn run(self, shutdown: CancellationToken) {
-        let mut ticker = tokio::time::interval(self.interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                biased;
-                () = shutdown.cancelled() => break,
-                _ = ticker.tick() => {
-                    tokio::select! {
-                        biased;
-                        () = shutdown.cancelled() => break,
-                        (next, details) = self.probe_once() => self.publish(next, &details),
-                    }
-                }
-            }
-        }
-    }
-
-    async fn probe_once(&self) -> (ReadinessSnapshot, Vec<Detail>) {
-        let deadline = self.interval;
-        let (storage, search) = tokio::join!(
-            tokio::time::timeout(deadline, self.storage.probe(&self.witness)),
-            tokio::time::timeout(deadline, self.store.probe()),
-        );
         let storage_backend = self.tx.borrow().storage.backend;
-        let mut details = Vec::new();
-        let storage = settle(
-            "storage",
+        let storage = self.probe_loop(
+            Slot::Storage,
             storage_backend,
-            storage,
+            || self.storage.probe(&self.witness),
             |error| match error {
                 StorageError::BucketNotFound { .. } => Unready::NotFound,
                 _ => Unready::Unreachable,
             },
-            &mut details,
+            &shutdown,
         );
-        let search = settle(
-            "search",
+        let search = self.probe_loop(
+            Slot::Search,
             SEARCH_BACKEND,
-            search,
+            || self.store.probe(),
             |error| match error {
                 VectorStoreError::CollectionNotFound { .. } => Unready::NotFound,
                 VectorStoreError::Backend { .. } => Unready::Unreachable,
             },
-            &mut details,
+            &shutdown,
         );
-        (ReadinessSnapshot { storage, search }, details)
+        tokio::join!(storage, search);
     }
 
-    /// Publish `next`, logging each check that changed state — not each tick,
-    /// so a long outage is one line, not one per interval.
-    fn publish(&self, next: ReadinessSnapshot, details: &[Detail]) {
-        let previous = self.tx.borrow().clone();
-        for (name, before, after) in [
-            ("storage", &previous.storage, &next.storage),
-            ("search", &previous.search, &next.search),
-        ] {
-            match (&before.outcome, &after.outcome) {
-                (Err(_), Ok(())) => info!(
-                    target: "notedthat::readiness",
-                    check = name,
-                    backend = after.backend,
-                    "READINESS_RESTORED"
-                ),
-                (before, Err(reason)) if before.as_ref().err() != Some(reason) => {
-                    let error = details
-                        .iter()
-                        .find(|d| d.check == name)
-                        .map_or("", |d| d.error.as_str());
-                    if reason.is_outage() {
-                        warn!(
-                            target: "notedthat::readiness",
-                            check = name,
-                            backend = after.backend,
-                            reason = reason.as_str(),
-                            error,
-                            "READINESS_LOST: /readyz answers 503 until this backend answers again"
-                        );
-                    } else {
-                        warn!(
-                            target: "notedthat::readiness",
-                            check = name,
-                            backend = after.backend,
-                            reason = reason.as_str(),
-                            error,
-                            "READINESS_DEGRADED: the backend answered, but what /readyz probes for is \
-                             gone; /readyz stays 200 and nothing re-creates it while the process runs"
-                        );
-                    }
-                }
-                _ => {}
+    /// One backend's loop: probe, publish, sleep an interval, again — with at
+    /// most one probe in flight. A probe that outlasts the interval is
+    /// published as `timeout` and then awaited to its end (whatever it
+    /// eventually says is published too), never dropped and started over.
+    async fn probe_loop<E, F, Fut>(
+        &self,
+        slot: Slot,
+        backend: &'static str,
+        probe: F,
+        classify: impl Fn(&E) -> Unready,
+        shutdown: &CancellationToken,
+    ) where
+        E: std::fmt::Display,
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
+    {
+        loop {
+            let fut = probe();
+            tokio::pin!(fut);
+            let bounded = tokio::select! {
+                biased;
+                () = shutdown.cancelled() => return,
+                result = tokio::time::timeout(self.interval, &mut fut) => result,
+            };
+            let timed_out = bounded.is_err();
+            let (check, error) = settle(backend, bounded, &classify);
+            self.publish(slot, check, error.as_deref());
+            if timed_out {
+                // The same probe, to its end: see the module doc.
+                let late = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => return,
+                    result = &mut fut => result,
+                };
+                let (check, error) = settle(backend, Ok(late), &classify);
+                self.publish(slot, check, error.as_deref());
+            }
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => return,
+                () = tokio::time::sleep(self.interval) => {}
             }
         }
-        self.tx.send_replace(next);
+    }
+
+    /// Publish one check, logging it when it changed state — not each tick,
+    /// so a long outage is one line, not one per interval.
+    fn publish(&self, slot: Slot, after: Check, error: Option<&str>) {
+        let previous = slot.of(&self.tx.borrow()).clone();
+        let name = slot.name();
+        match (&previous.outcome, &after.outcome) {
+            (Err(_), Ok(())) => info!(
+                target: "notedthat::readiness",
+                check = name,
+                backend = after.backend,
+                "READINESS_RESTORED"
+            ),
+            (before, Err(reason)) if before.as_ref().err() != Some(reason) => {
+                let error = error.unwrap_or("");
+                if reason.is_outage() {
+                    warn!(
+                        target: "notedthat::readiness",
+                        check = name,
+                        backend = after.backend,
+                        reason = reason.as_str(),
+                        error,
+                        "READINESS_LOST: /readyz answers 503 until this backend answers again"
+                    );
+                } else {
+                    warn!(
+                        target: "notedthat::readiness",
+                        check = name,
+                        backend = after.backend,
+                        reason = reason.as_str(),
+                        error,
+                        "READINESS_DEGRADED: the backend answered, but what /readyz probes for is \
+                         gone; /readyz stays 200 and nothing re-creates it while the process runs"
+                    );
+                }
+            }
+            _ => {}
+        }
+        self.tx
+            .send_modify(|snapshot| *slot.of_mut(snapshot) = after);
     }
 }
 
@@ -316,6 +364,42 @@ mod tests {
         })
         .await;
         assert_eq!(snapshot.storage, Check::ok("fs"));
+        shutdown.cancel();
+        handle.await.unwrap();
+    }
+
+    /// A probe that hangs is reported as `timeout` and then waited for — the
+    /// same probe, not a fresh one every tick — so a hung `fs` mount holds one
+    /// blocking thread rather than one per interval. When it finally answers,
+    /// what it says is published.
+    #[tokio::test]
+    async fn a_hung_probe_is_not_started_again_until_it_answers() {
+        let (storage, store) = provisioned().await;
+        store.set_probe_latency(TICK * 10);
+        let (mut rx, shutdown, handle) = start(Arc::new(storage), Arc::new(store.clone()));
+        wait_for(&mut rx, "search timeout", |s| {
+            s.search.outcome == Err(Unready::Timeout)
+        })
+        .await;
+
+        // Several intervals pass while the first probe is still in flight.
+        tokio::time::sleep(TICK * 5).await;
+        assert_eq!(
+            store.probe_calls(),
+            1,
+            "a hung probe is awaited, never abandoned and restarted"
+        );
+        assert_eq!(rx.borrow().search.outcome, Err(Unready::Timeout));
+
+        // It answers at last: its verdict is published, and only then does the
+        // next probe go out.
+        wait_for(&mut rx, "search ok once the late probe answers", |s| {
+            s.search.outcome.is_ok()
+        })
+        .await;
+        assert!(store.probe_calls() >= 1);
+        wait_for(&mut rx, "a second probe", |_| store.probe_calls() >= 2).await;
+
         shutdown.cancel();
         handle.await.unwrap();
     }
