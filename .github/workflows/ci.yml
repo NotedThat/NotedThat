@@ -238,9 +238,12 @@ jobs:
           missing=0
           for crate in $(cargo metadata --format-version 1 --no-deps \
                          | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
+            # `|| true`: under `set -e` a curl that could not connect would
+            # otherwise exit the script here, making a transient crates.io
+            # outage a red release job — the one thing this step must not add.
             status=$(curl -s -o /dev/null -w '%{http_code}' \
                      -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
-                     "https://crates.io/api/v1/crates/${crate}")
+                     "https://crates.io/api/v1/crates/${crate}" || true)
             case "$status" in
               200) ;;
               404) echo "::error::${crate} has never been published; Trusted Publishing cannot create it. Bootstrap it first — RELEASING.md, \"Adding a crate\"."; missing=1 ;;
