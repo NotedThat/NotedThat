@@ -52,6 +52,7 @@ fn app_with(
         events,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness,
+        reconcile: None,
     };
     build_router(state)
 }
@@ -1056,6 +1057,7 @@ async fn delete_enqueues_tombstone_on_success() {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     };
     let router = build_router(state);
 
@@ -1115,6 +1117,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     };
     let router = build_router(state);
 
@@ -1600,6 +1603,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: ready_receiver(),
+        reconcile: None,
     });
 
     for (method, uri, body) in [

@@ -250,6 +250,7 @@ async fn build_infrastructure(
         events: events.clone(),
         index_health: index_health.clone(),
         readiness: readiness_rx,
+        reconcile: None,
     };
 
     let worker_handle = tokio::spawn(

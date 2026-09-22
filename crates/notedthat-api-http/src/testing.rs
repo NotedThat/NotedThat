@@ -151,6 +151,29 @@ pub fn receiver_for(
     receiver
 }
 
+/// A [`ReconcileTrigger`](crate::state::ReconcileTrigger) that records what it
+/// was asked and answers busy on demand, for route tests.
+#[derive(Debug, Default)]
+pub struct RecordingReconcile {
+    /// Every slug a trigger was accepted for, in order.
+    pub triggered: std::sync::Mutex<Vec<String>>,
+    /// While set, every trigger answers [`crate::state::ReconcileBusy`].
+    pub busy: std::sync::atomic::AtomicBool,
+}
+
+impl crate::state::ReconcileTrigger for RecordingReconcile {
+    fn trigger(&self, kb: &KbSlug) -> Result<(), crate::state::ReconcileBusy> {
+        if self.busy.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::state::ReconcileBusy);
+        }
+        self.triggered
+            .lock()
+            .expect("mutex not poisoned")
+            .push(kb.as_str().to_string());
+        Ok(())
+    }
+}
+
 /// Build a test [`crate::state::AppState`] discarding the indexer receiver.
 pub fn test_app_state_with_default_channel(
     storage: Arc<dyn Storage>,
@@ -173,6 +196,7 @@ pub fn test_app_state_with_default_channel(
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: crate::testing::ready_receiver(),
+        reconcile: None,
     }
 }
 
@@ -202,6 +226,7 @@ pub fn test_app_state_with_channel(
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         },
         rx,
     )

@@ -35,7 +35,14 @@ const EVERY_ROUTE: &[(&str, &str)] = &[
     ("POST", "/api/v1/knowledgebases/notes/search"),
     ("GET", "/api/v1/knowledgebases/notes/events"),
     ("GET", "/api/v1/knowledgebases/notes/index"),
+    ("POST", "/api/v1/knowledgebases/notes/index/reconcile"),
 ];
+
+/// The operator routes: the service token's alone (D66), whatever the rules say,
+/// so the credential holder is answered `202` here and every other principal
+/// refused — `403` for a verified identity, `401` for no credential at all.
+const OPERATOR_ROUTES: &[(&str, &str)] =
+    &[("POST", "/api/v1/knowledgebases/notes/index/reconcile")];
 
 #[tokio::test]
 async fn every_route_refuses_an_anonymous_principal_holding_no_grant() {
@@ -73,6 +80,14 @@ async fn every_route_refuses_a_credentialed_principal_holding_no_grant() {
     for (method, uri) in EVERY_ROUTE {
         let response = request(&policies, method, uri, Some(TOKEN)).await;
 
+        if OPERATOR_ROUTES.contains(&(method, uri)) {
+            assert_eq!(
+                response.status(),
+                StatusCode::ACCEPTED,
+                "{method} {uri} refused the service token its own operator action"
+            );
+            continue;
+        }
         if INDEX_ROUTES.contains(&(method, uri)) || LISTING_RULE_ROUTES.contains(&(method, uri)) {
             // The knowledge-base index is not key-scoped and has no verb to
             // check: the credential holder can always reach `.notedthat` in

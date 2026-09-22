@@ -117,6 +117,25 @@ impl KbAccess {
         Err(self.denial())
     }
 
+    /// Authorize an operator action: only the deployment's own service token.
+    ///
+    /// Not a verb on a key, and not the listing rule either — an identity the
+    /// manifests grant everything is still not the operator, and the manifests
+    /// cannot say otherwise. A knowledge base's `anyone` rules never reach this
+    /// far: the middleware refuses an anonymous request to an operator route
+    /// before any slug is looked at, so the answer cannot depend on one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::denial`]: `403` for a verified credential that is not the
+    /// service token.
+    pub(crate) fn require_service_token(&self) -> Result<(), ApiError> {
+        if self.principal.is_service_token() {
+            return Ok(());
+        }
+        Err(self.denial())
+    }
+
     /// A predicate over keys for this principal and verb, compiled once.
     pub(crate) fn filter(&self, verb: Verb) -> KeyFilter<'_> {
         self.policy.key_filter(&self.principal, verb)
