@@ -242,7 +242,10 @@ an editor, back it up with any file-level tool. Edits made that way are picked u
 is watched, so a note changed outside NotedThat is re-indexed and searchable shortly
 afterwards ([configuration](docs/CONFIGURATION.md#filesystem-storage-backend)). `.env` sets
 `NOTEDTHAT_S3_*`, which the `fs` backend refuses to start alongside, so unset those three
-or comment them out first.
+or comment them out first. On the `s3` backend the bucket is not watched, but objects put
+there by other tools are found by a comparison pass at startup and whenever the service
+token `POST`s `/api/v1/knowledgebases/{kb}/index/reconcile`
+([configuration](docs/CONFIGURATION.md#s3-reconciliation)).
 
 ### Native server: Compose-managed dependencies
 

@@ -1,8 +1,8 @@
 //! `IndexEvent` — the message type on the async indexing queue.
 //!
 //! Producers enqueue events via `mpsc::Sender::try_send` (`notedthat-write`, after
-//! storage acknowledges) or `send` (the `fs` backend's watcher and reconcile pass in
-//! `notedthat-server`). Consumer (`IndexerWorker` in this crate) drains via
+//! storage acknowledges) or `send` (the `fs` backend's watcher and either backend's
+//! reconciliation pass in `notedthat-server`). Consumer (`IndexerWorker` in this crate) drains via
 //! `mpsc::Receiver::recv`. See §6.12 (Indexing queue) and D38 for semantics.
 
 use notedthat_core::{EventSource, KbSlug, ObjectPath};
@@ -10,13 +10,13 @@ use notedthat_core::{EventSource, KbSlug, ObjectPath};
 /// What raised an [`IndexEvent::Refresh`].
 ///
 /// The worker does the same work either way; the distinction survives only so
-/// the change event it publishes on the `fs` backend can say which one found
-/// the change (D55).
+/// the change event it publishes can say which one found the change (D55).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshOrigin {
     /// The filesystem watcher reported the key.
     Watch,
-    /// A comparison of the tree against the index reported the key.
+    /// A comparison of storage — the `fs` tree or the `s3` bucket — against the
+    /// index reported the key.
     Reconcile,
 }
 
