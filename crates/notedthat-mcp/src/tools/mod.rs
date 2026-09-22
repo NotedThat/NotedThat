@@ -76,7 +76,7 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Report a knowledge base's search-index health: state is one of healthy, indexing, backpressured, stale or failed, with pending events, queue depth and capacity, whether the worker is running, when something was last indexed, the most recent failure (when; its summary when the caller may list the whole knowledge base; its object key when the caller may list it) and, on the fs backend, the last reconciliation pass. Check it when search results look incomplete or out of date; a failed or stale knowledge base may not reflect recent writes."
+        description = "Report a knowledge base's search-index health: state is one of healthy, indexing, backpressured, stale or failed, with pending events, queue depth and capacity, whether the worker is running, when something was last indexed, the most recent failure (when; its summary when the caller may list the whole knowledge base; its object key when the caller may list it) and, on the fs backend, the last reconciliation pass. Check it when search results look incomplete or out of date; a failed or stale knowledge base may not reflect recent writes. For one specific write, the object.indexed event on the knowledge base's events stream is the precise completion signal."
     )]
     async fn index_status(
         &self,
@@ -87,7 +87,7 @@ impl NotedThatMcp {
     }
 
     #[tool(
-        description = "Hybrid search across one or more knowledge bases. kb is a list of slugs (discover them with list_knowledgebases); omit it, or pass [], to search every knowledge base the caller may search. Results are grouped per knowledge base in request order and each group keeps that knowledge base's own ranking; score is a per-knowledge-base rank artifact, not comparable across knowledge bases, so no merged ranking is given. limit is per knowledge base (default 10, max 50). With an explicit list, an unknown or inaccessible slug fails the whole call and is named in the error; with kb omitted, knowledge bases that refuse search are listed under skipped. An argument or filter key this tool does not know is refused before the tool runs, as a tool error naming the key; the filter's fields are exactly the HTTP search body's."
+        description = "Hybrid search across one or more knowledge bases. kb is a list of slugs (discover them with list_knowledgebases); omit it, or pass [], to search every knowledge base the caller may search. Results are grouped per knowledge base in request order and each group keeps that knowledge base's own ranking; score is a per-knowledge-base rank artifact, not comparable across knowledge bases, so no merged ranking is given. limit is per knowledge base (default 10, max 50). With an explicit list, an unknown or inaccessible slug fails the whole call and is named in the error; with kb omitted, knowledge bases that refuse search are listed under skipped. An argument or filter key this tool does not know is refused before the tool runs, as a tool error naming the key; the filter's fields are exactly the HTTP search body's. Indexing is asynchronous: an object written moments ago is in the results once the knowledge base's events stream (GET /api/v1/knowledgebases/{kb}/events) has reported object.indexed for its etag, and never if it reported object.index_failed; wait for that rather than retrying the search, and check index_status if unsure."
     )]
     async fn search(
         &self,

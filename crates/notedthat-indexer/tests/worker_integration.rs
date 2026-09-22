@@ -52,6 +52,7 @@ type StorageObject = (Bytes, Option<String>);
 struct MockStorage {
     objects: Mutex<HashMap<(String, String), StorageObject>>,
     stream_calls: AtomicUsize,
+    fail_next_head: AtomicBool,
     fail_stream_precondition: AtomicBool,
     fail_stream_midway: AtomicBool,
 }
@@ -61,6 +62,7 @@ impl MockStorage {
         Self {
             objects: Mutex::new(HashMap::new()),
             stream_calls: AtomicUsize::new(0),
+            fail_next_head: AtomicBool::new(false),
             fail_stream_precondition: AtomicBool::new(false),
             fail_stream_midway: AtomicBool::new(false),
         }
@@ -95,6 +97,12 @@ impl MockStorage {
 
     fn stream_calls(&self) -> usize {
         self.stream_calls.load(Ordering::SeqCst)
+    }
+
+    /// The next `HEAD` fails as an unreachable backend would, before the
+    /// worker learns anything about the object.
+    fn fail_next_head(&self) {
+        self.fail_next_head.store(true, Ordering::SeqCst);
     }
 
     fn fail_next_stream_precondition(&self) {
@@ -194,6 +202,11 @@ impl Storage for MockStorage {
         path: &ObjectPath,
         _conditionals: ConditionalHeaders,
     ) -> Result<ObjectMeta, StorageError> {
+        if self.fail_next_head.swap(false, Ordering::SeqCst) {
+            return Err(StorageError::BackendUnavailable {
+                message: "injected head failure".to_owned(),
+            });
+        }
         let guard = self.objects.lock().unwrap();
         match guard.get(&(kb.as_str().to_string(), path.as_str().to_string())) {
             Some((bytes, content_type)) => Ok(ObjectMeta {
@@ -1690,16 +1703,45 @@ mod announcing {
         publisher: Arc<MemoryPublisher>,
         events: Vec<IndexEvent>,
     ) {
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+        drive_with(
+            storage,
+            embedder,
+            store,
+            publisher,
+            Arc::new(IndexHealth::new()),
+            events,
+        )
+        .await;
+    }
+
+    /// [`drive`] with the embedder and health record chosen by the test, for
+    /// the outcomes that need a failing embedder or a look at `/index`'s view.
+    async fn drive_with(
+        storage: Arc<MockStorage>,
+        embedder: Arc<dyn Embedder>,
+        store: Arc<dyn VectorStore>,
+        publisher: Arc<MemoryPublisher>,
+        health: Arc<IndexHealth>,
+        events: Vec<IndexEvent>,
+    ) {
         let (tx, rx) = mpsc::channel(events.len().max(1));
         for event in events {
             tx.send(event).await.unwrap();
         }
         drop(tx);
-        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
         make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
             .with_event_publisher(Some(publisher as Arc<dyn EventPublisher>))
+            .with_health(health)
             .run()
             .await;
+    }
+
+    fn indexed_events(events: &[ObjectEvent]) -> Vec<&ObjectEvent> {
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, ObjectEventKind::Indexed { .. }))
+            .collect()
     }
 
     /// Everything the log holds for the test knowledge base.
@@ -1789,8 +1831,11 @@ mod announcing {
         assert_eq!(events[0].source, EventSource::Reconcile);
     }
 
+    /// The write path announced the write before enqueueing it; the worker's
+    /// part is the verdict (D65): the version it indexed, and how many points
+    /// now stand for it.
     #[tokio::test]
-    async fn a_write_upsert_is_never_announced_by_the_worker() {
+    async fn a_write_upsert_is_not_announced_but_its_outcome_is() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
         let storage = Arc::new(MockStorage::new());
@@ -1801,14 +1846,305 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![upsert("note.md", "\"whatever\"")],
+            vec![upsert("note.md", "\"advisory\"")],
         )
         .await;
 
-        assert!(announced(&publisher).await.is_empty());
+        let points = count_points(&store, &kb(), "note.md").await;
+        assert!(points > 0, "still indexed");
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].object_key.as_str(), "note.md");
+        assert_eq!(events[0].source, EventSource::Indexer);
+        assert_eq!(
+            events[0].kind,
+            ObjectEventKind::Indexed {
+                etag: MockStorage::etag_for(b"body"),
+                mime: "text/markdown".into(),
+                chunks: u32::try_from(points).unwrap(),
+            },
+            "the stamp is the one HEAD reported, not the advisory one enqueued"
+        );
+        assert!(events[0].occurred_at.ends_with('Z'));
+    }
+
+    /// An upsert names a key, not a version: it indexes whatever is current
+    /// when the worker reaches it. Two writes in quick succession therefore
+    /// yield verdicts that both carry the second version's stamp — the first
+    /// write's version is never announced as indexed, because it never was.
+    /// A subscriber waiting for its own `etag` must accept a later one as
+    /// superseding it, which is what the API.md recipe says.
+    #[tokio::test]
+    async fn back_to_back_writes_announce_only_the_latest_etag_as_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        // By the time the worker takes the first upsert, the second write has
+        // already replaced the bytes.
+        storage.insert(kb().as_str(), "note.md", "second version", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let first = MockStorage::etag_for(b"first version");
+        let second = MockStorage::etag_for(b"second version");
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md", &first), upsert("note.md", &second)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 2, "one verdict per upsert: {events:?}");
+        for event in &events {
+            assert_eq!(event.kind.name(), "object.indexed");
+            assert_eq!(
+                event.kind.etag(),
+                Some(second.as_str()),
+                "every verdict names the version that is in the index, never the superseded one"
+            );
+        }
         assert!(
-            count_points(&store, &kb(), "note.md").await > 0,
-            "still indexed"
+            events.iter().all(|e| e.kind.etag() != Some(first.as_str())),
+            "nothing is ever published for the first write's version"
+        );
+    }
+
+    /// A change the watcher detected is announced and then indexed, and the
+    /// two events name the same version.
+    #[tokio::test]
+    async fn a_refresh_that_re_embeds_publishes_written_then_indexed_with_the_same_etag() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![refresh("note.md", RefreshOrigin::Watch)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.written");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+        assert_eq!(events[1].kind.name(), "object.indexed");
+        assert_eq!(events[1].source, EventSource::Indexer);
+        assert_eq!(events[0].kind.etag(), events[1].kind.etag());
+        assert_eq!(events[1].kind.mime(), Some("text/markdown"));
+    }
+
+    /// The D50 skip changes nothing in the index, so it says nothing.
+    #[tokio::test]
+    async fn a_refresh_skipped_for_an_unchanged_etag_publishes_nothing() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let etag = MockStorage::etag_for(b"body");
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                upsert("note.md", &etag),
+                refresh("note.md", RefreshOrigin::Watch),
+                refresh("note.md", RefreshOrigin::Reconcile),
+            ],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "one indexed for the write, nothing for the two skips: {events:?}"
+        );
+        assert_eq!(events[0].kind.name(), "object.indexed");
+    }
+
+    /// The index never gained these, so there is no `object.indexed` to send:
+    /// `object.written` already described the bytes, and `/index` still
+    /// advances.
+    #[tokio::test]
+    async fn an_upsert_the_pipeline_tombstones_publishes_nothing() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "empty.md", "", "text/markdown");
+        storage.insert_bytes(
+            kb().as_str(),
+            "pic.png",
+            Bytes::from_static(b"\x89PNG"),
+            "image/png",
+        );
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                upsert("empty.md", "\"e\""),
+                upsert("pic.png", "\"p\""),
+                upsert("missing.md", "\"m\""),
+            ],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    /// `object.deleted` already said what happened to the key; there is no
+    /// `object.unindexed`.
+    #[tokio::test]
+    async fn a_tombstone_publishes_nothing() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                upsert("note.md", "\"n\""),
+                IndexEvent::Tombstone {
+                    kb: kb(),
+                    object_key: opath("note.md"),
+                },
+            ],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.indexed");
+        assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+    }
+
+    /// A subscriber waiting on `object.indexed` would otherwise wait forever.
+    /// The failure names the version it was working on and carries the very
+    /// summary `/index` reports.
+    #[tokio::test]
+    async fn a_failed_upsert_publishes_index_failed_and_no_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "broken.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let health = Arc::new(IndexHealth::new());
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(1), None));
+
+        drive_with(
+            storage.clone(),
+            embedder,
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![upsert("broken.md", "\"b\"")],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(indexed_events(&events).is_empty());
+        assert_eq!(events[0].object_key.as_str(), "broken.md");
+        assert_eq!(events[0].source, EventSource::Indexer);
+        let ObjectEventKind::IndexFailed {
+            etag,
+            mime,
+            summary,
+        } = &events[0].kind
+        else {
+            panic!("expected object.index_failed, got {:?}", events[0].kind);
+        };
+        assert_eq!(
+            etag.as_deref(),
+            Some(MockStorage::etag_for(b"body").as_str())
+        );
+        assert_eq!(mime.as_deref(), Some("text/markdown"));
+        let summary = summary.as_deref().expect("the log holds the summary");
+        assert!(
+            summary.starts_with("embedder.embed failed"),
+            "the pipeline's own error: {summary}"
+        );
+        assert!(summary.chars().count() <= 201, "bounded");
+        let recorded = health
+            .snapshot(kb().as_str())
+            .last_failure
+            .expect("the health record saw it too");
+        assert_eq!(summary, recorded.summary, "stream and /index agree");
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_a_failure_publishes_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "flaky.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(1), None));
+
+        drive_with(
+            storage.clone(),
+            embedder,
+            Arc::new(store.clone()),
+            publisher.clone(),
+            Arc::new(IndexHealth::new()),
+            vec![upsert("flaky.md", "\"f\""), upsert("flaky.md", "\"f\"")],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        let names: Vec<&str> = events.iter().map(|event| event.kind.name()).collect();
+        assert_eq!(
+            names,
+            ["object.index_failed", "object.indexed"],
+            "{events:?}"
+        );
+        assert_eq!(events[0].kind.etag(), events[1].kind.etag());
+        assert!(count_points(&store, &kb(), "flaky.md").await > 0);
+    }
+
+    /// When storage itself is unreachable the worker knows only the key.
+    #[tokio::test]
+    async fn a_failure_before_head_carries_no_stamp() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        storage.fail_next_head();
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md", "\"n\"")],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(
+            events[0].kind,
+            ObjectEventKind::IndexFailed {
+                etag: None,
+                mime: None,
+                summary: Some(
+                    "storage.head_object failed: backend unavailable: injected head failure".into()
+                ),
+            }
         );
     }
 
@@ -1924,10 +2260,14 @@ mod announcing {
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
         let storage = Arc::new(MockStorage::new());
         storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
-        let (tx, rx) = mpsc::channel(1);
+        storage.insert(kb().as_str(), "other.md", "more", "text/markdown");
+        let (tx, rx) = mpsc::channel(2);
+        // One announcement and two outcomes refused; neither path may fail
+        // the indexing itself.
         tx.send(refresh("note.md", RefreshOrigin::Watch))
             .await
             .unwrap();
+        tx.send(upsert("other.md", "\"o\"")).await.unwrap();
         drop(tx);
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
         make_worker_with_batch(
@@ -1943,6 +2283,7 @@ mod announcing {
         .await;
 
         assert!(count_points(&store, &kb(), "note.md").await > 0);
+        assert!(count_points(&store, &kb(), "other.md").await > 0);
     }
 }
 

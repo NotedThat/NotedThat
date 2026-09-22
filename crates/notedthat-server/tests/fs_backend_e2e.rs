@@ -674,8 +674,15 @@ async fn a_file_deleted_while_the_server_was_down_is_forgotten_at_startup() {
 const EVENT_WAIT: Duration = Duration::from_secs(15);
 
 async fn subscribe(server: &Server) -> sse::Subscription {
+    subscribe_with(server, "").await
+}
+
+async fn subscribe_with(server: &Server, query: &str) -> sse::Subscription {
     let response = reqwest::Client::new()
-        .get(server.url(&format!("/api/v1/knowledgebases/{}/events", server.kb)))
+        .get(server.url(&format!(
+            "/api/v1/knowledgebases/{}/events{query}",
+            server.kb
+        )))
         .bearer_auth(TOKEN)
         .send()
         .await
@@ -693,7 +700,10 @@ async fn subscribe(server: &Server) -> sse::Subscription {
 #[tokio::test]
 async fn a_file_dropped_into_the_tree_is_announced_by_the_watcher() {
     let server = start().await;
-    let mut sub = subscribe(&server).await;
+    // Changes only: a file dropped in without a declared type has none the
+    // worker can refuse, so it is indexed as text and reports that too.
+    let mut sub = subscribe_with(&server, "?event=written").await;
+    let mut deletions = subscribe_with(&server, "?event=deleted").await;
 
     let dropped = server.bucket_dir().join("memo.mp3");
     std::fs::write(&dropped, b"ID3\x03").expect("write");
@@ -710,7 +720,7 @@ async fn a_file_dropped_into_the_tree_is_announced_by_the_watcher() {
     );
 
     std::fs::remove_file(&dropped).expect("remove");
-    let frames = sub.events(1, EVENT_WAIT).await;
+    let frames = deletions.events(1, EVENT_WAIT).await;
     assert_eq!(frames[0].event.as_deref(), Some("object.deleted"));
     assert_eq!(frames[0].key(), "memo.mp3");
     assert_eq!(frames[0].source(), "fs-watch");
@@ -722,6 +732,34 @@ async fn a_file_dropped_into_the_tree_is_announced_by_the_watcher() {
     let frames = sub.events(1, EVENT_WAIT).await;
     assert_eq!(frames[0].key(), "inbox/voice.wav");
     assert_eq!(frames[0].source(), "reconcile");
+}
+
+/// A markdown file dropped into the tree is announced by the watcher and then, once
+/// the worker has re-read and embedded it, reported indexed under the same `ETag`
+/// (D65) — the whole detected-change path, on the real adapter.
+#[tokio::test]
+async fn a_file_dropped_into_the_tree_is_announced_and_then_indexed() {
+    let server = start().await;
+    let mut sub = subscribe(&server).await;
+
+    std::fs::write(server.bucket_dir().join("dropped.md"), "# dropped\n").expect("write");
+
+    let frames = sub.events(2, EVENT_WAIT).await;
+    assert_eq!(
+        frames
+            .iter()
+            .map(|f| (f.event.as_deref().unwrap(), f.key(), f.source()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("object.written", "dropped.md", "fs-watch"),
+            ("object.indexed", "dropped.md", "indexer"),
+        ]
+    );
+    let written = frames[0].data.as_ref().unwrap();
+    let indexed = frames[1].data.as_ref().unwrap();
+    assert_eq!(indexed["etag"], written["etag"], "{indexed}");
+    assert_eq!(indexed["mime"], "text/markdown");
+    assert!(indexed["chunks"].as_u64().unwrap() >= 1, "{indexed}");
 }
 
 /// A change made while nothing was running is found by the startup comparison and
@@ -743,22 +781,24 @@ async fn a_file_seeded_before_startup_is_announced_by_reconcile() {
         .await
         .expect("subscribe");
     let mut sub = sse::Subscription::open(response);
-    let frames = sub.events(1, EVENT_WAIT).await;
+    let frames = sub.events_where(1, EVENT_WAIT, sse::change_events).await;
     let seeded = frames
         .iter()
         .find(|f| f.key() == "seeded.md")
-        .unwrap_or_else(|| panic!("no event for seeded.md in {frames:?}"));
+        .unwrap_or_else(|| panic!("no change event for seeded.md in {frames:?}"));
     assert_eq!(seeded.event.as_deref(), Some("object.written"));
     assert_eq!(seeded.source(), "reconcile");
 }
 
 /// The watcher reports the server's own writes back to it (D50). The write already
 /// announced itself, so the echo must stay silent — proven by the next thing the
-/// watcher does announce being a different file.
+/// watcher does announce being a different file. An echo would be a write, so the
+/// subscription asks for writes only and the indexer's verdict on the probe stays
+/// out of the way.
 #[tokio::test]
 async fn the_servers_own_write_is_announced_once_not_again_by_its_echo() {
     let server = start().await;
-    let mut sub = subscribe(&server).await;
+    let mut sub = subscribe_with(&server, "?event=written").await;
     let client = reqwest::Client::new();
 
     let response = client

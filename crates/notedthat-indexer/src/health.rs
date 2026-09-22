@@ -281,7 +281,10 @@ fn pending(record: &KbRecord) -> usize {
 }
 
 /// The first line of `summary`, cut to [`FAILURE_SUMMARY_MAX_CHARS`].
-fn bound_summary(summary: &str) -> String {
+///
+/// Shared with the worker, so the stream's `object.index_failed` carries
+/// exactly the string `/index` reports (D65).
+pub(crate) fn bound_summary(summary: &str) -> String {
     let line = summary.lines().next().unwrap_or_default().trim();
     let mut bounded: String = line.chars().take(FAILURE_SUMMARY_MAX_CHARS).collect();
     if line.chars().count() > FAILURE_SUMMARY_MAX_CHARS {

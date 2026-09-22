@@ -11,11 +11,12 @@ mod snapshot;
 use crate::{
     embedder::Embedder,
     event::IndexEvent,
-    health::IndexHealth,
+    health::{IndexHealth, bound_summary},
     vector_store::{PointSelector, VectorStore},
 };
 use last_seen::LastSeen;
 use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
+use pipeline::{PipelineFailure, PipelineOutcome};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -56,10 +57,13 @@ pub struct IndexerWorker {
     pub batch_size: usize,
     /// Directory configuration for private index snapshots.
     pub staging: StagingConfig,
-    /// Where detected changes are announced, when an events backend is configured.
+    /// Where detected changes and indexing outcomes are published, when an
+    /// events backend is configured.
     ///
-    /// Only `Refresh` publishes: a write through `NotedThat` was announced by the
-    /// write path before its `Upsert` was even enqueued.
+    /// Only a `Refresh` announces a *change*: a write through `NotedThat` was
+    /// announced by the write path before its `Upsert` was even enqueued. Every
+    /// `Upsert` and `Refresh` then reports what became of it — `object.indexed`
+    /// or `object.index_failed` (D65) — once the health record has been stamped.
     pub events: Option<Arc<dyn EventPublisher>>,
     /// The last stamp this worker saw for each key, so the `fs` watcher's echo
     /// of a write the server made itself is not announced a second time.
@@ -100,7 +104,8 @@ impl IndexerWorker {
         self
     }
 
-    /// Announce changes this worker detects on the given event log.
+    /// Announce changes this worker detects, and the outcome of every upsert
+    /// or refresh, on the given event log.
     #[must_use]
     pub fn with_event_publisher(mut self, events: Option<Arc<dyn EventPublisher>>) -> Self {
         self.events = events;
@@ -165,6 +170,10 @@ impl IndexerWorker {
             "processing index event"
         );
 
+        // A tombstone reports no outcome, success or failure (D65): there is
+        // no `object.unindexed`, and `object.deleted` already said what
+        // happened to the key.
+        let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
         let result = match event {
             IndexEvent::Upsert {
                 kb,
@@ -185,22 +194,44 @@ impl IndexerWorker {
             }
             IndexEvent::Tombstone { kb, object_key } => {
                 self.remember(&kb, &object_key, None);
-                self.handle_tombstone(kb, object_key).await
+                self.handle_tombstone(kb, object_key)
+                    .await
+                    .map(|()| PipelineOutcome::Tombstoned)
+                    .map_err(PipelineFailure::before_head)
             }
         };
 
+        // The health record is stamped before the outcome is published, so a
+        // subscriber who reads `object.indexed` and then asks `/index` never
+        // finds the view behind the stream.
         match result {
-            Ok(()) => self.health.succeeded(kb.as_str()),
-            Err(message) => {
+            Ok(outcome) => {
+                self.health.succeeded(kb.as_str());
+                if let PipelineOutcome::Indexed { etag, mime, chunks } = outcome {
+                    self.publish(ObjectEvent::indexed(kb, object_key, etag, mime, chunks))
+                        .await;
+                }
+            }
+            Err(failure) => {
                 tracing::error!(
                     target: "notedthat::indexing",
                     kb = %kb.as_str(),
                     path = %object_key.as_str(),
-                    error = %message,
+                    error = %failure.message,
                     "INDEXING_FAILED"
                 );
                 self.health
-                    .failed(kb.as_str(), object_key.as_str(), &message);
+                    .failed(kb.as_str(), object_key.as_str(), &failure.message);
+                if reports_outcome {
+                    self.publish(ObjectEvent::index_failed(
+                        kb,
+                        object_key,
+                        failure.etag,
+                        failure.mime,
+                        bound_summary(&failure.message),
+                    ))
+                    .await;
+                }
             }
         }
     }
@@ -227,20 +258,30 @@ impl IndexerWorker {
             .differs(kb, object_key, etag)
     }
 
-    /// Publish a detected change. Failure is logged and indexing goes on: there
-    /// is no caller here to hand a 503 to, and the next pass re-detects the key.
+    /// Announce a detected change, once: the echo of the server's own write, or
+    /// of a change already announced, is kept quiet (D50). Outcome events do
+    /// not come through here — they are not change announcements, and must not
+    /// be deduplicated against the stamp the write already announced.
     pub(crate) async fn announce(&self, event: ObjectEvent) {
-        let Some(events) = &self.events else {
+        if self.events.is_none() {
             return;
-        };
-        let etag = match &event.kind {
-            notedthat_core::ObjectEventKind::Written { etag, .. } => Some(etag.as_str()),
-            notedthat_core::ObjectEventKind::Deleted => None,
-        };
+        }
+        let etag = event.kind.etag();
         if !self.is_news(&event.kb, &event.object_key, etag) {
             return;
         }
         self.remember(&event.kb, &event.object_key, etag.map(str::to_owned));
+        self.publish(event).await;
+    }
+
+    /// Publish on the log, if there is one. Failure is logged and indexing goes
+    /// on: there is no caller here to hand a 503 to — a missed announcement is
+    /// re-detected by the next pass, and a missed outcome is what `/index` is
+    /// for.
+    async fn publish(&self, event: ObjectEvent) {
+        let Some(events) = &self.events else {
+            return;
+        };
         let (kb, path) = (event.kb.clone(), event.object_key.clone());
         if let Err(error) = events.publish(event).await {
             tracing::error!(

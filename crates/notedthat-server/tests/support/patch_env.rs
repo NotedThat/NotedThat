@@ -18,6 +18,12 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const API_TOKEN: &str = "e2e-test-token";
 
+/// Storage, vector store and embedder, all in-process — the starting point
+/// for a test that swaps one of them out via [`PatchServer::start_with_backends`].
+pub fn in_memory_backends() -> notedthat_server::run::Backends {
+    patch_backends::in_memory_backends()
+}
+
 pub struct PatchServer {
     pub client: reqwest::Client,
     pub base_url: String,
@@ -36,7 +42,20 @@ impl PatchServer {
         max_patchable_size: u64,
         events: Option<std::sync::Arc<dyn notedthat_core::EventPublisher>>,
     ) -> Self {
-        let runtime = patch_backends::start_runtime_with_events(max_patchable_size, events);
+        let backends = notedthat_server::run::Backends {
+            events,
+            ..patch_backends::in_memory_backends()
+        };
+        Self::start_with_backends(max_patchable_size, backends).await
+    }
+
+    /// A server over exactly these backends — for a test that needs one of
+    /// them to misbehave. Start from [`patch_backends::in_memory_backends`].
+    pub async fn start_with_backends(
+        max_patchable_size: u64,
+        backends: notedthat_server::run::Backends,
+    ) -> Self {
+        let runtime = patch_backends::start_runtime_with_backends(max_patchable_size, backends);
         let config = runtime.config;
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);

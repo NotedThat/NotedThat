@@ -16,7 +16,7 @@ The search body is `{"query": "...", "filter": {...}, "limit": 10}`. `query` is 
 
 A listing shows only what the caller may see, so a page can be shorter than the requested limit, or empty, while still reporting `truncated`. Drive pagination from `next_cursor` and never from the number of objects returned.
 
-`GET /api/v1/knowledgebases/{kb_slug}/events` streams object change events as `text/event-stream` to callers the knowledge base grants `list`; send `Last-Event-ID` to resume after a disconnect, expect `410 gone` when that position is no longer retained, and `404 not_found` when the deployment has no events backend. Prefer it to polling listings when reacting to changes.
+`GET /api/v1/knowledgebases/{kb_slug}/events` streams object change events as `text/event-stream` to callers the knowledge base grants `list`; send `Last-Event-ID` to resume after a disconnect, expect `410 gone` when that position is no longer retained, and `404 not_found` when the deployment has no events backend. Prefer it to polling listings when reacting to changes. The stream also carries the indexer's verdict: after a write, `object.indexed` with the same `etag` means the object is now in search results, and `object.index_failed` means it is not; wait for one of those rather than retrying a search or polling the index state.
 
 `/browse/` is a human-facing HTML view of the same content. Use `/api/v1/` instead; do not scrape it.
 

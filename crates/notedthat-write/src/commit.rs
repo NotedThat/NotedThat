@@ -124,12 +124,16 @@ pub async fn commit_copy(
     Ok(outcome)
 }
 
-/// Report a durable write: index first, then publish.
+/// Report a durable write: publish, then index.
 ///
-/// The order matters for D38's promise that a 503 makes the client the retry
-/// mechanism. Either failure returns an error after the bytes are stored, and
-/// a retried write re-runs both — an event may be published twice, never
-/// zero times.
+/// Publishing first is what lets the worker's `object.indexed` for this
+/// `ETag` always follow `object.written` in the log (D65): the write is on
+/// the log before its `Upsert` is even in the queue. The enqueue happens
+/// whether or not the publish succeeded, so the index never depends on the
+/// broker; a refused publish is still the write's answer, and the retry
+/// re-announces and re-indexes. D38's promise holds either way — either
+/// failure returns an error after the bytes are stored, and a retried write
+/// re-runs both — so an event may be published twice, never zero times.
 pub(crate) async fn after_write(
     sinks: &WriteSinks<'_>,
     kb: &KbSlug,
@@ -138,6 +142,31 @@ pub(crate) async fn after_write(
     size: u64,
     mime: &str,
 ) -> Result<(), WriteError> {
+    // Publish first, so `object.indexed` for this `ETag` always follows the
+    // `object.written` it answers (D65) — but enqueue regardless of the
+    // outcome: the index is what search depends on and the broker is the
+    // optional component (§5 principle 9), so a refused publish must not
+    // leave stored bytes unsearchable until a client happens to retry. The
+    // refusal is still the write's answer, after the enqueue; the retry then
+    // announces the version and, an `Upsert` never being skipped, indexes it
+    // again — an `object.indexed` with no `object.written` before it is the
+    // same class of thing as a duplicate, and subscribers tolerate both.
+    let published = match sinks.events {
+        Some(events) => {
+            let event = ObjectEvent::written(
+                kb.clone(),
+                path.clone(),
+                outcome.etag.clone().unwrap_or_default(),
+                size,
+                mime.to_string(),
+                current_unix_seconds(),
+                sinks.source,
+            );
+            publish(events, event, WriteEffect::Stored).await
+        }
+        None => Ok(()),
+    };
+
     let event = IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: path.clone(),
@@ -168,24 +197,12 @@ pub(crate) async fn after_write(
             // until post-v1 worker liveness detection is added.
         }
     }
-
-    let Some(events) = sinks.events else {
-        return Ok(());
-    };
-    let event = ObjectEvent::written(
-        kb.clone(),
-        path.clone(),
-        outcome.etag.clone().unwrap_or_default(),
-        size,
-        mime.to_string(),
-        current_unix_seconds(),
-        sinks.source,
-    );
-    publish(events, event, WriteEffect::Stored).await
+    published
 }
 
-/// Delete an object idempotently, enqueue a best-effort tombstone event and
-/// publish the change.
+/// Delete an object idempotently, publish the change and enqueue a
+/// best-effort tombstone event — in that order, the one rule `after_write`
+/// follows (D65).
 pub async fn commit_delete(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,
@@ -197,6 +214,17 @@ pub async fn commit_delete(
         Ok(()) | Err(StorageError::NotFound { .. }) => {}
         Err(e) => return Err(WriteError::Storage(e)),
     }
+
+    // As in `after_write`: publish first, enqueue regardless, answer with the
+    // publish's outcome — a refused publish must not leave a deleted object's
+    // points searchable until a client retries.
+    let published = match sinks.events {
+        Some(events) => {
+            let event = ObjectEvent::deleted(kb.clone(), path.clone(), sinks.source);
+            publish(events, event, WriteEffect::Deleted).await
+        }
+        None => Ok(()),
+    };
 
     let event = IndexEvent::Tombstone {
         kb: kb.clone(),
@@ -225,12 +253,7 @@ pub async fn commit_delete(
             }
         }
     }
-
-    let Some(events) = sinks.events else {
-        return Ok(());
-    };
-    let event = ObjectEvent::deleted(kb.clone(), path.clone(), sinks.source);
-    publish(events, event, WriteEffect::Deleted).await
+    published
 }
 
 async fn publish(
@@ -781,7 +804,7 @@ mod tests {
         .await
         .expect("write succeeds");
 
-        rx.recv().await.expect("index event first");
+        rx.recv().await.expect("the index event, after the publish");
         let published = events.events();
         assert_eq!(published.len(), 1);
         let event = &published[0];
@@ -796,14 +819,17 @@ mod tests {
                 mime: "text/markdown".into(),
                 mtime: match &event.kind {
                     notedthat_core::ObjectEventKind::Written { mtime, .. } => *mtime,
-                    notedthat_core::ObjectEventKind::Deleted => unreachable!(),
+                    other => unreachable!("a write publishes object.written, got {other:?}"),
                 },
             }
         );
     }
 
+    /// The event goes out before the queue is tried, so a write the queue
+    /// refuses has been announced; the client's retry (D38) announces it
+    /// again — at least once, never zero times.
     #[tokio::test]
-    async fn indexer_backpressure_wins_and_nothing_is_published() {
+    async fn a_full_queue_still_refuses_the_write_after_its_event_was_published() {
         let storage = TestStorage::default();
         let events = RecordingPublisher::recording();
         let (indexer_tx, _rx) = mpsc::channel(1);
@@ -827,7 +853,13 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, WriteError::IndexerBackpressureUpsert));
-        assert!(events.events().is_empty(), "no event behind a 503");
+        let published = events.events();
+        assert_eq!(
+            published.len(),
+            1,
+            "announced before the 503: {published:?}"
+        );
+        assert_eq!(published[0].kind.name(), "object.written");
     }
 
     #[tokio::test]
@@ -865,7 +897,41 @@ mod tests {
                 .contains_key("test-kb/test.md"),
             "the bytes were stored before publishing failed"
         );
-        rx.recv().await.expect("the index event was still enqueued");
+        assert!(
+            matches!(rx.try_recv(), Ok(IndexEvent::Upsert { .. })),
+            "the index work was enqueued regardless: the broker is optional, the index is not"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_publish_still_enqueues_the_tombstone() {
+        let storage = TestStorage::default();
+        let events = RecordingPublisher::refusing();
+        let (indexer_tx, mut rx) = mpsc::channel(8);
+
+        let err = commit_delete(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Http),
+            &kb(),
+            &path_named("gone.md"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                WriteError::EventPublishFailed {
+                    after: WriteEffect::Deleted
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(IndexEvent::Tombstone { .. })),
+            "the points come out of the index whether or not the deletion was announced"
+        );
     }
 
     #[tokio::test]
@@ -934,7 +1000,7 @@ mod tests {
                 assert_eq!(*size, 7, "size comes from the HEAD after the copy");
                 assert_eq!(mime, "text/markdown");
             }
-            notedthat_core::ObjectEventKind::Deleted => panic!("a copy is a write"),
+            other => panic!("a copy is a write, got {other:?}"),
         }
     }
 }
