@@ -18,6 +18,8 @@ use notedthat_storage_fs::{
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use super::reconcile::{IndexSink, now_unix};
+
 /// How many changes one reconciliation pass holds while they are forwarded.
 const RECONCILE_BUFFER: usize = 256;
 
@@ -91,25 +93,6 @@ pub(super) fn start(
     let bridge = tokio::spawn(run_bridge(storage, store, sink, signals_rx, kbs));
 
     Ok(Some(FsWatch { watcher, bridge }))
-}
-
-/// The indexing queue as the bridge sees it: every event it enqueues is also
-/// counted on the health record, like a write's is (#97).
-#[derive(Clone)]
-struct IndexSink {
-    tx: mpsc::Sender<IndexEvent>,
-    health: Arc<IndexHealth>,
-}
-
-impl IndexSink {
-    /// Enqueue, blocking rather than dropping (D50). `Err` means the worker is
-    /// gone and there is nothing left to bridge to.
-    async fn send(&self, event: IndexEvent) -> Result<(), ()> {
-        let kb = event.kb().as_str().to_string();
-        self.tx.send(event).await.map_err(|_| ())?;
-        self.health.enqueued(&kb);
-        Ok(())
-    }
 }
 
 /// Drain signals until the watcher stops, reconciling everything once first.
@@ -287,10 +270,4 @@ async fn reconcile_into(
             "FS_WATCH_RESCAN: could not read the tree, so this pass was incomplete"
         ),
     }
-}
-
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }

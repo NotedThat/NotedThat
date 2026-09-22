@@ -27,6 +27,7 @@ mod events;
 mod fs_watch;
 mod mcp_http;
 mod readiness;
+mod reconcile;
 
 #[cfg(test)]
 #[path = "run/mcp_http_listener.rs"]
@@ -154,6 +155,8 @@ struct Infrastructure {
     fs_watch: Option<fs_watch::FsWatch>,
     /// Not yet running: `serve` spawns it under its own shutdown token.
     readiness: readiness::ReadinessPoller,
+    /// The `s3` backend's reconciliation passes; `None` on `fs` (D66).
+    reconciler: Option<Arc<reconcile::Reconciler>>,
 }
 
 /// The `/readyz` prober, after provisioning: it starts from "ready" because
@@ -181,6 +184,41 @@ fn readiness_poller(
         config.storage.kind().as_str(),
         Duration::from_millis(config.ready_probe_interval_ms),
     ))
+}
+
+/// Whatever keeps the index in step with changes the server did not make: the `fs`
+/// backend's watcher and its startup comparison (D50), or the `s3` backend's startup
+/// pass (D66) — the on-demand pass needs no starting.
+fn start_change_detection(
+    config: &Config,
+    kb_list: Vec<notedthat_core::KbSlug>,
+    reconciler: Option<&reconcile::Reconciler>,
+    store: &Arc<dyn VectorStore>,
+    indexer_tx: &mpsc::Sender<IndexEvent>,
+    index_health: Arc<notedthat_indexer::IndexHealth>,
+) -> anyhow::Result<Option<fs_watch::FsWatch>> {
+    match &config.storage {
+        StorageConfig::S3(s3) => {
+            match reconciler {
+                Some(reconciler) if s3.reconcile_on_startup => {
+                    reconciler.spawn_startup_pass(kb_list);
+                }
+                _ => info!(
+                    "s3 startup reconciliation is off; objects changed outside NotedThat are \
+                     indexed when the operator asks (POST …/index/reconcile)"
+                ),
+            }
+            Ok(None)
+        }
+        StorageConfig::Fs(fs) => fs_watch::start(
+            fs,
+            config.tenant_slug.clone(),
+            kb_list,
+            store.clone(),
+            indexer_tx.clone(),
+            index_health,
+        ),
+    }
 }
 
 async fn build_infrastructure(
@@ -231,6 +269,19 @@ async fn build_infrastructure(
         index_health: index_health.clone(),
     };
 
+    // The `s3` backend's comparison against the index, on demand and at startup (D66).
+    // The `fs` backend's watcher bridge covers the same ground on its own.
+    let reconciler = match &config.storage {
+        StorageConfig::S3(_) => Some(reconcile::Reconciler::new(
+            storage.clone(),
+            store.clone(),
+            indexer_tx.clone(),
+            index_health.clone(),
+            &kb_list,
+        )),
+        StorageConfig::Fs(_) => None,
+    };
+
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
     // Using separate instances risks model or endpoint drift between write and query paths.
     let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
@@ -250,7 +301,9 @@ async fn build_infrastructure(
         events: events.clone(),
         index_health: index_health.clone(),
         readiness: readiness_rx,
-        reconcile: None,
+        reconcile: reconciler
+            .clone()
+            .map(|r| r as Arc<dyn notedthat_api_http::state::ReconcileTrigger>),
     };
 
     let worker_handle = tokio::spawn(
@@ -270,17 +323,14 @@ async fn build_infrastructure(
 
     // After provisioning, so every knowledge base's directory exists to be watched, and
     // after the worker is spawned, so the first reconciliation has somewhere to send.
-    let watch = match &config.storage {
-        StorageConfig::S3(_) => None,
-        StorageConfig::Fs(fs) => fs_watch::start(
-            fs,
-            config.tenant_slug.clone(),
-            kb_list,
-            store.clone(),
-            state.indexer_tx.clone(),
-            index_health,
-        )?,
-    };
+    let watch = start_change_detection(
+        &config,
+        kb_list,
+        reconciler.as_deref(),
+        &store,
+        &state.indexer_tx,
+        index_health,
+    )?;
 
     Ok(Infrastructure {
         state,
@@ -289,6 +339,7 @@ async fn build_infrastructure(
         worker_handle,
         fs_watch: watch,
         readiness,
+        reconciler,
     })
 }
 
@@ -435,6 +486,7 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
         worker_handle,
         fs_watch,
         readiness,
+        reconciler,
     } = build_infrastructure(config.clone(), backends).await?;
     let shutdown_token = CancellationToken::new();
     let readiness_handle = tokio::spawn(readiness.run(shutdown_token.child_token()));
@@ -482,6 +534,10 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
     // close — thirty seconds of every shutdown, spent waiting for work that keeps arriving.
     if let Some(fs_watch) = fs_watch {
         fs_watch.stop().await;
+    }
+    // Same reason: a running pass holds a sender on the indexing queue.
+    if let Some(reconciler) = reconciler {
+        reconciler.stop().await;
     }
     complete_shutdown(indexer_shutdown, worker_handle).await;
     serve_result
