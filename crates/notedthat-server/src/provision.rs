@@ -29,8 +29,11 @@ pub struct ProvisionedKbs {
 /// 2. Ensure the bucket exists (idempotent).
 /// 3. Read the manifest; if absent, write a fresh v1 manifest.
 ///    If present but KB slug mismatches, overwrite with a fresh manifest.
+/// 4. Ensure the Qdrant collection exists, and record the embedding
+///    configuration in the manifest the first time.
 ///
-/// Any failure returns immediately as `Err(Error)`.
+/// Any failure, including an unreachable Qdrant, returns immediately as
+/// `Err(Error)` (D39).
 pub async fn provision_kbs(
     storage: &dyn Storage,
     tenant: &TenantSlug,
@@ -78,46 +81,24 @@ pub async fn provision_kbs(
         // unsupported schemas before publishing their public-read policies.
         manifest.validate()?;
 
-        match QdrantProvisioner::cross_check_manifest(&manifest, embedder_model, embedder_dim) {
-            Ok(None) => match provisioner
-                .ensure_collection(kb, u64::from(embedder_dim))
-                .await
-            {
-                Ok(()) => {
-                    manifest.embedding = Some(QdrantProvisioner::manifest_embedding_from_env(
-                        embedder_model.to_string(),
-                        embedder_dim,
-                        embedder_endpoint_hint.map(str::to_string),
-                    ));
-                    storage.write_manifest(kb, &manifest).await?;
-                    info!(kb = %kb.as_str(), "qdrant collection provisioned and manifest embedding recorded");
-                }
-                Err(err) => warn!(
-                    kb = %kb.as_str(),
-                    error = %err,
-                    "qdrant collection provisioning failed; continuing startup"
-                ),
-            },
-            Ok(Some(())) => {
-                if let Err(err) = provisioner
-                    .ensure_collection(kb, u64::from(embedder_dim))
-                    .await
-                {
-                    warn!(
-                        kb = %kb.as_str(),
-                        error = %err,
-                        "qdrant collection ensure failed; continuing startup"
-                    );
-                }
-            }
-            Err(err @ ProvisionError::ManifestMismatch { .. }) => {
-                return Err(provision_error(&err));
-            }
-            Err(err) => warn!(
-                kb = %kb.as_str(),
-                error = %err,
-                "qdrant manifest cross-check failed; continuing startup"
-            ),
+        // Every step is fatal (D39, §6.12 step 6): a server that starts without
+        // its collection indexes nothing and cannot tell anyone until a write
+        // fails, so the deployment finds out here, with the setting named.
+        let recorded =
+            QdrantProvisioner::cross_check_manifest(&manifest, embedder_model, embedder_dim)
+                .map_err(|err| provision_error(&err))?;
+        provisioner
+            .ensure_collection(kb, u64::from(embedder_dim))
+            .await
+            .map_err(|err| qdrant_provision_error(kb, &err))?;
+        if recorded.is_none() {
+            manifest.embedding = Some(QdrantProvisioner::manifest_embedding_from_env(
+                embedder_model.to_string(),
+                embedder_dim,
+                embedder_endpoint_hint.map(str::to_string),
+            ));
+            storage.write_manifest(kb, &manifest).await?;
+            info!(kb = %kb.as_str(), "qdrant collection provisioned and manifest embedding recorded");
         }
         if manifest.access.is_empty() {
             // Allow-only rules mean an empty array grants nothing to anyone. The
@@ -145,6 +126,19 @@ pub async fn provision_kbs(
 fn provision_error(err: &ProvisionError) -> Error {
     Error::Config {
         message: err.to_string(),
+    }
+}
+
+/// A collection that could not be ensured, with the knowledge base and the
+/// setting the operator will reach for — the same naming rule every other
+/// startup diagnostic follows.
+fn qdrant_provision_error(kb: &KbSlug, err: &ProvisionError) -> Error {
+    Error::Config {
+        message: format!(
+            "failed to provision the qdrant collection for knowledge base '{}' via {}: {err}",
+            kb.as_str(),
+            notedthat_core::setting("NOTEDTHAT_QDRANT_URL"),
+        ),
     }
 }
 
@@ -267,5 +261,36 @@ mod tests {
         assert_eq!(manifest.tenant_slug.as_str(), "default");
         assert_eq!(manifest.manifest_version, KbManifest::CURRENT_VERSION);
         assert!(manifest.created_at > 0);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_vector_store_refuses_startup_and_names_the_setting() {
+        let storage = InMemoryStorage::default();
+        let tenant = TenantSlug::default();
+        let kb = KbSlug::try_new("notes").unwrap();
+        let store = InMemoryVectorStore::new();
+        store.set_reachable(false);
+
+        let error = provision_kbs(
+            &storage,
+            &tenant,
+            std::slice::from_ref(&kb),
+            &QdrantProvisioner::new(std::sync::Arc::new(store)),
+            "test-model",
+            3,
+            Some("http://embedder.example"),
+        )
+        .await
+        .expect_err("an unreachable vector store is fatal (D39)");
+
+        let message = error.to_string();
+        for needle in ["'notes'", "NOTEDTHAT_QDRANT_URL", "--qdrant-url"] {
+            assert!(message.contains(needle), "{message:?} should name {needle}");
+        }
+
+        // The manifest written in step 3 must not claim an embedding the
+        // collection never got, so the next start provisions from scratch.
+        let manifest = storage.read_manifest(&kb).await.unwrap();
+        assert!(manifest.embedding.is_none());
     }
 }

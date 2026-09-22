@@ -144,6 +144,7 @@ mod tests {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         };
 
         Router::new()

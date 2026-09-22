@@ -64,6 +64,10 @@ fn unavailable() -> StorageError {
 
 #[async_trait]
 impl Storage for MemoryStorage {
+    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+        Ok(())
+    }
+
     async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
         Err(unavailable())
     }

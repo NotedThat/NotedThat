@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use notedthat_api_http::readiness::{Check, ReadinessReceiver, ReadinessSnapshot, Unready};
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
-use notedthat_api_http::testing::InMemoryStorage;
+use notedthat_api_http::testing::{InMemoryStorage, ready_receiver, receiver_for};
 use notedthat_core::KbSlug;
 use tower::util::ServiceExt;
 
@@ -20,12 +21,18 @@ fn app() -> axum::Router {
 }
 
 fn app_with_max_body_size(max_body_size: u64) -> axum::Router {
-    app_with(max_body_size, None)
+    app_with(max_body_size, None, ready_receiver())
+}
+
+/// A router whose `/readyz` sees `snapshot` as the backends' latest probe.
+fn app_reporting(snapshot: ReadinessSnapshot) -> axum::Router {
+    app_with(1024, None, receiver_for(snapshot))
 }
 
 fn app_with(
     max_body_size: u64,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
+    readiness: ReadinessReceiver,
 ) -> axum::Router {
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
@@ -44,6 +51,7 @@ fn app_with(
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness,
     };
     build_router(state)
 }
@@ -128,9 +136,8 @@ impl notedthat_core::EventPublisher for DisconnectedEvents {
     }
 }
 
-#[tokio::test]
-async fn readyz_is_unavailable_while_the_event_backend_is_disconnected() {
-    let resp = app_with(1024, Some(Arc::new(DisconnectedEvents)))
+async fn readyz(app: axum::Router) -> (StatusCode, serde_json::Value) {
+    let resp = app
         .oneshot(
             Request::builder()
                 .uri("/readyz")
@@ -139,15 +146,126 @@ async fn readyz_is_unavailable_while_the_event_backend_is_disconnected() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let json = response_json(resp).await;
+    let status = resp.status();
+    (status, response_json(resp).await)
+}
+
+#[tokio::test]
+async fn readyz_is_unavailable_while_the_event_backend_is_disconnected() {
+    let (status, json) = readyz(app_with(
+        1024,
+        Some(Arc::new(DisconnectedEvents)),
+        ready_receiver(),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(json["status"], "unavailable");
-    assert_eq!(json["events"], "nats");
+    assert_eq!(
+        json["checks"]["events"],
+        serde_json::json!({ "backend": "nats", "status": "unavailable", "reason": "disconnected" })
+    );
+    // The other backends are still reported, and still fine.
+    assert_eq!(json["checks"]["storage"]["status"], "ok");
+    assert_eq!(json["checks"]["search"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn readyz_lists_every_check_when_all_are_ok() {
+    let (status, json) = readyz(app_reporting(ReadinessSnapshot::ok("fs", "qdrant"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": "ok",
+            "checks": {
+                "storage": { "backend": "fs", "status": "ok" },
+                "search": { "backend": "qdrant", "status": "ok" },
+            }
+        }),
+        "no event backend configured, so no events check"
+    );
+}
+
+#[tokio::test]
+async fn readyz_is_unavailable_while_storage_is_unreachable() {
+    let (status, json) = readyz(app_reporting(ReadinessSnapshot {
+        storage: Check::unready("s3", Unready::Unreachable),
+        search: Check::ok("qdrant"),
+    }))
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json["status"], "unavailable");
+    assert_eq!(
+        json["checks"]["storage"],
+        serde_json::json!({ "backend": "s3", "status": "unavailable", "reason": "unreachable" })
+    );
+    assert_eq!(json["checks"]["search"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn readyz_is_unavailable_while_search_times_out() {
+    let (status, json) = readyz(app_reporting(ReadinessSnapshot {
+        storage: Check::ok("fs"),
+        search: Check::unready("qdrant", Unready::Timeout),
+    }))
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json["checks"]["search"]["reason"], "timeout");
+    assert_eq!(json["checks"]["storage"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
+    // The backend answered — it is up, and every other knowledge base keeps
+    // serving — so the replica stays in the load balancer; the check says why.
+    let (status, json) = readyz(app_reporting(ReadinessSnapshot {
+        storage: Check::unready("fs", Unready::NotFound),
+        search: Check::ok("qdrant"),
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["status"], "degraded",
+        "the top-level word mirrors the worst check: {json}"
+    );
+    assert_eq!(
+        json["checks"]["storage"],
+        serde_json::json!({ "backend": "fs", "status": "degraded", "reason": "not_found" })
+    );
+}
+
+#[tokio::test]
+async fn readyz_says_nothing_about_a_failure_beyond_its_reason() {
+    // The route is unauthenticated: a check carries a fixed reason and never
+    // the backend's own message, which could quote an endpoint or a credential.
+    let (_, json) = readyz(app_with(
+        1024,
+        Some(Arc::new(DisconnectedEvents)),
+        receiver_for(ReadinessSnapshot {
+            storage: Check::unready("s3", Unready::NotFound),
+            search: Check::unready("qdrant", Unready::Unreachable),
+        }),
+    ))
+    .await;
+    for (name, check) in json["checks"].as_object().expect("checks object") {
+        let keys: Vec<&str> = check
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["backend", "reason", "status"], "{name}");
+        assert!(
+            ["timeout", "unreachable", "not_found", "disconnected"]
+                .contains(&check["reason"].as_str().unwrap()),
+            "{name}: {check}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_disconnected_event_backend_answers_503_with_retry_after_on_subscribe() {
-    let resp = app_with(1024, Some(Arc::new(DisconnectedEvents)))
+    let resp = app_with(1024, Some(Arc::new(DisconnectedEvents)), ready_receiver())
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/knowledgebases/{KB}/events"))
@@ -937,6 +1055,7 @@ async fn delete_enqueues_tombstone_on_success() {
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: notedthat_api_http::testing::ready_receiver(),
     };
     let router = build_router(state);
 
@@ -995,6 +1114,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: notedthat_api_http::testing::ready_receiver(),
     };
     let router = build_router(state);
 
@@ -1479,6 +1599,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
         searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: ready_receiver(),
     });
 
     for (method, uri, body) in [

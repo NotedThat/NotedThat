@@ -233,6 +233,7 @@ mod patch_route {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         });
 
         (router, outcome.etag.unwrap())
@@ -277,6 +278,7 @@ mod patch_route {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         })
     }
 
@@ -483,6 +485,10 @@ mod patch_route {
 
         #[async_trait]
         impl Storage for PutPreconditionFailedStorage {
+            async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+                Ok(())
+            }
+
             async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
                 self.inner.ensure_bucket(kb).await
             }
@@ -801,6 +807,7 @@ mod line_range_get {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         })
     }
 
@@ -963,6 +970,7 @@ mod tests {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         })
     }
 
@@ -1179,6 +1187,7 @@ mod tests {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         };
         let router = build_router(state);
 
@@ -1272,6 +1281,7 @@ mod tests {
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
         };
         let router = build_router(state);
 

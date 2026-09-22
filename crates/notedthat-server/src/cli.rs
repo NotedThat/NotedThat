@@ -71,6 +71,11 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_MAX_PATCHABLE_SIZE", value_name = "BYTES")]
     pub max_patchable_size: Option<String>,
 
+    /// How often /readyz probes the storage backend and Qdrant, in milliseconds;
+    /// also each probe's deadline [default: 5000].
+    #[arg(long, env = "NOTEDTHAT_READY_PROBE_INTERVAL_MS", value_name = "MS")]
+    pub ready_probe_interval_ms: Option<String>,
+
     /// Private staging directory for uploads and index snapshots [default: the
     /// platform temporary directory].
     #[arg(long, env = "NOTEDTHAT_UPLOAD_TMP_DIR", value_name = "DIR")]

@@ -98,6 +98,7 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
         searcher: Arc::new(NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: notedthat_api_http::testing::ready_receiver(),
     })
 }
 

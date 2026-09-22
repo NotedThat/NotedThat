@@ -36,6 +36,7 @@ fn make_app() -> axum::Router {
         searcher: Arc::new(NoopSearcher),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: notedthat_api_http::testing::ready_receiver(),
     };
     build_router(state)
 }
@@ -54,6 +55,7 @@ fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
         searcher: mock,
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+        readiness: notedthat_api_http::testing::ready_receiver(),
     };
     build_router(state)
 }

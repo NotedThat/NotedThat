@@ -74,6 +74,7 @@ These have defaults and can be omitted.
 | `RUST_LOG` | *(none — see above)* | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | `NOTEDTHAT_MAX_PATCHABLE_SIZE` | `--max-patchable-size` | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
 | `NOTEDTHAT_UPLOAD_TMP_DIR` | `--upload-tmp-dir` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+| `NOTEDTHAT_READY_PROBE_INTERVAL_MS` | `--ready-probe-interval-ms` | positive integer (ms) | `5000` | How often `/readyz`'s background prober checks the storage backend and Qdrant; also each probe's deadline, so keep it well above the backends' round-trip time (the in-process e2e uses `20`; a networked S3 or Qdrant needs hundreds of milliseconds at least, or every probe times out and `/readyz` sits at `503 timeout`). An outage is reported within twice this value. Must be > 0. See [Readiness](#readiness). |
 
 ## Storage backend
 
@@ -775,6 +776,39 @@ export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 Do not also set `NOTEDTHAT_S3_*`; see
 [Settings belonging to the unselected backend are rejected](#settings-belonging-to-the-unselected-backend-are-rejected).
 
+## Readiness
+
+`/healthz` says the process is alive; `/readyz` says it can do its job. Every
+`NOTEDTHAT_READY_PROBE_INTERVAL_MS` (default `5000`) a background task probes the storage
+backend and Qdrant, each probe bounded by that same interval, and publishes the result;
+`/readyz` reads the latest result and never probes on request, so an orchestrator can poll it
+as often as it likes. An outage is reported within twice the interval, recovery within one,
+and neither needs a restart. The body names each check, its backend, a status of `ok`, `degraded` or `unavailable`,
+and — when it is not `ok` — one of `timeout`, `unreachable`, `not_found` or `disconnected`; the
+backend's own error goes to the log (`READINESS_LOST` or `READINESS_DEGRADED`, once per failure,
+and `READINESS_RESTORED`), never to the unauthenticated response. See [`docs/API.md`](API.md#get-readyz) for the body.
+
+What each probe is:
+
+- **`s3`** — `HeadBucket` on the bucket of the knowledge base whose slug sorts first
+  (`NOTEDTHAT_KBS` is held sorted, so `notes,archive` probes `archive`). It needs
+  `s3:ListBucket` on that bucket, which `ListObjectsV2` already requires, so no new grant in
+  practice. Some S3-compatible stores answer `403` rather than `404` for a bucket that does not
+  exist; that is reported as `unreachable` rather than `not_found`, and is still a `503`.
+- **`fs`** — a stat of that same knowledge base's directory under `NOTEDTHAT_FS_ROOT`.
+  It cannot see a read-only remount or a full disk; readiness means reachable, not writable.
+- **`qdrant`** — the `HealthCheck` RPC, through the same channel and API key as every other call.
+- **events** — the broker's connection state, when an events backend is configured.
+
+A `not_found` on `storage` means the bucket or directory that existed at startup has since been
+deleted; nothing re-creates it while the process runs, so restart to re-provision. It is
+`degraded`, not `unavailable`: the backend answered, so it is up and the other knowledge bases
+keep serving, and `/readyz` stays `200` rather than pulling the replica out of the load balancer
+for a data problem a restart fixes. Not covered:
+the `fs` change watcher (a lost watch is [`FS_WATCH_LOST`](#operating-it) and a rescan), the
+embedding endpoint, and how fresh the index is — that is per knowledge base, at
+`GET /api/v1/knowledgebases/{kb_slug}/index` (see [`docs/API.md`](API.md#get-apiv1knowledgebaseskb_slugindex)).
+
 ## Startup validation
 
 The server validates all configuration before binding to any port or reaching any backend. If a
@@ -806,6 +840,17 @@ directory, before any backend client is built:
 Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: NOTEDTHAT_FS_ROOT does not exist: /srv/notedthat
 Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: the storage root /srv/notedthat is already in use by another notedthat-server process (PID 4213)
 ```
+
+Provisioning is part of the same pass: every declared knowledge base's bucket, manifest and
+Qdrant collection is ensured before any listener binds, and any of them failing exits non-zero
+with the knowledge base and the setting to look at:
+
+```
+Error: failed to provision the qdrant collection for knowledge base 'notes' via NOTEDTHAT_QDRANT_URL (--qdrant-url): …
+```
+
+Under Docker Compose the server is `restart: unless-stopped`, so a Qdrant that is still coming up
+costs a restart or two rather than a server that serves without a search collection.
 
 This fail-fast behavior means misconfigured deployments fail loudly at startup rather than
 silently misbehaving at runtime.

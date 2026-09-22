@@ -158,6 +158,37 @@ async fn verify_first_snapshot(client: &reqwest::Client, first: &ServerInstance)
     );
 }
 
+/// `/readyz` starts from "ok" before its first probe, so a 200 at startup says
+/// nothing; what proves the real `HeadBucket` and `HealthCheck` calls work is
+/// that it *stays* 200 across several probe cycles (the harness sets a 200 ms
+/// interval, and a failing probe would flip it within two).
+async fn assert_readyz_holds_against_real_backends(
+    client: &reqwest::Client,
+    server: &ServerInstance,
+) {
+    let until = tokio::time::Instant::now() + Duration::from_millis(700);
+    while tokio::time::Instant::now() < until {
+        let response = client
+            .get(format!("{}/readyz", server.http_url))
+            .send()
+            .await
+            .expect("readyz");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.expect("readyz json");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "status": "ok",
+                "checks": {
+                    "storage": { "backend": "s3", "status": "ok" },
+                    "search": { "backend": "qdrant", "status": "ok" },
+                }
+            })
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires Docker (persistent SeaweedFS + Qdrant testcontainers)"]
 async fn stored_access_rules_are_loaded_only_at_server_startup() {
@@ -170,6 +201,7 @@ async fn stored_access_rules_are_loaded_only_at_server_startup() {
         .expect("wire client");
     let first = ServerInstance::start(backends.config());
     wait_ready(&client, &first).await;
+    assert_readyz_holds_against_real_backends(&client, &first).await;
 
     seed_objects(&client, &first).await;
 

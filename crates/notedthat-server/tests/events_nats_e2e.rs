@@ -104,6 +104,7 @@ fn config(kb: &str, addr: std::net::SocketAddr) -> Config {
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         mcp_max_read_bytes: 16 * 1024 * 1024,
+        ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }
@@ -338,7 +339,9 @@ async fn losing_the_broker_fails_readiness_and_writes_answer_503_with_retry_afte
         if response.status() == StatusCode::SERVICE_UNAVAILABLE {
             let body: serde_json::Value = response.json().await.expect("json");
             assert_eq!(body["status"], "unavailable");
-            assert_eq!(body["events"], "nats");
+            assert_eq!(body["checks"]["events"]["backend"], "nats");
+            assert_eq!(body["checks"]["events"]["status"], "unavailable");
+            assert_eq!(body["checks"]["events"]["reason"], "disconnected");
             break;
         }
         assert!(

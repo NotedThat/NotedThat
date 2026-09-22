@@ -637,6 +637,13 @@ fn render(result: Result<Vec<IndexedObject>, VectorStoreError>) -> String {
 async fn observe_lifecycle(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     let mut out: Observations = Vec::new();
 
+    // `/readyz`'s check: a reachable backend answers, whether or not any
+    // collection exists yet.
+    out.push((
+        "probe_before_create",
+        format!("{:?}", store.probe().await.map_err(|e| e.to_string())),
+    ));
+
     out.push((
         "exists_before_create",
         format!("{:?}", store.collection_exists(kb).await.expect("exists")),

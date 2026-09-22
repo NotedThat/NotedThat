@@ -484,3 +484,34 @@ async fn concept_type_resolves_through_the_nested_okf_payload() {
 
     assert_eq!(keys(&results), vec!["doc-1.md".to_string()]);
 }
+
+#[tokio::test]
+async fn set_reachable_takes_the_store_away_from_every_clone_and_brings_it_back() {
+    let store = InMemoryVectorStore::new();
+    store.create_collection(&kb(), 3).await.expect("create");
+    store.probe().await.expect("a fresh store is reachable");
+
+    // The switch is shared by clones, so the one a server holds flips too.
+    let held_by_server = store.clone();
+    store.set_reachable(false);
+    assert!(matches!(
+        held_by_server.probe().await,
+        Err(VectorStoreError::Backend { .. })
+    ));
+    assert!(
+        matches!(
+            held_by_server.collection_exists(&kb()).await,
+            Err(VectorStoreError::Backend { .. })
+        ),
+        "an outage fails every operation, not only the probe"
+    );
+
+    store.set_reachable(true);
+    held_by_server.probe().await.expect("reachable again");
+    assert!(
+        held_by_server
+            .collection_exists(&kb())
+            .await
+            .expect("exists")
+    );
+}

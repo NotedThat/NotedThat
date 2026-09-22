@@ -166,6 +166,10 @@ impl Embedder for ScriptedEmbedder {
 
 #[async_trait]
 impl Storage for MockStorage {
+    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+        Ok(())
+    }
+
     async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
         Ok(())
     }
@@ -1614,6 +1618,10 @@ struct FailingEtagLookup {
 
 #[async_trait]
 impl VectorStore for FailingEtagLookup {
+    async fn probe(&self) -> Result<(), VectorStoreError> {
+        Ok(())
+    }
+
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
         self.inner.collection_exists(kb).await
     }

@@ -272,6 +272,10 @@ mod tests {
 
     #[async_trait]
     impl Storage for TestStorage {
+        async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
+            Ok(())
+        }
+
         async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
             unimplemented!()
         }

@@ -34,6 +34,7 @@ use qdrant_client::qdrant::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 /// Rank constant for Reciprocal Rank Fusion, matching Qdrant's default.
@@ -76,6 +77,15 @@ struct Collection {
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryVectorStore {
     inner: Arc<RwLock<HashMap<String, Collection>>>,
+    /// Set by [`InMemoryVectorStore::set_reachable`]; every operation fails
+    /// with a backend error while it is on, the way a real outage would.
+    unreachable: Arc<AtomicBool>,
+    /// Set by [`InMemoryVectorStore::set_probe_latency`]: how long `probe`
+    /// takes to answer, in milliseconds, for a test that needs a slow backend.
+    probe_latency_ms: Arc<AtomicU64>,
+    /// How many times `probe` has been entered, for a test that needs to know a
+    /// probe is in flight rather than guess with a sleep.
+    probe_calls: Arc<AtomicU64>,
 }
 
 impl InMemoryVectorStore {
@@ -83,6 +93,37 @@ impl InMemoryVectorStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Simulate the backend going away (`false`) or coming back (`true`).
+    ///
+    /// Shared by every clone, so a test can flip the store a server holds.
+    pub fn set_reachable(&self, reachable: bool) {
+        self.unreachable.store(!reachable, Ordering::SeqCst);
+    }
+
+    /// Make `probe` take `latency` to answer, the way a backend that is up
+    /// but struggling would. Shared by every clone.
+    pub fn set_probe_latency(&self, latency: std::time::Duration) {
+        self.probe_latency_ms.store(
+            u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
+    }
+
+    /// How many times `probe` has been entered so far.
+    #[must_use]
+    pub fn probe_calls(&self) -> u64 {
+        self.probe_calls.load(Ordering::SeqCst)
+    }
+
+    fn check_reachable(&self) -> Result<(), VectorStoreError> {
+        if self.unreachable.load(Ordering::SeqCst) {
+            return Err(VectorStoreError::backend(
+                "in-memory vector store marked unreachable",
+            ));
+        }
+        Ok(())
     }
 
     /// Number of points currently stored for `kb`, or `None` if it has no collection.
@@ -394,12 +435,23 @@ fn bm25_scores(query: &str, candidates: &[(u64, &StoredPoint)]) -> Vec<(u64, f64
 
 #[async_trait]
 impl VectorStore for InMemoryVectorStore {
+    async fn probe(&self) -> Result<(), VectorStoreError> {
+        self.probe_calls.fetch_add(1, Ordering::SeqCst);
+        let latency = self.probe_latency_ms.load(Ordering::SeqCst);
+        if latency > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(latency)).await;
+        }
+        self.check_reachable()
+    }
+
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         Ok(state.contains_key(kb.as_str()))
     }
 
     async fn create_collection(&self, kb: &KbSlug, dense_dim: u64) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         state
             .entry(kb.as_str().to_string())
@@ -414,6 +466,7 @@ impl VectorStore for InMemoryVectorStore {
         field: &str,
         _kind: PayloadFieldKind,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -430,6 +483,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         points: Vec<PointStruct>,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -498,6 +552,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         selector: PointSelector,
     ) -> Result<(), VectorStoreError> {
+        self.check_reachable()?;
         let mut state = self.inner.write().await;
         let collection =
             state
@@ -530,6 +585,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         object_key: &str,
     ) -> Result<Option<String>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state
@@ -556,6 +612,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         prefix: Option<&str>,
     ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state
@@ -590,6 +647,7 @@ impl VectorStore for InMemoryVectorStore {
         kb: &KbSlug,
         query: HybridQuery,
     ) -> Result<Vec<ScoredPoint>, VectorStoreError> {
+        self.check_reachable()?;
         let state = self.inner.read().await;
         let collection =
             state

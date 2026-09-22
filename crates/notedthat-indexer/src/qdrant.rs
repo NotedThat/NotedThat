@@ -201,6 +201,14 @@ fn payload_string(point: &RetrievedPoint, field: &str) -> Option<String> {
 
 #[async_trait]
 impl VectorStore for QdrantClient {
+    async fn probe(&self) -> Result<(), VectorStoreError> {
+        self.inner()
+            .health_check()
+            .await
+            .map(drop)
+            .map_err(|err| VectorStoreError::backend(format!("health_check failed: {err}")))
+    }
+
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
         self.inner()
             .collection_exists(collection_name(kb))

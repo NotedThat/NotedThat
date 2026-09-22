@@ -122,6 +122,12 @@ impl VectorStoreError {
 /// HTTP search route and startup provisioning all hold the same instance.
 #[async_trait]
 pub trait VectorStore: Send + Sync {
+    /// Confirm the backend is reachable and answering.
+    ///
+    /// A read-only check for `/readyz`: it touches no collection and creates
+    /// nothing. Callers bound it with a timeout; the probe itself carries none.
+    async fn probe(&self) -> Result<(), VectorStoreError>;
+
     /// Whether a collection already exists for `kb`.
     async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError>;
 

@@ -229,6 +229,22 @@ impl Storage for S3Storage {
         }
     }
 
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        let bucket = self.bucket_name(kb);
+        match self.client.head_bucket().bucket(&bucket).send().await {
+            Ok(_) => Ok(()),
+            // `HeadBucket` carries no body, so a missing bucket is a bare `NotFound`;
+            // a store that does attach `NoSuchBucket` is read the same way every
+            // other operation reads it, so readiness and the request path agree.
+            Err(e) if is_not_found_sdk(&e) || is_no_such_bucket_sdk(&e) => {
+                Err(bucket_not_found(&bucket))
+            }
+            Err(e) => Err(StorageError::BackendUnavailable {
+                message: format!("head_bucket failed for {bucket}: {e}"),
+            }),
+        }
+    }
+
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let bucket = self.bucket_name(kb);
         let resp = self

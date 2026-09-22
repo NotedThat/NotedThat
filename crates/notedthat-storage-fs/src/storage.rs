@@ -311,6 +311,14 @@ impl Storage for FsStorage {
         .await
     }
 
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        let bucket = self.bucket(kb);
+        // The same lookup every operation starts with, so the readiness answer and
+        // the request-path answer for one directory can never disagree.
+        self.blocking(move |inner| inner.require_bucket(&bucket).map(drop))
+            .await
+    }
+
     async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
         let bucket = self.bucket(kb);
         self.blocking(move |inner| {
