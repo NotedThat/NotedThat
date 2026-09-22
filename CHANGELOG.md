@@ -10,6 +10,40 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/NotedThat/NotedThat/compare/v0.8.0...v0.9.0) - 2026-09-22
+
+### Added
+
+- [**breaking**] /readyz reports storage, search and events from a background prober
+- *(core)* add object.indexed and object.index_failed events and the indexer source
+- *(core)* [**breaking**] add Storage::probe for readiness checks
+- *(indexer)* publish object.indexed and object.index_failed when an upsert or refresh completes
+- *(indexer)* [**breaking**] add VectorStore::probe backed by Qdrant health_check
+- *(api-http)* select and gate the index outcome events on the events stream
+- *(api-http)* /readyz says degraded at the top when a check is
+
+### Fixed
+
+- *(storage)* the readiness probes answer through the same bucket lookup as every operation
+- *(core)* a display_name is not blank and carries no control characters; pin the two live read-path branches
+- *(server)* shutdown interrupts a readiness probe in flight; a gone bucket is degraded, not unready
+- *(write)* a refused publish still enqueues the index work
+- *(write)* publish the change event before enqueueing the index work
+- *(server)* a readiness probe that hangs is waited for, not restarted every tick
+- *(server)* [**breaking**] refuse to start when a Qdrant collection cannot be provisioned
+
+### Other
+
+- renumber the index outcome events decision to D65
+- *(core)* one rule for the manifest's two free-text fields
+- *(core)* [**breaking**] validate manifest display_name on load; remove the unused Kb struct
+- *(events)* a verdict for a newer version supersedes an older write; publish-first leaves a refused write unindexed
+- *(events)* round-trip the index outcome events through both logs
+- index freshness has an address — GET …/index (D62), not a process-wide probe
+- *(webdav)* [**breaking**] port WebDavFile read-path tests to StorageReadFile and delete the dead module
+- *(mcp)* tell agents a write is searchable once object.indexed arrives
+- *(server)* a write is announced, then indexed, then searchable
+
 ## [0.8.0](https://github.com/NotedThat/NotedThat/compare/v0.7.2...v0.8.0) - 2026-09-21
 
 ### Added
