@@ -106,9 +106,18 @@ pub struct McpHttpService {
 
 impl McpHttpService {
     /// Create a stateful streamable HTTP service with its own session table.
-    pub fn new(client: NotedThatClient, config: &McpHttpServiceConfig) -> Self {
+    ///
+    /// `events_enabled` says whether the deployment has an events backend:
+    /// with one, each session's handler may take resource subscriptions,
+    /// whose forwarders stop with the config's cancellation token (D66).
+    pub fn new(
+        client: NotedThatClient,
+        config: &McpHttpServiceConfig,
+        events_enabled: bool,
+    ) -> Self {
         let streamable_config = config.streamable_http_config();
-        let service_factory = move || Ok(NotedThatMcp::for_http(client.clone()));
+        let events = events_enabled.then(|| config.cancellation_token.clone());
+        let service_factory = move || Ok(NotedThatMcp::for_http(client.clone(), events.as_ref()));
         let sessions = Arc::new(LocalSessionManager::default());
         let inner =
             StreamableHttpService::new(service_factory, sessions.clone(), streamable_config);
@@ -184,7 +193,7 @@ mod mcp_http_service {
         let config = test_config(token);
 
         // When: the MCP HTTP service is created.
-        let service = McpHttpService::new(test_client(), &config);
+        let service = McpHttpService::new(test_client(), &config, false);
 
         // Then: rmcp receives the caller-supplied allow-lists.
         assert_eq!(
@@ -204,7 +213,7 @@ mod mcp_http_service {
         let config = test_config(token);
 
         // When: the MCP HTTP service is created.
-        let service = McpHttpService::new(test_client(), &config);
+        let service = McpHttpService::new(test_client(), &config, false);
 
         // Then: sessions are on — the notification leg needs them — and the
         // JSON-response switch, which rmcp reads only when stateless, is off.
@@ -218,7 +227,7 @@ mod mcp_http_service {
         // Given: a cancellation token owned by the caller.
         let token = CancellationToken::new();
         let config = test_config(token.clone());
-        let service = McpHttpService::new(test_client(), &config);
+        let service = McpHttpService::new(test_client(), &config, false);
 
         // When: the caller cancels the original token.
         token.cancel();
@@ -259,7 +268,7 @@ mod mcp_http_service {
         // Given: a constructed wrapper.
         let token = CancellationToken::new();
         let config = test_config(token);
-        let service = McpHttpService::new(test_client(), &config);
+        let service = McpHttpService::new(test_client(), &config, false);
 
         // When: callers request the underlying rmcp service.
         let inner = service.into_service();
@@ -315,7 +324,7 @@ mod caller_identity {
             CancellationToken::new(),
         )
         .expect("config");
-        let service = McpHttpService::new(client, &config);
+        let service = McpHttpService::new(client, &config, false);
         let sessions = service.session_manager();
         let authenticator = Arc::new(Authenticator::new(SERVICE_TOKEN).with_token_verifier(
             Arc::new(StubTokenVerifier::default().accepting(ALICE_TOKEN, "alice", [])),

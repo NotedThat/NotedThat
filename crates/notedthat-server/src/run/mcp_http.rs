@@ -27,6 +27,7 @@ pub(crate) fn build_router(
     access_policies: &BTreeMap<String, Arc<AccessPolicy>>,
     internal_api_url: &str,
     cancellation_token: CancellationToken,
+    events_enabled: bool,
 ) -> anyhow::Result<axum::Router> {
     let client = NotedThatClient::new(internal_api_url, &config.api_token)
         .context("failed to build MCP HTTP API client")?
@@ -37,7 +38,7 @@ pub(crate) fn build_router(
         cancellation_token,
     )
     .context("failed to build MCP HTTP service config")?;
-    let mcp_service = McpHttpService::new(client, &mcp_config);
+    let mcp_service = McpHttpService::new(client, &mcp_config, events_enabled);
     let sessions = mcp_service.session_manager();
     let anonymous = anonymous_admitted(config.mcp_anonymous, access_policies);
     let auth = Arc::new(McpAuth {

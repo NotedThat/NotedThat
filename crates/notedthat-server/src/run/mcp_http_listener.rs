@@ -192,6 +192,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
                 &std::collections::BTreeMap::new(),
                 &internal_http_api_url(backend_addr),
                 mcp_shutdown,
+                false,
             )
             .expect("MCP router should build"),
         );

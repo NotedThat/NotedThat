@@ -36,6 +36,10 @@ pub enum ConfigError {
 #[derive(Clone, Debug)]
 pub struct NotedThatClient {
     pub(crate) http: reqwest::Client,
+    /// For the event streams the subscription forwarders hold open (D66): no
+    /// total timeout, a connect timeout, and a read timeout of three missed
+    /// 15 s heartbeats so a dead connection is noticed.
+    stream_http: reqwest::Client,
     base_url: Url,
     /// The bearer every request carries, or `None` for the anonymous caller,
     /// whose requests carry no `Authorization` header at all.
@@ -71,9 +75,15 @@ impl NotedThatClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(ConfigError::ClientBuild)?;
+        let stream_http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(45))
+            .build()
+            .map_err(ConfigError::ClientBuild)?;
 
         Ok(Self {
             http,
+            stream_http,
             base_url: parsed,
             token: Some(token_trimmed.to_string()),
             max_read_bytes: DEFAULT_MAX_READ_BYTES,
@@ -99,6 +109,7 @@ impl NotedThatClient {
     pub fn with_token(&self, token: &str) -> Self {
         Self {
             http: self.http.clone(),
+            stream_http: self.stream_http.clone(),
             base_url: self.base_url.clone(),
             token: Some(token.to_string()),
             max_read_bytes: self.max_read_bytes,
@@ -115,6 +126,7 @@ impl NotedThatClient {
     pub fn anonymous(&self) -> Self {
         Self {
             http: self.http.clone(),
+            stream_http: self.stream_http.clone(),
             base_url: self.base_url.clone(),
             token: None,
             max_read_bytes: self.max_read_bytes,
@@ -140,6 +152,25 @@ impl NotedThatClient {
             }
         }
         url
+    }
+
+    /// The knowledge base's object change events (D55), as this caller, from
+    /// after `last_event_id` when there is one — the stream a subscription
+    /// forwarder consumes (D66). Sent on the client without a total timeout.
+    pub(crate) fn events_stream(
+        &self,
+        kb_slug: &str,
+        last_event_id: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let url = self.api_v1_url(&["knowledgebases", kb_slug, "events"]);
+        let mut request = self
+            .stream_http
+            .get(url)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        if let Some(id) = last_event_id {
+            request = request.header("Last-Event-ID", id);
+        }
+        self.authorized(request)
     }
 
     /// Attach `Authorization: Bearer <token>` to a request — nothing for the

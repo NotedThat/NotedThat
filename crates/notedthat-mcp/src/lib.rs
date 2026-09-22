@@ -14,6 +14,7 @@ pub mod resources_read;
 /// Incremental `text/event-stream` parsing, for the streams this crate reads.
 pub mod sse;
 pub mod sse_refusal;
+mod subscriptions;
 /// Test support: an MCP session client for the workspace's HTTP suites.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

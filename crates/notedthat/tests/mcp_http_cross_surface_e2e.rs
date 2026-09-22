@@ -1182,7 +1182,13 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
     // Given: a deployment with one public and one private knowledge base
     let http_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_kbs_and_mcp_http(&["public", "private"], http_addr);
-    let backends = in_memory_backends();
+    // With an event log, so the anonymous session may subscribe (D66).
+    let backends = notedthat_server::run::Backends {
+        events: Some(std::sync::Arc::new(notedthat_events::MemoryPublisher::new(
+            64,
+        ))),
+        ..in_memory_backends()
+    };
     seed_public_and_private(&backends).await;
     let server_handle = tokio::spawn(async move {
         notedthat_server::run::run_with(config, backends)
@@ -1343,6 +1349,45 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         reqwest::StatusCode::NOT_FOUND,
         "nothing was written"
     );
+
+    // Then: a subscription follows the same rules (D66) — the public note may
+    // be subscribed to and reports the next write; the private one is the
+    // concealed not_found, exactly as `read` answers it
+    let mut notifications = anon.notifications().await;
+    let subscribed = anon
+        .request(
+            11,
+            "resources/subscribe",
+            &serde_json::json!({ "uri": "notedthat://public/note.md" }),
+        )
+        .await;
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+    let refused = anon
+        .request(
+            12,
+            "resources/subscribe",
+            &serde_json::json!({ "uri": "notedthat://private/note.md" }),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32002, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("not_found")),
+        "concealed like read: {refused}"
+    );
+    let response = client
+        .put(format!("{http_url}/api/v1/knowledgebases/public/note.md"))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "text/markdown")
+        .body("# Public\n\nedited\n")
+        .send()
+        .await
+        .expect("PUT");
+    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    let notified = notifications.next(Duration::from_secs(5)).await;
+    assert_eq!(notified["method"], "notifications/resources/updated");
+    assert_eq!(notified["params"]["uri"], "notedthat://public/note.md");
 
     // Then: a supplied credential that does not verify is refused outright,
     // never quietly downgraded to the anonymous caller

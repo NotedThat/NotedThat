@@ -507,6 +507,9 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
                 &state.access_policies,
                 &internal_api_url,
                 shutdown_token.child_token(),
+                // What the server actually runs on, not `Config::events`:
+                // `run_with` takes its backends as given (D66).
+                state.events.is_some(),
             )?);
 
         let graceful_shutdown = shutdown_token.clone();
