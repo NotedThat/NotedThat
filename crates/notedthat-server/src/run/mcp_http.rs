@@ -5,13 +5,14 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{any, get, post_service},
+    routing::{MethodFilter, any, get, on_service},
 };
 use notedthat_core::{AccessPolicy, Authenticator, Principal};
 use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig,
     auth::{McpAuth, authenticate_caller},
     client::NotedThatClient,
+    http::admit_session,
     sse_refusal::refusal_body,
 };
 use std::collections::BTreeMap;
@@ -37,20 +38,26 @@ pub(crate) fn build_router(
     )
     .context("failed to build MCP HTTP service config")?;
     let mcp_service = McpHttpService::new(client, &mcp_config);
+    let sessions = mcp_service.session_manager();
     let anonymous = anonymous_admitted(config.mcp_anonymous, access_policies);
     let auth = Arc::new(McpAuth {
         authenticator,
         anonymous,
     });
-    let authenticated_mcp = post_service(mcp_service.into_service())
-        .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
+    // The stateful transport (D66): POST for requests, GET for the
+    // server-to-client notification leg, DELETE to end a session. Auth is the
+    // outermost layer, so a missing credential is 401 before rmcp answers
+    // 400/404 about the session; the session bound sits between the two.
+    let mcp = on_service(
+        MethodFilter::GET
+            .or(MethodFilter::POST)
+            .or(MethodFilter::DELETE),
+        mcp_service.into_service(),
+    )
+    .route_layer(middleware::from_fn_with_state(sessions, admit_session))
+    .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
     Ok(axum::Router::new()
-        .route(
-            "/mcp",
-            get(legacy_transport_refusal)
-                .delete(legacy_transport_refusal)
-                .merge(authenticated_mcp),
-        )
+        .route("/mcp", mcp)
         .route(
             "/sse",
             get(legacy_transport_refusal).post(legacy_transport_refusal),

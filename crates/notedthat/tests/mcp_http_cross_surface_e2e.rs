@@ -657,26 +657,71 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
         "POST /sse body must be exact SSE refusal JSON"
     );
 
-    let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
-    let status = resp.status().as_u16();
-    let body = resp.text().await.expect("failed to read GET /mcp body");
-    assert_eq!(status, 405, "GET /mcp must return 405; body: {body:?}");
-    assert_eq!(
-        body, EXACT_SSE_REFUSAL_BODY,
-        "GET /mcp body must be exact SSE refusal JSON"
-    );
+    //    GET and DELETE /mcp are the stateful transport's own (D66): the
+    //    notification leg and the session end. Auth is outermost, so without a
+    //    credential they are 401 like POST; with one, rmcp wants a session —
+    //    400 without the header, 404 for an id it never issued.
+    for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("unauthenticated /mcp");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "{method} /mcp without a credential"
+        );
 
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("sessionless /mcp");
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "{method} /mcp without a session"
+        );
+
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Accept", "text/event-stream")
+            .header("Mcp-Session-Id", "no-such-session")
+            .send()
+            .await
+            .expect("bogus-session /mcp");
+        let expected = if method == reqwest::Method::GET {
+            404
+        } else {
+            202
+        };
+        assert_eq!(
+            resp.status().as_u16(),
+            expected,
+            "{method} /mcp with an unknown session"
+        );
+    }
+
+    //    A request on no session, other than initialize, is refused by the
+    //    transport before any handler runs.
     let resp = client
-        .delete(&mcp_url)
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
         .send()
         .await
-        .expect("DELETE /mcp failed");
-    let status = resp.status().as_u16();
-    let body = resp.text().await.expect("failed to read DELETE /mcp body");
-    assert_eq!(status, 405, "DELETE /mcp must return 405; body: {body:?}");
+        .expect("sessionless tools/list");
     assert_eq!(
-        body, EXACT_SSE_REFUSAL_BODY,
-        "DELETE /mcp body must be exact SSE refusal JSON"
+        resp.status().as_u16(),
+        422,
+        "a non-initialize POST without Mcp-Session-Id"
     );
 
     //    Uses valid auth so the request reaches rmcp's Origin-validation layer.
@@ -1165,9 +1210,14 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         assert_eq!(response.status(), reqwest::StatusCode::CREATED, "{kb}");
     }
 
-    // When / Then: capability discovery needs no credential
-    let response = anonymous_mcp(&anon, 1, "initialize", serde_json::json!({})).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK, "initialize");
+    // When / Then: capability discovery needs no credential — an anonymous
+    // client opens a session like any other
+    let initialized = anon.initialize().await;
+    assert!(
+        initialized.get("result").is_some(),
+        "initialize: {initialized}"
+    );
+    assert!(anon.session_id().is_some(), "a session was issued");
     let tools = anon.request(2, "tools/list", &serde_json::json!({})).await;
     assert_eq!(
         tools["result"]["tools"].as_array().map(Vec::len),

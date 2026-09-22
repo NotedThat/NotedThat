@@ -1,10 +1,11 @@
-//! The exact 405 body served when a legacy SSE or unsupported method reaches
-//! the MCP surface.
+//! The exact 405 body served when the legacy SSE transport reaches the MCP
+//! surface.
 //!
 //! Which requests are refused is decided by the routes registered in
-//! `notedthat-server`'s `run::mcp_http` (GET/DELETE `/mcp`, GET/POST `/sse`,
-//! any method under `/sse/`), so that one router is the single source of truth.
-//! This module only owns the response body.
+//! `notedthat-server`'s `run::mcp_http` (GET/POST `/sse`, any method under
+//! `/sse/`), so that one router is the single source of truth. `GET` and
+//! `DELETE /mcp` are the stateful transport's own (D66), not refusals. This
+//! module only owns the response body.
 
 /// The exact JSON body for SSE refusal responses.
 const SSE_REFUSAL_BODY: &str = r#"{"error":"transport_not_supported","message":"Legacy SSE transport is not supported. Use streamable HTTP at POST /mcp"}"#;
