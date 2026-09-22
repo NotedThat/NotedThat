@@ -322,8 +322,13 @@ echo "# Hello WebDAV" | curl --fail -X PUT --data-binary @- \
 curl -u "$NOTEDTHAT_WEBDAV_USERNAME:$NOTEDTHAT_WEBDAV_PASSWORD" \
   http://127.0.0.1:8080/webdav/notes/hello-webdav.md
 
-# Ask the MCP endpoint for its tool list
-curl --fail -X POST -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
+# Ask the MCP endpoint for its tool list: initialize opens a session, the
+# session id goes on the next request, and the answer is an SSE frame
+SID=$(curl -sS -D - -o /dev/null -X POST -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  http://127.0.0.1:8080/mcp | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+curl --fail -X POST -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" -H "Mcp-Session-Id: $SID" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' http://127.0.0.1:8080/mcp
 ```

@@ -83,9 +83,18 @@ case "$CHALLENGE" in *resource_metadata=*) echo "PASS: 401 carries the resource_
 MCP_STATUS=$(status -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' "$NT_URL/mcp")
 assert "MCP without a bearer is 401" "401" "$MCP_STATUS"
 
-# 4. MCP acts as the caller.
-MCP_RESULT=$(curl -s -X POST -H "Authorization: Bearer $ALICE" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_knowledgebases","arguments":{}}}' "$NT_URL/mcp" \
+# 4. MCP acts as the caller. The transport is stateful (D66): initialize opens a
+# session, the session id goes on every later request, and the answer is the
+# data: line of an SSE frame.
+mcp_call() { # <bearer> <json-rpc body> -> the JSON-RPC message
+    local sid
+    sid=$(curl -s -D - -o /dev/null -X POST -H "Authorization: Bearer $1" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual-qa","version":"0"}}}' "$NT_URL/mcp" \
+        | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+    curl -s -X POST -H "Authorization: Bearer $1" -H "Mcp-Session-Id: $sid" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+        -d "$2" "$NT_URL/mcp" | sed -n 's/^data: //p' | grep -v '^$' | head -1
+}
+MCP_RESULT=$(mcp_call "$ALICE" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_knowledgebases","arguments":{}}}' \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("ok" if "result" in d and not d["result"].get("isError") else d)')
 assert "MCP list_knowledgebases with alice's token" "ok" "$MCP_RESULT"
 
@@ -124,8 +133,7 @@ else
     assert "alice (editor) writes" "201" "$(status -X PUT -H "Authorization: Bearer $ALICE" -H 'Content-Type: text/markdown' --data-binary '# Handbook v2' "$(obj handbook.md)")"
     assert "ivan (intern) cannot write" "403" "$(status -X PUT -H "Authorization: Bearer $IVAN" -H 'Content-Type: text/markdown' --data-binary '# nope' "$(obj handbook.md)")"
     assert "alice deletes under personal/alice/" "204" "$(status -X DELETE -H "Authorization: Bearer $ALICE" "$(obj personal%2Falice%2Ftodo.md)")"
-    assert "ivan's MCP read of hr/ is a forbidden tool error" "forbidden" "$(curl -s -X POST -H "Authorization: Bearer $IVAN" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
-        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"read\",\"arguments\":{\"kb\":\"$NT_KB\",\"path\":\"hr/salaries.md\"}}}" "$NT_URL/mcp" \
+    assert "ivan's MCP read of hr/ is a forbidden tool error" "forbidden" "$(mcp_call "$IVAN" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"read\",\"arguments\":{\"kb\":\"$NT_KB\",\"path\":\"hr/salaries.md\"}}}" \
         | python3 -c 'import json,sys; print("forbidden" if "forbidden" in json.dumps(json.load(sys.stdin)) else "allowed")')"
     # The denial names read and search, not list: the page renders, and the row
     # the intern may not read is listed without a link (D52).

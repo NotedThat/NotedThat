@@ -1179,9 +1179,11 @@ Do not expose the unified listener directly to the internet without TLS terminat
 
 ### MCP endpoint
 
-The unified listener mounts streamable MCP at `POST /mcp`. Legacy SSE paths (`GET /mcp`,
-`POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body directing clients to use
-`POST /mcp`.
+The unified listener mounts streamable MCP at `/mcp`: `POST` for requests, `GET` for the
+session's notification leg, `DELETE` to end a session ([sessions](API.md#streamable-http-transport)).
+Legacy SSE paths (`POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body
+directing clients to use `POST /mcp`. A process holds at most 256 MCP sessions; with an
+[events backend](#events-backend) configured, sessions may subscribe to resources.
 
 ### Example: public MCP through the shared TLS upstream
 

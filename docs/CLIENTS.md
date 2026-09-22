@@ -254,11 +254,19 @@ Three things about that shape, each from `mcp-remote`'s own README:
 
 ## Anything else that speaks MCP
 
-The endpoint is a stateless streamable-HTTP MCP server: every `POST /mcp` is a complete JSON-RPC
-exchange with a JSON response, no session to keep. Point the client at the URL, send the bearer,
-done. The legacy SSE transport is deliberately not offered
-([why](API.md#streamable-http-transport)). To see the tool list without any client, the MCP
-Inspector works:
+The endpoint is a streamable-HTTP MCP server with sessions, the shape the MCP specification
+describes: `initialize` returns an `Mcp-Session-Id`, every later request carries it, answers are
+SSE-framed, and `GET /mcp` is where server-to-client notifications arrive. Every client listed
+above does this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
+transport is deliberately not offered ([why](API.md#streamable-http-transport)); a hand-rolled
+client needs the three-step dance in [the transport notes](API.md#streamable-http-transport).
+
+With an events backend, the server also pushes resource notifications
+([Subscriptions](API.md#subscriptions)): Claude Desktop, Claude Code and the MCP Inspector
+subscribe to resources they display and refresh on `notifications/resources/updated`;
+`mcp-remote` forwards the notifications to whatever it bridges; a client that never calls
+`resources/subscribe` is unaffected. To see the tool list without any client, the MCP Inspector
+works:
 
 ```sh
 npx @modelcontextprotocol/inspector --transport http --server-url https://notes.example.com/mcp \
