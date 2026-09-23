@@ -208,6 +208,41 @@ async fn the_exposition_names_no_key_principal_credential_or_subscriber_filter()
 
     let body = server.scrape().await;
 
+    // The run above exercised writes, a deletion, a search, an index failure, a
+    // subscriber and a queue-full refusal, so every family the catalogue
+    // promises has had something to record. A family missing here is an
+    // instrumentation site that was never reached, which no absence check
+    // would notice.
+    for metric in [
+        "notedthat_http_requests_total",
+        "notedthat_http_request_duration_seconds",
+        "notedthat_http_requests_in_flight",
+        "notedthat_search_requests_total",
+        "notedthat_search_duration_seconds",
+        "notedthat_search_hits",
+        "notedthat_embedding_requests_total",
+        "notedthat_embedding_duration_seconds",
+        "notedthat_embedding_errors_total",
+        "notedthat_index_queue_depth",
+        "notedthat_index_queue_capacity",
+        "notedthat_index_events_enqueued_total",
+        "notedthat_index_events_refused_total",
+        "notedthat_index_events_completed_total",
+        "notedthat_index_worker_alive",
+        "notedthat_vector_store_operations_total",
+        "notedthat_vector_store_operation_duration_seconds",
+        "notedthat_events_published_total",
+        "notedthat_events_subscribers",
+        "notedthat_storage_operations_total",
+        "notedthat_storage_operation_duration_seconds",
+        "notedthat_build_info",
+    ] {
+        assert!(
+            body.contains(metric),
+            "{metric} is in the catalogue but nothing recorded it:\n{body}"
+        );
+    }
+
     // Positive first: an empty exposition would satisfy every absence below.
     assert!(
         body.contains(&format!("kb=\"{}\"", server.kb)),

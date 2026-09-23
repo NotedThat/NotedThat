@@ -498,6 +498,10 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 /// Both callers validate `config.staging` before constructing or accepting
 /// backends, so this body may assume it is already valid.
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
+    // Before anything is built: provisioning's storage calls and the indexer's
+    // health record are measurements, and the facade discards them silently
+    // when no recorder is installed yet (D68).
+    metrics::install(&config)?;
     let Infrastructure {
         state,
         dav_state,

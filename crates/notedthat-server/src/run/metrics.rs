@@ -280,6 +280,23 @@ impl MetricsListener {
     }
 }
 
+/// Install the recorder, before anything has a measurement to record.
+///
+/// Separate from [`start`] and called earlier because the facade's macros are a
+/// no-op until a recorder exists, and startup records: provisioning talks to
+/// storage, and the indexer's health record sets `notedthat_index_worker_alive`
+/// the moment it is built. Installed after the listener bound, those would be
+/// silently discarded and the gauge would never appear at all — a series
+/// missing for the life of the process, with nothing to show it had gone.
+pub(crate) fn install(config: &Config) -> anyhow::Result<()> {
+    if config.metrics_listen_addr.is_none() {
+        return Ok(());
+    }
+    shared_handle()?;
+    record_build_info(config);
+    Ok(())
+}
+
 /// Bind and serve the metrics listener, if this run configured one.
 pub(crate) async fn start(
     config: &Config,
@@ -290,7 +307,6 @@ pub(crate) async fn start(
     };
 
     let handle = shared_handle()?;
-    record_build_info(config);
 
     let listener = TcpListener::bind(addr)
         .await
