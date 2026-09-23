@@ -23,6 +23,51 @@ use crate::{
 /// reasonable filter payload.
 pub const SEARCH_BODY_MAX_BYTES: usize = 64 * 1024;
 
+/// One search, recorded in `Drop` so an abandoned one is still counted.
+///
+/// A client that gives up on a slow search drops the connection and hyper
+/// drops this handler's future, so nothing after the await runs. Recording
+/// after it would drop exactly the searches worth knowing about — the slow
+/// ones — leaving `notedthat_search_duration_seconds` quietest when search is
+/// at its worst. `outcome="cancelled"` is what the call keeps when nothing
+/// sets another.
+struct SearchCall {
+    kb: String,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl SearchCall {
+    fn begin(kb: String) -> Self {
+        Self {
+            kb,
+            started: Instant::now(),
+            outcome: metric_outcome::CANCELLED,
+        }
+    }
+
+    fn finish(&mut self, ok: bool) {
+        self.outcome = if ok {
+            metric_outcome::OK
+        } else {
+            metric_outcome::ERROR
+        };
+    }
+}
+
+impl Drop for SearchCall {
+    fn drop(&mut self) {
+        metrics::histogram!(metric::SEARCH_DURATION, metric_label::KB => self.kb.clone())
+            .record(self.started.elapsed().as_secs_f64());
+        metrics::counter!(
+            metric::SEARCH_REQUESTS,
+            metric_label::KB => self.kb.clone(),
+            metric_label::OUTCOME => self.outcome,
+        )
+        .increment(1);
+    }
+}
+
 /// Handle `POST /api/v1/knowledgebases/{kb_slug}/search`.
 pub async fn search_kb(
     State(state): State<AppState>,
@@ -94,21 +139,10 @@ pub async fn search_kb(
     // Timed here rather than inside the searcher: this is what the caller
     // waited for, and the searcher's two legs are already visible on their own
     // as `notedthat_embedding_*{phase="query"}` and
-    // `notedthat_vector_store_*{op="hybrid_search"}` (D68).
-    let started = Instant::now();
+    // `notedthat_vector_store_*{op="hybrid_search"}` (D69).
+    let mut search = SearchCall::begin(kb.as_str().to_string());
     let searched = state.searcher.search(&kb, validated, key_filter).await;
-    metrics::histogram!(metric::SEARCH_DURATION, metric_label::KB => kb.as_str().to_string())
-        .record(started.elapsed().as_secs_f64());
-    metrics::counter!(
-        metric::SEARCH_REQUESTS,
-        metric_label::KB => kb.as_str().to_string(),
-        metric_label::OUTCOME => if searched.is_ok() {
-            metric_outcome::OK
-        } else {
-            metric_outcome::ERROR
-        },
-    )
-    .increment(1);
+    search.finish(searched.is_ok());
     let mut response = searched.map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
     // The searcher is trusted to have applied the grant; this pass is the
     // backstop that turns a searcher which ignores it into a short page rather

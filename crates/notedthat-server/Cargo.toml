@@ -68,6 +68,9 @@ futures.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 bytes.workspace = true
+# A recorder the metered-wrapper tests can read back, to prove a dropped
+# call still records. Already in the tree under `metrics-exporter-prometheus`.
+metrics-util = { version = "0.20", features = ["debugging"] }
 temp-env = "0.3"
 tempfile.workspace = true
 # One persistent SeaweedFS/Qdrant pair for tests/phase3_access_e2e.rs, the

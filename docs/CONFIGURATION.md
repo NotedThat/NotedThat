@@ -243,6 +243,14 @@ rate(notedthat_storage_operations_total{outcome="unavailable"}[5m]) > 0
 rate(notedthat_vector_store_operations_total{outcome="unavailable"}[5m]) > 0
 ```
 
+`outcome="cancelled"` is the third kind: the caller gave up before the call answered — an
+abandoned search, a connection dropped mid-`GET`. It is recorded because the alternative is
+losing those calls entirely, and losing them selectively: a dropped future records nothing after
+its await, and the calls most likely to be abandoned are the slow ones, so the duration histograms
+would go quiet exactly when a backend is degrading. It is not a fault on its own — clients give
+up for their own reasons — but a rising share of it beside rising latency is the same story as
+`unavailable`, told from the caller's side.
+
 ### Metric catalogue
 
 The full table is in `SPECIFICATIONS.md` §6.15. The families are: HTTP requests

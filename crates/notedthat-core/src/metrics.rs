@@ -1,5 +1,5 @@
 //! Metric names and label vocabularies, shared by every crate that records one
-//! (D68).
+//! (D69).
 //!
 //! The names live here, next to the domain types they describe, for the same
 //! reason the log codes are constants: a metric is a contract with whoever
@@ -179,6 +179,15 @@ pub mod outcome {
     pub const UNAVAILABLE: &str = "unavailable";
     /// Anything else the backend refused.
     pub const ERROR: &str = "error";
+    /// The caller gave up before the call answered, so there is no outcome to
+    /// report — an abandoned search, a dropped connection mid-`GET`.
+    ///
+    /// Recorded from `Drop` rather than after the await, because nothing after
+    /// the await runs once the future is dropped. Without it the operation and
+    /// duration families would simply disagree, and disagree *worst* on slow
+    /// calls, which are the ones a caller gives up on: the histogram would go
+    /// quiet under exactly the condition it exists to reveal.
+    pub const CANCELLED: &str = "cancelled";
 }
 
 /// Values for the `phase` label on an embedding call.

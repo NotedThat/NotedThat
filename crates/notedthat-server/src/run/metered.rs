@@ -1,4 +1,4 @@
-//! Metered views of the backends, wrapped once where they are assembled (D68).
+//! Metered views of the backends, wrapped once where they are assembled (D69).
 //!
 //! Each of these forwards every call to an inner `Arc<dyn …>` and times it. The
 //! alternative — recording inside `S3Storage`, `FsStorage` and the Qdrant client
@@ -41,34 +41,68 @@ use notedthat_indexer::{
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Time a storage call and record its duration, its outcome and, when it
-/// failed, the kind of failure.
-fn record_storage<T>(
+/// One storage call, recorded in `Drop` so that a cancelled one is counted.
+///
+/// Recording after the await loses every call whose future the caller drops —
+/// an abandoned `GET` of a large object, a search the client gave up on — and
+/// loses them selectively: the calls most likely to be abandoned are the slow
+/// ones, so `notedthat_storage_duration_seconds` goes quiet exactly when the
+/// backend is degrading. A guard makes the count unconditional and turns the
+/// gap into a measurement, `outcome="cancelled"`, which is the outcome the
+/// call keeps if nothing sets another. Same reasoning as `InFlight` in
+/// [`notedthat_api_http::metrics`], which already had to solve this for the
+/// in-flight gauge.
+struct StorageCall {
     backend: &'static str,
     op: &'static str,
     started: Instant,
-    result: &Result<T, StorageError>,
-) {
-    metrics::histogram!(name::STORAGE_DURATION, label::BACKEND => backend, label::OP => op)
-        .record(started.elapsed().as_secs_f64());
-    let outcome = storage_outcome(result);
-    metrics::counter!(
-        name::STORAGE_OPERATIONS,
-        label::BACKEND => backend,
-        label::OP => op,
-        label::OUTCOME => outcome,
-    )
-    .increment(1);
-    if let Err(error) = result
-        && let Some(kind) = storage_error_kind(error)
-    {
+    outcome: &'static str,
+    error_kind: Option<&'static str>,
+}
+
+impl StorageCall {
+    fn begin(backend: &'static str, op: &'static str) -> Self {
+        Self {
+            backend,
+            op,
+            started: Instant::now(),
+            outcome: outcome::CANCELLED,
+            error_kind: None,
+        }
+    }
+
+    /// Replace the `cancelled` the guard started with by what actually
+    /// happened. Not called when the future is dropped, which is the point.
+    fn finish<T>(&mut self, result: &Result<T, StorageError>) {
+        self.outcome = storage_outcome(result);
+        self.error_kind = result.as_ref().err().and_then(storage_error_kind);
+    }
+}
+
+impl Drop for StorageCall {
+    fn drop(&mut self) {
+        metrics::histogram!(
+            name::STORAGE_DURATION,
+            label::BACKEND => self.backend,
+            label::OP => self.op,
+        )
+        .record(self.started.elapsed().as_secs_f64());
         metrics::counter!(
-            name::STORAGE_ERRORS,
-            label::BACKEND => backend,
-            label::OP => op,
-            label::ERROR_KIND => kind,
+            name::STORAGE_OPERATIONS,
+            label::BACKEND => self.backend,
+            label::OP => self.op,
+            label::OUTCOME => self.outcome,
         )
         .increment(1);
+        if let Some(kind) = self.error_kind {
+            metrics::counter!(
+                name::STORAGE_ERRORS,
+                label::BACKEND => self.backend,
+                label::OP => self.op,
+                label::ERROR_KIND => kind,
+            )
+            .increment(1);
+        }
     }
 }
 
@@ -87,9 +121,9 @@ impl MeteredStorage {
 
 macro_rules! metered_storage {
     ($self:ident, $op:literal, $call:expr) => {{
-        let started = Instant::now();
+        let mut call = StorageCall::begin($self.backend, $op);
         let result = $call.await;
-        record_storage($self.backend, $op, started, &result);
+        call.finish(&result);
         result
     }};
 }
@@ -257,28 +291,49 @@ fn vector_store_outcome<T>(result: &Result<T, VectorStoreError>) -> &'static str
     }
 }
 
-fn record_vector_store<T>(
+/// One vector-store call, recorded in `Drop` for the reason [`StorageCall`]
+/// gives: a dropped future would otherwise record nothing at all.
+struct VectorStoreCall {
     op: &'static str,
     started: Instant,
-    result: &Result<T, VectorStoreError>,
-) {
-    metrics::histogram!(name::VECTOR_STORE_DURATION, label::OP => op)
-        .record(started.elapsed().as_secs_f64());
-    metrics::counter!(
-        name::VECTOR_STORE_OPERATIONS,
-        label::OP => op,
-        label::OUTCOME => vector_store_outcome(result),
-    )
-    .increment(1);
-    if let Err(error) = result
-        && let Some(kind) = vector_store_error_kind(error)
-    {
+    outcome: &'static str,
+    error_kind: Option<&'static str>,
+}
+
+impl VectorStoreCall {
+    fn begin(op: &'static str) -> Self {
+        Self {
+            op,
+            started: Instant::now(),
+            outcome: outcome::CANCELLED,
+            error_kind: None,
+        }
+    }
+
+    fn finish<T>(&mut self, result: &Result<T, VectorStoreError>) {
+        self.outcome = vector_store_outcome(result);
+        self.error_kind = result.as_ref().err().and_then(vector_store_error_kind);
+    }
+}
+
+impl Drop for VectorStoreCall {
+    fn drop(&mut self) {
+        metrics::histogram!(name::VECTOR_STORE_DURATION, label::OP => self.op)
+            .record(self.started.elapsed().as_secs_f64());
         metrics::counter!(
-            name::VECTOR_STORE_ERRORS,
-            label::OP => op,
-            label::ERROR_KIND => kind,
+            name::VECTOR_STORE_OPERATIONS,
+            label::OP => self.op,
+            label::OUTCOME => self.outcome,
         )
         .increment(1);
+        if let Some(kind) = self.error_kind {
+            metrics::counter!(
+                name::VECTOR_STORE_ERRORS,
+                label::OP => self.op,
+                label::ERROR_KIND => kind,
+            )
+            .increment(1);
+        }
     }
 }
 
@@ -296,9 +351,9 @@ impl MeteredVectorStore {
 
 macro_rules! metered_vector_store {
     ($op:literal, $call:expr) => {{
-        let started = Instant::now();
+        let mut call = VectorStoreCall::begin($op);
         let result = $call.await;
-        record_vector_store($op, started, &result);
+        call.finish(&result);
         result
     }};
 }
@@ -406,30 +461,73 @@ impl MeteredEmbedder {
     }
 }
 
-#[async_trait]
-impl Embedder for MeteredEmbedder {
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
-        let started = Instant::now();
-        #[allow(clippy::cast_precision_loss)]
+/// One embedding call, recorded in `Drop` for the reason [`StorageCall`] gives.
+///
+/// `notedthat_embedding_texts` matters most here. It was recorded *before* the
+/// await while everything else was recorded after, so a dropped future moved
+/// one family and not the other and the two disagreed by construction —
+/// `rate(embedding_texts_count)` above `rate(embedding_requests_total)`, with
+/// the gap unattributable. Recording both from `Drop` means they always move
+/// together, whatever becomes of the future.
+struct EmbeddingCall {
+    phase: &'static str,
+    texts: usize,
+    started: Instant,
+    outcome: &'static str,
+    error_kind: Option<&'static str>,
+}
+
+impl EmbeddingCall {
+    fn begin(phase: &'static str, texts: usize) -> Self {
+        Self {
+            phase,
+            texts,
+            started: Instant::now(),
+            outcome: outcome::CANCELLED,
+            error_kind: None,
+        }
+    }
+
+    fn finish<T>(&mut self, result: &Result<T, EmbedderError>) {
+        self.outcome = if result.is_ok() {
+            outcome::OK
+        } else {
+            outcome::ERROR
+        };
+        self.error_kind = result.as_ref().err().map(embedder_error_kind);
+    }
+}
+
+impl Drop for EmbeddingCall {
+    #[allow(clippy::cast_precision_loss)]
+    fn drop(&mut self) {
         metrics::histogram!(name::EMBEDDING_TEXTS, label::PHASE => self.phase)
-            .record(texts.len() as f64);
-        let result = self.inner.embed(texts).await;
+            .record(self.texts as f64);
         metrics::histogram!(name::EMBEDDING_DURATION, label::PHASE => self.phase)
-            .record(started.elapsed().as_secs_f64());
+            .record(self.started.elapsed().as_secs_f64());
         metrics::counter!(
             name::EMBEDDING_REQUESTS,
             label::PHASE => self.phase,
-            label::OUTCOME => if result.is_ok() { outcome::OK } else { outcome::ERROR },
+            label::OUTCOME => self.outcome,
         )
         .increment(1);
-        if let Err(error) = &result {
+        if let Some(kind) = self.error_kind {
             metrics::counter!(
                 name::EMBEDDING_ERRORS,
                 label::PHASE => self.phase,
-                label::ERROR_KIND => embedder_error_kind(error),
+                label::ERROR_KIND => kind,
             )
             .increment(1);
         }
+    }
+}
+
+#[async_trait]
+impl Embedder for MeteredEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+        let mut call = EmbeddingCall::begin(self.phase, texts.len());
+        let result = self.inner.embed(texts).await;
+        call.finish(&result);
         result
     }
 
@@ -495,7 +593,7 @@ impl EventPublisher for MeteredEventPublisher {
     }
 }
 
-/// The backends, each wrapped in its metered view (D68).
+/// The backends, each wrapped in its metered view (D69).
 ///
 /// The embedder appears twice on purpose: both fields hold the *same* inner
 /// embedder and differ only in the `phase` they record under.
@@ -547,5 +645,134 @@ pub(crate) fn meter(
             notedthat_core::metrics::phase::QUERY,
         )),
         events: events.map(|publisher| Arc::new(MeteredEventPublisher::new(publisher)) as Arc<_>),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MeteredEmbedder, StorageCall, VectorStoreCall};
+    use async_trait::async_trait;
+    use metrics_util::debugging::{DebuggingRecorder, Snapshotter};
+    use notedthat_core::metrics::outcome;
+    use notedthat_indexer::embedder::{Embedder, EmbedderError};
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// An embedder whose call never answers, so the only way out of it is for
+    /// the caller to give up — which is the case under test.
+    struct NeverAnswers;
+
+    #[async_trait]
+    impl Embedder for NeverAnswers {
+        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+            std::future::pending().await
+        }
+        fn dim(&self) -> usize {
+            1
+        }
+        fn max_input_tokens(&self) -> usize {
+            1
+        }
+        fn model_id(&self) -> &'static str {
+            "never"
+        }
+    }
+
+    struct Idle;
+    impl Wake for Idle {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    /// Every `(name, labels)` the closure recorded, rendered as flat strings so
+    /// a test can look for one without depending on the snapshot's shape.
+    fn recorded(f: impl FnOnce()) -> Vec<String> {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter: Snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, f);
+        snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .map(|(key, _, _, _)| {
+                let key = key.key();
+                let labels = key
+                    .labels()
+                    .map(|l| format!("{}={}", l.key(), l.value()))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{}{{{}}}", key.name(), labels)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_dropped_embedding_call_is_counted_as_cancelled() {
+        // Given: an embedder that never answers, wrapped in the meter.
+        let series = recorded(|| {
+            let embedder = MeteredEmbedder::new(Arc::new(NeverAnswers), "query");
+            let texts = vec!["anything".to_string()];
+            let mut call = Box::pin(embedder.embed(&texts));
+            let waker = Waker::from(Arc::new(Idle));
+            let mut cx = Context::from_waker(&waker);
+
+            // When: the caller polls once and then gives up, as hyper does when
+            // a client disconnects mid-search.
+            assert!(matches!(call.as_mut().poll(&mut cx), Poll::Pending));
+            drop(call);
+        });
+
+        // Then: the call is counted, with the outcome that says what happened —
+        // not lost, which is what recording after the await did.
+        assert!(
+            series
+                .iter()
+                .any(|s| s.contains("notedthat_embedding_requests_total")
+                    && s.contains(&format!("outcome={}", outcome::CANCELLED))),
+            "a dropped embedding call must be counted as cancelled, got {series:?}"
+        );
+        // And: `texts` moved with it. These two disagreeing by construction —
+        // `texts` recorded before the await, everything else after — was the
+        // defect; an unattributable gap between the two families.
+        assert!(
+            series
+                .iter()
+                .any(|s| s.contains("notedthat_embedding_texts")),
+            "texts must be recorded with the request it belongs to, got {series:?}"
+        );
+        assert!(
+            series
+                .iter()
+                .any(|s| s.contains("notedthat_embedding_duration_seconds")),
+            "a cancelled call still took time, got {series:?}"
+        );
+    }
+
+    #[test]
+    fn a_guard_that_is_told_what_happened_records_that_instead() {
+        // The other half: `cancelled` is only what a call keeps when nothing
+        // sets an outcome, so a completed call must not be counted as one.
+        let series = recorded(|| {
+            let mut call = StorageCall::begin("fs", "probe");
+            call.finish::<()>(&Ok(()));
+        });
+        assert!(
+            series
+                .iter()
+                .any(|s| s.contains("notedthat_storage_operations_total")
+                    && s.contains(&format!("outcome={}", outcome::OK))),
+            "a finished call records its real outcome, got {series:?}"
+        );
+
+        let series = recorded(|| {
+            let call = VectorStoreCall::begin("hybrid_search");
+            drop(call);
+        });
+        assert!(
+            series
+                .iter()
+                .any(|s| s.contains("notedthat_vector_store_operations_total")
+                    && s.contains(&format!("outcome={}", outcome::CANCELLED))),
+            "an abandoned vector-store call is cancelled, got {series:?}"
+        );
     }
 }
