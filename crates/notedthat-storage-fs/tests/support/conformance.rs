@@ -707,7 +707,7 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
         fs: "absent",
         memory: "present",
         why: "S3's `ListObjectsV2` reports every object's `ETag` for free, and the \
-              reconciliation walk (D66) reads it from the listing so a pass never has to \
+              reconciliation walk (D67) reads it from the listing so a pass never has to \
               `HEAD` an unchanged object; the in-memory double reports it so that walk can \
               be proven without a bucket. `FsStorage` would have to open a sidecar per \
               entry to report one — up to a thousand reads per `PROPFIND` page — and its \

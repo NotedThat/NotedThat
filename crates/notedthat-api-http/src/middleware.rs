@@ -90,7 +90,7 @@ pub(crate) fn with_bearer_challenge(state: &AppState, mut response: Response) ->
     response
 }
 
-/// Routes that are the operator's alone (D66): never reachable without a
+/// Routes that are the operator's alone (D67): never reachable without a
 /// credential, whatever a manifest grants `anyone`, so the answer to one cannot
 /// depend on which slug was named.
 const OPERATOR_ONLY: &[&str] = &[MATCHED_KB_INDEX_RECONCILE];
@@ -202,7 +202,7 @@ mod tests {
 
     /// The operator route is the one `(method, route)` pair on the knowledge
     /// base that must never reach a handler without a credential, whatever the
-    /// manifests grant `anyone` (D66). Pinned here, next to the list, so a
+    /// manifests grant `anyone` (D67). Pinned here, next to the list, so a
     /// future entry cannot slip it in.
     #[test]
     fn the_operator_route_is_not_anonymously_reachable() {

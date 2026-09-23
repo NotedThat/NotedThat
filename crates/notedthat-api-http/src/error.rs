@@ -35,12 +35,12 @@ pub enum ApiError {
         /// What storage had already done.
         after: notedthat_write::WriteEffect,
     },
-    /// A reconciliation pass for this knowledge base is already running (D66).
+    /// A reconciliation pass for this knowledge base is already running (D67).
     #[error(
         "a reconciliation pass is already running for this knowledge base; retry once last_reconcile advances"
     )]
     ReconcileInProgress,
-    /// The storage backend has no on-demand reconciliation pass (D66).
+    /// The storage backend has no on-demand reconciliation pass (D67).
     #[error("on-demand reconciliation is available on the s3 backend only")]
     ReconcileUnsupported,
     /// A `Last-Event-ID` older than what the event log retains.
@@ -783,7 +783,7 @@ mod tests {
     }
 
     /// A second pass while one runs is a conflict, not a queue: the running
-    /// pass is already past keys a later change could touch (D66).
+    /// pass is already past keys a later change could touch (D67).
     #[test]
     fn a_reconcile_in_progress_is_a_conflict() {
         let (status, code) = ApiError::ReconcileInProgress.status_and_code();

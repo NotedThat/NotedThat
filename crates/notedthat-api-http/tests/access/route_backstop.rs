@@ -38,7 +38,7 @@ const EVERY_ROUTE: &[(&str, &str)] = &[
     ("POST", "/api/v1/knowledgebases/notes/index/reconcile"),
 ];
 
-/// The operator routes: the service token's alone (D66), whatever the rules say,
+/// The operator routes: the service token's alone (D67), whatever the rules say,
 /// so the credential holder is answered `202` here and every other principal
 /// refused — `403` for a verified identity, `401` for no credential at all.
 const OPERATOR_ROUTES: &[(&str, &str)] =

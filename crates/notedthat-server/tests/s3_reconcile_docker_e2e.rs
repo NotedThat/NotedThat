@@ -1,4 +1,4 @@
-//! The `s3` backend's reconciliation pass (D66) against a real bucket: objects written
+//! The `s3` backend's reconciliation pass (D67) against a real bucket: objects written
 //! and deleted behind the server's back with the S3 API, then found by the operator's
 //! pass and by the next startup.
 //!

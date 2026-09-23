@@ -57,7 +57,8 @@ impl Env {
         let (tx, mut rx) = mpsc::channel(64);
         let report = reconcile(&self.storage, &self.kb, prefix, indexed, &tx)
             .await
-            .expect("reconcile");
+            .expect("reconcile")
+            .expect("the receiver is alive, so the pass ran to the end");
         drop(tx);
 
         let mut keys = Vec::new();
@@ -286,4 +287,35 @@ async fn the_private_directory_is_not_compared() {
         "the manifest is not one of the objects compared"
     );
     assert!(report.clean);
+}
+
+/// A pass whose consumer walks away does not answer with a report.
+///
+/// `compare` finishes the whole comparison before the first key is sent, so a break
+/// part-way through still holds counts describing every object — and the caller uses `Ok`
+/// to decide whether to record those counts and clear `stale`. Saying `Ok(Some(report))`
+/// here would claim the queue holds every difference when most were never sent.
+#[tokio::test]
+async fn a_pass_nobody_is_listening_to_reports_no_pass() {
+    let env = env().await;
+    let a = env.put("a.md", "alpha").await;
+    let b = env.put("b.md", "bravo").await;
+
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    let outcome = reconcile(
+        &env.storage,
+        &env.kb,
+        None,
+        &indexed(&[("a.md", "\"stale\""), ("b.md", "\"stale\"")]),
+        &tx,
+    )
+    .await
+    .expect("the tree is readable, so this is not a walk error");
+
+    assert!(
+        outcome.is_none(),
+        "a closed sink is shutdown, not a completed pass: {outcome:?}"
+    );
+    let _ = (a, b);
 }

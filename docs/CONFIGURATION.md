@@ -88,7 +88,7 @@ One backend is active per process, chosen at startup.
 | `NOTEDTHAT_S3_ACCESS_KEY_ID` | `--s3-access-key-id` | Yes, when `s3` | — | Access key ID. No credential chain is consulted; this value is used directly. |
 | `NOTEDTHAT_S3_SECRET_ACCESS_KEY` | `--s3-secret-access-key` | Yes, when `s3` | — | Secret access key for the key ID above. |
 | `NOTEDTHAT_S3_ENDPOINT_URL` | `--s3-endpoint-url` | No | (AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage and R2. |
-| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `--s3-force-path-style` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. |
+| `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `--s3-force-path-style` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. `true` or `false` exactly; anything else refuses startup and names the setting. |
 | `NOTEDTHAT_S3_RECONCILE` | `--s3-reconcile` | No | `true` | Compare every knowledge base's bucket against the search index once at startup, re-indexing objects changed outside NotedThat. `true` or `false` exactly. The on-demand pass (`POST …/index/reconcile`) is available either way. See [S3 reconciliation](#s3-reconciliation). |
 | `NOTEDTHAT_FS_ROOT` | `--fs-root` | Yes, when `fs` | — | Absolute path of the storage root. |
 | `NOTEDTHAT_FS_METADATA` | `--fs-metadata` | No | `sidecar` | Where per-object metadata is kept. `sidecar` is the only accepted value today. |
@@ -262,7 +262,7 @@ writes through the API, WebDAV or MCP update the search index.
 An S3 bucket can change through anything that speaks S3 — `aws s3 cp`, a sync job, another
 application — and S3 has no change feed NotedThat can subscribe to portably, so unlike the `fs`
 backend nothing is watched. Instead the `s3` backend **compares** each knowledge base's bucket
-against the search index (D66):
+against the search index (D67):
 
 - **at startup**, for every declared knowledge base, while `NOTEDTHAT_S3_RECONCILE` is `true`
   (the default); until that pass completes the knowledge base reports `"state": "stale"` at
@@ -281,6 +281,15 @@ answers `409 conflict` — retry once `last_reconcile.at` moves.
 While a large pass is enqueueing, the indexing queue (1024 events) fills and writes through
 the API, WebDAV and MCP answer `503` with `Retry-After` until it drains — the same as during the
 `fs` startup pass. Schedule a requested pass accordingly.
+
+**What a pass costs in memory.** A pass holds both sides of the comparison resident for its
+whole duration: every key and `ETag` the bucket listing returned, and every key and `ETag` the
+index holds. Budget roughly **150 bytes per object**, counted once per knowledge base being
+compared — so about 150 MiB for a bucket of a million objects, and low single-digit GiB at ten
+million. The startup pass walks every declared knowledge base one after another, so the ceiling
+is the largest single knowledge base rather than their sum; a requested pass is one knowledge
+base. Size the container accordingly, or run the largest buckets with
+`NOTEDTHAT_S3_RECONCILE=false` and request passes when the memory is available.
 
 ```console
 $ aws s3 cp meeting.md s3://nt-default-notes/meeting.md
@@ -1096,7 +1105,7 @@ DELETE 503 semantics:
 
 MOVE 503 comes in two flavors; the response body distinguishes which failure occurred and what the client should do:
 - Destination index event failed: the destination object IS stored, the destination search-index upsert is missing, and the source is unchanged. Retry MOVE to re-enqueue the destination index event; the destination write is idempotent.
-- Source tombstone failed: the destination object IS stored, the source object IS deleted from S3, and the source search-index tombstone is missing. Search may return stale entries for the source path whose object_key now 404s. Retrying the whole MOVE will 404 on GET(src); on `s3`, a `POST …/index/reconcile` (D66) clears the stale source entry, since the object is gone from the bucket; on `fs`, the watcher's next pass does.
+- Source tombstone failed: the destination object IS stored, the source object IS deleted from S3, and the source search-index tombstone is missing. Search may return stale entries for the source path whose object_key now 404s. Retrying the whole MOVE will 404 on GET(src); on `s3`, a `POST …/index/reconcile` (D67) clears the stale source entry, since the object is gone from the bucket; on `fs`, the watcher's next pass does.
 
 A repeated DELETE or MOVE-tombstone 503 leaves a stale entry the next reconciliation pass removes (on `s3`, request one with `POST …/index/reconcile`; on `fs`, the watcher's pass). Clients SHOULD still implement retry-with-backoff for DELETE, matching PUT.
 

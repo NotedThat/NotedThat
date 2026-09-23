@@ -46,7 +46,7 @@ pub struct AppState {
     /// The latest background probe of the storage and vector backends.
     /// `/readyz` reads it and never probes inline.
     pub readiness: ReadinessReceiver,
-    /// What `POST …/index/reconcile` starts (D66): a comparison of one
+    /// What `POST …/index/reconcile` starts (D67): a comparison of one
     /// knowledge base's storage against the index, run by the server. `None`
     /// where the backend has no on-demand pass — the `fs` backend today, whose
     /// watcher covers it — and the route answers `404`.
@@ -58,7 +58,7 @@ pub struct AppState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconcileBusy;
 
-/// Starts a reconciliation pass for one knowledge base (D66).
+/// Starts a reconciliation pass for one knowledge base (D67).
 ///
 /// Synchronous on purpose: an implementation only claims the knowledge base's
 /// slot and spawns the pass, so the route answers before any bucket is listed.

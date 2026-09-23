@@ -2,7 +2,7 @@
 //!
 //! The comparison itself — why it is a comparison and not a replay, and why it is
 //! affordable — lives in [`notedthat_core::reconcile`] and is shared with the `s3`
-//! backend (D50, D66). This module supplies the filesystem's half: [`FsStorage::walk_etags`]
+//! backend (D50, D67). This module supplies the filesystem's half: [`FsStorage::walk_etags`]
 //! reads each object's `ETag` from its sidecar stamp, so an unchanged object costs a stat
 //! and a small read and its content is never opened.
 
@@ -36,18 +36,26 @@ pub struct FsChange {
 /// every key the index still holds there is reported as needing a fresh look, and the
 /// consumer's re-read finds it gone.
 ///
+/// `Ok(Some(report))` is a pass that ran to the end: every difference it counted was
+/// also enqueued, so the caller may record the counts and clear `stale`. `Ok(None)` is a
+/// pass the consumer walked away from — a closed `sink` — which is not an error (it
+/// means shutdown) but is not a completed pass either. The distinction is load-bearing
+/// because [`compare`] finishes the whole comparison before the first key is sent: a
+/// break at key 5 of 100 still returns counts describing all 100, so a caller handed
+/// those counts as `Ok` would report a knowledge base as freshly reconciled and no
+/// longer `stale` with 95 of its differences never enqueued. The `s3` half of the same
+/// comparison records nothing in that case, for the same reason.
+///
 /// # Errors
 ///
-/// Returns the walk's [`StorageError`] if the knowledge base cannot be read. A closed
-/// `sink` ends the pass early and is not an error: it means the consumer is shutting down;
-/// the report still counts the whole comparison.
+/// Returns the walk's [`StorageError`] if the knowledge base cannot be read.
 pub async fn reconcile(
     storage: &FsStorage,
     kb: &KbSlug,
     prefix: Option<&str>,
     indexed: &[IndexedEtag],
     sink: &mpsc::Sender<FsChange>,
-) -> Result<ReconcileReport, StorageError> {
+) -> Result<Option<ReconcileReport>, StorageError> {
     let on_disk = storage
         .walk_etags(kb, prefix)
         .await?
@@ -68,9 +76,9 @@ pub async fn reconcile(
                 kb = %kb.as_str(),
                 "reconciliation stopped early: nothing is listening any more"
             );
-            break;
+            return Ok(None);
         }
     }
 
-    Ok(report)
+    Ok(Some(report))
 }

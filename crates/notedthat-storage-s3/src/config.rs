@@ -18,7 +18,7 @@ pub const S3_ENV_VARS: [&str; 6] = [
 ];
 
 /// Whether every knowledge base's bucket is compared against the search index once at
-/// startup (D66). `"true"` or `"false"`; default `"true"`.
+/// startup (D67). `"true"` or `"false"`; default `"true"`.
 pub const S3_RECONCILE_ENV: &str = "NOTEDTHAT_S3_RECONCILE";
 
 /// A switch that is exactly `true` or `false`, the way the `fs` backend's are: a value
@@ -56,7 +56,7 @@ pub struct S3Config {
     /// Default: `false`.
     pub force_path_style: bool,
     /// Whether to compare every knowledge base's bucket against the search index once
-    /// at startup, re-indexing what changed out of band (D66). Default: `true`. The
+    /// at startup, re-indexing what changed out of band (D67). Default: `true`. The
     /// on-demand pass (`POST …/index/reconcile`) is available either way.
     pub reconcile_on_startup: bool,
 }
@@ -120,7 +120,8 @@ impl S3Config {
     /// # Errors
     ///
     /// Returns `Err(Error::Config { .. })` when a required setting is absent, or when
-    /// `NOTEDTHAT_S3_RECONCILE` is neither `true` nor `false`.
+    /// `NOTEDTHAT_S3_FORCE_PATH_STYLE` or `NOTEDTHAT_S3_RECONCILE` is neither `true` nor
+    /// `false`.
     pub fn from_settings(settings: S3Settings) -> Result<Self, Error> {
         let region = settings.region.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_S3_REGION")),
@@ -131,10 +132,11 @@ impl S3Config {
         let secret_access_key = settings.secret_access_key.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_S3_SECRET_ACCESS_KEY")),
         })?;
-        let force_path_style = settings
-            .force_path_style
-            .and_then(|v| v.parse::<bool>().ok())
-            .unwrap_or(false);
+        let force_path_style = parse_bool(
+            "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+            settings.force_path_style.as_deref(),
+            false,
+        )?;
         let reconcile_on_startup =
             parse_bool(S3_RECONCILE_ENV, settings.reconcile.as_deref(), true)?;
 
@@ -278,6 +280,34 @@ mod tests {
                     "{value:?}: {error}"
                 );
             });
+        }
+    }
+
+    /// The one a `SeaweedFS`, `MinIO`, Ceph or Garage deployment cannot afford to have
+    /// guessed: `yes` used to parse as `false`, and every request then went out
+    /// virtual-host style with nothing in the logs naming the setting that caused it.
+    #[test]
+    fn force_path_style_refuses_anything_but_true_or_false() {
+        for value in ["yes", "1", "on", "True"] {
+            temp_env::with_vars(
+                [
+                    ("NOTEDTHAT_S3_REGION", Some("us-east-1")),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("test-key")),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("test-secret")),
+                    ("NOTEDTHAT_S3_ENDPOINT_URL", None),
+                    ("NOTEDTHAT_S3_FORCE_PATH_STYLE", Some(value)),
+                    (S3_RECONCILE_ENV, None),
+                ],
+                || {
+                    let error = S3Config::from_env().expect_err("refused").to_string();
+                    assert!(
+                        error.contains("NOTEDTHAT_S3_FORCE_PATH_STYLE")
+                            && error.contains("--s3-force-path-style")
+                            && error.contains("expected \"true\" or \"false\""),
+                        "{value:?}: {error}"
+                    );
+                },
+            );
         }
     }
 

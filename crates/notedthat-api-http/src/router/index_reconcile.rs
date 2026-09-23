@@ -1,6 +1,6 @@
 //! `POST /api/v1/knowledgebases/{kb_slug}/index/reconcile` — compare one
 //! knowledge base's storage against the search index now, and re-index what
-//! differs (D66).
+//! differs (D67).
 //!
 //! An operator action, not a knowledge-base verb: only the deployment's own
 //! service token may ask, whatever the manifests grant anyone else. The pass
@@ -36,8 +36,13 @@ pub(super) async fn post_index_reconcile(
     };
 
     // Resolve first, so an undeclared slug is `404` for everyone, then the
-    // operator check — in that order, so a verified identity learns that the
-    // knowledge base exists (it could list it) and that this is not its call.
+    // operator check — in that order, so a verified identity learns only that
+    // the knowledge base is declared and that this is not its call. `resolve`
+    // attaches the principal and the policy; it never consults
+    // `visible_in_listing`, so the `403`-vs-`404` split is available to any
+    // verified identity, including one the manifests grant nothing anywhere.
+    // That is no more than `GET …/index` already tells such a caller: it
+    // resolves first too and then answers `403` on `require_visible`.
     let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
     access.require_service_token().map_err(&err)?;
 

@@ -241,13 +241,15 @@ fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKin
 
 /// Parse the backend selector, returning `None` when it was not supplied.
 ///
-/// Strict, unlike `NOTEDTHAT_LOG_FORMAT` and `NOTEDTHAT_S3_FORCE_PATH_STYLE`, which
-/// silently fall back on an unrecognised value. Those two can afford leniency because a
-/// mis-parse announces itself immediately — the wrong log format is visible in the first
-/// line of output, and a wrong path-style setting fails on the first request. A backend
-/// selector cannot: `NOTEDTHAT_STORAGE_BACKEND=fs3` would fall back to `s3`, start
-/// cleanly, provision buckets and serve a knowledge base that looks empty because the
-/// operator's data is on disk. Nothing later in the run would say so.
+/// Strict, unlike `NOTEDTHAT_LOG_FORMAT`, which silently falls back on an unrecognised
+/// value. That one can afford leniency because a mis-parse announces itself immediately:
+/// the wrong log format is visible in the first line of output. A backend selector
+/// cannot: `NOTEDTHAT_STORAGE_BACKEND=fs3` would fall back to `s3`, start cleanly,
+/// provision buckets and serve a knowledge base that looks empty because the operator's
+/// data is on disk. Nothing later in the run would say so. Every `NOTEDTHAT_S3_*` switch
+/// is strict for the same reason — `NOTEDTHAT_S3_FORCE_PATH_STYLE=yes` used to become
+/// `false`, and the `SeaweedFS` or `MinIO` deployment it was set for then failed with DNS
+/// errors naming nothing.
 fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBackendKind>, Error> {
     let Some(value) = supplied else {
         return Ok(None);

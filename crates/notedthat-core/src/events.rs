@@ -67,7 +67,7 @@ pub enum EventSource {
     /// The `fs` backend's filesystem watcher.
     FsWatch,
     /// Either backend's comparison of its storage against the index: at
-    /// startup, on a rescan, or on the operator's request (D50, D66).
+    /// startup, on a rescan, or on the operator's request (D50, D67).
     Reconcile,
     /// The indexer worker, reporting what it did with an object.
     Indexer,

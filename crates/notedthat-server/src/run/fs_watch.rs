@@ -13,10 +13,11 @@ use std::sync::Arc;
 use notedthat_core::KbSlug;
 use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
 use notedthat_storage_fs::{
-    FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag, reconcile,
+    FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag,
+    ReconcileReport, reconcile,
 };
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::reconcile::{IndexSink, now_unix};
 
@@ -227,40 +228,19 @@ async fn reconcile_into(
         // A completed pass, whatever it found, has enqueued every difference: nothing
         // is unobserved any more, and the report is worth showing (#97). An incomplete
         // pass leaves the record as it was, `stale` included.
-        Ok(report) => {
-            sink.health.reconciled(
-                kb.as_str(),
-                ReconcileSummary {
-                    at: now_unix(),
-                    scope: prefix.map(str::to_string),
-                    objects_on_disk: report.objects_on_disk,
-                    unchanged: report.unchanged,
-                    changed: report.changed,
-                    orphaned: report.orphaned,
-                },
-            );
-            if report.is_clean() {
-                info!(
-                    target: "notedthat::watch",
-                    kb = %kb.as_str(),
-                    prefix = prefix.unwrap_or(""),
-                    cause,
-                    objects = report.objects_on_disk,
-                    "already in step with the index"
-                );
-            } else {
-                info!(
-                    target: "notedthat::watch",
-                    kb = %kb.as_str(),
-                    prefix = prefix.unwrap_or(""),
-                    cause,
-                    objects = report.objects_on_disk,
-                    changed = report.changed,
-                    orphaned = report.orphaned,
-                    "enqueued objects whose index entries are out of date"
-                );
-            }
-        }
+        Ok(Some(report)) => record_pass(sink, kb, prefix, cause, &report),
+        // The consumer stopped listening part-way through, so most of the comparison was
+        // never enqueued. `compare` counts the whole tree before the first key is sent,
+        // so the counts in hand describe work that never reached the queue: recording
+        // them would say the opposite — and clear `stale` — so nothing is recorded,
+        // exactly as the `s3` pass does.
+        Ok(None) => debug!(
+            target: "notedthat::watch",
+            kb = %kb.as_str(),
+            prefix = prefix.unwrap_or(""),
+            cause,
+            "reconciliation stopped before the queue had every difference; nothing recorded"
+        ),
         Err(error) => warn!(
             target: "notedthat::watch",
             kb = %kb.as_str(),
@@ -269,5 +249,47 @@ async fn reconcile_into(
             %error,
             "FS_WATCH_RESCAN: could not read the tree, so this pass was incomplete"
         ),
+    }
+}
+
+/// Stamp the health record with a completed pass, and say what it found.
+fn record_pass(
+    sink: &IndexSink,
+    kb: &KbSlug,
+    prefix: Option<&str>,
+    cause: &str,
+    report: &ReconcileReport,
+) {
+    sink.health.reconciled(
+        kb.as_str(),
+        ReconcileSummary {
+            at: now_unix(),
+            scope: prefix.map(str::to_string),
+            objects_on_disk: report.objects_on_disk,
+            unchanged: report.unchanged,
+            changed: report.changed,
+            orphaned: report.orphaned,
+        },
+    );
+    if report.is_clean() {
+        info!(
+            target: "notedthat::watch",
+            kb = %kb.as_str(),
+            prefix = prefix.unwrap_or(""),
+            cause,
+            objects = report.objects_on_disk,
+            "already in step with the index"
+        );
+    } else {
+        info!(
+            target: "notedthat::watch",
+            kb = %kb.as_str(),
+            prefix = prefix.unwrap_or(""),
+            cause,
+            objects = report.objects_on_disk,
+            changed = report.changed,
+            orphaned = report.orphaned,
+            "enqueued objects whose index entries are out of date"
+        );
     }
 }

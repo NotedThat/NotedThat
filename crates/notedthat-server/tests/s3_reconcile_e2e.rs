@@ -1,10 +1,21 @@
-//! The `s3` backend's reconciliation pass (D66), end to end over in-process backends.
+//! The `s3` backend's reconciliation pass (D67), end to end over in-process backends.
 //!
 //! The subject is the pass and its two triggers — startup, and
 //! `POST …/index/reconcile` — so storage is the in-memory double under a config that
 //! selects `s3` (the real adapter's listing is proven by the storage conformance suite
 //! and the Docker e2e beside this file), the vector store is in-memory, and the embedder
 //! is a stub. The server, the worker, the health view and the route are real.
+//!
+//! Every test here ends with `handle.abort()`, which drops the server future at an await
+//! point and so **skips `serve`'s shutdown sequence** — `fs_watch.stop()`, then
+//! `reconciler.stop()`, then the indexer drain. That is a deliberate gap, not an
+//! oversight: `run_with` takes no shutdown handle, and `serve` is driven only by SIGTERM
+//! or SIGINT, which a test cannot raise without signalling the whole test binary. What
+//! the sequence is for is covered next to the code instead — `Reconciler::stop()`
+//! cancelling a pass that is blocked on a full queue is pinned by
+//! `stop_returns_while_a_pass_is_blocked_on_a_full_queue` in `run/reconcile.rs`, and its
+//! position before the drain by the comments in `serve`. Giving `run_with` a shutdown
+//! handle would close the gap properly and is worth doing when something else needs one.
 //!
 //! Run with: `cargo test -p notedthat-server --test s3_reconcile_e2e`
 #![allow(missing_docs)]
@@ -73,13 +84,30 @@ impl Server {
             .expect("json")
     }
 
-    /// Wait, bounded, until `/index` reports a completed pass newer than `after`.
+    /// Wait, bounded, until `/index` reports a completed pass no older than `after` and
+    /// not the same one.
+    ///
+    /// `at` is serialized to second resolution, so two passes over an unchanged bucket
+    /// inside the same second are byte-identical and cannot be told apart by timestamp.
+    /// The condition therefore asks for both: an `at` that has not gone backwards, and a
+    /// record that differs from the one the caller already saw. A caller that expects two
+    /// consecutive identical passes cannot use this helper and should wait on the counts.
     async fn wait_reconciled(&self, after: Option<&serde_json::Value>) -> serde_json::Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             let health = self.index_health().await;
             let last = &health["last_reconcile"];
-            if !last.is_null() && after != Some(last) {
+            let moved = match after {
+                None => !last.is_null(),
+                // RFC 3339 at second resolution, so the strings order the same way the
+                // instants do.
+                Some(previous) => {
+                    !last.is_null()
+                        && last["at"].as_str() >= previous["at"].as_str()
+                        && last != previous
+                }
+            };
+            if moved {
                 return last.clone();
             }
             assert!(

@@ -1,5 +1,5 @@
 //! Comparing a knowledge base's bucket against the search index on the `s3` backend
-//! (D66): once at startup, and whenever the operator asks.
+//! (D67): once at startup, and whenever the operator asks.
 //!
 //! S3 has no change feed `NotedThat` can subscribe to portably, so unlike the `fs`
 //! backend (D50) nothing is watched; a pass is the only mechanism. What a pass does is
@@ -146,6 +146,14 @@ impl ReconcileTrigger for Reconciler {
             return Err(ReconcileBusy);
         };
         let held = slot.clone().try_lock_owned().map_err(|_| ReconcileBusy)?;
+        // A courtesy check, not a barrier: nothing orders it against `stop()`, so a
+        // request that passes it can still reach `spawn` after `stop()` has returned.
+        // What actually bounds a late pass is the cancellation token — `stop()` cancels
+        // *before* it closes, and the spawned body below is `biased` with
+        // `cancelled()` first, so a task that wins the race never polls `run_pass` and
+        // so never sends on the indexing queue the drain is about to consume. This
+        // check only spares the common case the work of spawning a task that would
+        // immediately return.
         if self.inner.tracker.is_closed() {
             return Err(ReconcileBusy);
         }

@@ -68,7 +68,7 @@ pub struct IndexFailure {
     pub summary: String,
 }
 
-/// What the last completed reconciliation pass found (D50 on `fs`, D66 on `s3`).
+/// What the last completed reconciliation pass found (D50 on `fs`, D67 on `s3`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileSummary {
     /// Unix seconds.
@@ -105,7 +105,7 @@ pub struct KbHealthSnapshot {
     pub last_backpressure_at: Option<i64>,
     /// Unix seconds since which changes may have gone unobserved.
     pub stale_since: Option<i64>,
-    /// The last completed reconciliation pass (D50 on `fs`, D66 on `s3`).
+    /// The last completed reconciliation pass (D50 on `fs`, D67 on `s3`).
     pub last_reconcile: Option<ReconcileSummary>,
 }
 

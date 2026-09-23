@@ -1,4 +1,4 @@
-//! `POST /api/v1/knowledgebases/{kb}/index/reconcile` (D66): who may ask, and
+//! `POST /api/v1/knowledgebases/{kb}/index/reconcile` (D67): who may ask, and
 //! what each answer looks like on the wire.
 
 use std::collections::BTreeMap;

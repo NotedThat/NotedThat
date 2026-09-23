@@ -155,7 +155,7 @@ struct Infrastructure {
     fs_watch: Option<fs_watch::FsWatch>,
     /// Not yet running: `serve` spawns it under its own shutdown token.
     readiness: readiness::ReadinessPoller,
-    /// The `s3` backend's reconciliation passes; `None` on `fs` (D66).
+    /// The `s3` backend's reconciliation passes; `None` on `fs` (D67).
     reconciler: Option<Arc<reconcile::Reconciler>>,
 }
 
@@ -188,7 +188,7 @@ fn readiness_poller(
 
 /// Whatever keeps the index in step with changes the server did not make: the `fs`
 /// backend's watcher and its startup comparison (D50), or the `s3` backend's startup
-/// pass (D66) — the on-demand pass needs no starting.
+/// pass (D67) — the on-demand pass needs no starting.
 fn start_change_detection(
     config: &Config,
     kb_list: Vec<notedthat_core::KbSlug>,
@@ -269,7 +269,7 @@ async fn build_infrastructure(
         index_health: index_health.clone(),
     };
 
-    // The `s3` backend's comparison against the index, on demand and at startup (D66).
+    // The `s3` backend's comparison against the index, on demand and at startup (D67).
     // The `fs` backend's watcher bridge covers the same ground on its own.
     let reconciler = match &config.storage {
         StorageConfig::S3(_) => Some(reconcile::Reconciler::new(
