@@ -42,9 +42,10 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use notedthat_core::KbSlug;
 use notedthat_core::metrics::{HISTOGRAM_BUCKETS, label, name};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -261,6 +262,59 @@ pub(crate) async fn sample_queue_depth<T: Send + 'static>(
                     .set((capacity - sender.capacity()) as f64);
             }
         }
+    }
+}
+
+/// One reconciliation pass's timing and outcome (D68).
+///
+/// A guard rather than a record at the end, because both reconcilers return
+/// early from several places — a missing collection, an unreadable index or
+/// bucket, a worker that has gone — and each of those is an outcome worth
+/// counting. Recording only where a pass ran to completion would make a backend
+/// that fails every pass indistinguishable from one that is not reconciling at
+/// all, which is the case an operator most needs to see.
+pub(crate) struct PassMetric {
+    kb: String,
+    cause: String,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl PassMetric {
+    /// Begin timing a pass. Until [`Self::completed`] is called it will record
+    /// as `incomplete`.
+    pub(crate) fn started(kb: &KbSlug, cause: &str) -> Self {
+        Self {
+            kb: kb.as_str().to_string(),
+            cause: cause.to_string(),
+            started: Instant::now(),
+            outcome: "incomplete",
+        }
+    }
+
+    /// The pass ran to completion and its report was recorded.
+    pub(crate) fn completed(&mut self) {
+        self.outcome = "completed";
+    }
+
+    /// The consumer stopped listening part-way through, so most of the
+    /// comparison never reached the queue.
+    pub(crate) fn abandoned(&mut self) {
+        self.outcome = "abandoned";
+    }
+}
+
+impl Drop for PassMetric {
+    fn drop(&mut self) {
+        metrics::histogram!(name::RECONCILE_DURATION, label::KB => self.kb.clone())
+            .record(self.started.elapsed().as_secs_f64());
+        metrics::counter!(
+            name::RECONCILE_PASSES,
+            label::KB => self.kb.clone(),
+            label::CAUSE => self.cause.clone(),
+            label::OUTCOME => self.outcome,
+        )
+        .increment(1);
     }
 }
 

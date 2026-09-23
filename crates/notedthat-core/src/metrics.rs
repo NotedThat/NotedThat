@@ -309,6 +309,10 @@ pub fn storage_outcome<T>(result: &Result<T, StorageError>) -> &'static str {
             | StorageError::PreconditionFailed
             | StorageError::RangeNotSatisfiable { .. },
         ) => outcome::PRECONDITION,
+        // Its own value, not the catch-all: this is the one an operator alerts
+        // on, and `docs/CONFIGURATION.md` names the series. Folded into
+        // `error` it would be a documented alert that can never fire.
+        Err(StorageError::BackendUnavailable { .. }) => outcome::UNAVAILABLE,
         Err(_) => outcome::ERROR,
     }
 }
@@ -496,24 +500,37 @@ mod tests {
 
     #[test]
     fn a_failing_backend_is_counted_as_an_error() {
-        for (error, kind) in [
+        for (error, kind, expected) in [
             (
                 StorageError::BackendUnavailable {
                     message: "https://seaweed.internal:8333 refused the connection".to_string(),
                 },
                 "backend_unavailable",
+                outcome::UNAVAILABLE,
             ),
             (
                 StorageError::BucketNotFound {
                     bucket: "notedthat-notes".to_string(),
                 },
                 "bucket_not_found",
+                outcome::ERROR,
             ),
         ] {
             let result: Result<(), StorageError> = Err(error);
-            assert_eq!(storage_outcome(&result), outcome::ERROR);
+            assert_eq!(storage_outcome(&result), expected);
             assert_eq!(storage_error_kind(result.as_ref().unwrap_err()), Some(kind));
         }
+    }
+
+    /// `docs/CONFIGURATION.md` tells operators to alert on
+    /// `outcome="unavailable"`. A documented alert that can never fire is worse
+    /// than no alert, so the value has to be reachable from a real failure.
+    #[test]
+    fn an_unreachable_backend_is_its_own_outcome_not_the_catch_all() {
+        let result: Result<(), StorageError> = Err(StorageError::BackendUnavailable {
+            message: "connection refused".to_string(),
+        });
+        assert_eq!(storage_outcome(&result), outcome::UNAVAILABLE);
     }
 
     /// The error kinds are variant names, never the variants' contents — those

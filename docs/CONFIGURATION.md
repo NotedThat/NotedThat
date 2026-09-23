@@ -234,8 +234,14 @@ histogram and pin the in-flight gauge at the subscriber count. A live stream's c
 
 A storage call that answers `404`, `304` or `412` is counted as an outcome, not an error: those are
 how an idempotent delete and every conditional request work, and counting them would make the error
-rate track client caching rather than the backend's health. Alert on
-`notedthat_storage_operations_total{outcome="unavailable"}`.
+rate track client caching rather than the backend's health. The vector store is treated the same
+way — a missing collection is `outcome="not_found"`, which both reconcilers handle by skipping the
+pass. What is left is the backend being unreachable, so that is what to alert on:
+
+```promql
+rate(notedthat_storage_operations_total{outcome="unavailable"}[5m]) > 0
+rate(notedthat_vector_store_operations_total{outcome="unavailable"}[5m]) > 0
+```
 
 ### Metric catalogue
 

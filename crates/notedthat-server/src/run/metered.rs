@@ -233,12 +233,27 @@ impl Storage for MeteredStorage {
     }
 }
 
-/// The `error_kind` for a vector-store failure: the variant's name, never the
-/// collection name or the backend's message.
-fn vector_store_error_kind(error: &VectorStoreError) -> &'static str {
+/// The `error_kind` for a vector-store failure, or `None` when it is control
+/// flow. The variant's name only — never the collection name or the backend's
+/// message.
+fn vector_store_error_kind(error: &VectorStoreError) -> Option<&'static str> {
     match error {
-        VectorStoreError::CollectionNotFound { .. } => "collection_not_found",
-        VectorStoreError::Backend { .. } => "backend",
+        VectorStoreError::CollectionNotFound { .. } => None,
+        VectorStoreError::Backend { .. } => Some("backend"),
+    }
+}
+
+/// The `outcome` for a vector-store call.
+///
+/// `CollectionNotFound` is control flow here, exactly as `NotFound` is for
+/// storage: both reconcilers treat it as "no collection yet, skip the pass" and
+/// search maps it to a client error, so counting it as a failure would inflate
+/// the series an operator alerts on with a state the code handles by design.
+fn vector_store_outcome<T>(result: &Result<T, VectorStoreError>) -> &'static str {
+    match result {
+        Ok(_) => outcome::OK,
+        Err(VectorStoreError::CollectionNotFound { .. }) => outcome::NOT_FOUND,
+        Err(VectorStoreError::Backend { .. }) => outcome::UNAVAILABLE,
     }
 }
 
@@ -252,14 +267,16 @@ fn record_vector_store<T>(
     metrics::counter!(
         name::VECTOR_STORE_OPERATIONS,
         label::OP => op,
-        label::OUTCOME => if result.is_ok() { outcome::OK } else { outcome::ERROR },
+        label::OUTCOME => vector_store_outcome(result),
     )
     .increment(1);
-    if let Err(error) = result {
+    if let Err(error) = result
+        && let Some(kind) = vector_store_error_kind(error)
+    {
         metrics::counter!(
             name::VECTOR_STORE_ERRORS,
             label::OP => op,
-            label::ERROR_KIND => vector_store_error_kind(error),
+            label::ERROR_KIND => kind,
         )
         .increment(1);
     }

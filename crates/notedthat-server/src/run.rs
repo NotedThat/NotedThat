@@ -568,13 +568,24 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
             .await
             .context("HTTP listener failed");
         shutdown_trigger.abort();
-        if let Some(metrics_listener) = metrics_listener {
-            metrics_listener.join().await;
-        }
-        result
+        result.map(|()| metrics_listener)
     }
     .await;
+    // Cancelled before anything is joined. The metrics listener waits on this
+    // token, and `axum::serve` can return an error of its own — an accept-loop
+    // failure — without any shutdown having been signalled; joining before the
+    // cancel would then wait forever on a task nothing had told to stop, and
+    // every cleanup step below would be skipped with it.
     shutdown_token.cancel();
+    let serve_result = match serve_result {
+        Ok(metrics_listener) => {
+            if let Some(metrics_listener) = metrics_listener {
+                metrics_listener.join().await;
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    };
     // Cancelled with everything else; it holds no queue, so nothing waits on it but us.
     if let Err(e) = readiness_handle.await {
         tracing::error!(error = %e, "readiness poller panicked");

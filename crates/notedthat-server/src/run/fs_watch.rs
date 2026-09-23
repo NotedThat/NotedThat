@@ -11,13 +11,11 @@
 use std::sync::Arc;
 
 use notedthat_core::KbSlug;
-use notedthat_core::metrics::{label as metric_label, name as metric};
 use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
 use notedthat_storage_fs::{
     FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag,
     ReconcileReport, reconcile,
 };
-use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -163,6 +161,11 @@ async fn reconcile_into(
     prefix: Option<&str>,
     cause: &str,
 ) {
+    // Before the first fallible call, so the two early returns below — a
+    // dropped collection, an unreadable index — are counted as `incomplete`
+    // rather than silently recording nothing, which is what the `s3` pass does
+    // for the same conditions.
+    let mut pass = super::metrics::PassMetric::started(kb, cause);
     let indexed = match store.indexed_objects(kb, prefix).await {
         Ok(indexed) => indexed,
         // Named apart from any other read failure because it is the one an operator can
@@ -222,23 +225,14 @@ async fn reconcile_into(
         })
     };
 
-    let started = Instant::now();
     let report = reconcile(storage, kb, prefix, &indexed, &changes_tx).await;
     drop(changes_tx);
     let _ = forwarder.await;
-    metrics::histogram!(metric::RECONCILE_DURATION, metric_label::KB => kb.as_str().to_string())
-        .record(started.elapsed().as_secs_f64());
-    metrics::counter!(
-        metric::RECONCILE_PASSES,
-        metric_label::KB => kb.as_str().to_string(),
-        metric_label::CAUSE => cause.to_string(),
-        metric_label::OUTCOME => match &report {
-            Ok(Some(_)) => "completed",
-            Ok(None) => "abandoned",
-            Err(_) => "incomplete",
-        },
-    )
-    .increment(1);
+    match &report {
+        Ok(Some(_)) => pass.completed(),
+        Ok(None) => pass.abandoned(),
+        Err(_) => {}
+    }
 
     match report {
         // A completed pass, whatever it found, has enqueued every difference: nothing
