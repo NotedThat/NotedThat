@@ -159,7 +159,7 @@ struct Infrastructure {
     readiness: readiness::ReadinessPoller,
     /// The `s3` backend's reconciliation passes; `None` on `fs` (D67).
     reconciler: Option<Arc<reconcile::Reconciler>>,
-    /// A sender on the indexing queue, held only to read its depth (D68).
+    /// A sender on the indexing queue, held only to read its depth (D69).
     ///
     /// The metrics sampler needs `capacity`/`max_capacity`, and a `Sender` is
     /// the only thing that has them. It keeps the channel open, so it must be
@@ -238,7 +238,7 @@ async fn build_infrastructure(
     config: Config,
     backends: backends::Backends,
 ) -> anyhow::Result<Infrastructure> {
-    // Metered once, here, before anything clones them (D68).
+    // Metered once, here, before anything clones them (D69).
     let metered::MeteredBackends {
         storage,
         store,
@@ -500,7 +500,7 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
     // Before anything is built: provisioning's storage calls and the indexer's
     // health record are measurements, and the facade discards them silently
-    // when no recorder is installed yet (D68).
+    // when no recorder is installed yet (D69).
     metrics::install(&config)?;
     let Infrastructure {
         state,
@@ -551,7 +551,7 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
             // After the merges, deliberately: applied inside `build_router`'s
             // own layer stack this would cover the API and the root routes
             // only, because WebDAV and MCP are merged onto the app afterwards
-            // and a layer wraps what it was applied to (D68).
+            // and a layer wraps what it was applied to (D69).
             .layer(axum::middleware::from_fn(
                 notedthat_api_http::metrics::track_requests,
             ));

@@ -1,5 +1,5 @@
 //! E2E: the metrics listener exists only when asked for, serves the Prometheus
-//! text exposition, and answers nothing else (D68).
+//! text exposition, and answers nothing else (D69).
 //!
 //! ```sh
 //! cargo test -p notedthat-server --locked --test metrics_e2e

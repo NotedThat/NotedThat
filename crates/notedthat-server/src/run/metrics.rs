@@ -1,4 +1,4 @@
-//! The Prometheus exporter and the listener that serves it (D68).
+//! The Prometheus exporter and the listener that serves it (D69).
 //!
 //! # Why this is a second listener
 //!
@@ -265,7 +265,7 @@ pub(crate) async fn sample_queue_depth<T: Send + 'static>(
     }
 }
 
-/// One reconciliation pass's timing and outcome (D68).
+/// One reconciliation pass's timing and outcome (D69).
 ///
 /// A guard rather than a record at the end, because both reconcilers return
 /// early from several places — a missing collection, an unreadable index or

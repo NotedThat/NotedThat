@@ -194,7 +194,7 @@ impl IndexHealth {
         // `kb` alone. `object_key` is the whole reason this method takes an
         // argument the metric must not see: a key in a label is customer data
         // in a store that is retained for months and read by people who were
-        // granted nothing (D51, D68). The key stays in the health record, which
+        // granted nothing (D51, D69). The key stays in the health record, which
         // is access-checked; the counter is a rate, and a rate needs no key.
         metrics::counter!(
             metric::INDEX_EVENTS_COMPLETED,

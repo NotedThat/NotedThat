@@ -345,7 +345,7 @@ const DEFAULT_METRICS_LISTEN_ADDR: &str = "127.0.0.1:9090";
 /// The default is loopback, unlike [`Config::listen_addr`]'s `0.0.0.0`. The
 /// exposition carries no bearer and answers anyone who can reach it, so the
 /// safe bind is the one that reaches nobody, and exposing it is an edit an
-/// operator makes on purpose (D68).
+/// operator makes on purpose (D69).
 fn parse_metrics(
     enabled: Option<&str>,
     listen_addr: Option<&str>,
@@ -531,7 +531,7 @@ pub struct Config {
     /// default 5000).
     pub ready_probe_interval_ms: u64,
     /// Where the Prometheus exposition is served, or `None` while metrics are
-    /// off (`NOTEDTHAT_METRICS_ENABLED`, `NOTEDTHAT_METRICS_LISTEN_ADDR`; D68).
+    /// off (`NOTEDTHAT_METRICS_ENABLED`, `NOTEDTHAT_METRICS_LISTEN_ADDR`; D69).
     ///
     /// One field rather than a flag beside an address, so "enabled, and here"
     /// and "off" are the only two states anything downstream can see. The pair
@@ -2502,7 +2502,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The metrics listener (D68).
+    /// The metrics listener (D69).
     mod metrics {
         use super::*;
 

@@ -86,7 +86,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
-# Metrics (D68). The instrumented crates take only the facade: its macros are a
+# Metrics (D69). The instrumented crates take only the facade: its macros are a
 # no-op until a recorder is installed, so nothing here reaches a crate's public
 # API and every unit test keeps running without an exporter. The exporter itself
 # is `notedthat-server`'s alone.

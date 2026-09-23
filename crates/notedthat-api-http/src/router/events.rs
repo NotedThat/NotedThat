@@ -154,7 +154,7 @@ fn parse_last_event_id(req: &Request) -> Result<Option<EventId>, ApiError> {
         })
 }
 
-/// One live subscriber's place in `notedthat_events_subscribers` (D68).
+/// One live subscriber's place in `notedthat_events_subscribers` (D69).
 ///
 /// The stream *is* the subscription: nothing is called when a client goes
 /// away, the response body is simply dropped. So the decrement has to be owned

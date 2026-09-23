@@ -1,6 +1,6 @@
 //! E2E: a scraped exposition names no object key, no principal, no credential
 //! and no subscriber's filter — asserted against sentinels this test put into
-//! the running deployment, not against a pattern (D68).
+//! the running deployment, not against a pattern (D69).
 //!
 //! Every sentinel below is unique to this file. If one appears in the rendered
 //! text, the only thing that could have put it there is a label. The test runs

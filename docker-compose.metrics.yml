@@ -2,7 +2,7 @@
 #
 # The default stack records nothing and binds no metrics listener. This overlay turns the
 # exporter on and adds a Prometheus that scrapes it, so request rates, search latency and
-# the index queue can be graphed rather than read out of logs (D68):
+# the index queue can be graphed rather than read out of logs (D69):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up --build -d
 #

@@ -1,4 +1,4 @@
-//! A server with its metrics listener open, for the D68 suites.
+//! A server with its metrics listener open, for the D69 suites.
 //!
 //! Built on `patch_backends`, which already assembles the real routers, the
 //! real indexer worker and the real shutdown path over in-process backends.
