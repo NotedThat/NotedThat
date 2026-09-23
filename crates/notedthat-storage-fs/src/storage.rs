@@ -713,8 +713,10 @@ impl Storage for FsStorage {
                     key: found.key,
                     size: found.size,
                     last_modified: found.last_modified,
-                    // S3's ListObjectsV2 mapping drops both, and resolving them here would
-                    // turn a listing into up to 1000 metadata reads and rehashes.
+                    // S3's `ListObjectsV2` carries no content type; it does carry the
+                    // `ETag`, but resolving one here would turn a listing into up to 1000
+                    // sidecar reads and rehashes, so this backend leaves it absent (a
+                    // pinned divergence; `walk_etags` is the reconciliation walk's source).
                     content_type: None,
                     etag: None,
                 });

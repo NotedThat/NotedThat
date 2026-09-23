@@ -462,10 +462,11 @@ impl Storage for InMemoryStorage {
                 key: obj_key.clone(),
                 size: stored.bytes.len() as u64,
                 last_modified: Some(unix_seconds_i64(stored.last_modified)),
-                // S3's ListObjectsV2 mapping drops both, so a caller that saw them here
-                // would break the moment it ran against a real backend.
+                // S3's `ListObjectsV2` carries no content type, so a caller that saw one
+                // here would break the moment it ran against a real backend. It does
+                // carry the `ETag`, which is what the reconciliation walk consumes.
                 content_type: None,
-                etag: None,
+                etag: Some(stored.etag.clone()),
             })
             .collect();
         matching.sort_by(|a, b| a.key.cmp(&b.key));

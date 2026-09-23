@@ -68,6 +68,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(content_range_reflects_object_size);
         $emit!(copy_enforces_both_preconditions);
         $emit!(list_objects_pagination_walks_cursor);
+        $emit!(list_reports_an_etag_that_matches_head);
         $emit!(missing_bucket_is_bucket_not_found);
     };
 }
@@ -854,6 +855,39 @@ pub async fn copy_enforces_both_preconditions(store: &dyn Storage, kb: &KbSlug) 
 /// `is_truncated` and `NextContinuationToken`, `FsStorage` from an encoded walk position
 /// and `InMemoryStorage` from a key comparison, so agreeing is not the same as being
 /// right — `storage_conformance_*.rs` compares the three, this pins them.
+/// A listing entry's `ETag`, when the backend reports one, is the object's `ETag` — the
+/// string `HEAD` returns — so the reconciliation walk can trust it without a `HEAD` per
+/// key. `S3Storage` and `InMemoryStorage` report it; `FsStorage` does not (a sidecar read
+/// per entry on every listing page is not worth it, and its walk has its own source).
+pub async fn list_reports_an_etag_that_matches_head(store: &dyn Storage, kb: &KbSlug) {
+    store.ensure_bucket(kb).await.expect("ensure_bucket");
+    put(store, kb, "etag/a.md", b"# A\n", "text/markdown").await;
+    put(store, kb, "etag/b.md", b"# B, longer\n", "text/markdown").await;
+
+    let listing = store
+        .list_objects(kb, Some("etag/"), 10, None)
+        .await
+        .expect("list_objects");
+    assert_eq!(listing.objects.len(), 2);
+    for object in &listing.objects {
+        let head = store
+            .head_object(kb, &path(&object.key), ConditionalHeaders::default())
+            .await
+            .expect("head_object");
+        // A backend whose listing carries no stamp is allowed (the comparison then
+        // re-reads rather than skips); one that does must report the object's own.
+        if let Some(listed) = &object.etag {
+            assert_quoted_lower_hex_etag(listed);
+            assert_eq!(
+                Some(listed.as_str()),
+                head.etag.as_deref(),
+                "{}: the listed ETag must be HEAD's",
+                object.key
+            );
+        }
+    }
+}
+
 pub async fn list_objects_pagination_walks_cursor(store: &dyn Storage, kb: &KbSlug) {
     const SEEDED: u32 = 25;
     const PAGE: u32 = 10;

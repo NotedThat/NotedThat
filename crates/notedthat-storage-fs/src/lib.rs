@@ -58,7 +58,8 @@ pub use config::{
     FS_ALLOW_LOSSY_NAMES_ENV, FS_DIR_MODE_ENV, FS_ENV_VARS, FS_FILE_MODE_ENV, FS_METADATA_ENV,
     FS_ROOT_ENV, FS_WATCH_DEBOUNCE_MS_ENV, FS_WATCH_ENV, FsConfig, FsSettings, MetadataMode,
 };
-pub use reconcile::{FsChange, IndexedEtag, ReconcileReport, reconcile};
+pub use notedthat_core::reconcile::{IndexedEtag, ReconcileReport};
+pub use reconcile::{FsChange, reconcile};
 pub use root::{RootLock, open_root};
 pub use storage::FsStorage;
 pub use watch::{FsSignal, FsWatchConfig, FsWatcher, watch_kbs};

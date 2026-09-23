@@ -222,6 +222,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     };
 
     let router = build_router(state);
@@ -258,6 +259,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     };
     build_router(state)
 }

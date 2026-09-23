@@ -145,6 +145,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         };
 
         Router::new()

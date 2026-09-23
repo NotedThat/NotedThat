@@ -9,6 +9,7 @@ mod events;
 mod health;
 mod helpers;
 mod index_health;
+mod index_reconcile;
 mod kbs;
 mod llms;
 mod objects;
@@ -33,6 +34,7 @@ use browse::{browse_path, browse_root};
 use events::subscribe_events;
 use health::{healthz, readyz};
 use index_health::get_index_health;
+use index_reconcile::post_index_reconcile;
 use kbs::{list_kbs, list_objects};
 use llms::llms_txt;
 use objects::{delete_object, get_object, head_object, patch_object, post_object, put_object};
@@ -71,6 +73,7 @@ api_routes! {
     ROUTE_KB_SEARCH / MATCHED_KB_SEARCH => "/knowledgebases/{kb_slug}/search",
     ROUTE_KB_EVENTS / MATCHED_KB_EVENTS => "/knowledgebases/{kb_slug}/events",
     ROUTE_KB_INDEX / MATCHED_KB_INDEX => "/knowledgebases/{kb_slug}/index",
+    ROUTE_KB_INDEX_RECONCILE / MATCHED_KB_INDEX_RECONCILE => "/knowledgebases/{kb_slug}/index/reconcile",
     ROUTE_KB_OBJECT / MATCHED_KB_OBJECT => "/knowledgebases/{kb_slug}/{*object_path}",
 }
 
@@ -103,6 +106,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(ROUTE_KB_EVENTS, get(subscribe_events))
         .route(ROUTE_KB_INDEX, get(get_index_health))
+        .route(
+            ROUTE_KB_INDEX_RECONCILE,
+            axum::routing::post(post_index_reconcile),
+        )
         .route(
             ROUTE_KB_OBJECT,
             get(get_object)
@@ -155,9 +162,9 @@ pub fn build_router(state: AppState) -> Router {
 #[cfg(test)]
 mod route_constants {
     use super::{
-        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_INDEX, MATCHED_KB_OBJECT,
-        MATCHED_KB_SEARCH, MATCHED_KBS, ROUTE_KB, ROUTE_KB_EVENTS, ROUTE_KB_INDEX, ROUTE_KB_OBJECT,
-        ROUTE_KB_SEARCH, ROUTE_KBS,
+        API_V1_PREFIX, MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_INDEX, MATCHED_KB_INDEX_RECONCILE,
+        MATCHED_KB_OBJECT, MATCHED_KB_SEARCH, MATCHED_KBS, ROUTE_KB, ROUTE_KB_EVENTS,
+        ROUTE_KB_INDEX, ROUTE_KB_INDEX_RECONCILE, ROUTE_KB_OBJECT, ROUTE_KB_SEARCH, ROUTE_KBS,
     };
 
     /// The router registers the relative form and the middleware matches the
@@ -172,6 +179,7 @@ mod route_constants {
             (ROUTE_KB_SEARCH, MATCHED_KB_SEARCH),
             (ROUTE_KB_EVENTS, MATCHED_KB_EVENTS),
             (ROUTE_KB_INDEX, MATCHED_KB_INDEX),
+            (ROUTE_KB_INDEX_RECONCILE, MATCHED_KB_INDEX_RECONCILE),
             (ROUTE_KB_OBJECT, MATCHED_KB_OBJECT),
         ] {
             assert_eq!(matched, format!("{API_V1_PREFIX}{route}"));
@@ -234,6 +242,7 @@ mod patch_route {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         });
 
         (router, outcome.etag.unwrap())
@@ -279,6 +288,7 @@ mod patch_route {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         })
     }
 
@@ -808,6 +818,7 @@ mod line_range_get {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         })
     }
 
@@ -971,6 +982,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         })
     }
 
@@ -1188,6 +1200,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         };
         let router = build_router(state);
 
@@ -1282,6 +1295,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         };
         let router = build_router(state);
 

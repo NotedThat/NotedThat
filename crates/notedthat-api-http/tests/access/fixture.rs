@@ -5,7 +5,8 @@ use axum::body::to_bytes;
 use bytes::Bytes;
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
-use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
+use notedthat_api_http::state::ReconcileTrigger;
+use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher, RecordingReconcile};
 use notedthat_core::testing::StubTokenVerifier;
 use notedthat_core::{
     AccessPolicy, AccessRule, Authenticator, ConditionalHeaders, EventPublisher, KbDetails, KbSlug,
@@ -71,6 +72,25 @@ pub(super) async fn app(policies: BTreeMap<String, AccessPolicy>) -> axum::Route
     app_with(policies, Arc::new(NoopSearcher), authenticator(), None).await
 }
 
+/// The fixture app over a given reconcile trigger, or none at all (the `fs`
+/// backend's shape).
+pub(super) async fn app_with_reconcile(
+    policies: BTreeMap<String, AccessPolicy>,
+    reconcile: Option<Arc<dyn ReconcileTrigger>>,
+) -> axum::Router {
+    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
+    build(
+        policies,
+        Arc::new(NoopSearcher),
+        authenticator(),
+        None,
+        indexer_tx,
+        Arc::new(IndexHealth::new()),
+        reconcile,
+    )
+    .await
+}
+
 pub(super) async fn app_with_searcher(
     policies: BTreeMap<String, AccessPolicy>,
     searcher: Arc<dyn Searcher>,
@@ -122,6 +142,7 @@ pub(super) async fn app_with_index_side(
         None,
         indexer_tx,
         health.clone(),
+        Some(Arc::new(RecordingReconcile::default())),
     )
     .await;
     (app, IndexSide { health, queue_rx })
@@ -141,6 +162,7 @@ async fn app_with(
         events,
         indexer_tx,
         Arc::new(IndexHealth::new()),
+        Some(Arc::new(RecordingReconcile::default())),
     )
     .await
 }
@@ -152,6 +174,7 @@ async fn build(
     events: Option<Arc<dyn EventPublisher>>,
     indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
     index_health: Arc<IndexHealth>,
+    reconcile: Option<Arc<dyn ReconcileTrigger>>,
 ) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
@@ -214,6 +237,7 @@ async fn build(
         events,
         index_health,
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile,
     })
 }
 

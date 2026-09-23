@@ -648,7 +648,9 @@ impl Storage for S3Storage {
     /// pages through them ten at a time, and requires the pages to compose back into the
     /// seeded set exactly once and in order. That scenario runs against `S3Storage` over
     /// `SeaweedFS`, `FsStorage` over a directory tree and `InMemoryStorage`, so what it
-    /// pins is the contract rather than one backend's reading of it.
+    /// pins is the contract rather than one backend's reading of it. The `ETag` carried
+    /// by each entry is asserted against `HEAD`'s by `list_reports_an_etag_that_matches_head`
+    /// in the same file.
     ///
     /// The two malformed responses handled below have no coverage, because a real backend
     /// cannot be made to produce either on demand: `is_truncated=false` carrying a
@@ -714,12 +716,17 @@ impl Storage for S3Storage {
                 let key = obj.key().unwrap_or("").to_string();
                 let size = u64::try_from(obj.size().unwrap_or(0)).unwrap_or(0);
                 let last_modified = obj.last_modified().map(aws_smithy_types::DateTime::secs);
+                // `ListObjectsV2` reports each object's `ETag` — the same string
+                // `HEAD` returns for it, quotes included — and no content type. The
+                // reconciliation walk (`notedthat_core::reconcile::walk_etags`) reads the
+                // stamp from here so a pass never has to `HEAD` an unchanged object.
+                let etag = obj.e_tag().map(str::to_string);
                 ObjectMeta {
                     key,
                     size,
                     last_modified,
                     content_type: None,
-                    etag: None,
+                    etag,
                 }
             })
             .collect();

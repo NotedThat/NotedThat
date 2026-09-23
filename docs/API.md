@@ -1287,7 +1287,7 @@ curl -sSf -X POST \
 
 #### Upgrade notes (M4 → M5)
 
-> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. Reindex tooling is a post-v1 feature (D42); operators can trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
+> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. A full rebuild stays a post-v1 feature (D42); `POST …/index/reconcile` (D67) only refreshes objects whose bytes changed, so for this upgrade operators trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
@@ -1405,7 +1405,7 @@ reports what it did with that work:
 | `webdav` | WebDAV `PUT`, `DELETE`, `COPY` (destination) and `MOVE` — a `MOVE` is two events: the destination written, then the source deleted |
 | `mcp` | MCP tool calls, which write through the HTTP API. The MCP server marks its requests with `X-NotedThat-Source: mcp`; the header is informational, any client may send it, and nothing is granted or refused on its account |
 | `fs-watch` | The `fs` backend's watcher noticing a file written or removed in its tree by something other than NotedThat |
-| `reconcile` | The `fs` backend's comparison of its tree against the index: at startup, after a directory-level change (a new or renamed folder's files arrive this way), or on a rescan |
+| `reconcile` | Either backend's comparison of its storage against the index. On `fs`: at startup, after a directory-level change (a new or renamed folder's files arrive this way), or on a rescan. On `s3`: at startup, and on `POST …/index/reconcile` (D67) |
 | `indexer` | The indexer worker reporting the outcome of an upsert or refresh — `object.indexed` or `object.index_failed`. Never a change to the bytes |
 
 **Indexing outcomes.** Indexing is asynchronous: `object.written` says the bytes are stored, not
@@ -1561,7 +1561,7 @@ the listing rule admits still learns that indexing failed, and when.
 | `worker` | `running`, or `stopped` once the indexer loop has ended (a crash, or shutdown in progress) |
 | `last_indexed_at` | When an event for this knowledge base last completed — an upsert, a tombstone, or a refresh that found the index current. `null` until one has |
 | `last_failure` | The most recent `INDEXING_FAILED` for this knowledge base, kept even after a later success: when; for a caller who may `list` the whole knowledge base the pipeline's own one-line error (`summary`, at most 200 characters — the same string the stream's `object.index_failed` carries); for a caller who may `list` it, the object key. `null` if none |
-| `last_reconcile` | `fs` backend only: when the last completed reconciliation pass ran (D50) and, for a caller who may `list` what it walked, what it counted. A pass after a change under one directory walks that prefix alone and says so in `scope`, and is shown — `scope` and counts together — to a caller who may `list` that prefix; without `scope` the counts are the whole base's and go to a caller who may `list` the whole base. `null` on `s3`, and until the startup pass completes |
+| `last_reconcile` | When the last completed reconciliation pass ran (D50 on `fs`, D67 on `s3`) and, for a caller who may `list` what it walked, what it counted: `objects_on_disk` (the objects in the tree or bucket), `unchanged`, `changed`, `orphaned`. On `fs`, a pass after a change under one directory walks that prefix alone and says so in `scope`, and is shown — `scope` and counts together — to a caller who may `list` that prefix; without `scope` the counts are the whole base's and go to a caller who may `list` the whole base. On `s3` every pass is the whole base's: the startup pass, or the latest `POST …/index/reconcile`. `null` until the first pass completes, and forever if `NOTEDTHAT_S3_RECONCILE=false` and nobody asks |
 
 **The state model, and what to do:**
 
@@ -1570,8 +1570,18 @@ the listing rule admits still learns that indexing failed, and when.
 | `healthy` | Nothing pending, the last outcome succeeded, nothing has gone unobserved | Nothing. Search reflects every write the indexer has been told about |
 | `indexing` | Events for this knowledge base are queued or in progress | Wait and poll — or, for one specific write, subscribe to [`…/events`](#get-apiv1knowledgebaseskb_slugevents) and wait for its `object.indexed`; a search now may miss the newest writes. `pending` counts down as each event *finishes*, not as the worker picks it up |
 | `backpressured` | The queue was full within the last 30 s, or is full right now. Writers got `503 backend_unavailable` with `Retry-After: 5`; their bytes were stored but not indexed (D38) | Retry the refused writes — re-writing an object is what re-enqueues it. If it recurs, the embedder or Qdrant is slower than the write rate; the queue capacity is a fixed 1024 in v1 |
-| `stale` | `fs` backend: the watcher lost events (`FS_WATCH_LOST`, or the kernel's queue overflowed) and the rescan that repairs that has not completed yet — or the startup pass has not. Changes on disk may be unobserved | Wait for the pass; `last_reconcile` fills in when it completes. If `FS_WATCH_LOST` recurs in the log, raise `fs.inotify.max_user_watches` (see [Filesystem storage backend](CONFIGURATION.md#filesystem-storage-backend)). A knowledge base stuck `stale` with the log saying its pass was *skipped* has no search collection: check the provisioning warnings and restart once Qdrant is reachable |
+| `stale` | The startup comparison pass has not completed — on `fs`, also when the watcher lost events (`FS_WATCH_LOST`, or the kernel's queue overflowed) and the rescan that repairs that has not completed yet. Changes in storage may be unobserved | Wait for the pass; `last_reconcile` fills in when it completes. On `fs`, if `FS_WATCH_LOST` recurs in the log, raise `fs.inotify.max_user_watches` (see [Filesystem storage backend](CONFIGURATION.md#filesystem-storage-backend)). A knowledge base stuck `stale` with the log saying its pass was *skipped* (`FS_WATCH_RESCAN` / `S3_RECONCILE_SKIPPED`) has no search collection: it was provisioned at startup and has since been dropped, so restart to re-provision it; on `s3`, `S3_RECONCILE_INCOMPLETE` means the bucket could not be listed — fix that, then `POST …/index/reconcile` |
 | `failed` | The most recent event for this knowledge base failed, or the indexer worker has stopped (`worker: "stopped"`) | Read `last_failure.summary`: it names the embedder or the vector store. Fix that, then re-write the affected object to reindex it (D42); there is no retry or dead-letter queue. A stopped worker means the process must be restarted |
+
+**What `healthy` claims on `s3` with reconciliation off.** "Nothing has gone unobserved"
+is a claim about the bucket only where something compares the two sides. On `fs` that is
+always true: the startup pass is not optional and the watcher runs after it, so `stale`
+always resolves into a statement about the tree. On `s3` with
+`NOTEDTHAT_S3_RECONCILE=false` and no `POST …/index/reconcile` yet, no comparison has ever
+run — so `healthy` there means only *nothing NotedThat wrote is outstanding*, and carries
+no claim about objects put in the bucket by anything else. `last_reconcile` is the field
+that tells the two apart: `null` with the switch off stays `null` until somebody asks for a
+pass. Leave the switch on if you want `healthy` to mean what it means on `fs`.
 
 An object keyed exactly `index` cannot be read at this path, as one keyed `search` or `events`
 cannot at theirs; every other key under the knowledge base is unaffected.
@@ -1581,6 +1591,52 @@ cannot at theirs; every other key under the knowledge base is unaffected.
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
      http://localhost:8080/api/v1/knowledgebases/notes/index
+```
+
+---
+
+### POST /api/v1/knowledgebases/{kb_slug}/index/reconcile
+
+Compare one knowledge base's bucket against the search index now, and re-index what differs
+(D67). This is how the `s3` backend learns about objects written, changed or deleted by
+anything other than NotedThat — `aws s3 cp`, a sync job, another application — without waiting
+for the next restart. S3 has no change feed NotedThat can subscribe to portably, so a pass is
+the only mechanism; on `fs` the watcher does this on its own (D50).
+
+What a pass costs: one `ListObjectsV2` per thousand keys, one scroll of the index, and then a
+re-read and re-embed of only the objects whose `ETag` differs or which the index lacks; an object
+gone from the bucket is removed from the index. Unchanged objects are neither fetched nor
+embedded, so a pass over an up-to-date bucket of any size reads no content. While a large pass
+is enqueueing, the indexing queue fills and writes answer `503` with `Retry-After` until it
+drains, exactly as during the `fs` startup pass.
+
+**Authentication:** the service token only. This is an operator action, not a knowledge-base
+verb: an identity the manifests grant everything is still refused (`403`), and a request with
+no credential is refused (`401`) before any slug is looked at, so the route cannot be used to
+learn which knowledge bases exist.
+
+**Response:** `202 Accepted`; the pass runs in the background. Its result appears in
+[`GET …/index`](#get-apiv1knowledgebaseskb_slugindex) as `last_reconcile` — poll until
+`last_reconcile.at` moves.
+
+| Status | Body |
+|--------|------|
+| 202 Accepted | `{"kb_slug": "notes", "status": "started"}` |
+| 401 Unauthorized | No credential, or one that did not verify |
+| 403 Forbidden | A verified credential that is not the service token |
+| 404 Not Found | `{"error": "not_found", ...}` — the knowledge base is not declared, or the backend has no on-demand pass (`fs`: "on-demand reconciliation is available on the s3 backend only") |
+| 409 Conflict | `{"error": "conflict", ...}` — a pass for this knowledge base is already running (the startup pass, or a previous request). It is already past keys a later change could touch, so it does not satisfy the request; retry once `last_reconcile.at` advances |
+
+**Example:**
+
+```sh
+aws s3 cp notes/meeting.md s3://nt-default-notes/meeting.md   # behind NotedThat's back
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8080/api/v1/knowledgebases/notes/index/reconcile
+# {"kb_slug":"notes","status":"started"}
+curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8080/api/v1/knowledgebases/notes/index | jq .last_reconcile
+# {"at":"…","objects_on_disk":41,"unchanged":40,"changed":1,"orphaned":0}
 ```
 
 ---
@@ -1605,6 +1661,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | POST | `/api/v1/knowledgebases/{kb_slug}/search` | Yes | Hybrid semantic search (RRF fusion) |
 | GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
 | GET | `/api/v1/knowledgebases/{kb_slug}/index` | Yes | Search-index health of one knowledge base: state, queue, last failure, last reconciliation |
+| POST | `/api/v1/knowledgebases/{kb_slug}/index/reconcile` | Service token | Compare the bucket against the index and re-index what differs (`s3`; `404` on `fs`) |
 | POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
 | any | `/webdav/`… | Basic or Bearer, or anonymous where granted | WebDAV Class 1 share, one directory per knowledge base |
 

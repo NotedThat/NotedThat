@@ -50,6 +50,7 @@ services:
       NOTEDTHAT_S3_SECRET_ACCESS_KEY: ${NOTEDTHAT_S3_SECRET_ACCESS_KEY:-any}
       NOTEDTHAT_S3_ENDPOINT_URL: http://seaweedfs:8333
       NOTEDTHAT_S3_FORCE_PATH_STYLE: "true"
+      NOTEDTHAT_S3_RECONCILE: ${NOTEDTHAT_S3_RECONCILE:-true}
     depends_on:
       seaweedfs:
         condition: service_healthy

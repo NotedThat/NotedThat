@@ -35,6 +35,14 @@ pub enum ApiError {
         /// What storage had already done.
         after: notedthat_write::WriteEffect,
     },
+    /// A reconciliation pass for this knowledge base is already running (D67).
+    #[error(
+        "a reconciliation pass is already running for this knowledge base; retry once last_reconcile advances"
+    )]
+    ReconcileInProgress,
+    /// The storage backend has no on-demand reconciliation pass (D67).
+    #[error("on-demand reconciliation is available on the s3 backend only")]
+    ReconcileUnsupported,
     /// A `Last-Event-ID` older than what the event log retains.
     #[error("events after {requested} are no longer retained; oldest retained is {oldest}")]
     EventsGone {
@@ -259,10 +267,13 @@ impl ApiError {
                 (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
             }
             Self::EventsGone { .. } => (StatusCode::GONE, "gone"),
+            Self::ReconcileInProgress => (StatusCode::CONFLICT, "conflict"),
             Self::Core(CoreError::InvalidInput { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid_request")
             }
-            Self::Core(CoreError::NotFound { .. }) => (StatusCode::NOT_FOUND, "not_found"),
+            Self::ReconcileUnsupported | Self::Core(CoreError::NotFound { .. }) => {
+                (StatusCode::NOT_FOUND, "not_found")
+            }
             Self::Core(CoreError::PayloadTooLarge { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
             }
@@ -499,6 +510,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         })
     }
 
@@ -523,6 +535,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         })
     }
 
@@ -767,6 +780,29 @@ mod tests {
         assert_eq!(status.as_u16(), 400);
         assert_eq!(code, "invalid_request");
         assert!(api_err.to_string().contains("description"));
+    }
+
+    /// A second pass while one runs is a conflict, not a queue: the running
+    /// pass is already past keys a later change could touch (D67).
+    #[test]
+    fn a_reconcile_in_progress_is_a_conflict() {
+        let (status, code) = ApiError::ReconcileInProgress.status_and_code();
+        assert_eq!(status.as_u16(), 409);
+        assert_eq!(code, "conflict");
+        assert!(
+            ApiError::ReconcileInProgress
+                .to_string()
+                .contains("last_reconcile")
+        );
+    }
+
+    /// A backend with no on-demand pass has no such route to offer.
+    #[test]
+    fn an_unsupported_reconcile_is_not_found_and_names_the_backend_that_has_one() {
+        let (status, code) = ApiError::ReconcileUnsupported.status_and_code();
+        assert_eq!(status.as_u16(), 404);
+        assert_eq!(code, "not_found");
+        assert!(ApiError::ReconcileUnsupported.to_string().contains("s3"));
     }
 
     #[test]
@@ -1309,6 +1345,7 @@ mod tests {
                 events: None,
                 index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
                 readiness: crate::testing::ready_receiver(),
+                reconcile: None,
             })
         }
 

@@ -46,6 +46,29 @@ pub struct AppState {
     /// The latest background probe of the storage and vector backends.
     /// `/readyz` reads it and never probes inline.
     pub readiness: ReadinessReceiver,
+    /// What `POST …/index/reconcile` starts (D67): a comparison of one
+    /// knowledge base's storage against the index, run by the server. `None`
+    /// where the backend has no on-demand pass — the `fs` backend today, whose
+    /// watcher covers it — and the route answers `404`.
+    pub reconcile: Option<Arc<dyn ReconcileTrigger>>,
+}
+
+/// A knowledge base already has a pass running; a second one now would not see
+/// what the first is past, so the caller retries once `last_reconcile` moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileBusy;
+
+/// Starts a reconciliation pass for one knowledge base (D67).
+///
+/// Synchronous on purpose: an implementation only claims the knowledge base's
+/// slot and spawns the pass, so the route answers before any bucket is listed.
+pub trait ReconcileTrigger: Send + Sync {
+    /// Start a pass, or report that one is already running.
+    ///
+    /// # Errors
+    ///
+    /// [`ReconcileBusy`] when the knowledge base's previous pass has not finished.
+    fn trigger(&self, kb: &KbSlug) -> Result<(), ReconcileBusy>;
 }
 
 impl AppState {
@@ -82,6 +105,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         }
     }
 

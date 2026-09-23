@@ -29,8 +29,9 @@ pub const FAILURE_SUMMARY_MAX_CHARS: usize = 200;
 pub enum IndexState {
     /// The most recent outcome was a failure, or the worker is gone.
     Failed,
-    /// Changes may have gone unobserved (`fs` watch lost or overflowed) and
-    /// the rescan that repairs that has not completed yet.
+    /// Changes may have gone unobserved — the startup comparison has not
+    /// completed, or on `fs` the watch was lost or overflowed — and the pass
+    /// that repairs that has not completed yet.
     Stale,
     /// Writers were refused with `503` within [`BACKPRESSURE_WINDOW`], or the
     /// queue is full right now.
@@ -67,7 +68,7 @@ pub struct IndexFailure {
     pub summary: String,
 }
 
-/// What the last completed `fs` reconciliation pass found (D50).
+/// What the last completed reconciliation pass found (D50 on `fs`, D67 on `s3`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileSummary {
     /// Unix seconds.
@@ -76,7 +77,7 @@ pub struct ReconcileSummary {
     /// A pass over `docs/` after a change there counts `docs/` alone, and the
     /// numbers below say so rather than posing as the base's.
     pub scope: Option<String>,
-    /// Objects the walk found in storage.
+    /// Objects the walk found in storage — on disk, or in the bucket.
     pub objects_on_disk: usize,
     /// Objects already indexed from exactly these bytes.
     pub unchanged: usize,
@@ -104,7 +105,7 @@ pub struct KbHealthSnapshot {
     pub last_backpressure_at: Option<i64>,
     /// Unix seconds since which changes may have gone unobserved.
     pub stale_since: Option<i64>,
-    /// The last completed reconciliation pass, `fs` backend only.
+    /// The last completed reconciliation pass (D50 on `fs`, D67 on `s3`).
     pub last_reconcile: Option<ReconcileSummary>,
 }
 

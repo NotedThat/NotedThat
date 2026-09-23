@@ -2,8 +2,8 @@
 
 use crate::error::ApiErrorResponse;
 use crate::router::{
-    MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_INDEX, MATCHED_KB_OBJECT, MATCHED_KB_SEARCH,
-    MATCHED_KBS,
+    MATCHED_KB, MATCHED_KB_EVENTS, MATCHED_KB_INDEX, MATCHED_KB_INDEX_RECONCILE, MATCHED_KB_OBJECT,
+    MATCHED_KB_SEARCH, MATCHED_KBS,
 };
 use crate::state::AppState;
 use axum::body::Body;
@@ -90,6 +90,11 @@ pub(crate) fn with_bearer_challenge(state: &AppState, mut response: Response) ->
     response
 }
 
+/// Routes that are the operator's alone (D67): never reachable without a
+/// credential, whatever a manifest grants `anyone`, so the answer to one cannot
+/// depend on which slug was named.
+const OPERATOR_ONLY: &[&str] = &[MATCHED_KB_INDEX_RECONCILE];
+
 /// Whether this request's route lets an anonymous caller through to a handler
 /// that will authorize it per key.
 fn anonymous_may_reach<B>(req: &Request<B>) -> bool {
@@ -97,9 +102,14 @@ fn anonymous_may_reach<B>(req: &Request<B>) -> bool {
         return false;
     };
     let matched = matched.as_str();
-    ANONYMOUS_REACHABLE
+    let reachable = ANONYMOUS_REACHABLE
         .iter()
-        .any(|(method, route)| *method == req.method() && *route == matched)
+        .any(|(method, route)| *method == req.method() && *route == matched);
+    debug_assert!(
+        !(reachable && OPERATOR_ONLY.contains(&matched)),
+        "an operator route is listed as anonymously reachable"
+    );
+    reachable
 }
 
 pub use notedthat_core::CredentialRefused;
@@ -159,6 +169,7 @@ mod tests {
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             readiness: crate::testing::ready_receiver(),
+            reconcile: None,
         }
     }
 
@@ -185,6 +196,22 @@ mod tests {
                 resp.status(),
                 StatusCode::UNAUTHORIZED,
                 "{uri} must not be exempted by the auth layer itself"
+            );
+        }
+    }
+
+    /// The operator route is the one `(method, route)` pair on the knowledge
+    /// base that must never reach a handler without a credential, whatever the
+    /// manifests grant `anyone` (D67). Pinned here, next to the list, so a
+    /// future entry cannot slip it in.
+    #[test]
+    fn the_operator_route_is_not_anonymously_reachable() {
+        for operator in OPERATOR_ONLY {
+            assert!(
+                !ANONYMOUS_REACHABLE
+                    .iter()
+                    .any(|(_, route)| route == operator),
+                "{operator} must stay behind the credential check"
             );
         }
     }

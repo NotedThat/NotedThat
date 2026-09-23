@@ -66,7 +66,8 @@ pub enum EventSource {
     Mcp,
     /// The `fs` backend's filesystem watcher.
     FsWatch,
-    /// The `fs` backend's startup or on-demand comparison against the index.
+    /// Either backend's comparison of its storage against the index: at
+    /// startup, on a rescan, or on the operator's request (D50, D67).
     Reconcile,
     /// The indexer worker, reporting what it did with an object.
     Indexer,

@@ -51,6 +51,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     })
 }
 
@@ -237,6 +238,7 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),
+        reconcile: None,
     })
 }
 
