@@ -26,6 +26,7 @@ use tracing::info;
 mod events;
 mod fs_watch;
 mod mcp_http;
+mod metrics;
 mod readiness;
 mod reconcile;
 
@@ -157,6 +158,12 @@ struct Infrastructure {
     readiness: readiness::ReadinessPoller,
     /// The `s3` backend's reconciliation passes; `None` on `fs` (D67).
     reconciler: Option<Arc<reconcile::Reconciler>>,
+    /// A sender on the indexing queue, held only to read its depth (D68).
+    ///
+    /// The metrics sampler needs `capacity`/`max_capacity`, and a `Sender` is
+    /// the only thing that has them. It keeps the channel open, so it must be
+    /// dropped before the drain — `serve` does that with the sampler's token.
+    indexer_tx: mpsc::Sender<IndexEvent>,
 }
 
 /// The `/readyz` prober, after provisioning: it starts from "ready" because
@@ -296,7 +303,7 @@ async fn build_infrastructure(
         authenticator: authenticator.clone(),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,
-        indexer_tx,
+        indexer_tx: indexer_tx.clone(),
         searcher,
         events: events.clone(),
         index_health: index_health.clone(),
@@ -340,6 +347,7 @@ async fn build_infrastructure(
         fs_watch: watch,
         readiness,
         reconciler,
+        indexer_tx,
     })
 }
 
@@ -487,10 +495,24 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
         fs_watch,
         readiness,
         reconciler,
+        indexer_tx,
     } = build_infrastructure(config.clone(), backends).await?;
     let shutdown_token = CancellationToken::new();
     let readiness_handle = tokio::spawn(readiness.run(shutdown_token.child_token()));
+    // Sampled on its own token so the sender it holds is dropped the moment the
+    // sampler stops — a live sender would keep the queue open and the drain
+    // below would wait out its full timeout on a producer that is only counting.
+    let queue_sampler_shutdown = shutdown_token.child_token();
+    let queue_sampler = tokio::spawn(metrics::sample_queue_depth(
+        indexer_tx,
+        queue_sampler_shutdown.clone(),
+    ));
     let serve_result = async {
+        // Before the product listener: a metrics port already in use must refuse
+        // startup, rather than leaving the product surface open and the
+        // operator's scrape target quietly non-existent.
+        let metrics_listener = metrics::start(&config, shutdown_token.child_token()).await?;
+
         let listener = TcpListener::bind(config.listen_addr)
             .await
             .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
@@ -524,6 +546,9 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
             .await
             .context("HTTP listener failed");
         shutdown_trigger.abort();
+        if let Some(metrics_listener) = metrics_listener {
+            metrics_listener.join().await;
+        }
         result
     }
     .await;
@@ -531,6 +556,11 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
     // Cancelled with everything else; it holds no queue, so nothing waits on it but us.
     if let Err(e) = readiness_handle.await {
         tracing::error!(error = %e, "readiness poller panicked");
+    }
+    // Before the drain, like the watcher below and for the same reason: it holds
+    // a sender on the indexing queue.
+    if let Err(e) = queue_sampler.await {
+        tracing::error!(error = %e, "index queue sampler panicked");
     }
     // Before the drain, not after: the watcher holds a sender on the indexing queue, so
     // draining while it still runs would chase a live producer and never see the queue
