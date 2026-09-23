@@ -7,6 +7,20 @@
 //! `notifications/resources/updated`; they are also what an anonymous or
 //! misbehaving client could open without bound, so [`admit_session`] caps
 //! them at [`MAX_SESSIONS`] per process.
+//!
+//! **A session id is not bound to a credential.** rmcp binds nothing to a
+//! session, and auth is outermost, so any valid credential — including the
+//! anonymous caller where `anyone` is granted — that presents a session id can
+//! attach that session's `GET` leg or `unsubscribe` from it. Tool calls are
+//! unaffected: each acts as the credential presented on its own request. The
+//! notification leg is not, and this is why it matters more since
+//! subscriptions: a forwarder runs as the *session owner's* credential, so
+//! whoever attaches the leg reads which object URIs that principal subscribed
+//! to and exactly when those objects change — object keys and change timing
+//! for objects the attacher may not read. `list_changed` leaks write timing
+//! the same way. Session ids are rmcp-generated UUIDs, so this is not
+//! guessable; the binding is a disclosed follow-up (§7.4), recorded as a
+//! confidentiality limitation rather than as tidiness.
 
 use std::sync::Arc;
 
@@ -149,6 +163,14 @@ impl McpHttpService {
 /// a request on an existing session, the `GET` leg and `DELETE` pass. The
 /// refusal is `503` with `Retry-After`, the shape every other capacity
 /// refusal on this server takes (D38).
+///
+/// A **soft** cap, not a hard one: the count and `next.run` are not atomic, so
+/// concurrent sessionless `POST`s can all read a count below the limit and
+/// overshoot it by however many were in flight. Bounded by concurrency and
+/// harmless — the point is to stop unbounded growth, not to hold an exact
+/// number — but the constant reads like a hard cap and is not one. Making it
+/// exact means reserving a slot before rmcp creates the session and releasing
+/// it if rmcp does not, which is more machinery than the overshoot costs.
 pub async fn admit_session(
     State(sessions): State<Arc<LocalSessionManager>>,
     request: Request,

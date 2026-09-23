@@ -133,6 +133,18 @@ impl NotedThatClient {
         }
     }
 
+    /// The credential this client presents, for keying per-caller state by.
+    ///
+    /// `None` is the anonymous caller, which is a credential like any other
+    /// here: what the API resolves it to and what D51 then grants it differ
+    /// from every bearer's, so state opened as anonymous must not be shared
+    /// with state opened as anyone else. Used only as a map key inside one
+    /// session; never logged or rendered.
+    #[must_use]
+    pub(crate) fn credential(&self) -> Option<String> {
+        self.token.clone()
+    }
+
     /// Returns the base URL as a display string (for logging — safe, no token).
     pub fn base_url_display(&self) -> &str {
         self.base_url.as_str()

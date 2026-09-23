@@ -136,13 +136,24 @@ impl McpSession {
     /// so the first request of a session that was never initialized runs
     /// [`Self::session_init`] first — the older helpers never initialized, and
     /// this is what keeps their call sites unchanged.
+    ///
+    /// An `initialize` asked for here is [`Self::initialize`], which is the one
+    /// path that captures the `Mcp-Session-Id` from the answer's headers.
+    /// Sending it through [`Self::send`] instead would answer correctly and
+    /// leave the client with no session, so the *next* call would open a second
+    /// one and everything after would run on that — two sessions per test,
+    /// assertions made on one and work done on the other, and anything
+    /// session-scoped silently testing nothing.
     pub async fn request(
         &self,
         id: u64,
         method: &str,
         params: &serde_json::Value,
     ) -> serde_json::Value {
-        if method != "initialize" && self.session_id().is_none() {
+        if method == "initialize" {
+            return self.initialize().await;
+        }
+        if self.session_id().is_none() {
             self.session_init().await;
         }
         let response = self.send(id, method, params).await;
@@ -159,6 +170,16 @@ impl McpSession {
             value.get("jsonrpc").and_then(serde_json::Value::as_str),
             Some("2.0"),
             "expected JSON-RPC 2.0: {value}"
+        );
+        // `message_of` returns the first frame carrying data, and this server
+        // now pushes messages of its own. rmcp answers a `POST` on that
+        // request's own stream, so today the first frame is the answer — but a
+        // crossed reply would otherwise surface as a panic on `value["result"]`
+        // somewhere unrelated, with no hint that the messages were swapped.
+        assert_eq!(
+            value.get("id").and_then(serde_json::Value::as_u64),
+            Some(id),
+            "answer belongs to a different request: {value}"
         );
         value
     }
@@ -352,12 +373,23 @@ impl NotificationStream {
         self.pending.drain(..).collect()
     }
 
-    /// Assert that no message arrives within `quiet`.
+    /// Assert that no message arrives within `quiet` — and that the leg was
+    /// there not to receive one.
+    ///
+    /// [`Self::collect_for`] stops the moment the body ends, so a closed or
+    /// broken notification leg drains to the same empty vec as a healthy quiet
+    /// one. Without the second assertion, a regression that closed the leg on
+    /// the first write would turn every negative assertion in the subscription
+    /// suite green at once.
     pub async fn expect_silence(&mut self, quiet: Duration) {
         let seen = self.collect_for(quiet).await;
         assert!(
             seen.is_empty(),
             "expected no MCP notification, got {seen:?}"
+        );
+        assert!(
+            !self.ended(),
+            "the notification leg closed instead of staying silent"
         );
     }
 

@@ -115,6 +115,26 @@ fn start_position(kbs: &[String], cursor: Option<String>) -> Result<Option<M8Cur
     }
 }
 
+/// Which knowledge base a page of [`list_resources`] covers, given the cursor
+/// that asked for it.
+///
+/// A page is one knowledge base's objects, never a mix, so this names exactly
+/// what the page will list. The subscription layer watches that one for
+/// `list_changed` rather than every knowledge base the caller can see: a client
+/// that lists one page has only been shown one knowledge base, and starting a
+/// loopback event stream for the other nineteen costs a held-open connection
+/// each, per session, that nothing asked for and only ending the session stops.
+///
+/// # Errors
+///
+/// The same invalid-cursor error [`list_resources`] would answer with.
+pub(crate) fn kb_for_page(
+    kbs: &[String],
+    cursor: Option<&str>,
+) -> Result<Option<String>, McpError> {
+    Ok(start_position(kbs, cursor.map(str::to_owned))?.map(|position| position.kb_slug))
+}
+
 fn next_kb_after<'a>(kbs: &'a [String], kb_slug: &str) -> Option<&'a str> {
     kbs.iter()
         .position(|candidate| candidate == kb_slug)

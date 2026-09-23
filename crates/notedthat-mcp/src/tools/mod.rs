@@ -220,9 +220,16 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         }))
     }
 
-    /// List resources — and, from a session's first listing on, watch the
-    /// knowledge bases it named for `list_changed` (D66): a client that never
-    /// listed cannot be surprised by a change, so nothing is watched before.
+    /// List resources — and watch the knowledge base each page named for
+    /// `list_changed` (D66): a client that never listed cannot be surprised by
+    /// a change, so nothing is watched before, and a client that listed one
+    /// page has been shown one knowledge base, so only that one is watched.
+    ///
+    /// Each watch is a `GET …/events` stream held open against the loopback API
+    /// for the life of the session, so watching every knowledge base the caller
+    /// *could* see — which is what this used to do, on the first page — cost
+    /// `sessions × knowledge bases` internal streams for a client that asked
+    /// for one page.
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
@@ -231,11 +238,13 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         let client = self.client_for(&context.extensions)?;
         let kbs = client.list_kb_slugs().await?;
         let cursor = request.and_then(|params| params.cursor);
-        let first_page = cursor.is_none();
+        let listed = crate::resources_list::kb_for_page(&kbs, cursor.as_deref())?;
         let result = crate::resources_list::list_resources(&client, &kbs, cursor).await?;
-        if first_page && let Some(subscriptions) = &self.subscriptions {
+        if let Some(subscriptions) = &self.subscriptions
+            && let Some(listed) = listed
+        {
             subscriptions
-                .watch_list_changes(&kbs, &client, &context.peer)
+                .watch_list_changes(std::slice::from_ref(&listed), &client, &context.peer)
                 .await;
         }
         Ok(result)

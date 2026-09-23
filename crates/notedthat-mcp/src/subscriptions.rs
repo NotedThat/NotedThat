@@ -74,14 +74,41 @@ enum Link {
 pub(crate) struct Subscriptions {
     /// A child of the service's shutdown token; cancelled in `Drop`.
     cancel: CancellationToken,
+    /// Set when the keeper gave up on the session: its notification leg is not
+    /// working, so nothing subscribed to it can be delivered. `subscribe` says
+    /// so rather than answering `Ok` and going quiet.
+    gone: AtomicBool,
     inner: Mutex<Inner>,
     list_changed: Arc<Coalescer>,
 }
 
+/// What a forwarder is keyed on: the knowledge base, and the credential it
+/// consumes the events route as.
+///
+/// The credential is part of the key because a forwarder runs as whoever
+/// opened it, for its whole life, while `probe_listable` runs as whoever is
+/// subscribing *now*. Keying on the knowledge base alone made those two
+/// different callers whenever they differed — and the ordinary way they differ
+/// is not an attacker but OIDC token refresh: a client keeps one MCP session
+/// across its whole connection, which is the point of the stateful transport,
+/// and rotates its access token underneath it every few minutes. The second
+/// `subscribe` would then be probed as the new token, served by the old
+/// token's stream, and lose every subscription on that knowledge base when the
+/// old token expired and the route answered `401`. The anonymous case is worse
+/// and quieter: one request that arrives without an `Authorization` header
+/// opens the stream as the anonymous caller, and every authenticated
+/// subscription afterwards is fed by a stream D51 filters as anonymous — so
+/// the private key's events never arrive and `subscribe` still answered `Ok`.
+///
+/// The bearer is held verbatim, as the client already holds it, and is never
+/// logged or rendered: it is a map key inside one session's state.
+type WatchKey = (String, Option<String>);
+
 #[derive(Default)]
 struct Inner {
-    kbs: HashMap<String, KbWatch>,
+    kbs: HashMap<WatchKey, KbWatch>,
     keeper_started: bool,
+    coalescer_started: bool,
 }
 
 /// One knowledge base's forwarder, shared between the handler and the task.
@@ -119,6 +146,7 @@ impl Subscriptions {
     pub(crate) fn new(shutdown: &CancellationToken) -> Arc<Self> {
         Arc::new(Self {
             cancel: shutdown.child_token(),
+            gone: AtomicBool::new(false),
             inner: Mutex::new(Inner::default()),
             list_changed: Arc::new(Coalescer::default()),
         })
@@ -135,6 +163,7 @@ impl Subscriptions {
         client: &NotedThatClient,
         peer: &Peer<RoleServer>,
     ) -> Result<(), McpError> {
+        self.still_deliverable()?;
         let link = {
             let mut inner = self.inner.lock().expect("subscriptions");
             let watch = self.ensure_watch(&mut inner, kb, client, peer);
@@ -143,10 +172,21 @@ impl Subscriptions {
                 .lock()
                 .expect("subscription keys")
                 .insert(key.to_owned(), uri.to_owned());
+            // The keeper starts here and nowhere else. A subscription is the
+            // only thing a session has that is worth holding the session open
+            // for; starting it from `resources/list` would keep every
+            // connected client that listed once alive for as long as it
+            // answered pings, and `MAX_SESSIONS` would never be reclaimed.
             self.ensure_keeper(&mut inner, peer);
+            self.ensure_coalescer(&mut inner, peer);
             watch.link.subscribe()
         };
-        match wait_open(link).await {
+        let state = wait_open(link).await;
+        // Re-checked after the wait: the keeper can give up while it runs, and
+        // a `Connecting` link on a session whose token is cancelled will never
+        // open.
+        self.still_deliverable()?;
+        match state {
             Link::Refused(403) => Err(McpToolError::Forbidden.into()),
             Link::Refused(401) => Err(McpToolError::Unauthorized.into()),
             Link::Refused(_) => Err(McpToolError::NotFound("object".to_owned()).into()),
@@ -154,17 +194,41 @@ impl Subscriptions {
         }
     }
 
+    /// Refuse a subscription this session could never deliver.
+    ///
+    /// `Ok` from `subscribe` is a promise that notifications will arrive. Once
+    /// the keeper has given up — the client stopped answering `ping`, or
+    /// answered it with an error, while its session stayed otherwise usable —
+    /// every forwarder is cancelled and nothing restarts them, so the promise
+    /// is one this session cannot keep.
+    fn still_deliverable(&self) -> Result<(), McpError> {
+        if self.gone.load(Ordering::SeqCst) || self.cancel.is_cancelled() {
+            return Err(McpToolError::BackendUnavailable.into());
+        }
+        Ok(())
+    }
+
     /// Forget `key` in `kb`; idempotent. A forwarder nobody wants any more is
     /// stopped.
     pub(crate) fn unsubscribe(&self, kb: &str, key: &str) {
         let mut inner = self.inner.lock().expect("subscriptions");
-        let Some(watch) = inner.kbs.get(kb) else {
-            return;
-        };
-        watch.keys.lock().expect("subscription keys").remove(key);
-        if !watch.wanted() {
-            watch.cancel.cancel();
-            inner.kbs.remove(kb);
+        // Every watch on this knowledge base, whatever credential opened it:
+        // `resources/unsubscribe` carries a URI and nothing else, so the client
+        // cannot name which of its credentials registered the key, and after a
+        // token refresh that is not the one it is presenting now.
+        let mut spent = Vec::new();
+        for (watch_key, watch) in &inner.kbs {
+            if watch_key.0 != kb {
+                continue;
+            }
+            watch.keys.lock().expect("subscription keys").remove(key);
+            if !watch.wanted() {
+                watch.cancel.cancel();
+                spent.push(watch_key.clone());
+            }
+        }
+        for watch_key in spent {
+            inner.kbs.remove(&watch_key);
         }
     }
 
@@ -172,6 +236,14 @@ impl Subscriptions {
     /// whose listing named them. Waits for the streams to open, briefly, so
     /// a write right after the listing counts; a knowledge base whose stream
     /// the route refuses is simply not watched.
+    ///
+    /// Deliberately does **not** start the keeper. `resources/list` is what
+    /// most clients call on connect, so a session that listed once would
+    /// otherwise be pinged forever and never idle out — rmcp's idle timer
+    /// counts messages — and `MAX_SESSIONS` would fill with sessions nothing
+    /// reclaims. A `list_changed` watch has no pending notification a client
+    /// is blocked on; a subscription does, and that is where the keeper
+    /// starts.
     pub(crate) async fn watch_list_changes(
         self: &Arc<Self>,
         kbs: &[String],
@@ -189,16 +261,24 @@ impl Subscriptions {
                 })
                 .collect();
             if !kbs.is_empty() {
-                self.ensure_keeper(&mut inner, peer);
+                self.ensure_coalescer(&mut inner, peer);
             }
             links
         };
-        for link in links {
-            wait_open(link).await;
-        }
+        // One budget for all of them, not one each. Awaiting in turn made the
+        // first `resources/list` of a session cost up to `OPEN_WAIT × kbs` —
+        // 50 s for ten knowledge bases with a slow or unreachable events route,
+        // inside the call most clients make at connect time. The waits share
+        // nothing, and what this wait is for — a write in the next moment not
+        // being missed — one shared budget covers.
+        let _ = tokio::time::timeout(
+            OPEN_WAIT,
+            futures::future::join_all(links.into_iter().map(wait_open)),
+        )
+        .await;
     }
 
-    /// The live watch for `kb`, started if missing or dead.
+    /// The live watch for `kb` as this caller, started if missing or dead.
     fn ensure_watch(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -206,8 +286,15 @@ impl Subscriptions {
         client: &NotedThatClient,
         peer: &Peer<RoleServer>,
     ) -> KbWatch {
-        if let Some(watch) = inner.kbs.get(kb)
+        let watch_key: WatchKey = (kb.to_owned(), client.credential());
+        // `alive` alone is not enough: it is cleared only where a forwarder
+        // exits through `drop_watch`, and a cancelled token is the other way a
+        // watch stops having a task behind it. Reusing one would hand back a
+        // watch whose `link` still reads `Open` from before, so `subscribe`
+        // would answer `Ok` for a subscription nothing can ever feed.
+        if let Some(watch) = inner.kbs.get(&watch_key)
             && watch.alive.load(Ordering::SeqCst)
+            && !watch.cancel.is_cancelled()
         {
             return watch.clone();
         }
@@ -218,10 +305,10 @@ impl Subscriptions {
             link: tokio::sync::watch::Sender::new(Link::Connecting),
             cancel: self.cancel.child_token(),
         };
-        inner.kbs.insert(kb.to_owned(), watch.clone());
+        inner.kbs.insert(watch_key.clone(), watch.clone());
         tokio::spawn(forward(Forwarder {
             session: Arc::downgrade(self),
-            kb: kb.to_owned(),
+            watch_key,
             client: client.clone(),
             peer: peer.clone(),
             watch: watch.clone(),
@@ -230,14 +317,32 @@ impl Subscriptions {
         watch
     }
 
-    /// Start the keeper and the coalescer once, on the session's first
-    /// interest; they run until the session's token is cancelled.
+    /// Start the keeper once, on the session's first subscription; it runs
+    /// until the session's token is cancelled.
+    ///
+    /// Separate from [`Self::ensure_coalescer`] on purpose. The coalescer only
+    /// forwards what a watch produced and costs nothing when nothing does; the
+    /// keeper holds the *session* open against rmcp's idle timer, which is a
+    /// thing to do only for a client with a notification it is waiting on.
     fn ensure_keeper(self: &Arc<Self>, inner: &mut Inner, peer: &Peer<RoleServer>) {
         if inner.keeper_started {
             return;
         }
         inner.keeper_started = true;
-        tokio::spawn(keep_alive(peer.clone(), self.cancel.clone()));
+        tokio::spawn(keep_alive(
+            Arc::downgrade(self),
+            peer.clone(),
+            self.cancel.clone(),
+        ));
+    }
+
+    /// Start the `list_changed` coalescer once, on the session's first list
+    /// watch; it runs until the session's token is cancelled.
+    fn ensure_coalescer(self: &Arc<Self>, inner: &mut Inner, peer: &Peer<RoleServer>) {
+        if inner.coalescer_started {
+            return;
+        }
+        inner.coalescer_started = true;
         tokio::spawn(
             self.list_changed
                 .clone()
@@ -245,15 +350,32 @@ impl Subscriptions {
         );
     }
 
-    /// The forwarder for `kb` found the route refusing its caller: forget
-    /// everything about that knowledge base.
-    fn drop_watch(&self, kb: &str) {
+    /// A forwarder is stopping: mark its watch dead so no later `subscribe`
+    /// joins it, and forget it if it is still the one registered.
+    ///
+    /// Called on **every** exit from [`forward`], not only the route-refusal
+    /// one. A watch left `alive` with no task behind it is the worst shape this
+    /// module has: `ensure_watch` hands it back, its `link` still reads `Open`,
+    /// and `subscribe` answers `Ok` for something that will never fire.
+    ///
+    /// The registered watch is compared by identity before it is removed,
+    /// because `unsubscribe` may already have dropped this one and a later
+    /// `subscribe` put a fresh watch under the same key.
+    fn drop_watch(&self, watch_key: &WatchKey, watch: &KbWatch) {
+        watch.alive.store(false, Ordering::SeqCst);
+        watch.list_changed.store(false, Ordering::SeqCst);
+        watch.keys.lock().expect("subscription keys").clear();
+        // Only this watch's token, never the one a replacement under the same
+        // key holds. Redundant for the task that just returned; it is what
+        // makes the deadness visible to `ensure_watch`'s own check.
+        watch.cancel.cancel();
         let mut inner = self.inner.lock().expect("subscriptions");
-        if let Some(watch) = inner.kbs.remove(kb) {
-            watch.alive.store(false, Ordering::SeqCst);
-            watch.list_changed.store(false, Ordering::SeqCst);
-            watch.keys.lock().expect("subscription keys").clear();
-            watch.cancel.cancel();
+        if inner
+            .kbs
+            .get(watch_key)
+            .is_some_and(|registered| Arc::ptr_eq(&registered.keys, &watch.keys))
+        {
+            inner.kbs.remove(watch_key);
         }
     }
 }
@@ -296,7 +418,7 @@ pub(crate) async fn probe_listable(
 /// Everything a forwarder needs, owned by its task.
 struct Forwarder {
     session: Weak<Subscriptions>,
-    kb: String,
+    watch_key: WatchKey,
     client: NotedThatClient,
     peer: Peer<RoleServer>,
     watch: KbWatch,
@@ -341,11 +463,30 @@ fn decide(event: Option<&str>, data: &str, watch: &KbWatch) -> Vec<Action> {
 
 /// Consume the knowledge base's event stream as the caller until the session
 /// ends, the client goes away, or the route refuses the caller.
+///
+/// However it ends, the watch it was feeding is marked dead on the way out —
+/// see [`Subscriptions::drop_watch`] for why that matters more than where it
+/// ends.
 async fn forward(fw: Forwarder) {
+    let watch_key = fw.watch_key.clone();
+    let watch = fw.watch.clone();
+    let session = fw.session.clone();
+    run_forwarder(fw).await;
+    if let Some(session) = session.upgrade() {
+        session.drop_watch(&watch_key, &watch);
+    } else {
+        watch.alive.store(false, Ordering::SeqCst);
+    }
+}
+
+/// [`forward`]'s body: every `return` here is an exit the caller cleans up
+/// after.
+async fn run_forwarder(fw: Forwarder) {
+    let kb = &fw.watch_key.0;
     let mut last_event_id: Option<String> = None;
     let mut backoff = BACKOFF_MIN;
     loop {
-        let request = fw.client.events_stream(&fw.kb, last_event_id.as_deref());
+        let request = fw.client.events_stream(kb, last_event_id.as_deref());
         let response = tokio::select! {
             () = fw.watch.cancel.cancelled() => return,
             sent = request.send() => sent,
@@ -353,7 +494,7 @@ async fn forward(fw: Forwarder) {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                tracing::debug!(target: "notedthat::mcp", kb = %fw.kb, %error, "events stream request failed; retrying");
+                tracing::debug!(target: "notedthat::mcp", kb = %kb, %error, "events stream request failed; retrying");
                 if !pause(&fw.watch.cancel, &mut backoff).await {
                     return;
                 }
@@ -364,26 +505,28 @@ async fn forward(fw: Forwarder) {
             200 => {
                 fw.watch.link.send_replace(Link::Open);
             }
-            410 => {
-                // The position is gone; a subscription has no replay to owe.
-                last_event_id = None;
-                continue;
-            }
+            // The position is gone; a subscription has no replay to owe, so
+            // the id is dropped and the next attempt asks for the stream from
+            // now. Guarded on there having *been* an id to drop: the events
+            // route answers `410` only to a `Last-Event-ID`, so an
+            // unconditional `410` — a proxy in front of the loopback call, a
+            // later change to the route — would otherwise reconnect in a tight
+            // loop for the life of the session, spinning a core and hammering
+            // the API from inside the same process. Without an id it falls
+            // through to the backoff arm below.
+            410 if last_event_id.take().is_some() => continue,
             status @ (401 | 403 | 404) => {
                 tracing::warn!(
                     target: "notedthat::mcp",
-                    kb = %fw.kb,
+                    kb = %kb,
                     status,
                     "the events route refused the subscriber; dropping its subscriptions for this knowledge base"
                 );
                 fw.watch.link.send_replace(Link::Refused(status));
-                if let Some(session) = fw.session.upgrade() {
-                    session.drop_watch(&fw.kb);
-                }
                 return;
             }
             status => {
-                tracing::debug!(target: "notedthat::mcp", kb = %fw.kb, status, "events stream unavailable; retrying");
+                tracing::debug!(target: "notedthat::mcp", kb = %kb, status, "events stream unavailable; retrying");
                 if !pause(&fw.watch.cancel, &mut backoff).await {
                     return;
                 }
@@ -442,8 +585,20 @@ async fn pause(cancel: &CancellationToken, backoff: &mut Duration) -> bool {
 
 /// Ping the client once a minute so rmcp's idle timer sees a message. A ping
 /// the client does not answer means it has no working notification leg, so
-/// the subscriptions are worthless: cancel them and let the session expire.
-async fn keep_alive(peer: Peer<RoleServer>, cancel: CancellationToken) {
+/// the subscriptions are worthless: cancel them, mark the session undeliverable
+/// and let it expire.
+///
+/// The mark matters because cancelling tells rmcp nothing — the session stays
+/// open and usable for tools. Without it, a later `resources/subscribe` on the
+/// same session would build a watch whose token is already cancelled, its
+/// forwarder would return on the first `select!`, `wait_open` would time out
+/// still `Connecting`, and `subscribe` would answer `Ok` for a subscription
+/// that can never fire.
+async fn keep_alive(
+    session: Weak<Subscriptions>,
+    peer: Peer<RoleServer>,
+    cancel: CancellationToken,
+) {
     loop {
         tokio::select! {
             () = cancel.cancelled() => return,
@@ -462,6 +617,9 @@ async fn keep_alive(peer: Peer<RoleServer>, cancel: CancellationToken) {
                 target: "notedthat::mcp",
                 "a subscribed session stopped answering pings; dropping its subscriptions"
             );
+            if let Some(session) = session.upgrade() {
+                session.gone.store(true, Ordering::SeqCst);
+            }
             cancel.cancel();
             return;
         }
@@ -561,6 +719,10 @@ mod tests {
         assert!(decide(Some("object.written"), "not json", &w).is_empty());
     }
 
+    fn key(kb: &str, token: Option<&str>) -> WatchKey {
+        (kb.to_owned(), token.map(str::to_owned))
+    }
+
     #[tokio::test]
     async fn unsubscribing_the_last_key_stops_the_watch_but_a_list_watch_keeps_it() {
         let subs = Subscriptions::new(&CancellationToken::new());
@@ -569,11 +731,24 @@ mod tests {
             .lock()
             .unwrap()
             .kbs
-            .insert("notes".into(), w.clone());
+            .insert(key("notes", Some("t1")), w.clone());
         subs.unsubscribe("notes", "missing.md");
-        assert!(subs.inner.lock().unwrap().kbs.contains_key("notes"));
+        assert!(
+            subs.inner
+                .lock()
+                .unwrap()
+                .kbs
+                .contains_key(&key("notes", Some("t1")))
+        );
         subs.unsubscribe("notes", "a.md");
-        assert!(!subs.inner.lock().unwrap().kbs.contains_key("notes"));
+        assert!(
+            !subs
+                .inner
+                .lock()
+                .unwrap()
+                .kbs
+                .contains_key(&key("notes", Some("t1")))
+        );
         assert!(w.cancel.is_cancelled());
 
         let w = watch(&[("a.md", "u")], true);
@@ -581,10 +756,82 @@ mod tests {
             .lock()
             .unwrap()
             .kbs
-            .insert("notes".into(), w.clone());
+            .insert(key("notes", Some("t1")), w.clone());
         subs.unsubscribe("notes", "a.md");
-        assert!(subs.inner.lock().unwrap().kbs.contains_key("notes"));
+        assert!(
+            subs.inner
+                .lock()
+                .unwrap()
+                .kbs
+                .contains_key(&key("notes", Some("t1")))
+        );
         assert!(!w.cancel.is_cancelled());
+    }
+
+    /// One `unsubscribe` carries a URI and nothing else, so it has to reach
+    /// every watch on that knowledge base — including one opened by a token the
+    /// client has since rotated away from.
+    #[tokio::test]
+    async fn unsubscribing_reaches_watches_opened_by_every_credential() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let old_token = watch(&[("a.md", "u")], false);
+        let new_token = watch(&[("a.md", "u")], false);
+        let anonymous = watch(&[("a.md", "u")], false);
+        {
+            let mut inner = subs.inner.lock().unwrap();
+            inner
+                .kbs
+                .insert(key("notes", Some("t1")), old_token.clone());
+            inner
+                .kbs
+                .insert(key("notes", Some("t2")), new_token.clone());
+            inner.kbs.insert(key("notes", None), anonymous.clone());
+        }
+
+        subs.unsubscribe("notes", "a.md");
+
+        assert!(subs.inner.lock().unwrap().kbs.is_empty());
+        assert!(old_token.cancel.is_cancelled());
+        assert!(new_token.cancel.is_cancelled());
+        assert!(anonymous.cancel.is_cancelled());
+    }
+
+    /// The token-refresh case: two credentials on one knowledge base get two
+    /// forwarders, so the older one expiring cannot take the newer one's
+    /// subscriptions with it.
+    #[test]
+    fn a_watch_is_keyed_on_the_credential_as_well_as_the_knowledge_base() {
+        assert_ne!(key("notes", Some("t1")), key("notes", Some("t2")));
+        assert_ne!(key("notes", Some("t1")), key("notes", None));
+        assert_ne!(key("notes", None), key("other", None));
+    }
+
+    /// A watch whose task has stopped must not be handed back as live: its
+    /// `link` still reads whatever it last was, so `subscribe` would answer
+    /// `Ok` for something that can never fire.
+    #[test]
+    fn a_cancelled_watch_is_not_reused() {
+        let w = watch(&[("a.md", "u")], false);
+        assert!(w.alive.load(Ordering::SeqCst));
+        w.cancel.cancel();
+        assert!(
+            w.alive.load(Ordering::SeqCst) && w.cancel.is_cancelled(),
+            "still `alive`, which is exactly why `ensure_watch` checks the token too"
+        );
+    }
+
+    /// Once the keeper has given up, `subscribe` says so instead of answering
+    /// `Ok` and going quiet.
+    #[test]
+    fn a_session_the_keeper_gave_up_on_refuses_new_subscriptions() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        assert!(subs.still_deliverable().is_ok());
+        subs.gone.store(true, Ordering::SeqCst);
+        assert!(subs.still_deliverable().is_err());
+
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.cancel.cancel();
+        assert!(subs.still_deliverable().is_err());
     }
 
     #[test]

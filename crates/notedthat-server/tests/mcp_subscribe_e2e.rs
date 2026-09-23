@@ -183,17 +183,26 @@ async fn a_burst_of_writes_is_a_bounded_number_of_list_changed_notifications() {
         .await;
     assert!(listed["result"]["resources"].is_array(), "{listed}");
 
+    // The coalescer emits roughly one notification per second for as long as
+    // writes keep arriving, and every write here lands before `collect_for`
+    // starts — so the ceiling is a function of how long the loop took, not a
+    // constant. A fixed `6` would encode "the PUT loop took under about six
+    // seconds", which is comfortable against in-process backends and is not on
+    // a loaded CI runner; the failure would read as a coalescing regression.
+    let started = std::time::Instant::now();
     for i in 0..100 {
         server.put_text(&format!("bulk/{i}.md"), "x").await;
     }
+    let ceiling = usize::try_from(started.elapsed().as_secs()).unwrap_or(usize::MAX - 3) + 3;
     let seen = stream.collect_for(Duration::from_secs(3)).await;
     let list_changed = seen
         .iter()
         .filter(|n| n["method"] == "notifications/resources/list_changed")
         .count();
     assert!(
-        (1..=6).contains(&list_changed),
-        "100 writes should coalesce into a few notifications, got {list_changed}: {seen:?}"
+        (1..=ceiling).contains(&list_changed),
+        "100 writes should coalesce into at most {ceiling} notifications, \
+         got {list_changed}: {seen:?}"
     );
     assert!(
         seen.iter()

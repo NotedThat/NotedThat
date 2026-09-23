@@ -1975,8 +1975,21 @@ describes by default, which is what lets it push `notifications/resources/update
 - `DELETE /mcp` with the session id ends the session (`202`) and closes its notification leg.
 - `MCP-Protocol-Version` is optional; when present it must be a version the server knows, and
   on `initialize` it must equal the body's `protocolVersion`.
-- A session idle for five minutes is closed; one with live subscriptions is kept alive by a
-  server `ping` every 60 s for as long as the client answers.
+- A session idle for five minutes is closed; one with live subscriptions — a
+  `resources/subscribe`, not merely a `resources/list` — is kept alive by a server `ping` every
+  60 s for as long as the client answers. A client that stops answering has no working
+  notification leg, so its subscriptions are dropped and a later `resources/subscribe` on that
+  session is refused (`backend_unavailable`) rather than accepted and left silent.
+- **A session id is not bound to the credential that opened it.** rmcp binds nothing to a
+  session, so any valid credential — including the anonymous caller where `anyone` is granted —
+  that presents a session id can attach that session's `GET` leg or `unsubscribe` from it. Tool
+  calls are unaffected: each acts as the credential presented on its own request. The
+  notification leg is not: a forwarder runs as the session owner's credential, so whoever
+  attaches the leg reads which object URIs that principal subscribed to and exactly when those
+  objects change — for objects they may not read themselves — and `list_changed` leaks write
+  timing the same way. Session ids are rmcp-generated UUIDs, so this is not guessable, but
+  treat a session id as a credential: send it over TLS, do not log it, and do not share it
+  between principals. Binding the two is a follow-up (SPECIFICATIONS.md §7.4).
 - At most **256 sessions** per process: a `POST` that would open another answers `503` with
   `Retry-After: 5`. Clients that keep their session id hold one slot each; a client that
   `initialize`s per request burns through them and idles them out five minutes later.
@@ -2286,7 +2299,11 @@ URI that was not subscribed.
 
 **`notifications/resources/list_changed`** is sent when an object is written or deleted in a
 knowledge base the session has listed. It is lazy — a session is watched from its first
-`resources/list` on, for the knowledge bases that listing named — and coalesced: one notification
+`resources/list` on, and only for the knowledge base each page actually listed, since a page is
+one knowledge base's objects; a client that lists one page is watching one knowledge base, and
+a client that pages through all of them is watching all of them. Each watch is a held-open
+event stream for the life of the session, which is why it follows what was listed rather than
+everything the caller could list. Notifications are coalesced: one
 at once, and at most one more per second however many changes arrive in between, so a bulk
 upload is a handful of notifications, not one per object. It fires on every write, since
 neither the API nor storage tells a create from a modify; treat it as a hint to re-list, not
@@ -2294,9 +2311,12 @@ as a diff.
 
 What a subscription is not: it is per session (it ends with `DELETE /mcp`, the idle timeout, or
 a restart, and a new session starts with none), it has no replay (a client that needs history
-uses the events route with `Last-Event-ID`, or lists), and it does not outlive its credential
-(a bearer the events route later refuses drops the session's subscriptions in that knowledge
-base silently). Without an events backend neither capability is advertised and both methods
+uses the events route with `Last-Event-ID`, or lists), and it does not outlive the credential that made it
+(a bearer the events route later refuses drops that credential's subscriptions in that
+knowledge base silently). Subscriptions made with different credentials on one session are kept
+apart, each fed by its own stream, so a client that rotates its token — an OIDC client
+refreshing mid-session — does not lose the subscriptions it made with the new one when the old
+one expires. Without an events backend neither capability is advertised and both methods
 answer `method_not_found` (`-32601`).
 
 ### Path Encoding
@@ -2325,4 +2345,5 @@ All MCP errors carry one of these codes:
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
 - **Subscriptions are per session and unreplayed**: they end with the session, a new session starts with none, and `list_changed` fires on modifies as well as creates and deletes
+- **A session id is not bound to a credential**: another authenticated caller presenting a session id can attach its notification leg and read which resources that session subscribed to, and when they change. Tool calls are unaffected. See [Transports](#transports)
 - **`tools/list` is static**: an anonymous caller is shown the mutating tools too and learns they are refused only by calling one; grants are per knowledge base and per path, so a filtered list would be a false signal anyway
