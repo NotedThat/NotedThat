@@ -656,7 +656,7 @@ mod tests {
     use notedthat_core::metrics::outcome;
     use notedthat_indexer::embedder::{Embedder, EmbedderError};
     use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
 
     /// An embedder whose call never answers, so the only way out of it is for
     /// the caller to give up — which is the case under test.
@@ -676,11 +676,6 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "never"
         }
-    }
-
-    struct Idle;
-    impl Wake for Idle {
-        fn wake(self: Arc<Self>) {}
     }
 
     /// Every `(name, labels)` the closure recorded, rendered as flat strings so
@@ -712,8 +707,7 @@ mod tests {
             let embedder = MeteredEmbedder::new(Arc::new(NeverAnswers), "query");
             let texts = vec!["anything".to_string()];
             let mut call = Box::pin(embedder.embed(&texts));
-            let waker = Waker::from(Arc::new(Idle));
-            let mut cx = Context::from_waker(&waker);
+            let mut cx = Context::from_waker(Waker::noop());
 
             // When: the caller polls once and then gives up, as hyper does when
             // a client disconnects mid-search.
