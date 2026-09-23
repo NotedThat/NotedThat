@@ -134,6 +134,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs) -> Config {
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: listeners.http,
+        metrics_listen_addr: None,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,

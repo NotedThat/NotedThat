@@ -25,6 +25,7 @@ fn test_config() -> Config {
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: "127.0.0.1:0".parse().expect("test HTTP addr is valid"),
+        metrics_listen_addr: None,
         storage: crate::config::StorageConfig::S3(S3Config {
             endpoint_url: Some("http://127.0.0.1:8333".to_string()),
             region: "us-east-1".to_string(),

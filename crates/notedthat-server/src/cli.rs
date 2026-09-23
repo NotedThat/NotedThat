@@ -63,6 +63,21 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_LISTEN_ADDR", value_name = "HOST:PORT")]
     pub listen_addr: Option<String>,
 
+    /// Serve the Prometheus exposition on its own listener [default: false].
+    #[arg(
+        long,
+        env = "NOTEDTHAT_METRICS_ENABLED",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = BOOL_FLAG,
+    )]
+    pub metrics_enabled: Option<String>,
+
+    /// Address and port the metrics listener binds to; loopback by default,
+    /// because the exposition is unauthenticated [default: 127.0.0.1:9090].
+    #[arg(long, env = "NOTEDTHAT_METRICS_LISTEN_ADDR", value_name = "HOST:PORT")]
+    pub metrics_listen_addr: Option<String>,
+
     /// Log output format: `pretty` or `json` [default: pretty].
     #[arg(long, env = "NOTEDTHAT_LOG_FORMAT", value_name = "FORMAT")]
     pub log_format: Option<String>,

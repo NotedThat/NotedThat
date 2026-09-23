@@ -77,6 +77,7 @@ fn config(kb: &str, addr: std::net::SocketAddr) -> Config {
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: addr,
+        metrics_listen_addr: None,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         // `run_with` takes the log from `Backends`; this is never consulted.
         events: EventsConfig::None,

@@ -165,6 +165,7 @@ fn config(listen_addr: std::net::SocketAddr, reconcile_on_startup: bool) -> Conf
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr,
+        metrics_listen_addr: None,
         storage: StorageConfig::S3(s3),
         events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,

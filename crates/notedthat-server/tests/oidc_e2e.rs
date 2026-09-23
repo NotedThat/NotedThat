@@ -89,6 +89,7 @@ fn test_config(
         kbs: BTreeMap::from([(KB.to_string(), kb())]),
         tenant_slug: TenantSlug::default(),
         listen_addr,
+        metrics_listen_addr: None,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,

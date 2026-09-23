@@ -56,6 +56,7 @@ fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_serve
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr,
+        metrics_listen_addr: None,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,
