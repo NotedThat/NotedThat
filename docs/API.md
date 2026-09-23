@@ -1977,9 +1977,11 @@ describes by default, which is what lets it push `notifications/resources/update
   on `initialize` it must equal the body's `protocolVersion`.
 - A session idle for five minutes is closed; one with live subscriptions — a
   `resources/subscribe`, not merely a `resources/list` — is kept alive by a server `ping` every
-  60 s for as long as the client answers. A client that stops answering has no working
-  notification leg, so its subscriptions are dropped and a later `resources/subscribe` on that
-  session is refused (`backend_unavailable`) rather than accepted and left silent.
+  60 s for as long as it still has one and the client answers. Unsubscribe the last key and the
+  pings stop, so the session idles out on schedule like any other. A client that stops answering
+  has no working notification leg, so its subscriptions are dropped and a later
+  `resources/subscribe` on that session is refused (`backend_unavailable`) rather than accepted
+  and left silent.
 - **A session id is not bound to the credential that opened it.** rmcp binds nothing to a
   session, so any valid credential — including the anonymous caller where `anyone` is granted —
   that presents a session id can attach that session's `GET` leg or `unsubscribe` from it. Tool
@@ -1989,7 +1991,7 @@ describes by default, which is what lets it push `notifications/resources/update
   objects change — for objects they may not read themselves — and `list_changed` leaks write
   timing the same way. Session ids are rmcp-generated UUIDs, so this is not guessable, but
   treat a session id as a credential: send it over TLS, do not log it, and do not share it
-  between principals. Binding the two is a follow-up (SPECIFICATIONS.md §7.4).
+  between principals. Binding the two is a follow-up ([#179](https://github.com/NotedThat/NotedThat/issues/179), SPECIFICATIONS.md §7.4).
 - At most **256 sessions** per process: a `POST` that would open another answers `503` with
   `Retry-After: 5`. Clients that keep their session id hold one slot each; a client that
   `initialize`s per request burns through them and idles them out five minutes later.
@@ -2345,5 +2347,5 @@ All MCP errors carry one of these codes:
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
 - **Subscriptions are per session and unreplayed**: they end with the session, a new session starts with none, and `list_changed` fires on modifies as well as creates and deletes
-- **A session id is not bound to a credential**: another authenticated caller presenting a session id can attach its notification leg and read which resources that session subscribed to, and when they change. Tool calls are unaffected. See [Transports](#transports)
+- **A session id is not bound to a credential**: another authenticated caller presenting a session id can attach its notification leg and read which resources that session subscribed to, and when they change. Tool calls are unaffected. See [Transports](#transports) and [#179](https://github.com/NotedThat/NotedThat/issues/179)
 - **`tools/list` is static**: an anonymous caller is shown the mutating tools too and learns they are refused only by calling one; grants are per knowledge base and per path, so a filtered list would be a false signal anyway

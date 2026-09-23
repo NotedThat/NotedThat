@@ -19,8 +19,11 @@
 //! to and exactly when those objects change — object keys and change timing
 //! for objects the attacher may not read. `list_changed` leaks write timing
 //! the same way. Session ids are rmcp-generated UUIDs, so this is not
-//! guessable; the binding is a disclosed follow-up (§7.4), recorded as a
-//! confidentiality limitation rather than as tidiness.
+//! guessable; the binding is a disclosed follow-up (§7.4, issue #179),
+//! recorded as a confidentiality limitation rather than as tidiness. The same
+//! record it needs — session to principal — is what would let [`MAX_SESSIONS`]
+//! be budgeted per principal instead of per process, so the two travel
+//! together.
 
 use std::sync::Arc;
 

@@ -19,7 +19,10 @@
 //! Two more tasks per subscribed session: a **keeper** that pings the client
 //! once a minute, because rmcp's idle timeout counts messages, not an open
 //! `GET` leg, and a session that only listens would otherwise be closed after
-//! five minutes; and the **coalescer** behind `list_changed`.
+//! five minutes; and the **coalescer** behind `list_changed`. The keeper runs
+//! only while something is subscribed — it starts on the first
+//! `resources/subscribe` and stops once the last one goes, so it never holds a
+//! session open for a client with nothing to receive.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -318,7 +321,7 @@ impl Subscriptions {
     }
 
     /// Start the keeper once, on the session's first subscription; it runs
-    /// until the session's token is cancelled.
+    /// until the session's token is cancelled or its last subscription goes.
     ///
     /// Separate from [`Self::ensure_coalescer`] on purpose. The coalescer only
     /// forwards what a watch produced and costs nothing when nothing does; the
@@ -334,6 +337,25 @@ impl Subscriptions {
             peer.clone(),
             self.cancel.clone(),
         ));
+    }
+
+    /// Whether any knowledge base still holds a subscribed key.
+    ///
+    /// What the keeper asks before each ping. `list_changed` watches do not
+    /// count: they are the case the keeper deliberately does not hold a session
+    /// open for.
+    fn has_subscriptions(&self) -> bool {
+        let inner = self.inner.lock().expect("subscriptions");
+        inner
+            .kbs
+            .values()
+            .any(|watch| !watch.keys.lock().expect("subscription keys").is_empty())
+    }
+
+    /// Let the keeper stop without ending the session, so a later `subscribe`
+    /// starts a fresh one.
+    fn release_keeper(&self) {
+        self.inner.lock().expect("subscriptions").keeper_started = false;
     }
 
     /// Start the `list_changed` coalescer once, on the session's first list
@@ -583,10 +605,16 @@ async fn pause(cancel: &CancellationToken, backoff: &mut Duration) -> bool {
     }
 }
 
-/// Ping the client once a minute so rmcp's idle timer sees a message. A ping
-/// the client does not answer means it has no working notification leg, so
-/// the subscriptions are worthless: cancel them, mark the session undeliverable
-/// and let it expire.
+/// Ping the client once a minute, for as long as it has a subscription to
+/// deliver, so rmcp's idle timer sees a message. A ping the client does not
+/// answer means it has no working notification leg, so the subscriptions are
+/// worthless: cancel them, mark the session undeliverable and let it expire.
+///
+/// It stops of its own accord once nothing is subscribed. The keeper is what
+/// defeats rmcp's idle timer, so one that outlived the last subscription would
+/// pin a `MAX_SESSIONS` slot for a session with nothing to deliver — reachable
+/// by unsubscribing the last key, and by a `subscribe` that `ensure_keeper`
+/// started before the route refused it.
 ///
 /// The mark matters because cancelling tells rmcp nothing — the session stays
 /// open and usable for tools. Without it, a later `resources/subscribe` on the
@@ -603,6 +631,34 @@ async fn keep_alive(
         tokio::select! {
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(KEEPER_INTERVAL) => {}
+        }
+        // Nothing subscribed any more — the last key was unsubscribed, or the
+        // route refused the only forwarder and `drop_watch` cleared it. Stop
+        // pinging and let rmcp's idle timer reclaim the session: holding it
+        // open past that point is the exact thing moving the keeper out of
+        // `resources/list` was meant to stop, arrived at from the other end.
+        // `keeper_started` is released rather than the session cancelled, so a
+        // later `subscribe` starts a fresh keeper.
+        //
+        // The upgraded handle is dropped before the ping below: a strong
+        // reference held across an await would keep `Subscriptions` alive past
+        // the session that owns it, and `Drop` is what cancels every task.
+        let idle = match session.upgrade() {
+            None => return,
+            Some(live) => {
+                let idle = !live.has_subscriptions();
+                if idle {
+                    live.release_keeper();
+                }
+                idle
+            }
+        };
+        if idle {
+            tracing::debug!(
+                target: "notedthat::mcp",
+                "a session has no subscriptions left; the keeper stops and it may idle out"
+            );
+            return;
         }
         let ping = peer.send_request_with_option(
             ServerRequest::PingRequest(PingRequest::default()),
@@ -818,6 +874,47 @@ mod tests {
             w.alive.load(Ordering::SeqCst) && w.cancel.is_cancelled(),
             "still `alive`, which is exactly why `ensure_watch` checks the token too"
         );
+    }
+
+    /// The keeper holds a session open against rmcp's idle timer, so it must
+    /// stop when the last subscription does — otherwise unsubscribing pins a
+    /// `MAX_SESSIONS` slot for a session with nothing left to deliver.
+    #[tokio::test]
+    async fn the_keeper_stands_down_once_nothing_is_subscribed() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.inner
+            .lock()
+            .unwrap()
+            .kbs
+            .insert(key("notes", Some("t1")), watch(&[("a.md", "u")], false));
+        assert!(subs.has_subscriptions());
+
+        // What the keeper does on a tick that finds nothing left.
+        subs.unsubscribe("notes", "a.md");
+        assert!(!subs.has_subscriptions());
+        subs.inner.lock().unwrap().keeper_started = true;
+        subs.release_keeper();
+        assert!(
+            !subs.inner.lock().unwrap().keeper_started,
+            "a later subscribe must be able to start a fresh keeper"
+        );
+        assert!(
+            !subs.cancel.is_cancelled(),
+            "standing down lets the session idle out; it does not end it"
+        );
+    }
+
+    /// A `list_changed` watch is exactly the case the keeper must not hold a
+    /// session open for.
+    #[tokio::test]
+    async fn a_list_watch_alone_is_not_a_subscription() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.inner
+            .lock()
+            .unwrap()
+            .kbs
+            .insert(key("notes", None), watch(&[], true));
+        assert!(!subs.has_subscriptions());
     }
 
     /// Once the keeper has given up, `subscribe` says so instead of answering
