@@ -369,7 +369,7 @@ impl McpHttpService {
 /// (#179).
 pub async fn bind_session(
     State(sessions): State<Arc<McpSessions>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let owner = request
@@ -384,15 +384,33 @@ pub async fn bind_session(
 
     if let Some(id) = presented {
         if !sessions.admits(&id, owner.as_ref()).await {
-            let method = request.method().clone();
             tracing::warn!(
                 target: "notedthat::mcp",
-                method = %method,
+                method = %request.method(),
                 "MCP_SESSION_OWNER_MISMATCH a session was presented by a principal that does not own it"
             );
-            // Answer what an id rmcp does not know answers, so that the
-            // refusal says nothing about whether the session exists.
-            return unknown_session(&method);
+            // Hand rmcp an id it cannot know and let it answer, rather than
+            // synthesizing the answer here.
+            //
+            // Synthesizing it short-circuited ahead of every precondition rmcp
+            // validates *before* its own session lookup — the `Host`/`Origin`
+            // allow-list, `Accept`, `Content-Type`, the JSON parse,
+            // `MCP-Protocol-Version` — so a malformed request told the two
+            // apart: rmcp answered `403`/`406`/`415`/`400` for an id it did not
+            // know, while this layer answered `404`/`202` for one it refused.
+            // That difference named which session ids exist, which is the one
+            // thing this branch is for. Falling through makes the two answers
+            // identical by construction instead of by a copy that has to be
+            // kept in step with the crate.
+            //
+            // `DELETE` stays safe: rmcp's `close_session` on an id it does not
+            // hold removes nothing and still answers `202`, so the owner's
+            // session is untouched — and `forget` below is not reached, so the
+            // record survives the refusal too.
+            request
+                .headers_mut()
+                .insert(SESSION_HEADER, HeaderValue::from_static(NO_SUCH_SESSION));
+            return next.run(request).await;
         }
         let closing = request.method() == Method::DELETE;
         let response = next.run(request).await;
@@ -415,8 +433,23 @@ pub async fn bind_session(
             .get(SESSION_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        if let (Some(id), Some(owner)) = (opened, owner) {
-            sessions.record(&id, owner).await;
+        match (opened, owner) {
+            (Some(id), Some(owner)) => sessions.record(&id, owner).await,
+            // The write side of `admits`'s no-principal case, and the one that
+            // fails *open*: an unrecorded session is admitted for everyone, so
+            // a session created here without an owner is drivable by every
+            // caller — exactly what D68 exists to prevent. Unreachable under
+            // the layer order `build_router` mounts, but `bind_session` is
+            // `pub` and nothing fails if that pairing is broken, so it is said
+            // out loud rather than left silent. rmcp offers no handle to end a
+            // session it has just created, which is why this logs instead of
+            // closing it.
+            (Some(_), None) => tracing::error!(
+                target: "notedthat::mcp",
+                "MCP_SESSION_UNBOUND a session opened with no principal on the request; \
+                 bind_session is mounted without an auth layer and the session is unowned"
+            ),
+            _ => {}
         }
         return response;
     }
@@ -424,24 +457,13 @@ pub async fn bind_session(
     next.run(request).await
 }
 
-/// rmcp's own answer for a session id it does not know, reproduced exactly so
-/// that "not yours" and "no such session" are one answer.
+/// A session id rmcp cannot have issued, substituted onto a refused request so
+/// that rmcp produces its own unknown-session answer.
 ///
-/// Deliberately not the D38 JSON envelope the `503` next door uses: rmcp
-/// answers plain text with no content type, and matching it byte for byte is
-/// the whole point. `DELETE` is the one method where rmcp accepts an unknown id
-/// instead of refusing it — it closes whatever it finds and answers `202`
-/// regardless — so a refused `DELETE` answers that, leaving the session alone.
-fn unknown_session(method: &Method) -> Response {
-    if method == Method::DELETE {
-        return StatusCode::ACCEPTED.into_response();
-    }
-    (
-        StatusCode::NOT_FOUND,
-        Body::from("Not Found: Session not found"),
-    )
-        .into_response()
-}
+/// rmcp mints ids with `Uuid::new_v4()`, whose version nibble is always `4`.
+/// The nil UUID's is `0`, so no session rmcp holds can ever carry this id and
+/// the substitution cannot collide with a live one.
+const NO_SUCH_SESSION: &str = "00000000-0000-0000-0000-000000000000";
 
 /// The D38 capacity refusal: `503`, `Retry-After: 5`, and a body naming the
 /// bound the caller ran into.
@@ -713,6 +735,21 @@ mod caller_identity {
         )
     }
 
+    /// A way to make a request malformed that rmcp rejects *before* it looks
+    /// the session up. One per precondition the refusal used to short-circuit
+    /// past, and each was its own oracle for which session ids exist.
+    #[derive(Clone, Copy, Debug)]
+    enum Flaw {
+        /// An `Accept` rmcp will not serve.
+        Accept,
+        /// A `Content-Type` rmcp will not parse.
+        ContentType,
+        /// An `MCP-Protocol-Version` rmcp does not know.
+        ProtocolVersion,
+        /// A `Host` outside the allow-list — the first thing rmcp checks.
+        Host,
+    }
+
     /// One request of any method, with `bearer` when there is one and `session`
     /// when there is one: the status, the headers and the body bytes, none of
     /// them interpreted. The refusal assertions compare all three.
@@ -722,16 +759,44 @@ mod caller_identity {
         bearer: Option<&str>,
         session: Option<&str>,
     ) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
+        raw_with(app, method, bearer, session, None).await
+    }
+
+    /// [`raw`], optionally malformed in one of the ways rmcp rejects ahead of
+    /// its own session lookup.
+    async fn raw_with(
+        app: &Router,
+        method: Method,
+        bearer: Option<&str>,
+        session: Option<&str>,
+        flaw: Option<Flaw>,
+    ) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
+        let host = match flaw {
+            Some(Flaw::Host) => "attacker.example.com",
+            _ => "127.0.0.1",
+        };
+        let accept = match (&method, flaw) {
+            (_, Some(Flaw::Accept)) => "application/json",
+            (&Method::GET, _) => "text/event-stream",
+            _ => "application/json, text/event-stream",
+        };
         let mut request = Request::builder()
             .method(method.clone())
             .uri("/mcp")
-            .header("host", "127.0.0.1");
-        request = match method {
-            Method::GET => request.header("accept", "text/event-stream"),
-            _ => request
-                .header("accept", "application/json, text/event-stream")
-                .header("content-type", "application/json"),
-        };
+            .header("host", host)
+            .header("accept", accept);
+        if method != Method::GET {
+            request = request.header(
+                "content-type",
+                match flaw {
+                    Some(Flaw::ContentType) => "text/plain",
+                    _ => "application/json",
+                },
+            );
+        }
+        if matches!(flaw, Some(Flaw::ProtocolVersion)) {
+            request = request.header("mcp-protocol-version", "bogus");
+        }
         if let Some(bearer) = bearer {
             request = request.header("authorization", format!("Bearer {bearer}"));
         }
@@ -1036,22 +1101,54 @@ mod caller_identity {
             let app = app(&api.uri());
             let alice = open_session(&app, ALICE_TOKEN).await;
 
+            // Well-formed, and malformed in each of the ways rmcp rejects
+            // before it looks a session up. The malformed ones are the point: a
+            // refusal synthesized ahead of those preconditions answered
+            // `404`/`202` where an unknown id got `403`/`406`/`415`/`400`, and
+            // one `DELETE` carrying a bogus protocol version was enough to ask
+            // whether an id was live.
+            let flaws = [
+                None,
+                Some(Flaw::Accept),
+                Some(Flaw::ContentType),
+                Some(Flaw::ProtocolVersion),
+                Some(Flaw::Host),
+            ];
             for method in [Method::POST, Method::GET, Method::DELETE] {
-                // When: bob presents each of them.
-                let refused = raw(&app, method.clone(), Some(BOB_TOKEN), Some(&alice)).await;
-                let unknown =
-                    raw(&app, method.clone(), Some(BOB_TOKEN), Some(UNKNOWN_SESSION)).await;
+                for flaw in flaws {
+                    // When: bob presents each of them.
+                    let refused =
+                        raw_with(&app, method.clone(), Some(BOB_TOKEN), Some(&alice), flaw).await;
+                    let unknown = raw_with(
+                        &app,
+                        method.clone(),
+                        Some(BOB_TOKEN),
+                        Some(UNKNOWN_SESSION),
+                        flaw,
+                    )
+                    .await;
 
-                // Then: the same answer, down to the bytes and the headers — so the
-                // refusal is not an oracle for which session ids exist.
-                assert_eq!(refused.0, unknown.0, "{method} status");
-                assert_eq!(refused.2, unknown.2, "{method} body");
-                assert_eq!(
-                    refused.1.get(header::CONTENT_TYPE),
-                    unknown.1.get(header::CONTENT_TYPE),
-                    "{method} content-type"
-                );
+                    // Then: the same answer, down to the bytes and the headers — so the
+                    // refusal is not an oracle for which session ids exist.
+                    assert_eq!(refused.0, unknown.0, "{method} {flaw:?} status");
+                    assert_eq!(refused.2, unknown.2, "{method} {flaw:?} body");
+                    assert_eq!(
+                        refused.1.get(header::CONTENT_TYPE),
+                        unknown.1.get(header::CONTENT_TYPE),
+                        "{method} {flaw:?} content-type"
+                    );
+                }
             }
+
+            // And: none of it touched alice's session, the refused `DELETE`s
+            // included — the refusal now reaches rmcp, so this pins that it
+            // reaches it carrying an id rmcp cannot act on.
+            let (status, _, _) = raw(&app, Method::GET, Some(ALICE_TOKEN), Some(&alice)).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "alice's session must survive bob's refused DELETEs"
+            );
         }
 
         #[tokio::test]
