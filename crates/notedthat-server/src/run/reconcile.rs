@@ -20,9 +20,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use notedthat_api_http::state::{ReconcileBusy, ReconcileTrigger};
+use notedthat_core::metrics::{label as metric_label, name as metric};
 use notedthat_core::reconcile::{IndexedEtag, compare, walk_etags};
 use notedthat_core::{KbSlug, Storage};
 use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
+use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -178,7 +180,54 @@ impl ReconcileTrigger for Reconciler {
 /// against, and guessing would mean either re-embedding everything or silently doing
 /// nothing. A pass that could not list the bucket does the same — a partial listing
 /// would report every unlisted key as orphaned, the one outcome nothing would repair.
+/// One reconciliation pass's timing and outcome (D68).
+///
+/// A guard, because `run_pass` returns early from four places and each of those
+/// is an outcome worth counting; a record at the end would count only the
+/// passes that got there.
+struct PassMetric {
+    kb: String,
+    cause: String,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl PassMetric {
+    fn started(kb: &KbSlug, cause: &str) -> Self {
+        Self {
+            kb: kb.as_str().to_string(),
+            cause: cause.to_string(),
+            started: Instant::now(),
+            outcome: "incomplete",
+        }
+    }
+
+    fn completed(&mut self) {
+        self.outcome = "completed";
+    }
+}
+
+impl Drop for PassMetric {
+    fn drop(&mut self) {
+        metrics::histogram!(metric::RECONCILE_DURATION, metric_label::KB => self.kb.clone())
+            .record(self.started.elapsed().as_secs_f64());
+        metrics::counter!(
+            metric::RECONCILE_PASSES,
+            metric_label::KB => self.kb.clone(),
+            metric_label::CAUSE => self.cause.clone(),
+            metric_label::OUTCOME => self.outcome,
+        )
+        .increment(1);
+    }
+}
+
 async fn run_pass(inner: &Inner, kb: &KbSlug, cause: &str) {
+    // Dropped on every exit from this function, so a pass that ends early —
+    // a missing collection, an unreadable bucket, a worker that has gone — is
+    // still counted, with the outcome it actually had. A pass counted only on
+    // success would make a backend that fails every pass look like a backend
+    // that is not reconciling at all.
+    let mut pass = PassMetric::started(kb, cause);
     let indexed = match inner.store.indexed_objects(kb, None).await {
         Ok(indexed) => indexed,
         Err(notedthat_indexer::VectorStoreError::CollectionNotFound { .. }) => {
@@ -241,6 +290,7 @@ async fn run_pass(inner: &Inner, kb: &KbSlug, cause: &str) {
 
     // A completed pass, whatever it found, has enqueued every difference: nothing is
     // unobserved any more, and the report is worth showing (#97).
+    pass.completed();
     let report = reconciliation.report;
     inner.sink.health.reconciled(
         kb.as_str(),

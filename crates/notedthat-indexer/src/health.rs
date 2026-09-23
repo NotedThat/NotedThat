@@ -9,6 +9,10 @@
 //! credentials or the queue's contents; the failure summary is the pipeline's
 //! own one-line error, bounded.
 
+use notedthat_core::metrics::{
+    index_outcome as metric_index, label as metric_label, name as metric,
+    reconcile_class as metric_class,
+};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -144,6 +148,7 @@ pub struct IndexHealth {
 
 impl Default for IndexHealth {
     fn default() -> Self {
+        metrics::gauge!(metric::INDEX_WORKER_ALIVE).set(1.0);
         Self {
             inner: Mutex::new(Inner {
                 kbs: BTreeMap::new(),
@@ -162,6 +167,8 @@ impl IndexHealth {
 
     /// An event for `kb` entered the queue.
     pub fn enqueued(&self, kb: &str) {
+        metrics::counter!(metric::INDEX_EVENTS_ENQUEUED, metric_label::KB => kb.to_string())
+            .increment(1);
         self.record(kb, |r, _| r.enqueued += 1);
     }
 
@@ -169,6 +176,12 @@ impl IndexHealth {
     /// *and* in-flight work, so an object still being embedded keeps the
     /// knowledge base `indexing` until this or [`Self::failed`] is recorded.
     pub fn succeeded(&self, kb: &str) {
+        metrics::counter!(
+            metric::INDEX_EVENTS_COMPLETED,
+            metric_label::KB => kb.to_string(),
+            metric_label::OUTCOME => metric_index::SUCCEEDED,
+        )
+        .increment(1);
         self.record(kb, |r, now| {
             r.completed += 1;
             r.last_indexed_at = Some(now);
@@ -178,6 +191,17 @@ impl IndexHealth {
 
     /// An event for `kb` failed; `summary` is the pipeline's error.
     pub fn failed(&self, kb: &str, object_key: &str, summary: &str) {
+        // `kb` alone. `object_key` is the whole reason this method takes an
+        // argument the metric must not see: a key in a label is customer data
+        // in a store that is retained for months and read by people who were
+        // granted nothing (D51, D68). The key stays in the health record, which
+        // is access-checked; the counter is a rate, and a rate needs no key.
+        metrics::counter!(
+            metric::INDEX_EVENTS_COMPLETED,
+            metric_label::KB => kb.to_string(),
+            metric_label::OUTCOME => metric_index::FAILED,
+        )
+        .increment(1);
         let summary = bound_summary(summary);
         self.record(kb, move |r, now| {
             r.completed += 1;
@@ -192,11 +216,15 @@ impl IndexHealth {
 
     /// A write to `kb` was refused because the queue was full (D38).
     pub fn backpressured(&self, kb: &str) {
+        metrics::counter!(metric::INDEX_EVENTS_REFUSED, metric_label::KB => kb.to_string())
+            .increment(1);
         self.record(kb, |r, now| r.last_backpressure_at = Some(now));
     }
 
     /// Changes to `kb` may have gone unobserved until a rescan completes.
     pub fn mark_stale(&self, kb: &str) {
+        metrics::counter!(metric::INDEX_STALE_MARKS, metric_label::KB => kb.to_string())
+            .increment(1);
         self.record(kb, |r, now| {
             r.stale_since.get_or_insert(now);
         });
@@ -205,6 +233,29 @@ impl IndexHealth {
     /// A reconciliation pass over `kb` completed: whatever it found is now
     /// queued, so nothing is unobserved any more.
     pub fn reconciled(&self, kb: &str, summary: ReconcileSummary) {
+        // Recorded here so `fs` (D50) and `s3` (D67) produce one family without
+        // either bridge knowing about the other.
+        for (class, count) in [
+            (metric_class::UNCHANGED, summary.unchanged),
+            (metric_class::CHANGED, summary.changed),
+            (metric_class::ORPHANED, summary.orphaned),
+        ] {
+            metrics::counter!(
+                metric::RECONCILE_OBJECTS,
+                metric_label::KB => kb.to_string(),
+                metric_label::CLASS => class,
+            )
+            .increment(count as u64);
+        }
+        // A level, not work found, so a gauge — and only for a whole-base pass.
+        // A pass over one prefix reports that prefix's count, and publishing it
+        // as the base's would be a number that shrinks whenever a subtree is
+        // rescanned. `scope` is exactly that distinction.
+        if summary.scope.is_none() {
+            #[allow(clippy::cast_precision_loss)]
+            metrics::gauge!(metric::RECONCILE_OBJECTS_ON_DISK, metric_label::KB => kb.to_string())
+                .set(summary.objects_on_disk as f64);
+        }
         self.record(kb, move |r, _| {
             r.last_reconcile = Some(summary);
             r.stale_since = None;
@@ -214,6 +265,9 @@ impl IndexHealth {
     /// The worker's loop has ended. Every knowledge base is `failed` from here
     /// on: nothing will drain the queue until the process restarts.
     pub fn worker_stopped(&self) {
+        // Idempotent, and called from two places — the worker's own exit and
+        // the closed-queue arm of a write — so setting it twice is expected.
+        metrics::gauge!(metric::INDEX_WORKER_ALIVE).set(0.0);
         self.lock().worker_alive = false;
     }
 
