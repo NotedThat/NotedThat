@@ -10,10 +10,13 @@ What this document adds is the part that lives in no single place: the reverse p
 what a `503` means, what to back up, what one instance holds, what a release may break, and what
 NotedThat does not do.
 
-**Not covered yet.** Monitoring and alerting wait on a metrics endpoint
-([#164](https://github.com/NotedThat/NotedThat/issues/164)); there is none today. Until then the
-operational signals are `/readyz`, the per-knowledge-base index endpoint, and the log codes — all
-named below where they matter.
+**Monitoring is not covered here, and what exists depends on your release.** Through v0.10.0
+there is no metrics endpoint, and the operational signals are `/readyz`, the per-knowledge-base
+index endpoint and the log codes — all named below where they matter. From the release that
+carries [#164](https://github.com/NotedThat/NotedThat/issues/164) there is also `GET /metrics` in
+the Prometheus exposition format, on the separate listener described below; its settings and its
+metric catalogue are `docs/CONFIGURATION.md`'s, not this guide's. Alerting rules on top of either
+are still to be written.
 
 ---
 
@@ -29,11 +32,18 @@ client ──────▶ reverse proxy ────────────�
                                                    └──▶ NATS           (optional; events)
 ```
 
-One process, one port. The API is under `/api/v1`, WebDAV under `/webdav`, streamable MCP at
-`/mcp`, the read-only HTML listings under `/browse`, and `/healthz`, `/readyz` and `/llms.txt` at
-the root. There is no second port to forward and no per-surface listener — the three variables
-that used to create them are refused at startup by name
+One process, one port to forward. The API is under `/api/v1`, WebDAV under `/webdav`, streamable
+MCP at `/mcp`, the read-only HTML listings under `/browse`, and `/healthz`, `/readyz` and
+`/llms.txt` at the root. There is no per-surface listener — the three variables that used to
+create them are refused at startup by name
 ([removed variables](CONFIGURATION.md#removed-variables)).
+
+The one exception is the metrics listener, and it is the exception that proves the rule: where
+your release has `GET /metrics` it is served by a second listener of its own, off by default and
+bound to loopback. It is **scraped, never proxied** — it carries no authentication, so the whole
+point of the separate socket is that it is not reachable from where the product listener is. The
+`location /` block below points at `127.0.0.1:8080` and so cannot reach it; do not add a
+`/metrics` location that can.
 
 **The server speaks plain HTTP only.** Terminate TLS once, at one proxy, and forward the complete
 path space to it. Bearer tokens over plaintext are acceptable on loopback or a private trusted
@@ -158,8 +168,9 @@ streaming routes need.
 | No cache ignoring `Vary: Authorization` | `/browse` serves different pages to anonymous and credentialed callers at one URL |
 | Rate limiting | There is no application rate limiter. Configure rate and burst limits here before exposing anonymous `search` |
 
-The server already sets `X-Accel-Buffering: no` on both streams, which nginx honours by itself —
-`proxy_buffering off` is belt and braces, and matters for proxies that do not read that header.
+The API events route sets `X-Accel-Buffering: no`, which nginx honours by itself. **`GET /mcp`
+does not** — rmcp sets no buffering hint — so `proxy_buffering off` is required for the MCP
+notification leg rather than belt and braces, and a per-location config must carry it there too.
 
 ### The `Host` trap
 
@@ -420,15 +431,28 @@ to enumerate private prefixes.
 honouring the same `anyone` rules — useful when you want an OAuth-capable client challenged on
 connect.
 
-### Treat an MCP session id as a credential
+### MCP session ids
 
-A session id is **not bound to the credential that opened it** (D66). Another authenticated caller
-who obtains one can attach that session's notification leg and watch which object URIs it
-subscribed to and when they change — including objects that caller may not read itself. Ids are
-UUIDs, so this is not guessable, and tool calls are unaffected: each acts as the credential on its
-own request. Send session ids over TLS, keep them out of logs, and do not share them between
-principals. Binding sessions to principals is tracked as
-[#179](https://github.com/NotedThat/NotedThat/issues/179).
+Whether a session id is bound to the principal that opened it depends on your release.
+
+**Through v0.10.0 it is not** (D66), so treat the id itself as a credential: another
+authenticated caller who obtains one can attach that session's notification leg and watch which
+object URIs it subscribed to and when they change — including objects that caller may not read
+itself — and can end the session with a `DELETE`. Ids are UUIDs, so this is not guessable, and
+tool calls are unaffected: each acts as the credential presented on its own request.
+
+**From the release that carries [#179](https://github.com/NotedThat/NotedThat/issues/179) it is**
+(D68): a request presenting a session id whose owner is not the request's own principal is
+answered exactly as an id the server does not know, on all three methods, so the `DELETE` is
+closed with the rest.
+
+Two things hold either way, and are the residue #179 leaves behind. Every caller presenting no
+credential is **one** owner, since nothing distinguishes two of them — so on a deployment
+admitting anonymous callers one anonymous client can still attach another's leg, though both hold
+identical read authority. And the session bound is **per process, not per principal**, so one
+caller can hold every slot.
+
+Send session ids over TLS and keep them out of logs on any release.
 
 ### The rest
 
@@ -461,20 +485,24 @@ committing to the deployment.
   **SeaweedFS < 4.09**, and **RustFS 1.0.0-beta.8** under lock-timeout contention. `PATCH`
   inherits the same exposure, because its final write is a conditional `PUT`. There is no startup
   probe for this; verifying a backend is the deployer's gate.
-- **MCP sessions.** A session id is not bound to the credential that opened it, as above. A
-  process holds a fixed maximum of sessions and one caller can hold all of them; a budget per
-  principal is a follow-up. Subscriptions live and die with the session — no replay, no
-  persistence, and a restart ends every one of them. A client that stops answering the keeper's
-  ping has its subscriptions dropped, and a later `subscribe` on that session is refused rather
-  than accepted and left silent.
+- **MCP sessions.** A process holds a fixed maximum of sessions and one caller can hold all of
+  them; the bound is per process, and a budget per principal is a follow-up. Every anonymous
+  caller is one owner, so they share each other's sessions by construction. Through v0.10.0 a
+  session id is additionally not bound to the principal that opened it at all — see
+  [MCP session ids](#mcp-session-ids). Subscriptions live and die with the session — no replay,
+  no persistence, and a restart ends every one of them. A client that stops answering the
+  keeper's ping has its subscriptions dropped, and a later `subscribe` on that session is refused
+  rather than accepted and left silent.
 - **No stability commitment yet.** Pre-v1, and
   [#176](https://github.com/NotedThat/NotedThat/issues/176) — which would say what v1 covers and
   what a deprecation looks like — is open. The current
   intent recorded there is that the HTTP API, the MCP surface, the WebDAV surface, the event
   schema and the `NOTEDTHAT_*` settings would be covered, and the crates' Rust APIs would not; it
   is a proposal until that issue closes.
-- **No metrics endpoint.** [#164](https://github.com/NotedThat/NotedThat/issues/164) is open.
-  `/readyz`, the per-knowledge-base index endpoint and the log codes are what exists.
+- **Monitoring depends on the release.** Through v0.10.0 there is no metrics endpoint, and
+  `/readyz`, the per-knowledge-base index endpoint and the log codes are what exists;
+  [#164](https://github.com/NotedThat/NotedThat/issues/164) adds `GET /metrics` on its own
+  loopback listener. No alerting rules ship either way.
 - **Other things NotedThat does not do:** no application rate limiter; no reload signal, so access
   rules need a restart; no object lock, retention or legal hold, and WebDAV `LOCK` is refused; no
   full reindex, so changing the embedding model has its own procedure; no admin API for creating
