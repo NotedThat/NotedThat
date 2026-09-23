@@ -522,70 +522,87 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
         indexer_tx,
         queue_sampler_shutdown.clone(),
     ));
-    let serve_result = async {
-        // Before the product listener: a metrics port already in use must refuse
-        // startup, rather than leaving the product surface open and the
-        // operator's scrape target quietly non-existent.
-        let metrics_listener = metrics::start(&config, shutdown_token.child_token()).await?;
+    // Before the product listener: a metrics port already in use must refuse
+    // startup, rather than leaving the product surface open and the operator's
+    // scrape target quietly non-existent.
+    //
+    // Bound out here rather than inside the block below so that it outlives
+    // every way that block can end. Carried out of the block on the success
+    // path only, it was dropped on every error one — a failed metrics bind, a
+    // failed product bind, an accept-loop failure — which detached its two
+    // tasks: `shutdown_token` still wound them down, but nothing waited for
+    // them. Today the indexer drain below outlasts them either way, so this
+    // buys no observable behaviour and no test can tell the two apart; it is
+    // here so that the shutdown sequence owns every task it started rather
+    // than resting on the drain being slow.
+    let metrics_listener = metrics::start(&config, shutdown_token.child_token()).await;
+    let (serve_result, metrics_listener) = match metrics_listener {
+        // Not a `?`: nothing started, so there is nothing to join, but the
+        // cleanup below still has to run.
+        Err(error) => (Err(error), None),
+        Ok(metrics_listener) => {
+            let result = async {
+                let listener = TcpListener::bind(config.listen_addr)
+                    .await
+                    .with_context(|| {
+                        format!("failed to bind HTTP listener on {}", config.listen_addr)
+                    })?;
+                let bound_addr = listener.local_addr()?;
+                let internal_api_url = mcp_http::internal_http_api_url(bound_addr);
 
-        let listener = TcpListener::bind(config.listen_addr)
-            .await
-            .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
-        let bound_addr = listener.local_addr()?;
-        let internal_api_url = mcp_http::internal_http_api_url(bound_addr);
+                info!(http = %bound_addr, "notedthat-server listening");
 
-        info!(http = %bound_addr, "notedthat-server listening");
+                let app = build_router(state.clone())
+                    .merge(build_dav_router(dav_state))
+                    .merge(mcp_http::build_router(
+                        &config,
+                        state.authenticator.clone(),
+                        &state.access_policies,
+                        &internal_api_url,
+                        shutdown_token.child_token(),
+                        // What the server actually runs on, not `Config::events`:
+                        // `run_with` takes its backends as given (D66).
+                        state.events.is_some(),
+                    )?)
+                    // After the merges, deliberately: applied inside
+                    // `build_router`'s own layer stack this would cover the API
+                    // and the root routes only, because WebDAV and MCP are
+                    // merged onto the app afterwards and a layer wraps what it
+                    // was applied to (D69).
+                    .layer(axum::middleware::from_fn(
+                        notedthat_api_http::metrics::track_requests,
+                    ));
 
-        let app = build_router(state.clone())
-            .merge(build_dav_router(dav_state))
-            .merge(mcp_http::build_router(
-                &config,
-                state.authenticator.clone(),
-                &state.access_policies,
-                &internal_api_url,
-                shutdown_token.child_token(),
-                // What the server actually runs on, not `Config::events`:
-                // `run_with` takes its backends as given (D66).
-                state.events.is_some(),
-            )?)
-            // After the merges, deliberately: applied inside `build_router`'s
-            // own layer stack this would cover the API and the root routes
-            // only, because WebDAV and MCP are merged onto the app afterwards
-            // and a layer wraps what it was applied to (D69).
-            .layer(axum::middleware::from_fn(
-                notedthat_api_http::metrics::track_requests,
-            ));
+                let graceful_shutdown = shutdown_token.clone();
+                let signal_shutdown = shutdown_token.clone();
+                let shutdown_trigger = tokio::spawn(async move {
+                    shutdown_signal().await;
+                    signal_shutdown.cancel();
+                });
 
-        let graceful_shutdown = shutdown_token.clone();
-        let signal_shutdown = shutdown_token.clone();
-        let shutdown_trigger = tokio::spawn(async move {
-            shutdown_signal().await;
-            signal_shutdown.cancel();
-        });
-
-        let result = axum::serve(listener, app)
-            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
-            .await
-            .context("HTTP listener failed");
-        shutdown_trigger.abort();
-        result.map(|()| metrics_listener)
-    }
-    .await;
+                let result = axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
+                    .await
+                    .context("HTTP listener failed");
+                shutdown_trigger.abort();
+                result
+            }
+            .await;
+            (result, metrics_listener)
+        }
+    };
     // Cancelled before anything is joined. The metrics listener waits on this
     // token, and `axum::serve` can return an error of its own — an accept-loop
     // failure — without any shutdown having been signalled; joining before the
     // cancel would then wait forever on a task nothing had told to stop, and
     // every cleanup step below would be skipped with it.
     shutdown_token.cancel();
-    let serve_result = match serve_result {
-        Ok(metrics_listener) => {
-            if let Some(metrics_listener) = metrics_listener {
-                metrics_listener.join().await;
-            }
-            Ok(())
-        }
-        Err(error) => Err(error),
-    };
+    // Joined whether the run ended well or badly: this is the only thing that
+    // waits for the metrics socket to be released, and a caller that rebinds
+    // the address after `run_with` returns is what would notice if it did not.
+    if let Some(metrics_listener) = metrics_listener {
+        metrics_listener.join().await;
+    }
     // Cancelled with everything else; it holds no queue, so nothing waits on it but us.
     if let Err(e) = readiness_handle.await {
         tracing::error!(error = %e, "readiness poller panicked");
