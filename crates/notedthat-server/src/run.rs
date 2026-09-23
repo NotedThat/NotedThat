@@ -26,6 +26,7 @@ use tracing::info;
 mod events;
 mod fs_watch;
 mod mcp_http;
+mod metered;
 mod metrics;
 mod readiness;
 mod reconcile;
@@ -228,16 +229,23 @@ fn start_change_detection(
     }
 }
 
+// Wiring, and it is meant to read as one list: every backend, queue, token and
+// task this process needs, assembled in the order their dependencies allow.
+// Splitting it produces helpers with eight parameters and no independent
+// meaning, which is harder to follow than the list.
+#[allow(clippy::too_many_lines)]
 async fn build_infrastructure(
     config: Config,
     backends: backends::Backends,
 ) -> anyhow::Result<Infrastructure> {
-    let backends::Backends {
+    // Metered once, here, before anything clones them (D68).
+    let metered::MeteredBackends {
         storage,
         store,
-        embedder,
+        embed_index,
+        embed_query,
         events,
-    } = backends;
+    } = metered::meter(&config.storage, backends);
 
     let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
     let indexer_shutdown = CancellationToken::new();
@@ -291,8 +299,11 @@ async fn build_infrastructure(
 
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
     // Using separate instances risks model or endpoint drift between write and query paths.
+    //
+    // `embed_index` and `embed_query` are two views of that one instance, not
+    // two instances: same endpoint and client, counted under two `phase` labels.
     let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
-        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embedder.clone()),
+        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embed_query),
     );
 
     let state = AppState {
@@ -316,7 +327,7 @@ async fn build_infrastructure(
     let worker_handle = tokio::spawn(
         IndexerWorker::new(
             storage.clone(),
-            embedder.clone(),
+            embed_index,
             store.clone(),
             indexer_rx,
             indexer_shutdown.clone(),
