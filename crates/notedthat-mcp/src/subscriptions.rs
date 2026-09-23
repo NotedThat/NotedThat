@@ -344,18 +344,29 @@ impl Subscriptions {
     /// What the keeper asks before each ping. `list_changed` watches do not
     /// count: they are the case the keeper deliberately does not hold a session
     /// open for.
+    #[cfg(test)]
     fn has_subscriptions(&self) -> bool {
-        let inner = self.inner.lock().expect("subscriptions");
-        inner
-            .kbs
-            .values()
-            .any(|watch| !watch.keys.lock().expect("subscription keys").is_empty())
+        any_subscribed(&self.inner.lock().expect("subscriptions"))
     }
 
-    /// Let the keeper stop without ending the session, so a later `subscribe`
-    /// starts a fresh one.
-    fn release_keeper(&self) {
-        self.inner.lock().expect("subscriptions").keeper_started = false;
+    /// Stand the keeper down if nothing is subscribed any more, so a later
+    /// `subscribe` starts a fresh one; `true` when it did.
+    ///
+    /// The test and the release are deliberately one lock acquisition. Split
+    /// across two, a `subscribe` landing in between finds `keeper_started`
+    /// still set, declines to spawn a keeper of its own, and is then left
+    /// without one when this clears the flag. The subscription is live and the
+    /// forwarder delivers, but nothing pings, so rmcp's idle timer closes the
+    /// session a few minutes later and takes the subscription with it — and
+    /// nothing restarts the keeper, because the client has no reason to
+    /// subscribe again.
+    fn stand_down_if_idle(&self) -> bool {
+        let mut inner = self.inner.lock().expect("subscriptions");
+        let idle = !any_subscribed(&inner);
+        if idle {
+            inner.keeper_started = false;
+        }
+        idle
     }
 
     /// Start the `list_changed` coalescer once, on the session's first list
@@ -605,6 +616,17 @@ async fn pause(cancel: &CancellationToken, backoff: &mut Duration) -> bool {
     }
 }
 
+/// Whether any of a session's watches still holds a subscribed key.
+///
+/// Takes `&Inner` rather than locking, so the keeper can test this and clear
+/// `keeper_started` without letting go in between.
+fn any_subscribed(inner: &Inner) -> bool {
+    inner
+        .kbs
+        .values()
+        .any(|watch| !watch.keys.lock().expect("subscription keys").is_empty())
+}
+
 /// Ping the client once a minute, for as long as it has a subscription to
 /// deliver, so rmcp's idle timer sees a message. A ping the client does not
 /// answer means it has no working notification leg, so the subscriptions are
@@ -645,13 +667,7 @@ async fn keep_alive(
         // the session that owns it, and `Drop` is what cancels every task.
         let idle = match session.upgrade() {
             None => return,
-            Some(live) => {
-                let idle = !live.has_subscriptions();
-                if idle {
-                    live.release_keeper();
-                }
-                idle
-            }
+            Some(live) => live.stand_down_if_idle(),
         };
         if idle {
             tracing::debug!(
@@ -893,7 +909,7 @@ mod tests {
         subs.unsubscribe("notes", "a.md");
         assert!(!subs.has_subscriptions());
         subs.inner.lock().unwrap().keeper_started = true;
-        subs.release_keeper();
+        assert!(subs.stand_down_if_idle());
         assert!(
             !subs.inner.lock().unwrap().keeper_started,
             "a later subscribe must be able to start a fresh keeper"
@@ -901,6 +917,26 @@ mod tests {
         assert!(
             !subs.cancel.is_cancelled(),
             "standing down lets the session idle out; it does not end it"
+        );
+    }
+
+    /// The stand-down is all-or-nothing: a session that still holds a
+    /// subscription keeps its keeper *and* its `keeper_started` mark, so a
+    /// `subscribe` racing the keeper's tick cannot end up with neither.
+    #[tokio::test]
+    async fn a_session_with_a_subscription_left_keeps_its_keeper() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.inner
+            .lock()
+            .unwrap()
+            .kbs
+            .insert(key("notes", Some("t1")), watch(&[("a.md", "u")], false));
+        subs.inner.lock().unwrap().keeper_started = true;
+
+        assert!(!subs.stand_down_if_idle(), "the keeper must keep going");
+        assert!(
+            subs.inner.lock().unwrap().keeper_started,
+            "the mark must survive, or the next subscribe spawns a second keeper"
         );
     }
 
