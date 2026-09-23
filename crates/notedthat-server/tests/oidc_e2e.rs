@@ -176,13 +176,13 @@ impl Server {
         Self::start_as(resource, false, McpAnonymous::Auto).await
     }
 
-    /// A server whose one knowledge base additionally grants `anyone`
-    /// `list` and `read` when `public`, under the given MCP anonymous mode.
     /// A server whose writes are announced, so a session can subscribe (D66).
     async fn start_with_events() -> Self {
         Self::start_inner(None, false, McpAnonymous::Auto, true).await
     }
 
+    /// A server whose one knowledge base additionally grants `anyone`
+    /// `list` and `read` when `public`, under the given MCP anonymous mode.
     async fn start_as(resource: Option<String>, public: bool, mcp_anonymous: McpAnonymous) -> Self {
         Self::start_inner(resource, public, mcp_anonymous, false).await
     }
