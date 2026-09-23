@@ -98,6 +98,19 @@ MCP_RESULT=$(mcp_call "$ALICE" '{"jsonrpc":"2.0","id":1,"method":"tools/call","p
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("ok" if "result" in d and not d["result"].get("isError") else d)')
 assert "MCP list_knowledgebases with alice's token" "ok" "$MCP_RESULT"
 
+# 4b. A session belongs to the principal that opened it (D68). Alice's session
+# id, presented by ivan, is answered as an id the server does not know: 404 on
+# POST and on the notification leg, 202 on DELETE with her session untouched.
+ALICE_SID=$(curl -s -D - -o /dev/null -X POST -H "Authorization: Bearer $ALICE" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual-qa","version":"0"}}}' "$NT_URL/mcp" \
+    | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+assert "ivan on alice's session (POST)" "404" "$(status -X POST -H "Authorization: Bearer $IVAN" -H "Mcp-Session-Id: $ALICE_SID" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_knowledgebases","arguments":{}}}' "$NT_URL/mcp")"
+assert "ivan on alice's notification leg" "404" "$(status -H "Authorization: Bearer $IVAN" -H "Mcp-Session-Id: $ALICE_SID" -H 'Accept: text/event-stream' --max-time 3 "$NT_URL/mcp")"
+assert "ivan deleting alice's session" "202" "$(status -X DELETE -H "Authorization: Bearer $IVAN" -H "Mcp-Session-Id: $ALICE_SID" "$NT_URL/mcp")"
+assert "alice still holds her session" "200" "$(status -X POST -H "Authorization: Bearer $ALICE" -H "Mcp-Session-Id: $ALICE_SID" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_knowledgebases","arguments":{}}}' "$NT_URL/mcp")"
+
 if [ "$PHASE" = "1" ]; then
     # 5. The stock manifest: signed-in may do everything, `.notedthat` excepted.
     assert "alice writes handbook.md" "201" "$(status -X PUT -H "Authorization: Bearer $ALICE" -H 'Content-Type: text/markdown' --data-binary '# Handbook' "$(obj handbook.md)")"
