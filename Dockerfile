@@ -50,6 +50,12 @@ RUN cargo chef cook --release --recipe-path recipe.json \
 
 # Copy the actual sources and compile the distributable binary against the cooked deps.
 COPY . .
+# The same revision the image is labelled with, baked in so `notedthat_build_info`
+# can report it (D68). Declared here as well as in the runtime stage because a
+# build argument is scoped to the stage that declares it. Left `unknown` for a
+# plain `docker build`, which is honest: nothing told this build what it is.
+ARG IMAGE_REVISION=unknown
+ENV NOTEDTHAT_BUILD_REVISION=${IMAGE_REVISION}
 RUN cargo build --release --locked \
     --bin notedthat-server \
  && strip target/release/notedthat-server

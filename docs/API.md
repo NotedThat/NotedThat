@@ -1647,6 +1647,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 |--------|------|------|-------------|
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe |
+| GET | `/metrics` | — | **Not on this listener.** The Prometheus exposition is served on a separate, unauthenticated listener, off by default (D68); `GET /metrics` here is `404` with or without a credential. See [Metrics](CONFIGURATION.md#metrics) |
 | GET | `/llms.txt` | No | Plain-text navigation instructions for LLM clients: access rules, API, MCP, WebDAV |
 | GET | `/.well-known/oauth-protected-resource` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
