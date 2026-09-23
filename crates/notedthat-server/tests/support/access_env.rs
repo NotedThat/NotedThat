@@ -125,6 +125,7 @@ impl Backends {
             mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
             max_patchable_size: 10 * 1024 * 1024,
             mcp_max_read_bytes: 16 * 1024 * 1024,
+            mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
             // Short enough that the readiness assertion in `phase3_access_e2e` sees
             // several real `HeadBucket` / `HealthCheck` rounds before it moves on.
             ready_probe_interval_ms: 200,

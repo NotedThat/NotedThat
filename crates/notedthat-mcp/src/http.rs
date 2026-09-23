@@ -5,8 +5,8 @@
 //! every answer SSE-framed, `GET` as the server-to-client notification leg and
 //! `DELETE` to end it. Sessions are what let the server push
 //! `notifications/resources/updated`; they are also what an anonymous or
-//! misbehaving client could open without bound, so [`admit_session`] caps
-//! them at [`MAX_SESSIONS`] per process.
+//! misbehaving client could open without bound, so [`bind_session`] caps them
+//! at `NOTEDTHAT_MCP_MAX_SESSIONS` ([`DEFAULT_MAX_SESSIONS`]) per process.
 //!
 //! **A session id is not bound to a credential.** rmcp binds nothing to a
 //! session, and auth is outermost, so any valid credential — including the
@@ -21,9 +21,8 @@
 //! the same way. Session ids are rmcp-generated UUIDs, so this is not
 //! guessable; the binding is a disclosed follow-up (§7.4, issue #179),
 //! recorded as a confidentiality limitation rather than as tidiness. The same
-//! record it needs — session to principal — is what would let [`MAX_SESSIONS`]
-//! be budgeted per principal instead of per process, so the two travel
-//! together.
+//! record it needs — session to principal — is what would let the bound be
+//! budgeted per principal instead of per process, so the two travel together.
 
 use std::sync::Arc;
 
@@ -45,11 +44,12 @@ use crate::{NotedThatMcp, client::NotedThatClient};
 /// Axum/tower-compatible rmcp Streamable HTTP service type for `NotedThatMcp`.
 pub type McpHttpInnerService = StreamableHttpService<NotedThatMcp, LocalSessionManager>;
 
-/// The most sessions one process holds at once. A `POST` that would open
-/// another — one carrying no `Mcp-Session-Id` — answers `503` until a session
-/// ends or idles out (five minutes, rmcp's default), so a client that keeps
-/// its session id costs one slot for as long as it is active.
-pub const MAX_SESSIONS: usize = 256;
+/// The most sessions one process holds at once, absent
+/// `NOTEDTHAT_MCP_MAX_SESSIONS`. A `POST` that would open another — one
+/// carrying no `Mcp-Session-Id` — answers `503` until a session ends or idles
+/// out (five minutes, rmcp's default), so a client that keeps its session id
+/// costs one slot for as long as it is active.
+pub const DEFAULT_MAX_SESSIONS: usize = 256;
 
 /// The session header, as rmcp spells it.
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -60,6 +60,7 @@ pub struct McpHttpServiceConfig {
     allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
     cancellation_token: CancellationToken,
+    max_sessions: usize,
 }
 
 impl McpHttpServiceConfig {
@@ -89,7 +90,24 @@ impl McpHttpServiceConfig {
             allowed_hosts,
             allowed_origins,
             cancellation_token,
+            max_sessions: DEFAULT_MAX_SESSIONS,
         })
+    }
+
+    /// Hold at most `max_sessions` sessions in this process
+    /// (`NOTEDTHAT_MCP_MAX_SESSIONS`). The caller owns the number: this crate
+    /// reads no environment of its own, exactly as it takes its allow-lists
+    /// and cancellation token from the caller.
+    #[must_use]
+    pub fn with_max_sessions(mut self, max_sessions: usize) -> Self {
+        self.max_sessions = max_sessions;
+        self
+    }
+
+    /// The configured session bound.
+    #[must_use]
+    pub fn max_sessions(&self) -> usize {
+        self.max_sessions
     }
 
     /// rmcp's defaults are the stateful transport: sessions on, JSON-response
@@ -114,11 +132,49 @@ pub enum McpHttpServiceConfigError {
     EmptyAllowedOrigins,
 }
 
+/// rmcp's session table and the bound on how many of them this process holds:
+/// the state [`bind_session`] runs on.
+///
+/// rmcp is the only writer of the table itself; this type adds what rmcp holds
+/// no room for.
+#[derive(Debug)]
+pub struct McpSessions {
+    /// Handed to rmcp as its session manager, and read here to count sessions.
+    manager: Arc<LocalSessionManager>,
+    max_sessions: usize,
+}
+
+impl McpSessions {
+    fn new(max_sessions: usize) -> Self {
+        Self {
+            manager: Arc::new(LocalSessionManager::default()),
+            max_sessions,
+        }
+    }
+
+    /// The session table, for rmcp.
+    #[must_use]
+    pub fn manager(&self) -> Arc<LocalSessionManager> {
+        self.manager.clone()
+    }
+
+    /// The configured session bound.
+    #[must_use]
+    pub fn max_sessions(&self) -> usize {
+        self.max_sessions
+    }
+
+    /// Whether this process already holds as many sessions as it may.
+    async fn at_capacity(&self) -> bool {
+        self.manager.sessions.read().await.len() >= self.max_sessions
+    }
+}
+
 /// Reusable streamable HTTP service wrapper for `NotedThatMcp`.
 #[derive(Clone)]
 pub struct McpHttpService {
     inner: McpHttpInnerService,
-    sessions: Arc<LocalSessionManager>,
+    sessions: Arc<McpSessions>,
 }
 
 impl McpHttpService {
@@ -135,9 +191,9 @@ impl McpHttpService {
         let streamable_config = config.streamable_http_config();
         let events = events_enabled.then(|| config.cancellation_token.clone());
         let service_factory = move || Ok(NotedThatMcp::for_http(client.clone(), events.as_ref()));
-        let sessions = Arc::new(LocalSessionManager::default());
+        let sessions = Arc::new(McpSessions::new(config.max_sessions));
         let inner =
-            StreamableHttpService::new(service_factory, sessions.clone(), streamable_config);
+            StreamableHttpService::new(service_factory, sessions.manager(), streamable_config);
 
         Self { inner, sessions }
     }
@@ -147,9 +203,9 @@ impl McpHttpService {
         self.inner
     }
 
-    /// The session table, for [`admit_session`].
+    /// The session state, for [`bind_session`].
     #[must_use]
-    pub fn session_manager(&self) -> Arc<LocalSessionManager> {
+    pub fn sessions(&self) -> Arc<McpSessions> {
         self.sessions.clone()
     }
 
@@ -159,7 +215,7 @@ impl McpHttpService {
     }
 }
 
-/// Refuse to open a session past [`MAX_SESSIONS`].
+/// Refuse to open a session past the configured bound.
 ///
 /// Only a `POST` with no `Mcp-Session-Id` can open one (rmcp answers anything
 /// but `initialize` there with `422`), so that is the only request counted;
@@ -171,30 +227,37 @@ impl McpHttpService {
 /// concurrent sessionless `POST`s can all read a count below the limit and
 /// overshoot it by however many were in flight. Bounded by concurrency and
 /// harmless — the point is to stop unbounded growth, not to hold an exact
-/// number — but the constant reads like a hard cap and is not one. Making it
+/// number — but the setting reads like a hard cap and is not one. Making it
 /// exact means reserving a slot before rmcp creates the session and releasing
-/// it if rmcp does not, which is more machinery than the overshoot costs.
-pub async fn admit_session(
-    State(sessions): State<Arc<LocalSessionManager>>,
+/// it if rmcp does not, which is more machinery than the overshoot costs; it
+/// travels with the per-principal budget (#179).
+pub async fn bind_session(
+    State(sessions): State<Arc<McpSessions>>,
     request: Request,
     next: Next,
 ) -> Response {
     let opens_session = request.method() == axum::http::Method::POST
         && !request.headers().contains_key(SESSION_HEADER);
-    if opens_session && sessions.sessions.read().await.len() >= MAX_SESSIONS {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [
-                (header::CONTENT_TYPE, HeaderValue::from_static("application/json")),
-                (header::RETRY_AFTER, HeaderValue::from_static("5")),
-            ],
-            Body::from(format!(
-                r#"{{"error":"backend_unavailable","message":"this server holds its maximum of {MAX_SESSIONS} MCP sessions; retry when one ends"}}"#
-            )),
-        )
-            .into_response();
+    if opens_session && sessions.at_capacity().await {
+        return capacity_refusal(sessions.max_sessions());
     }
     next.run(request).await
+}
+
+/// The D38 capacity refusal: `503`, `Retry-After: 5`, and a body naming the
+/// bound the caller ran into.
+fn capacity_refusal(max_sessions: usize) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("application/json")),
+            (header::RETRY_AFTER, HeaderValue::from_static("5")),
+        ],
+        Body::from(format!(
+            r#"{{"error":"backend_unavailable","message":"this server holds its maximum of {max_sessions} MCP sessions; retry when one ends"}}"#
+        )),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -259,6 +322,17 @@ mod mcp_http_service {
 
         // Then: the rmcp config observes the same cancellation hook.
         assert!(service.config().cancellation_token.is_cancelled());
+    }
+
+    #[test]
+    fn the_session_bound_defaults_to_the_documented_two_hundred_and_fifty_six() {
+        // Given / When: a config that says nothing about the bound.
+        let config = test_config(CancellationToken::new());
+
+        // Then: the documented default, and a caller-supplied value is kept.
+        assert_eq!(DEFAULT_MAX_SESSIONS, 256);
+        assert_eq!(config.max_sessions(), DEFAULT_MAX_SESSIONS);
+        assert_eq!(config.with_max_sessions(7).max_sessions(), 7);
     }
 
     #[test]
@@ -342,21 +416,29 @@ mod caller_identity {
     }
 
     fn app(api_url: &str) -> Router {
+        app_parts(api_url, DEFAULT_MAX_SESSIONS).0
+    }
+
+    /// The router and the session state behind it, so a test can assert on
+    /// both — and with a session bound of its own, so the bound can be reached
+    /// in two `initialize`s rather than in two hundred and fifty-seven.
+    fn app_parts(api_url: &str, max_sessions: usize) -> (Router, Arc<McpSessions>) {
         let client = NotedThatClient::new(api_url, SERVICE_TOKEN).expect("client");
         let config = McpHttpServiceConfig::new(
             ["127.0.0.1", "localhost"],
             ["http://127.0.0.1:8080"],
             CancellationToken::new(),
         )
-        .expect("config");
+        .expect("config")
+        .with_max_sessions(max_sessions);
         let service = McpHttpService::new(client, &config, false);
-        let sessions = service.session_manager();
+        let sessions = service.sessions();
         let authenticator = Arc::new(Authenticator::new(SERVICE_TOKEN).with_token_verifier(
             Arc::new(StubTokenVerifier::default().accepting(ALICE_TOKEN, "alice", [])),
         ));
         // The same stack `notedthat-server` mounts: auth outermost, then the
         // session bound, then rmcp for POST, GET and DELETE.
-        Router::new().route(
+        let router = Router::new().route(
             "/mcp",
             on_service(
                 MethodFilter::GET
@@ -364,7 +446,10 @@ mod caller_identity {
                     .or(MethodFilter::DELETE),
                 service.into_service(),
             )
-            .route_layer(middleware::from_fn_with_state(sessions, admit_session))
+            .route_layer(middleware::from_fn_with_state(
+                sessions.clone(),
+                bind_session,
+            ))
             .route_layer(middleware::from_fn_with_state(
                 Arc::new(McpAuth {
                     authenticator,
@@ -372,7 +457,8 @@ mod caller_identity {
                 }),
                 authenticate_caller,
             )),
-        )
+        );
+        (router, sessions)
     }
 
     /// One `POST /mcp` as `bearer`, on `session` when there is one; the
@@ -477,13 +563,14 @@ mod caller_identity {
     }
 
     #[tokio::test]
-    async fn a_new_session_is_refused_above_the_bound() {
+    async fn a_new_session_is_refused_above_the_configured_bound() {
+        // Given: a process that may hold two sessions, holding two.
         let api = MockServer::start().await;
-        let app = app(&api.uri());
-        for _ in 0..MAX_SESSIONS {
-            open_session(&app, SERVICE_TOKEN).await;
-        }
+        let (app, _) = app_parts(&api.uri(), 2);
+        let first = open_session(&app, SERVICE_TOKEN).await;
+        open_session(&app, SERVICE_TOKEN).await;
 
+        // When: a third `initialize` arrives.
         let (response, _) = post(
             &app,
             SERVICE_TOKEN,
@@ -498,10 +585,20 @@ mod caller_identity {
             }),
         )
         .await;
+
+        // Then: the D38 capacity refusal, naming the configured bound rather
+        // than the default.
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()["retry-after"], "5");
 
-        // An existing session is not counted against anyone.
+        // And: the bound holds for new sessions only — an existing one still
+        // answers, while another `initialize` is still refused.
+        let call = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_knowledgebases", "arguments": {} },
+        });
+        let (existing, _) = post(&app, SERVICE_TOKEN, Some(&first), call).await;
+        assert_eq!(existing.status(), StatusCode::OK);
         let session = open_session_or_none(&app).await;
         assert!(session.is_none(), "the bound holds for new sessions only");
     }
