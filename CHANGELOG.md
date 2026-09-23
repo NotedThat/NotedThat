@@ -10,6 +10,35 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/NotedThat/NotedThat/compare/v0.9.0...v0.10.0) - 2026-09-23
+
+### Added
+
+- *(mcp)* resources/subscribe, unsubscribe and listChanged fed by the object change events
+- *(mcp)* [**breaking**] stateful streamable HTTP sessions at /mcp
+- *(core)* reconcile — the two-cursor comparison and a backend-agnostic ETag walk
+- *(storage-s3)* NOTEDTHAT_S3_RECONCILE switches the startup pass
+- *(storage-s3)* list_objects reports each object's ETag
+- *(api-http)* POST /knowledgebases/{kb}/index/reconcile for the service token
+- *(mcp)* incremental SSE frame parser
+- *(server)* reconcile every knowledge base against its bucket on the s3 backend
+
+### Fixed
+
+- address review on the s3 reconciliation pass
+- *(mcp)* the keeper's stand-down tests and releases under one lock
+- *(mcp)* stand the keeper down when the last subscription goes
+- *(mcp)* address review on subscriptions and the stateful transport
+
+### Other
+
+- *(mcp)* one MCP session client for every HTTP suite
+- record D66 — s3 reconciliation on startup and on demand
+- Merge pull request #173 from NotedThat/feat/s3-reconcile
+- *(storage-fs)* reconcile is a thin wrapper over core's comparison
+- record MCP resource subscriptions on stateful sessions as D66
+- *(server)* the s3 pass indexes, forgets and reports, with and without Docker
+
 ## [0.9.0](https://github.com/NotedThat/NotedThat/compare/v0.8.0...v0.9.0) - 2026-09-22
 
 ### Added

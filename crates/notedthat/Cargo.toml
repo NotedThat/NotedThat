@@ -22,7 +22,7 @@ path = "src/bin/notedthat-server.rs"
 dist = true
 
 [dependencies]
-notedthat-server = { path = "../notedthat-server", version = "0.9.0" }
+notedthat-server = { path = "../notedthat-server", version = "0.10.0" }
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
