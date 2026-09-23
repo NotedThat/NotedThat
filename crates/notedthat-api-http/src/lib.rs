@@ -3,6 +3,7 @@
 
 pub(crate) mod authz;
 pub mod error;
+pub mod metrics;
 pub mod middleware;
 pub mod readiness;
 pub mod router;

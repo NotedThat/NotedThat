@@ -543,7 +543,14 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
                 // What the server actually runs on, not `Config::events`:
                 // `run_with` takes its backends as given (D66).
                 state.events.is_some(),
-            )?);
+            )?)
+            // After the merges, deliberately: applied inside `build_router`'s
+            // own layer stack this would cover the API and the root routes
+            // only, because WebDAV and MCP are merged onto the app afterwards
+            // and a layer wraps what it was applied to (D68).
+            .layer(axum::middleware::from_fn(
+                notedthat_api_http::metrics::track_requests,
+            ));
 
         let graceful_shutdown = shutdown_token.clone();
         let signal_shutdown = shutdown_token.clone();

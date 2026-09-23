@@ -7,8 +7,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
+use notedthat_core::metrics::{label as metric_label, name as metric, outcome as metric_outcome};
 use notedthat_core::{Error as CoreError, KbSlug, Verb, search::SearchRequest};
 use notedthat_indexer::KeyPredicate;
+use std::time::Instant;
 
 use crate::{
     error::{ApiError, ApiErrorResponse},
@@ -89,17 +91,38 @@ pub async fn search_kb(
     } else {
         Some(&allows)
     };
-    let mut response = state
-        .searcher
-        .search(&kb, validated, key_filter)
-        .await
-        .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
+    // Timed here rather than inside the searcher: this is what the caller
+    // waited for, and the searcher's two legs are already visible on their own
+    // as `notedthat_embedding_*{phase="query"}` and
+    // `notedthat_vector_store_*{op="hybrid_search"}` (D68).
+    let started = Instant::now();
+    let searched = state.searcher.search(&kb, validated, key_filter).await;
+    metrics::histogram!(metric::SEARCH_DURATION, metric_label::KB => kb.as_str().to_string())
+        .record(started.elapsed().as_secs_f64());
+    metrics::counter!(
+        metric::SEARCH_REQUESTS,
+        metric_label::KB => kb.as_str().to_string(),
+        metric_label::OUTCOME => if searched.is_ok() {
+            metric_outcome::OK
+        } else {
+            metric_outcome::ERROR
+        },
+    )
+    .increment(1);
+    let mut response = searched.map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
     // The searcher is trusted to have applied the grant; this pass is the
     // backstop that turns a searcher which ignores it into a short page rather
     // than a leak. It costs at most `limit` pattern matches.
     response
         .hits
         .retain(|hit| filter.allows(hit.object_key.as_str()));
+    // Counted after the backstop, so the histogram reports what the caller was
+    // actually given. The `0` bucket is the interesting one: "this search
+    // returned nothing" is the report behind most claims that indexing is
+    // broken.
+    #[allow(clippy::cast_precision_loss)]
+    metrics::histogram!(metric::SEARCH_HITS, metric_label::KB => kb.as_str().to_string())
+        .record(response.hits.len() as f64);
 
     Ok((StatusCode::OK, Json(response)).into_response())
 }
