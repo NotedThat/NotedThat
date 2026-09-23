@@ -73,94 +73,30 @@ async fn mcp_read_line_range_returns_correct_slice() {
     // Given: MCP HTTP is enabled for a server containing a 20-line Markdown note.
     let server = fixture_server().await;
 
-    let initialize = mcp_request(
-        &server.client,
-        &server.mcp_url,
-        0,
-        "initialize",
-        serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "notedthat-line-range-e2e", "version": "0" }
-        }),
-    )
-    .await;
+    let mcp = notedthat_mcp::testing::McpSession::connect(&server.base_url, API_TOKEN);
+    let initialize = mcp.initialize().await;
     assert!(
         initialize.get("result").is_some(),
         "initialize should succeed before tools/call: {initialize}"
     );
 
     // When: the MCP read tool is invoked with line_start=2 and line_end=4.
-    let response = mcp_call_tool(
-        &server.client,
-        &server.mcp_url,
-        1,
-        "read",
-        serde_json::json!({
-            "kb": server.kb,
-            "path": "hello.md",
-            "line_start": 2,
-            "line_end": 4,
-        }),
-    )
-    .await;
+    let response = mcp
+        .call_tool(
+            1,
+            "read",
+            &serde_json::json!({
+                "kb": server.kb,
+                "path": "hello.md",
+                "line_start": 2,
+                "line_end": 4,
+            }),
+        )
+        .await;
 
     // Then: the tool content is the exact requested line slice.
     let text = response["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("MCP read response should contain text: {response}"));
     assert_eq!(text, LINES_2_TO_4);
-}
-
-async fn mcp_request(
-    client: &reqwest::Client,
-    mcp_url: &str,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let response = client
-        .post(mcp_url)
-        .header("Authorization", format!("Bearer {API_TOKEN}"))
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .expect("MCP HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "MCP HTTP {method} should succeed, got {}",
-        response.status()
-    );
-    response
-        .json::<serde_json::Value>()
-        .await
-        .expect("MCP HTTP response must be JSON")
-}
-
-async fn mcp_call_tool(
-    client: &reqwest::Client,
-    mcp_url: &str,
-    id: u64,
-    tool_name: &str,
-    arguments: serde_json::Value,
-) -> serde_json::Value {
-    mcp_request(
-        client,
-        mcp_url,
-        id,
-        "tools/call",
-        serde_json::json!({
-            "name": tool_name,
-            "arguments": arguments,
-        }),
-    )
-    .await
 }

@@ -53,6 +53,15 @@ fn resource_names(resources: &[Resource]) -> Vec<String> {
         .collect()
 }
 
+/// The handler's shape: the caller's knowledge bases first, then the page.
+async fn list_resources(
+    client: &NotedThatClient,
+    cursor: Option<String>,
+) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+    let kbs = client.list_kb_slugs().await?;
+    super::list_resources(client, &kbs, cursor).await
+}
+
 async fn collect_all(client: &NotedThatClient) -> Vec<Resource> {
     let mut cursor = None;
     let mut resources = Vec::new();

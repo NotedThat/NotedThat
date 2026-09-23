@@ -115,7 +115,10 @@ fn internal_http_api_url_uses_actual_bound_socket() {
     assert_eq!(internal_http_api_url(concrete), "http://192.0.2.10:49125");
 }
 
-async fn initialize_mcp(addr: SocketAddr) {
+/// `initialize` a session and hand back the `Mcp-Session-Id` header the
+/// stateful transport issues (`None` while the transport is stateless), so
+/// the hand-written request below can carry it.
+async fn initialize_mcp(addr: SocketAddr) -> Option<String> {
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
         .bearer_auth("test-token")
@@ -134,6 +137,11 @@ async fn initialize_mcp(addr: SocketAddr) {
         .await
         .expect("MCP initialize request should succeed");
     assert!(response.status().is_success());
+    response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 #[tokio::test]
@@ -184,6 +192,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
                 &std::collections::BTreeMap::new(),
                 &internal_http_api_url(backend_addr),
                 mcp_shutdown,
+                false,
             )
             .expect("MCP router should build"),
         );
@@ -203,7 +212,9 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
             .expect("surface request should succeed");
         assert_eq!(response.text().await.expect("response has body"), expected);
     }
-    initialize_mcp(addr).await;
+    let session = initialize_mcp(addr)
+        .await
+        .map_or(String::new(), |id| format!("Mcp-Session-Id: {id}\r\n"));
 
     let mut mcp_connection = TcpStream::connect(addr)
         .await
@@ -216,7 +227,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
     })
     .to_string();
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer test-token\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer test-token\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{session}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
         body.len()
     );
     mcp_connection

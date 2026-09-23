@@ -18,23 +18,26 @@ struct M8Cursor {
 }
 
 #[derive(Debug, Deserialize)]
-struct ListObjectsResponse {
-    objects: Vec<ObjectMeta>,
-    next_cursor: Option<String>,
+pub(crate) struct ListObjectsResponse {
+    pub(crate) objects: Vec<ObjectMeta>,
+    pub(crate) next_cursor: Option<String>,
 }
 
+/// One page of the caller's resources across `kbs` — the knowledge bases
+/// `list_kb_slugs` named for this caller — from `cursor`.
 pub async fn list_resources(
     client: &NotedThatClient,
+    kbs: &[String],
     cursor: Option<String>,
 ) -> Result<ListResourcesResult, McpError> {
-    let kbs = client.list_kb_slugs().await?;
-    let Some(position) = start_position(&kbs, cursor)? else {
+    let Some(position) = start_position(kbs, cursor)? else {
         return Ok(ListResourcesResult::default());
     };
 
     let page = list_objects(
         client,
         &position.kb_slug,
+        None,
         position.backend_cursor.as_deref(),
     )
     .await?;
@@ -48,7 +51,7 @@ pub async fn list_resources(
             kb_slug: position.kb_slug,
             backend_cursor: Some(backend_cursor),
         })?),
-        None => next_kb_after(&kbs, &position.kb_slug)
+        None => next_kb_after(kbs, &position.kb_slug)
             .map(|kb_slug| {
                 encode_cursor(&M8Cursor {
                     kb_slug: kb_slug.to_string(),
@@ -65,13 +68,19 @@ pub async fn list_resources(
     })
 }
 
-async fn list_objects(
+/// One page of `GET /api/v1/knowledgebases/{kb}` as the caller, optionally
+/// narrowed to keys starting with `prefix`.
+pub(crate) async fn list_objects(
     client: &NotedThatClient,
     kb_slug: &str,
+    prefix: Option<&str>,
     cursor: Option<&str>,
 ) -> Result<ListObjectsResponse, McpError> {
     let url = client.api_v1_url(&["knowledgebases", kb_slug]);
     let mut query = Vec::new();
+    if let Some(prefix) = prefix {
+        query.push(("prefix", prefix));
+    }
     if let Some(cursor) = cursor {
         query.push(("cursor", cursor));
     }
@@ -104,6 +113,26 @@ fn start_position(kbs: &[String], cursor: Option<String>) -> Result<Option<M8Cur
             backend_cursor: None,
         })),
     }
+}
+
+/// Which knowledge base a page of [`list_resources`] covers, given the cursor
+/// that asked for it.
+///
+/// A page is one knowledge base's objects, never a mix, so this names exactly
+/// what the page will list. The subscription layer watches that one for
+/// `list_changed` rather than every knowledge base the caller can see: a client
+/// that lists one page has only been shown one knowledge base, and starting a
+/// loopback event stream for the other nineteen costs a held-open connection
+/// each, per session, that nothing asked for and only ending the session stops.
+///
+/// # Errors
+///
+/// The same invalid-cursor error [`list_resources`] would answer with.
+pub(crate) fn kb_for_page(
+    kbs: &[String],
+    cursor: Option<&str>,
+) -> Result<Option<String>, McpError> {
+    Ok(start_position(kbs, cursor.map(str::to_owned))?.map(|position| position.kb_slug))
 }
 
 fn next_kb_after<'a>(kbs: &'a [String], kb_slug: &str) -> Option<&'a str> {

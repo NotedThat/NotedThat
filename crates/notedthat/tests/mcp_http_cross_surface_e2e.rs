@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use notedthat_mcp::testing::McpSession;
+
 /// How long to wait for the server to bind after startup begins.
 ///
 /// Provisioning is in-process now, so this is generous by a wide margin; it
@@ -159,56 +161,21 @@ async fn wait_for_http(url: &str, timeout: Duration) {
 }
 
 async fn mcp_request(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &McpSession,
     id: u64,
     method: &str,
     params: serde_json::Value,
 ) -> serde_json::Value {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let response = client
-        .post(mcp_url)
-        .header("Authorization", format!("Bearer {API_TOKEN}"))
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .expect("MCP HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "MCP HTTP {method} should succeed, got {}",
-        response.status()
-    );
-    response
-        .json::<serde_json::Value>()
-        .await
-        .expect("MCP HTTP response must be JSON")
+    mcp.request(id, method, &params).await
 }
 
 async fn mcp_call_tool(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &McpSession,
     id: u64,
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    mcp_request(
-        client,
-        mcp_url,
-        id,
-        "tools/call",
-        serde_json::json!({
-            "name": tool_name,
-            "arguments": arguments,
-        }),
-    )
-    .await
+    mcp.call_tool(id, tool_name, &arguments).await
 }
 
 fn mcp_json_content(response: &serde_json::Value) -> serde_json::Value {
@@ -223,8 +190,7 @@ fn mcp_json_content(response: &serde_json::Value) -> serde_json::Value {
 }
 
 async fn poll_mcp_search_hit(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &McpSession,
     phrase: &str,
     timeout: Duration,
 ) -> Option<serde_json::Value> {
@@ -236,8 +202,7 @@ async fn poll_mcp_search_hit(
         }
 
         let response = mcp_call_tool(
-            client,
-            mcp_url,
+            mcp,
             id,
             "search",
             serde_json::json!({
@@ -280,15 +245,12 @@ async fn mcp_http_initialize_tools() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let mcp = McpSession::connect(&format!("http://{http_addr}"), API_TOKEN);
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
-
-    let client = reqwest::Client::new();
 
     // When: an authenticated MCP Streamable HTTP client initializes and lists tools.
     let initialize = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         0,
         "initialize",
         serde_json::json!({
@@ -321,7 +283,7 @@ async fn mcp_http_initialize_tools() {
         "M8 resources capability should be an empty object"
     );
 
-    let tools_list = mcp_request(&client, &mcp_url, 1, "tools/list", serde_json::json!({})).await;
+    let tools_list = mcp_request(&mcp, 1, "tools/list", serde_json::json!({})).await;
     let tools = tools_list["result"]["tools"]
         .as_array()
         .expect("tools/list result must contain tools array");
@@ -358,10 +320,9 @@ async fn mcp_http_write_search_identity() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let mcp = McpSession::connect(&format!("http://{http_addr}"), API_TOKEN);
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
-    let client = reqwest::Client::new();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time should be after unix epoch")
@@ -370,8 +331,7 @@ async fn mcp_http_write_search_identity() {
     let content = format!("# MCP HTTP identity\n\n{phrase}\n");
 
     let initialize = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         0,
         "initialize",
         serde_json::json!({
@@ -388,8 +348,7 @@ async fn mcp_http_write_search_identity() {
 
     // When: a note is written via MCP HTTP and queried via the MCP HTTP search tool.
     let write_response = mcp_call_tool(
-        &client,
-        &mcp_url,
+        &mcp,
         1,
         "write",
         serde_json::json!({
@@ -405,7 +364,7 @@ async fn mcp_http_write_search_identity() {
         "MCP HTTP write should succeed: {write_response}"
     );
 
-    let found_hit = poll_mcp_search_hit(&client, &mcp_url, &phrase, Duration::from_secs(40)).await;
+    let found_hit = poll_mcp_search_hit(&mcp, &phrase, Duration::from_secs(40)).await;
     let hit = found_hit.expect("MCP HTTP search should return the written phrase within 40 s");
 
     // Then: the returned identity is the exact object and a valid byte coordinate range.
@@ -431,8 +390,7 @@ async fn mcp_http_write_search_identity() {
 /// Poll MCP `search` with `arguments` until `ready` accepts the answer, or
 /// give up at `timeout`. A JSON-RPC error is never accepted.
 async fn poll_mcp_search_until(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &McpSession,
     arguments: serde_json::Value,
     timeout: Duration,
     ready: impl Fn(&serde_json::Value) -> bool,
@@ -443,7 +401,7 @@ async fn poll_mcp_search_until(
         if tokio::time::Instant::now() > deadline {
             return None;
         }
-        let response = mcp_call_tool(client, mcp_url, id, "search", arguments.clone()).await;
+        let response = mcp_call_tool(mcp, id, "search", arguments.clone()).await;
         id += 1;
         if response.get("error").is_none() {
             let answer = mcp_json_content(&response);
@@ -467,7 +425,7 @@ async fn mcp_http_search_spans_knowledge_bases() {
             .expect("server run failed");
     });
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let mcp = McpSession::connect(&format!("http://{http_addr}"), API_TOKEN);
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -483,8 +441,7 @@ async fn mcp_http_search_spans_knowledge_bases() {
         assert!(put.status().is_success(), "PUT into {kb}: {}", put.status());
     }
     let initialize = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         0,
         "initialize",
         serde_json::json!({
@@ -507,8 +464,7 @@ async fn mcp_http_search_spans_knowledge_bases() {
 
     // When: one call names both knowledge bases, beta first
     let answer = poll_mcp_search_until(
-        &client,
-        &mcp_url,
+        &mcp,
         serde_json::json!({"kb": ["beta", "alpha"], "query": "definition of a document", "limit": 5}),
         Duration::from_secs(40),
         both_have_a_hit,
@@ -529,8 +485,7 @@ async fn mcp_http_search_spans_knowledge_bases() {
 
     // When: the list names a knowledge base the server has not declared
     let refused = mcp_call_tool(
-        &client,
-        &mcp_url,
+        &mcp,
         1,
         "search",
         serde_json::json!({"kb": ["alpha", "nope"], "query": "definition of a document"}),
@@ -546,8 +501,7 @@ async fn mcp_http_search_spans_knowledge_bases() {
 
     // When: the call names no knowledge base at all
     let answer = poll_mcp_search_until(
-        &client,
-        &mcp_url,
+        &mcp,
         serde_json::json!({"query": "definition of a document"}),
         Duration::from_secs(10),
         both_have_a_hit,
@@ -703,26 +657,71 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
         "POST /sse body must be exact SSE refusal JSON"
     );
 
-    let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
-    let status = resp.status().as_u16();
-    let body = resp.text().await.expect("failed to read GET /mcp body");
-    assert_eq!(status, 405, "GET /mcp must return 405; body: {body:?}");
-    assert_eq!(
-        body, EXACT_SSE_REFUSAL_BODY,
-        "GET /mcp body must be exact SSE refusal JSON"
-    );
+    //    GET and DELETE /mcp are the stateful transport's own (D66): the
+    //    notification leg and the session end. Auth is outermost, so without a
+    //    credential they are 401 like POST; with one, rmcp wants a session —
+    //    400 without the header, 404 for an id it never issued.
+    for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("unauthenticated /mcp");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "{method} /mcp without a credential"
+        );
 
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("sessionless /mcp");
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "{method} /mcp without a session"
+        );
+
+        let resp = client
+            .request(method.clone(), &mcp_url)
+            .header("Authorization", format!("Bearer {API_TOKEN}"))
+            .header("Accept", "text/event-stream")
+            .header("Mcp-Session-Id", "no-such-session")
+            .send()
+            .await
+            .expect("bogus-session /mcp");
+        let expected = if method == reqwest::Method::GET {
+            404
+        } else {
+            202
+        };
+        assert_eq!(
+            resp.status().as_u16(),
+            expected,
+            "{method} /mcp with an unknown session"
+        );
+    }
+
+    //    A request on no session, other than initialize, is refused by the
+    //    transport before any handler runs.
     let resp = client
-        .delete(&mcp_url)
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
         .send()
         .await
-        .expect("DELETE /mcp failed");
-    let status = resp.status().as_u16();
-    let body = resp.text().await.expect("failed to read DELETE /mcp body");
-    assert_eq!(status, 405, "DELETE /mcp must return 405; body: {body:?}");
+        .expect("sessionless tools/list");
     assert_eq!(
-        body, EXACT_SSE_REFUSAL_BODY,
-        "DELETE /mcp body must be exact SSE refusal JSON"
+        resp.status().as_u16(),
+        422,
+        "a non-initialize POST without Mcp-Session-Id"
     );
 
     //    Uses valid auth so the request reaches rmcp's Origin-validation layer.
@@ -784,7 +783,7 @@ async fn mcp_resources_list_and_read() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let mcp = McpSession::connect(&format!("http://{http_addr}"), API_TOKEN);
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -795,8 +794,7 @@ async fn mcp_resources_list_and_read() {
         for i in 0..OBJECTS_PER_KB {
             req_id += 1;
             let resp = mcp_request(
-                &client,
-                &mcp_url,
+                &mcp,
                 req_id,
                 "tools/call",
                 serde_json::json!({
@@ -858,7 +856,7 @@ async fn mcp_resources_list_and_read() {
             Some(c) => serde_json::json!({ "cursor": c }),
             None => serde_json::json!({}),
         };
-        let resp = mcp_request(&client, &mcp_url, req_id, "resources/list", params).await;
+        let resp = mcp_request(&mcp, req_id, "resources/list", params).await;
         assert!(
             resp["error"].is_null(),
             "resources/list returned JSON-RPC error on page {page_count}: {resp}"
@@ -930,8 +928,7 @@ async fn mcp_resources_list_and_read() {
     let md_uri = "notedthat://alpha/obj-0000.md";
     req_id += 1;
     let read_md = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         req_id,
         "resources/read",
         serde_json::json!({ "uri": md_uri }),
@@ -967,8 +964,7 @@ async fn mcp_resources_list_and_read() {
     let bin_uri = format!("notedthat://{BINARY_KB}/{BINARY_KEY}");
     req_id += 1;
     let read_bin = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         req_id,
         "resources/read",
         serde_json::json!({ "uri": bin_uri }),
@@ -1019,7 +1015,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     });
 
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let mcp = McpSession::connect(&format!("http://{http_addr}"), API_TOKEN);
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
     let client = reqwest::Client::new();
@@ -1045,8 +1041,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
 
     // Initialize MCP.
     let initialize = mcp_request(
-        &client,
-        &mcp_url,
+        &mcp,
         0,
         "initialize",
         serde_json::json!({
@@ -1063,8 +1058,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
 
     // When: MCP replace tool is called with the first ETag.
     let replace_response = mcp_call_tool(
-        &client,
-        &mcp_url,
+        &mcp,
         1,
         "replace",
         serde_json::json!({
@@ -1103,8 +1097,7 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
     // And over the HTTP transport too, a read's structuredContent names the
     // version its text came from — the one the replace just produced.
     let read_response = mcp_call_tool(
-        &client,
-        &mcp_url,
+        &mcp,
         2,
         "read",
         serde_json::json!({ "kb": "notes", "path": "mcp-replace.md" }),
@@ -1138,46 +1131,23 @@ async fn mcp_replace_after_http_write_updates_content_and_advances_etag() {
 
 // ─── Anonymous MCP (D59) ─────────────────────────────────────────────────────
 
-/// A `POST /mcp` with no `Authorization` header at all.
+/// A `POST /mcp` with no `Authorization` header at all; the raw answer.
 async fn anonymous_mcp(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    anon: &McpSession,
     id: u64,
     method: &str,
     params: serde_json::Value,
 ) -> reqwest::Response {
-    client
-        .post(mcp_url)
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        }))
-        .send()
-        .await
-        .expect("anonymous MCP request")
+    anon.send(id, method, &params).await
 }
 
 async fn anonymous_tool_call(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    anon: &McpSession,
     id: u64,
     tool: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    let response = anonymous_mcp(
-        client,
-        mcp_url,
-        id,
-        "tools/call",
-        serde_json::json!({ "name": tool, "arguments": arguments }),
-    )
-    .await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK, "{tool}");
-    response.json().await.expect("JSON-RPC body")
+    anon.call_tool(id, tool, &arguments).await
 }
 
 /// Two knowledge bases whose manifests are written before the server starts,
@@ -1212,7 +1182,13 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
     // Given: a deployment with one public and one private knowledge base
     let http_addr = notedthat_api_http::testing::reserve_addr();
     let config = test_config_with_kbs_and_mcp_http(&["public", "private"], http_addr);
-    let backends = in_memory_backends();
+    // With an event log, so the anonymous session may subscribe (D66).
+    let backends = notedthat_server::run::Backends {
+        events: Some(std::sync::Arc::new(notedthat_events::MemoryPublisher::new(
+            64,
+        ))),
+        ..in_memory_backends()
+    };
     seed_public_and_private(&backends).await;
     let server_handle = tokio::spawn(async move {
         notedthat_server::run::run_with(config, backends)
@@ -1221,6 +1197,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
     });
     let http_url = format!("http://{http_addr}");
     let mcp_url = format!("http://{http_addr}/mcp");
+    let anon = McpSession::anonymous(&format!("http://{http_addr}"));
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
     let client = reqwest::Client::new();
     // One note in each, written through the API so that it is indexed too.
@@ -1239,12 +1216,15 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         assert_eq!(response.status(), reqwest::StatusCode::CREATED, "{kb}");
     }
 
-    // When / Then: capability discovery needs no credential
-    let response = anonymous_mcp(&client, &mcp_url, 1, "initialize", serde_json::json!({})).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK, "initialize");
-    let response = anonymous_mcp(&client, &mcp_url, 2, "tools/list", serde_json::json!({})).await;
-    assert_eq!(response.status(), reqwest::StatusCode::OK, "tools/list");
-    let tools: serde_json::Value = response.json().await.expect("tools/list body");
+    // When / Then: capability discovery needs no credential — an anonymous
+    // client opens a session like any other
+    let initialized = anon.initialize().await;
+    assert!(
+        initialized.get("result").is_some(),
+        "initialize: {initialized}"
+    );
+    assert!(anon.session_id().is_some(), "a session was issued");
+    let tools = anon.request(2, "tools/list", &serde_json::json!({})).await;
     assert_eq!(
         tools["result"]["tools"].as_array().map(Vec::len),
         Some(EXPECTED_M7_TOOLS.split(',').count()),
@@ -1252,14 +1232,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
     );
 
     // Then: discovery names only the knowledge base that grants anyone something
-    let listed = anonymous_tool_call(
-        &client,
-        &mcp_url,
-        3,
-        "list_knowledgebases",
-        serde_json::json!({}),
-    )
-    .await;
+    let listed = anonymous_tool_call(&anon, 3, "list_knowledgebases", serde_json::json!({})).await;
     // Slugs only: an entry may carry more fields (#155 adds `display_name`
     // and `description`); what matters here is which knowledge bases appear.
     let entries = mcp_json_content(&listed);
@@ -1273,8 +1246,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
 
     // Then: read and list succeed where `anyone` holds the verb …
     let read = anonymous_tool_call(
-        &client,
-        &mcp_url,
+        &anon,
         4,
         "read",
         serde_json::json!({ "kb": "public", "path": "note.md" }),
@@ -1286,14 +1258,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
             .is_some_and(|text| text.contains("readable by anyone")),
         "{read}"
     );
-    let list = anonymous_tool_call(
-        &client,
-        &mcp_url,
-        5,
-        "list",
-        serde_json::json!({ "kb": "public" }),
-    )
-    .await;
+    let list = anonymous_tool_call(&anon, 5, "list", serde_json::json!({ "kb": "public" })).await;
     assert_eq!(
         mcp_json_content(&list)["objects"][0]["key"],
         serde_json::json!("note.md"),
@@ -1315,7 +1280,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
             serde_json::json!({ "kb": "undeclared", "path": "note.md" }),
         ),
     ] {
-        let denied = anonymous_tool_call(&client, &mcp_url, id, tool, arguments).await;
+        let denied = anonymous_tool_call(&anon, id, tool, arguments).await;
         assert_eq!(
             denied["error"]["code"],
             serde_json::json!(-32002),
@@ -1333,8 +1298,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
     let deadline = tokio::time::Instant::now() + SERVER_READY_TIMEOUT;
     let searched = loop {
         let answer = anonymous_tool_call(
-            &client,
-            &mcp_url,
+            &anon,
             9,
             "search",
             serde_json::json!({ "query": "readable by anyone", "limit": 5 }),
@@ -1368,8 +1332,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
 
     // Then: a mutating tool is refused — its route admits no anonymous caller
     let write = anonymous_tool_call(
-        &client,
-        &mcp_url,
+        &anon,
         10,
         "write",
         serde_json::json!({ "kb": "public", "path": "new.md", "content": "# no" }),
@@ -1386,6 +1349,45 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         reqwest::StatusCode::NOT_FOUND,
         "nothing was written"
     );
+
+    // Then: a subscription follows the same rules (D66) — the public note may
+    // be subscribed to and reports the next write; the private one is the
+    // concealed not_found, exactly as `read` answers it
+    let mut notifications = anon.notifications().await;
+    let subscribed = anon
+        .request(
+            11,
+            "resources/subscribe",
+            &serde_json::json!({ "uri": "notedthat://public/note.md" }),
+        )
+        .await;
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+    let refused = anon
+        .request(
+            12,
+            "resources/subscribe",
+            &serde_json::json!({ "uri": "notedthat://private/note.md" }),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32002, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("not_found")),
+        "concealed like read: {refused}"
+    );
+    let response = client
+        .put(format!("{http_url}/api/v1/knowledgebases/public/note.md"))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .header("Content-Type", "text/markdown")
+        .body("# Public\n\nedited\n")
+        .send()
+        .await
+        .expect("PUT");
+    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    let notified = notifications.next(Duration::from_secs(5)).await;
+    assert_eq!(notified["method"], "notifications/resources/updated");
+    assert_eq!(notified["params"]["uri"], "notedthat://public/note.md");
 
     // Then: a supplied credential that does not verify is refused outright,
     // never quietly downgraded to the anonymous caller
@@ -1419,12 +1421,12 @@ async fn never_keeps_mcp_credentialed_on_a_public_deployment() {
             .expect("server run failed");
     });
     let http_url = format!("http://{http_addr}");
-    let mcp_url = format!("http://{http_addr}/mcp");
+    let anon = McpSession::anonymous(&format!("http://{http_addr}"));
     wait_for_http(&format!("{http_url}/healthz"), SERVER_READY_TIMEOUT).await;
     let client = reqwest::Client::new();
 
     // When: an anonymous client tries to discover the tools
-    let response = anonymous_mcp(&client, &mcp_url, 1, "tools/list", serde_json::json!({})).await;
+    let response = anonymous_mcp(&anon, 1, "tools/list", serde_json::json!({})).await;
 
     // Then: 401 — the challenge an OAuth-capable client needs — although the
     // same request on the HTTP API succeeds, because the rules did not change

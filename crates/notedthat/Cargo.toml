@@ -35,6 +35,10 @@ notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"]
 # `test-support` exposes `run::run_with`, which the cross-surface fixtures use
 # to start a real server over in-memory backends.
 notedthat-server = { path = "../notedthat-server", features = ["test-support"] }
+# `test-support` carries the MCP session client every `/mcp` suite drives.
+notedthat-mcp = { path = "../notedthat-mcp", features = ["test-support"] }
+# The memory event log, for the suites that subscribe to resources over MCP.
+notedthat-events = { path = "../notedthat-events" }
 notedthat-core = { path = "../notedthat-core" }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
 serde_json = { workspace = true }

@@ -15,29 +15,55 @@ mod write;
 use crate::auth::Caller;
 use crate::client::NotedThatClient;
 use crate::error::McpToolError;
+use crate::subscriptions::{Subscriptions, probe_listable};
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
     model::{
         CallToolResult, Extensions, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResult, ServerInfo,
+        ReadResourceRequestParams, ReadResourceResult, ServerInfo, SubscribeRequestMethod,
+        SubscribeRequestParams, UnsubscribeRequestMethod, UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
 };
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// MCP tool handler backed by the `NotedThat` HTTP API.
-#[derive(Clone)]
+///
+/// One instance per session (the stateful transport creates it at
+/// `initialize`), so what it owns is per-session state: the resource
+/// subscriptions, when the deployment can feed them. Deliberately not
+/// `Clone` — a stray copy would keep the subscriptions alive past the session.
 pub struct NotedThatMcp {
     client: NotedThatClient,
+    /// `Some` when an events backend is configured: the session may subscribe
+    /// to resources, and `initialize` says so (D66). `None` otherwise, and
+    /// `resources/subscribe` is `method_not_found`, like the capability it
+    /// did not advertise.
+    subscriptions: Option<Arc<Subscriptions>>,
 }
 
 impl NotedThatMcp {
     /// A handler for the streamable HTTP transport: every call acts as the
     /// bearer the auth middleware accepted, and a call that carries none is
-    /// refused rather than run as `client`'s token.
-    pub fn for_http(client: NotedThatClient) -> Self {
-        Self { client }
+    /// refused rather than run as `client`'s token. With `events`, the
+    /// session may subscribe to resources; its forwarders stop when that
+    /// token is cancelled or the session ends, whichever comes first.
+    pub fn for_http(client: NotedThatClient, events: Option<&CancellationToken>) -> Self {
+        Self {
+            client,
+            subscriptions: events.map(Subscriptions::new),
+        }
+    }
+
+    /// The session's subscriptions, or the error a client gets for using a
+    /// capability the server did not advertise.
+    fn subscriptions<M: rmcp::model::ConstString>(&self) -> Result<&Arc<Subscriptions>, McpError> {
+        self.subscriptions
+            .as_ref()
+            .ok_or_else(McpError::method_not_found::<M>)
     }
 
     /// The API client for one call: the caller's own credential when the
@@ -194,16 +220,34 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         }))
     }
 
+    /// List resources — and watch the knowledge base each page named for
+    /// `list_changed` (D66): a client that never listed cannot be surprised by
+    /// a change, so nothing is watched before, and a client that listed one
+    /// page has been shown one knowledge base, so only that one is watched.
+    ///
+    /// Each watch is a `GET …/events` stream held open against the loopback API
+    /// for the life of the session, so watching every knowledge base the caller
+    /// *could* see — which is what this used to do, on the first page — cost
+    /// `sessions × knowledge bases` internal streams for a client that asked
+    /// for one page.
     async fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        crate::resources_list::list_resources(
-            &self.client_for(&context.extensions)?,
-            request.and_then(|params| params.cursor),
-        )
-        .await
+        let client = self.client_for(&context.extensions)?;
+        let kbs = client.list_kb_slugs().await?;
+        let cursor = request.and_then(|params| params.cursor);
+        let listed = crate::resources_list::kb_for_page(&kbs, cursor.as_deref())?;
+        let result = crate::resources_list::list_resources(&client, &kbs, cursor).await?;
+        if let Some(subscriptions) = &self.subscriptions
+            && let Some(listed) = listed
+        {
+            subscriptions
+                .watch_list_changes(std::slice::from_ref(&listed), &client, &context.peer)
+                .await;
+        }
+        Ok(result)
     }
 
     async fn read_resource(
@@ -215,18 +259,66 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
             .await
     }
 
+    /// Subscribe to a `notedthat://` resource (D66): the key is probed as
+    /// the caller — may it `list` it? — so a subscription that is accepted is
+    /// one the events route will feed, and one it would not feed is refused
+    /// the way `resources/read` refuses: `forbidden`, or the concealed
+    /// `not_found`.
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        let subscriptions = self.subscriptions::<SubscribeRequestMethod>()?;
+        let client = self.client_for(&context.extensions)?;
+        let parsed = crate::resources_read::parse_resource_uri(&request.uri)?;
+        probe_listable(&client, &parsed.kb_slug, &parsed.object_key).await?;
+        subscriptions
+            .subscribe(
+                &parsed.kb_slug,
+                &parsed.object_key,
+                &request.uri,
+                &client,
+                &context.peer,
+            )
+            .await
+    }
+
+    /// Forget a subscription; idempotent, and never an error for a URI that
+    /// was never subscribed. Nothing here waits, so no `async fn`.
+    fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<(), McpError>> + Send + '_ {
+        let outcome = self
+            .subscriptions::<UnsubscribeRequestMethod>()
+            .and_then(|subscriptions| {
+                let parsed = crate::resources_read::parse_resource_uri(&request.uri)?;
+                subscriptions.unsubscribe(&parsed.kb_slug, &parsed.object_key);
+                Ok(())
+            });
+        std::future::ready(outcome)
+    }
+
     /// Override `get_info` to advertise both tools and resources capabilities.
     ///
-    /// Without this override the `#[tool_handler]` macro would generate a `get_info` that only
-    /// includes `enable_tools()`. Adding `enable_resources()` causes the MCP `initialize` response
-    /// to include `"resources": {}` (no `subscribe`, no `listChanged`).
+    /// Without this override the `#[tool_handler]` macro would generate a
+    /// `get_info` that only includes `enable_tools()`. `enable_resources()`
+    /// makes `initialize` include `resources`; `subscribe` and `listChanged`
+    /// are advertised exactly when an events backend can feed them (D66).
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            rmcp::model::ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-        )
+        let capabilities = rmcp::model::ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources();
+        let capabilities = if self.subscriptions.is_some() {
+            capabilities
+                .enable_resources_subscribe()
+                .enable_resources_list_changed()
+        } else {
+            capabilities
+        };
+        ServerInfo::new(capabilities.build())
     }
 }
 
@@ -261,7 +353,7 @@ mod client_for {
     #[test]
     fn http_call_acts_as_its_caller() {
         // Given: an HTTP handler and a call the middleware accepted
-        let handler = NotedThatMcp::for_http(client());
+        let handler = NotedThatMcp::for_http(client(), None);
 
         // When: the client for that call is picked
         let picked = handler
@@ -276,7 +368,7 @@ mod client_for {
     fn anonymous_http_call_carries_no_token() {
         // Given: an HTTP handler and a call the middleware admitted as the
         // anonymous caller
-        let handler = NotedThatMcp::for_http(client());
+        let handler = NotedThatMcp::for_http(client(), None);
 
         // When: the client for that call is picked
         let picked = handler
@@ -292,7 +384,7 @@ mod client_for {
     fn http_call_without_a_caller_token_is_refused() {
         // Given: an HTTP handler and a call whose request the middleware
         // never saw, so no Caller was left in it
-        let handler = NotedThatMcp::for_http(client());
+        let handler = NotedThatMcp::for_http(client(), None);
 
         // When: the client for that call is picked
         let refused = handler.client_for(&http_call(None)).unwrap_err();
@@ -305,7 +397,7 @@ mod client_for {
     #[test]
     fn http_call_without_request_parts_is_refused() {
         // Given: an HTTP handler and a call with no HTTP request at all
-        let handler = NotedThatMcp::for_http(client());
+        let handler = NotedThatMcp::for_http(client(), None);
 
         // When: the client for that call is picked
         let refused = handler.client_for(&Extensions::new()).unwrap_err();
@@ -339,13 +431,13 @@ mod resources_shared {
     }
 
     fn handler(url: &str) -> NotedThatMcp {
-        NotedThatMcp::for_http(client(url))
+        NotedThatMcp::for_http(client(url), None)
     }
 
     // ── Capability advertisement ─────────────────────────────────────────────
 
     #[test]
-    fn initialize_includes_resources_no_subscribe_no_list_changed() {
+    fn initialize_includes_resources_without_subscribe_or_list_changed_when_no_events_backend() {
         let h = handler("http://localhost:8080");
         let info = h.get_info();
         let resources = info
@@ -360,6 +452,19 @@ mod resources_shared {
             resources.list_changed.is_none(),
             "resources.listChanged must be absent from capabilities"
         );
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_subscribe_and_list_changed_with_an_events_backend() {
+        let shutdown = CancellationToken::new();
+        let h = NotedThatMcp::for_http(client("http://localhost:8080"), Some(&shutdown));
+        let resources = h
+            .get_info()
+            .capabilities
+            .resources
+            .expect("resources capability");
+        assert_eq!(resources.subscribe, Some(true));
+        assert_eq!(resources.list_changed, Some(true));
     }
 
     #[test]
@@ -522,7 +627,9 @@ mod resources_shared {
             .mount(&server)
             .await;
 
-        let result = crate::resources_list::list_resources(&client(&server.uri()), None).await;
+        let client = client(&server.uri());
+        let kbs = client.list_kb_slugs().await.expect("kbs");
+        let result = crate::resources_list::list_resources(&client, &kbs, None).await;
         assert!(
             result.is_ok(),
             "resources/list must succeed: {:?}",

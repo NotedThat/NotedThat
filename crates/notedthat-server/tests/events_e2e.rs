@@ -436,8 +436,7 @@ async fn mcp_writes_are_attributed_to_mcp_and_the_header_is_informational() {
     let mut sub = subscribe(&server, "").await;
 
     let result = mcp_call_tool(
-        &server.client,
-        &server.mcp_url,
+        &server.mcp,
         1,
         "write",
         serde_json::json!({
@@ -453,8 +452,7 @@ async fn mcp_writes_are_attributed_to_mcp_and_the_header_is_informational() {
     assert_eq!(frames[0].source(), "mcp");
 
     let result = mcp_call_tool(
-        &server.client,
-        &server.mcp_url,
+        &server.mcp,
         2,
         "delete",
         serde_json::json!({ "kb": server.kb, "path": "mcp/note.md" }),

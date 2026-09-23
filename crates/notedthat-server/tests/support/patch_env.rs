@@ -28,6 +28,10 @@ pub struct PatchServer {
     pub client: reqwest::Client,
     pub base_url: String,
     pub mcp_url: String,
+    /// One MCP session as the service token, shared by every tool call a test
+    /// makes: the stateful transport binds a session per `initialize`, and a
+    /// suite should not open one per call.
+    pub mcp: notedthat_mcp::testing::McpSession,
     pub kb: String,
     server_handle: JoinHandle<()>,
 }
@@ -68,10 +72,12 @@ impl PatchServer {
 
         wait_for_http(&format!("{base_url}/healthz"), SERVER_READY_TIMEOUT).await;
 
+        let mcp = notedthat_mcp::testing::McpSession::connect(&base_url, API_TOKEN);
         Self {
             client: reqwest::Client::new(),
             base_url,
             mcp_url,
+            mcp,
             kb: runtime.kb,
             server_handle,
         }
@@ -241,52 +247,21 @@ pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -
 }
 
 pub async fn mcp_request(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &notedthat_mcp::testing::McpSession,
     id: u64,
     method: &str,
     params: serde_json::Value,
 ) -> serde_json::Value {
-    let response = client
-        .post(mcp_url)
-        .header("Authorization", format!("Bearer {API_TOKEN}"))
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        }))
-        .send()
-        .await
-        .expect("MCP HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "MCP HTTP {method} should succeed, got {}",
-        response.status()
-    );
-    response
-        .json::<serde_json::Value>()
-        .await
-        .expect("MCP HTTP response must be JSON")
+    mcp.request(id, method, &params).await
 }
 
 pub async fn mcp_call_tool(
-    client: &reqwest::Client,
-    mcp_url: &str,
+    mcp: &notedthat_mcp::testing::McpSession,
     id: u64,
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    mcp_request(
-        client,
-        mcp_url,
-        id,
-        "tools/call",
-        serde_json::json!({"name": tool_name, "arguments": arguments}),
-    )
-    .await
+    mcp.call_tool(id, tool_name, &arguments).await
 }
 
 async fn wait_for_http(url: &str, timeout: Duration) {

@@ -98,8 +98,7 @@ async fn mcp_append_without_if_match_grows_object() {
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
     server.put_text("mcp-append.md", "alpha\n").await;
     let initialize = mcp_request(
-        &server.client,
-        &server.mcp_url,
+        &server.mcp,
         0,
         "initialize",
         serde_json::json!({
@@ -116,8 +115,7 @@ async fn mcp_append_without_if_match_grows_object() {
 
     // When: the MCP append tool omits if_match.
     let tool_response = mcp_call_tool(
-        &server.client,
-        &server.mcp_url,
+        &server.mcp,
         1,
         "append",
         serde_json::json!({

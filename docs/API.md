@@ -1662,7 +1662,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | GET | `/api/v1/knowledgebases/{kb_slug}/events` | Yes | Object change events as `text/event-stream`; `404` unless an events backend is configured |
 | GET | `/api/v1/knowledgebases/{kb_slug}/index` | Yes | Search-index health of one knowledge base: state, queue, last failure, last reconciliation |
 | POST | `/api/v1/knowledgebases/{kb_slug}/index/reconcile` | Service token | Compare the bucket against the index and re-index what differs (`s3`; `404` on `fs`) |
-| POST | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP, stateless JSON-response; `GET`/`DELETE` and `/sse` answer `405` |
+| POST, GET, DELETE | `/mcp` | Bearer, or anonymous where a manifest grants `anyone` something (D59) | Streamable HTTP MCP with sessions (D66): `POST` for requests, `GET` for the notification leg, `DELETE` to end the session; `/sse` answers `405` |
 | any | `/webdav/`… | Basic or Bearer, or anonymous where granted | WebDAV Class 1 share, one directory per knowledge base |
 
 
@@ -1916,10 +1916,11 @@ subprocess is bridged with `mcp-remote`; see [Connecting clients](CLIENTS.md#cli
 
 #### Streamable HTTP transport
 
-MCP is served over HTTP at `POST /mcp` on the unified listener. It is always mounted with the
-API and WebDAV.
+MCP is served over HTTP at `/mcp` on the unified listener. It is always mounted with the API
+and WebDAV.
 
-**Endpoint:** `POST /mcp`
+**Endpoint:** `/mcp` — `POST` for every request and notification a client sends, `GET` for the
+server-to-client notification leg, `DELETE` to end a session.
 
 **Authentication:** Bearer token, same credentials as the HTTP API — the service token or an
 identity token:
@@ -1955,12 +1956,67 @@ without a token is simply admitted as anonymous and never prompted to sign in; `
 the prompt at the cost of anonymous MCP. The startup log line `MCP_ANONYMOUS` says which case a
 deployment is in.
 
-The server operates in **stateless JSON-response mode**: each `POST /mcp` request is a complete, self-contained JSON-RPC exchange. No session state is retained between requests.
+**Sessions (D66).** The server is the stateful streamable-HTTP transport the MCP specification
+describes by default, which is what lets it push `notifications/resources/updated` (see
+[Subscriptions](#subscriptions)):
+
+- `initialize` is a `POST` with no `Mcp-Session-Id`; the answer carries one in its
+  `Mcp-Session-Id` header. Every later request and notification must send that header back. A
+  `POST` without it, other than `initialize`, is `422`; `GET` or `DELETE` without it is `400`;
+  an id the server does not know is `404` (the session ended, or the server restarted — start
+  over with `initialize`).
+- Every `POST` answer is `text/event-stream`: the JSON-RPC response is the `data:` of a frame,
+  preceded by a priming frame (`id: 0`, `retry:`, empty `data:`). Send
+  `Accept: application/json, text/event-stream`. A notification (`notifications/initialized`)
+  is answered `202` with no body.
+- `GET /mcp` with `Accept: text/event-stream` and the session id opens the notification leg —
+  the stream server-initiated messages arrive on. It carries a keep-alive comment every 15 s.
+  Only one is live per session; a second becomes a shadow that sees only keep-alives.
+- `DELETE /mcp` with the session id ends the session (`202`) and closes its notification leg.
+- `MCP-Protocol-Version` is optional; when present it must be a version the server knows, and
+  on `initialize` it must equal the body's `protocolVersion`.
+- A session idle for five minutes is closed; one with live subscriptions — a
+  `resources/subscribe`, not merely a `resources/list` — is kept alive by a server `ping` every
+  60 s for as long as it still has one and the client answers. Unsubscribe the last key and the
+  pings stop, so the session idles out on schedule like any other. A client that stops answering
+  has no working notification leg, so its subscriptions are dropped and a later
+  `resources/subscribe` on that session is refused (`backend_unavailable`) rather than accepted
+  and left silent.
+- **A session id is not bound to the credential that opened it.** rmcp binds nothing to a
+  session, so any valid credential — including the anonymous caller where `anyone` is granted —
+  that presents a session id can attach that session's `GET` leg or `unsubscribe` from it. Tool
+  calls are unaffected: each acts as the credential presented on its own request. The
+  notification leg is not: a forwarder runs as the session owner's credential, so whoever
+  attaches the leg reads which object URIs that principal subscribed to and exactly when those
+  objects change — for objects they may not read themselves — and `list_changed` leaks write
+  timing the same way. Session ids are rmcp-generated UUIDs, so this is not guessable, but
+  treat a session id as a credential: send it over TLS, do not log it, and do not share it
+  between principals. Binding the two is a follow-up ([#179](https://github.com/NotedThat/NotedThat/issues/179), SPECIFICATIONS.md §7.4).
+- At most **256 sessions** per process: a `POST` that would open another answers `503` with
+  `Retry-After: 5`. Clients that keep their session id hold one slot each; a client that
+  `initialize`s per request burns through them and idles them out five minutes later.
+
+A minimal exchange with curl (the notification leg, then a subscription, then a write):
+
+```sh
+B=http://127.0.0.1:8080; T=$NOTEDTHAT_API_TOKEN
+H=(-H "Authorization: Bearer $T" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
+SID=$(curl -sS -D - -o /dev/null "${H[@]}" -X POST $B/mcp -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+curl -sS -o /dev/null "${H[@]}" -H "Mcp-Session-Id: $SID" -X POST $B/mcp -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+curl -sS -N -H "Authorization: Bearer $T" -H "Accept: text/event-stream" -H "Mcp-Session-Id: $SID" $B/mcp &
+curl -sS "${H[@]}" -H "Mcp-Session-Id: $SID" -X POST $B/mcp -d '{"jsonrpc":"2.0","id":1,"method":"resources/subscribe","params":{"uri":"notedthat://notes/hello.md"}}'
+curl -sS -X PUT -H "Authorization: Bearer $T" -H "Content-Type: text/markdown" --data-binary 'hi' $B/api/v1/knowledgebases/notes/hello.md
+# the GET leg prints: data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"notedthat://notes/hello.md"}}
+curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $T" -H "Mcp-Session-Id: $SID" $B/mcp
+```
+
+Behind a reverse proxy, `/mcp` needs the same treatment as the events route: no response
+buffering and no read timeout on the `GET` leg (`proxy_buffering off`, `proxy_read_timeout 0`
+in nginx).
 
 **SSE refusal:** The legacy SSE transport is not supported. The following requests return `405 Method Not Allowed`:
 
-- `GET /mcp`
-- `DELETE /mcp`
 - `POST /sse`
 - `GET /sse` and any path under `/sse/`
 
@@ -2172,7 +2228,7 @@ whose `MOVE` is server-side. (Sliced reads are no help here; there is no sliced 
 
 ### Resources
 
-NotedThat exposes MCP Resources so clients can browse and read objects without calling tools directly. Resources are advertised in the `initialize` response under `capabilities.resources`. There is no `subscribe` or `listChanged` support in v1.
+NotedThat exposes MCP Resources so clients can browse and read objects without calling tools directly. Resources are advertised in the `initialize` response under `capabilities.resources` — as `{}` on a deployment without an events backend, and as `{"subscribe": true, "listChanged": true}` with one (see [Subscriptions](#subscriptions)).
 
 #### URI scheme
 
@@ -2217,6 +2273,54 @@ MIME detection by extension:
 
 **Read budget**: an object larger than `NOTEDTHAT_MCP_MAX_READ_BYTES` (default 16 MiB) is refused with `response_too_large`, which points at the `read` tool's slice arguments. The budget is on the bytes fetched; a binary resource is base64-encoded on top of that, so its `blob` is about four thirds of the budget at most. A resource carries its body once (unlike the `read` tool, which carries the text in both halves of its result), so that is the only expansion here.
 
+#### Subscriptions
+
+With an [events backend](CONFIGURATION.md#events-backend) configured, a session can be told when
+a resource changes, instead of polling. The notifications are the
+[object change events](#get-apiv1knowledgebaseskb_slugevents), consumed by the MCP server as the
+subscriber itself — with the session's own bearer, or none — so what a session may subscribe to
+is exactly what the events route would show it, and the MCP layer holds no access rules of its
+own (D59).
+
+**`resources/subscribe`** `{ "uri": "notedthat://<kb>/<key>" }` registers the key. The key is
+probed first as the caller: it must exist and the caller must be able to `list` it (the rule
+the events route applies per event), otherwise the answer is what `resources/read` would give —
+`forbidden` for a signed-in caller denied the knowledge base, and the concealed `not_found`
+(`-32002`) for a key the caller cannot see, a knowledge base an anonymous caller may not see, or
+a key that does not exist. Subscribing to a key that does not exist yet is therefore refused;
+use `listChanged` to learn when it appears. The answer arrives once the knowledge base's event
+stream is open, so a change made right after it is not missed.
+
+**`notifications/resources/updated`** `{ "uri": … }` is sent on the session's notification leg
+after every `object.written` and `object.deleted` for a subscribed key — the URI is the one
+subscribed. The indexer's own events (`object.indexed`, `object.index_failed`) do not notify: the
+resource's text did not change. A write through any surface counts, including the session's own.
+
+**`resources/unsubscribe`** `{ "uri": … }` stops them; it is idempotent and never an error for a
+URI that was not subscribed.
+
+**`notifications/resources/list_changed`** is sent when an object is written or deleted in a
+knowledge base the session has listed. It is lazy — a session is watched from its first
+`resources/list` on, and only for the knowledge base each page actually listed, since a page is
+one knowledge base's objects; a client that lists one page is watching one knowledge base, and
+a client that pages through all of them is watching all of them. Each watch is a held-open
+event stream for the life of the session, which is why it follows what was listed rather than
+everything the caller could list. Notifications are coalesced: one
+at once, and at most one more per second however many changes arrive in between, so a bulk
+upload is a handful of notifications, not one per object. It fires on every write, since
+neither the API nor storage tells a create from a modify; treat it as a hint to re-list, not
+as a diff.
+
+What a subscription is not: it is per session (it ends with `DELETE /mcp`, the idle timeout, or
+a restart, and a new session starts with none), it has no replay (a client that needs history
+uses the events route with `Last-Event-ID`, or lists), and it does not outlive the credential that made it
+(a bearer the events route later refuses drops that credential's subscriptions in that
+knowledge base silently). Subscriptions made with different credentials on one session are kept
+apart, each fed by its own stream, so a client that rotates its token — an OIDC client
+refreshing mid-session — does not lose the subscriptions it made with the new one when the old
+one expires. Without an events backend neither capability is advertised and both methods
+answer `method_not_found` (`-32601`).
+
 ### Path Encoding
 
 Object paths are percent-encoded per RFC 3986 before being placed in URLs. The `/` separator within a path is encoded as `%2F`. Example: `docs/rfc/7231.md` → `docs%2Frfc%2F7231.md`.
@@ -2242,5 +2346,6 @@ All MCP errors carry one of these codes:
 
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
-- **No subscribe or listChanged**: Resources capability is advertised without these fields; clients must poll `resources/list` for updates
+- **Subscriptions are per session and unreplayed**: they end with the session, a new session starts with none, and `list_changed` fires on modifies as well as creates and deletes
+- **A session id is not bound to a credential**: another authenticated caller presenting a session id can attach its notification leg and read which resources that session subscribed to, and when they change. Tool calls are unaffected. See [Transports](#transports) and [#179](https://github.com/NotedThat/NotedThat/issues/179)
 - **`tools/list` is static**: an anonymous caller is shown the mutating tools too and learns they are refused only by calling one; grants are per knowledge base and per path, so a filtered list would be a false signal anyway

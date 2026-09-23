@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 
-#[path = "support/mcp_http.rs"]
-mod mcp_http;
-use mcp_http::McpSession;
+use notedthat_mcp::testing::McpSession;
 
 /// How long to wait for the server to bind after startup.
 ///

@@ -108,8 +108,7 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
     }
 
     let initialized = mcp_request(
-        &server.client,
-        &server.mcp_url,
+        &server.mcp,
         0,
         "initialize",
         json!({
@@ -121,8 +120,7 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
     assert!(initialized.get("result").is_some());
     for (id, filters, expected) in [(1, filter, 1), (2, json!({"concept_type": "Rule"}), 0)] {
         let result = mcp_call_tool(
-            &server.client,
-            &server.mcp_url,
+            &server.mcp,
             id,
             "search",
             json!({

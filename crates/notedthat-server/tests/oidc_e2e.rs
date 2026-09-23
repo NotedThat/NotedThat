@@ -484,34 +484,17 @@ async fn auto_admits_anonymous_mcp_on_a_public_deployment_but_never_a_bad_token(
         McpAnonymous::Auto,
     )
     .await;
-    let list = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
-    });
-
     // When / Then — no credential is the anonymous caller, and gets the tools …
-    let anonymous = server
-        .client
-        .post(format!("{}/mcp", server.base))
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .json(&list)
-        .send()
-        .await
-        .expect("mcp");
-    assert_eq!(anonymous.status(), 200);
+    let anonymous = notedthat_mcp::testing::McpSession::anonymous(&server.base)
+        .request(1, "tools/list", &serde_json::json!({}))
+        .await;
+    assert!(anonymous["result"]["tools"].is_array(), "{anonymous}");
 
     // … while a token the issuer did not sign is still refused with the
     // challenge, never downgraded to that same anonymous caller.
-    let refused = server
-        .client
-        .post(format!("{}/mcp", server.base))
-        .bearer_auth("not.a.jwt")
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .json(&list)
-        .send()
-        .await
-        .expect("mcp");
+    let refused = notedthat_mcp::testing::McpSession::connect(&server.base, "not.a.jwt")
+        .send(1, "tools/list", &serde_json::json!({}))
+        .await;
     assert_eq!(refused.status(), 401);
     assert!(refused.headers().get("www-authenticate").is_some());
 }
@@ -569,24 +552,9 @@ async fn mcp_call(
     tool: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": { "name": tool, "arguments": arguments },
-    });
-    let response = server
-        .client
-        .post(format!("{}/mcp", server.base))
-        .bearer_auth(token)
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
+    notedthat_mcp::testing::McpSession::connect(&server.base, token)
+        .call_tool(1, tool, &arguments)
         .await
-        .expect("mcp request");
-    assert_eq!(response.status(), 200, "MCP {tool}");
-    response.json().await.expect("json-rpc response")
 }
 
 #[tokio::test]

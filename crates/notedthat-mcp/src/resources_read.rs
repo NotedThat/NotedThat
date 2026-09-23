@@ -13,9 +13,9 @@ use url::Url;
 
 const OCTET_STREAM: &str = "application/octet-stream";
 
-struct ParsedResourceUri {
-    kb_slug: String,
-    object_key: String,
+pub(crate) struct ParsedResourceUri {
+    pub(crate) kb_slug: String,
+    pub(crate) object_key: String,
 }
 
 /// Read an MCP resource by `notedthat://<kb_slug>/<percent-encoded object_key>` URI.
@@ -61,7 +61,7 @@ pub async fn read_resource(
     Ok(ReadResourceResult::new(vec![contents]))
 }
 
-fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpError> {
+pub(crate) fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpError> {
     if uri.is_empty() {
         return Err(invalid_params("resource URI must not be empty"));
     }

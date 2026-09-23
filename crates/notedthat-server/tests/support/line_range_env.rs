@@ -26,7 +26,6 @@ pub const LINES_18_TO_20: &str = "line 18\nline 19\nline 20\n";
 pub struct RunningServer {
     pub client: reqwest::Client,
     pub base_url: String,
-    pub mcp_url: String,
     pub kb: String,
     server_handle: JoinHandle<()>,
 }
@@ -49,7 +48,6 @@ impl RunningServer {
             events: None,
         };
         let base_url = format!("http://{}", config.listen_addr);
-        let mcp_url = format!("{base_url}/mcp");
         let server_handle = tokio::spawn(async move {
             notedthat_server::run::run_with(config, backends)
                 .await
@@ -61,7 +59,6 @@ impl RunningServer {
         Self {
             client: reqwest::Client::new(),
             base_url,
-            mcp_url,
             kb,
             server_handle,
         }
