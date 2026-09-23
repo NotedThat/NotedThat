@@ -83,6 +83,7 @@ Every mount option, including Windows and the `LOCK` caveat: [docs/WEBDAV.md](do
 - [Mounting a knowledge base](docs/WEBDAV.md) — WebDAV on Linux, macOS, Windows; rclone; Obsidian
 - [API reference](docs/API.md) — HTTP, WebDAV, MCP, events, and anonymous-read behavior
 - [Configuration](docs/CONFIGURATION.md) — environment, manifest access rules, OIDC, storage and events backends
+- [Running in production](docs/OPERATIONS.md) — reverse proxy and TLS, backpressure, backup and restore, capacity, upgrades, security posture
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
 - [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
 - [DEVELOPMENT.md](DEVELOPMENT.md) — developer commands and test conventions
@@ -336,6 +337,10 @@ curl --fail -X POST -H "Authorization: Bearer $NOTEDTHAT_API_TOKEN" -H "Mcp-Sess
 Then wire in a real client — [docs/CLIENTS.md](docs/CLIENTS.md) — or mount the share —
 [docs/WEBDAV.md](docs/WEBDAV.md). `docs/manual-qa/webdav-gvfs.sh` runs a fuller WebDAV walkthrough
 with cadaver or curl.
+
+Everything above runs NotedThat locally. Deploying an instance behind TLS — the reverse
+proxy written out, what a `503` means, what to back up, and what one instance holds:
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 
 Full configuration reference — every setting as an environment variable or as the flag that overrides it: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
