@@ -33,7 +33,7 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 ### Other
 
 - *(mcp)* one MCP session client for every HTTP suite
-- record D66 — s3 reconciliation on startup and on demand
+- record D67 — s3 reconciliation on startup and on demand
 - Merge pull request #173 from NotedThat/feat/s3-reconcile
 - *(storage-fs)* reconcile is a thin wrapper over core's comparison
 - record MCP resource subscriptions on stateful sessions as D66
