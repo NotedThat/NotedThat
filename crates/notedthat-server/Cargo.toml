@@ -36,6 +36,8 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tower.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }
 thiserror.workspace = true

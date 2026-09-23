@@ -86,6 +86,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+# Metrics (D68). The instrumented crates take only the facade: its macros are a
+# no-op until a recorder is installed, so nothing here reaches a crate's public
+# API and every unit test keeps running without an exporter. The exporter itself
+# is `notedthat-server`'s alone.
+metrics = "0.24"
+# `default = ["http-listener", "push-gateway"]`, and both are unwanted. The
+# exposition is served by our own axum route on the metrics listener, so the
+# exporter's `hyper` server earns nothing; and nothing here pushes. Off, the
+# exporter adds no HTTP or TLS stack of its own — the seventeen crates it does
+# bring are its histogram and concurrent-map machinery.
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 # Errors
 thiserror = "2.0"
