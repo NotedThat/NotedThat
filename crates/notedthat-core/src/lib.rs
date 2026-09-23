@@ -11,6 +11,7 @@ pub mod etag;
 pub mod events;
 pub mod kb;
 pub mod listing;
+pub mod metrics;
 pub mod object_path;
 pub mod preconditions;
 pub mod range;
