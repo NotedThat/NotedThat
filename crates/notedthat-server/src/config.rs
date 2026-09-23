@@ -374,6 +374,16 @@ fn parse_metrics(
         }
     };
 
+    // Normalised once, before either branch reads it. The enabled path below
+    // used to trim and filter while this one tested the raw value, so the same
+    // empty string was the default with metrics on and a startup refusal with
+    // them off — and off is the default. Compose passes an unset variable
+    // through as `${VAR-}`, which arrives as the empty string, so an operator
+    // who never configured an address would be refused for one, exactly as
+    // `NOTEDTHAT_MCP_ANONYMOUS` next door is careful not to do. The refusal is
+    // for an address that really was supplied and really would be ignored.
+    let listen_addr = listen_addr.map(str::trim).filter(|value| !value.is_empty());
+
     if !enabled {
         if listen_addr.is_some() {
             return Err(Error::Config {
@@ -394,10 +404,7 @@ fn parse_metrics(
         return Ok(None);
     }
 
-    let supplied = listen_addr
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_METRICS_LISTEN_ADDR);
+    let supplied = listen_addr.unwrap_or(DEFAULT_METRICS_LISTEN_ADDR);
     let addr: SocketAddr = supplied.parse().map_err(|e| Error::Config {
         message: format!(
             "{} is invalid: {e}",
@@ -2607,15 +2614,23 @@ pub(crate) mod tests {
             );
         }
 
-        /// An empty value is still a value, here as everywhere else.
+        /// An empty value is no value, as it is for its siblings.
+        ///
+        /// Compose passes an unset variable through as `${VAR-}`, which reaches
+        /// the server as the empty string — the reason `NOTEDTHAT_MCP_ANONYMOUS`
+        /// documents "unset or empty means `auto`" and the two MCP bounds have
+        /// `_empty_or_blank_is_the_default_like_its_siblings`. Refusing here
+        /// would stop a deployment that names the variable without setting it,
+        /// over an address nobody configured. The refusal is for an address that
+        /// really was supplied and really would be ignored, which the test above
+        /// pins.
         #[test]
-        fn an_empty_address_still_counts_as_supplied() {
-            let error = config_with(&[("NOTEDTHAT_METRICS_LISTEN_ADDR", Some(""))])
-                .expect_err("an empty address is supplied, and metrics are off");
-            assert!(
-                error.to_string().contains("NOTEDTHAT_METRICS_LISTEN_ADDR"),
-                "{error}"
-            );
+        fn an_empty_address_is_no_address() {
+            for blank in ["", "   "] {
+                let config = config_with(&[("NOTEDTHAT_METRICS_LISTEN_ADDR", Some(blank))])
+                    .expect("a blank address is no address, and metrics stay off");
+                assert_eq!(config.metrics_listen_addr, None, "{blank:?}");
+            }
         }
 
         #[test]
