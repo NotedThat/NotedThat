@@ -10,6 +10,38 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/NotedThat/NotedThat/compare/v0.10.0...v0.11.0) - 2026-09-24
+
+### Added
+
+- *(server)* NOTEDTHAT_METRICS_ENABLED and NOTEDTHAT_METRICS_LISTEN_ADDR
+- *(mcp)* [**breaking**] NOTEDTHAT_MCP_MAX_SESSIONS sizes the session bound
+- *(core)* the metric names, labels and histogram buckets the catalogue is made of
+- *(indexer,storage-fs)* index queue, reconciliation and watch metrics
+- *(server)* meter the storage, vector store, embedder and event log
+- *(api-http)* request, search and events metrics
+- *(mcp)* [**breaking**] a session answers only to the principal that opened it
+- *(server)* serve the Prometheus exposition on a listener of its own
+
+### Fixed
+
+- *(metrics)* count a call the caller gave up on, instead of losing it
+- *(server)* four findings from the PR review
+- *(mcp)* let rmcp answer a refused session, and say so when one is unowned
+- *(server)* join the metrics listener on the way out of a failed run
+- *(metrics)* an empty NOTEDTHAT_METRICS_LISTEN_ADDR is no address
+- *(metrics)* use Waker::noop() in the cancellation test
+- *(server)* install the recorder before anything has a measurement to record
+
+### Other
+
+- Merge pull request #181 from NotedThat/feat/mcp-session-binding
+- the metrics facade and the Prometheus exporter as workspace dependencies
+- renumber the metrics listener decision to D69
+- *(mcp)* another principal is refused a session, and a refresh keeps one
+- *(server)* the metrics listener, and that the exposition leaks no identifiers
+- correct the max-sessions default and a misplaced doc comment
+
 ## [0.10.0](https://github.com/NotedThat/NotedThat/compare/v0.9.0...v0.10.0) - 2026-09-23
 
 ### Added
