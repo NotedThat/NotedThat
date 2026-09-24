@@ -2679,6 +2679,8 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "hyper",
+ "hyper-util",
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",

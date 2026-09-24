@@ -32,6 +32,7 @@ mod metered;
 mod metrics;
 mod readiness;
 mod reconcile;
+mod serve;
 
 #[cfg(test)]
 #[path = "run/mcp_http_listener.rs"]
@@ -628,10 +629,14 @@ async fn serve(
                     signal_shutdown.cancel();
                 });
 
-                let result = axum::serve(listener, app)
-                    .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
-                    .await
-                    .context("HTTP listener failed");
+                let result = serve::serve(
+                    listener,
+                    app,
+                    config.request_bounds.header_read_timeout,
+                    graceful_shutdown,
+                )
+                .await
+                .context("HTTP listener failed");
                 shutdown_trigger.abort();
                 result
             }

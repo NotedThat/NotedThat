@@ -581,8 +581,12 @@ pub struct RequestBoundsConfig {
     /// `Retry-After: 5`.
     pub max_requests_in_flight: usize,
     /// Longest a connection may take to send a complete request head
-    /// (`NOTEDTHAT_HEADER_READ_TIMEOUT_MS`; default 10 s). Past it the
+    /// (`NOTEDTHAT_HEADER_READ_TIMEOUT_MS`; default 30 s). Past it the
     /// connection is closed; there is no request to answer.
+    ///
+    /// hyper starts this clock whenever the connection is waiting for a head,
+    /// which includes a kept-alive connection idling between requests, so it
+    /// is also how long an idle connection stays open.
     pub header_read_timeout: Duration,
 }
 
@@ -594,8 +598,9 @@ impl RequestBoundsConfig {
     pub const DEFAULT_WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
     /// Default for [`Self::max_requests_in_flight`].
     pub const DEFAULT_MAX_REQUESTS_IN_FLIGHT: usize = 512;
-    /// Default for [`Self::header_read_timeout`].
-    pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Default for [`Self::header_read_timeout`]: hyper's own, once a timer
+    /// lets it enforce one.
+    pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Takes the four settings rather than the whole [`ServerCli`], which
     /// [`Config::from_cli`] has partly moved out of by the time it gets here.
@@ -1844,7 +1849,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.request_bounds.max_requests_in_flight, 512);
         assert_eq!(
             cfg.request_bounds.header_read_timeout,
-            Duration::from_secs(10)
+            Duration::from_secs(30)
         );
     }
 

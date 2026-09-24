@@ -109,7 +109,8 @@ pub struct ServerCli {
     pub max_requests_in_flight: Option<String>,
 
     /// Longest a connection may take to send a complete request head, in
-    /// milliseconds, before it is closed [default: 10000].
+    /// milliseconds, before it is closed; also how long an idle kept-alive
+    /// connection stays open [default: 30000].
     #[arg(long, env = "NOTEDTHAT_HEADER_READ_TIMEOUT_MS", value_name = "MS")]
     pub header_read_timeout_ms: Option<String>,
 
