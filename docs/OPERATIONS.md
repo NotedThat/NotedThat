@@ -485,11 +485,13 @@ committing to the deployment.
   **SeaweedFS < 4.09**, and **RustFS 1.0.0-beta.8** under lock-timeout contention. `PATCH`
   inherits the same exposure, because its final write is a conditional `PUT`.
 
-  Whether the server checks this depends on your release. **Through v0.10.0 it does not**, and
-  verifying a backend is the deployer's gate. **From the release that carries
-  [#190](https://github.com/NotedThat/NotedThat/issues/190) it does** (D70): at startup each
-  bucket is asked whether it refuses a `PUT` whose `If-Match` or `If-None-Match` does not hold,
-  and one that stores it anyway **refuses startup** — so upgrading a deployment on such a backend
+  Whether the server checks this depends on your release. **Up to and including v0.11.0 it does
+  not**, and verifying a backend is the deployer's gate. **From the release that carries
+  [#190](https://github.com/NotedThat/NotedThat/issues/190) it does** (D70) — that release is the
+  thing to check for, not a version number, so this does not go stale again: at startup each
+  bucket is asked whether it honours a `PUT` whose `If-Match` holds and refuses one whose
+  `If-Match` or `If-None-Match` does not, and one that stores it anyway **refuses startup** — so
+  upgrading a deployment on such a backend
   stops it until you either move to a backend that enforces them or set
   `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true` to accept the risk. With that setting
   the finding stays visible: `S3_CONDITIONAL_WRITES_NOT_ENFORCED` in the log, `/readyz`

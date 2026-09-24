@@ -382,9 +382,18 @@ and store the object anyway (Garage, SeaweedFS older than 4.09 — see
 answers `200` and one of two concurrent writers is lost without anyone being told.
 
 So at startup, before provisioning, the `s3` backend **asks each bucket** (D70): it writes a
-scratch object at `.notedthat/conditional-write-probe-<id>`, overwrites it once with
-`If-None-Match: *` and once with an `If-Match` that cannot hold, reads the two answers, and deletes
-the object. A bucket that refuses both with `412` passes. One that stores either:
+scratch object at `.notedthat/conditional-write-probe-<id>` and then overwrites it three times,
+because enforcement is a claim in both directions and asking only half of it cannot tell a store
+that compares correctly from one that never matches at all:
+
+| Overwrite | A store that enforces them |
+|---|---|
+| `If-Match` naming the `ETag` the first `PUT` returned | stores it |
+| `If-Match` naming that `ETag` with one hex digit altered | refuses `412` |
+| `If-None-Match: *` over the object that now exists | refuses `412` |
+
+It then deletes the object. A bucket that answers all three that way passes. One that **stores**
+either of the last two:
 
 - **refuses startup** by default, naming the knowledge base, the header it ignored and the setting
   below;
@@ -394,13 +403,30 @@ the object. A bucket that refuses both with `412` passes. One that stores either
   `preconditions_not_enforced` in [`/readyz`](#readiness), and
   `notedthat_storage_conditional_writes_enforced{kb="…"} 0` in the [metrics](#metric-catalogue).
 
-A store that answers `501 Not Implemented` to a conditional `PUT` is treated the same way: every
-conditional write would fail there rather than be lost, which is safer, but it is still a store
-the surfaces cannot use as documented.
+Two more answers are refused the same way, because the surfaces cannot be used as documented on
+either, though neither loses a write in silence:
 
-The check needs `s3:PutObject` and `s3:DeleteObject` under `.notedthat/`, which provisioning
-already requires to write the manifest. If a delete fails, the scratch object is left behind; it
-is private like everything under `.notedthat/` and is never indexed.
+- **`501 Not Implemented`** to a conditional `PUT` — the store does not implement the header, so
+  every conditional write fails rather than being lost.
+- **`412` to the first overwrite too** — the store refuses even an `If-Match` naming the `ETag` it
+  just returned, so no conditional write can ever succeed. The usual cause is an `ETag`
+  representation mismatch: returned unquoted or weak, compared as strong and quoted, or the
+  reverse. Sending a precondition that *ought* to hold is the only way to see this; a store that
+  answers `412` to everything is otherwise indistinguishable from one that enforces correctly.
+
+**Permissions.** The check needs `s3:PutObject` under `.notedthat/`, which provisioning already
+requires to write the manifest, **and `s3:DeleteObject` under `.notedthat/`, which provisioning
+does not** — it never deletes anything. A deployment whose IAM policy grants `DeleteObject` on
+content keys but not under `.notedthat/` therefore needs a new permission: without it the probe
+still answers correctly, but logs a warning on every start and leaves one
+`.notedthat/conditional-write-probe-<id>` per knowledge base behind. The key is fresh each time,
+so those accumulate. They are private like everything under `.notedthat/` and are never indexed.
+
+**Versioned buckets.** On a bucket with versioning enabled, a plain delete only adds a delete
+marker, so the probe removes each version it wrote by id, and the marker too. Nothing is left
+behind — but if the deletes fail (see permissions above), what remains is one noncurrent version
+per overwrite rather than one object, and a lifecycle rule for noncurrent versions under
+`.notedthat/conditional-write-probe-` is the way to sweep them.
 
 **What it cannot see.** One writer at startup can prove a store ignores the headers; it cannot
 provoke a failure that only happens when two writers race — RustFS's lock timeouts under load, or

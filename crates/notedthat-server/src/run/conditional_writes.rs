@@ -107,6 +107,10 @@ fn judge(kb: &KbSlug, found: ConditionalWrites, allow: bool) -> Result<bool, Err
         ConditionalWrites::Unsupported => "answered 501 Not Implemented to a conditional PUT, \
              so every write carrying If-Match or If-None-Match would fail"
             .to_string(),
+        ConditionalWrites::AlwaysRefused => "refused 412 even for an If-Match naming the ETag it \
+             had just returned, so no conditional write can ever succeed — usually an ETag the \
+             backend returns in one representation and compares in another"
+            .to_string(),
     };
     let allow_setting = setting(S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV);
     if allow {
@@ -134,7 +138,7 @@ mod tests {
     use aws_sdk_s3::config::retry::RetryConfig;
     use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
-    use wiremock::matchers::{header_exists, method};
+    use wiremock::matchers::{header, header_exists, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn kb() -> KbSlug {
@@ -200,6 +204,20 @@ mod tests {
     }
 
     #[test]
+    fn a_bucket_that_refuses_every_conditional_write_refuses_startup() {
+        let message = refusal(ConditionalWrites::AlwaysRefused);
+        assert!(message.contains("412"), "{message}");
+        assert!(message.contains("ETag"), "{message}");
+        assert!(
+            message.contains("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES"),
+            "{message}"
+        );
+        // Its own diagnosis, not the 501 one: the remedy is the same but the
+        // thing to go looking at is not.
+        assert!(!message.contains("501"), "{message}");
+    }
+
+    #[test]
     fn the_opt_out_starts_and_reports_the_bucket_unenforced() {
         for found in [
             ConditionalWrites::NotEnforced {
@@ -207,27 +225,45 @@ mod tests {
                 if_none_match: true,
             },
             ConditionalWrites::Unsupported,
+            ConditionalWrites::AlwaysRefused,
         ] {
             assert!(!judge(&kb(), found, true).expect("allowed"));
         }
     }
 
-    /// A fake S3 endpoint that creates buckets, deletes objects and stores every `PUT`,
-    /// refusing a conditional one `412` only when `enforcing`.
+    /// The `ETag` [`fake_s3`] returns, and the value the probe derives from it for the
+    /// `If-Match` that must not match. `tests/conditional_write_probe.rs` is where that
+    /// derivation is pinned; here they only have to agree with it.
+    const REAL_ETAG: &str = "\"0123abcd\"";
+    const ALTERED_ETAG: &str = "\"1123abcd\"";
+
+    /// A fake S3 endpoint that creates buckets, deletes objects and stores every `PUT`.
+    ///
+    /// When `enforcing`, it behaves as a correct backend does on all three of the
+    /// probe's overwrites: the `If-Match` naming the real `ETag` is stored, and the
+    /// altered `If-Match` and `If-None-Match: *` are refused `412`. Refusing every
+    /// conditional `PUT` instead — which is what this fake used to do — is
+    /// [`ConditionalWrites::AlwaysRefused`], not enforcement.
     async fn fake_s3(enforcing: bool) -> MockServer {
         let server = MockServer::start().await;
         if enforcing {
-            for header in ["if-match", "if-none-match"] {
+            Mock::given(method("PUT"))
+                .and(header("if-match", REAL_ETAG))
+                .respond_with(ResponseTemplate::new(200).insert_header("etag", REAL_ETAG))
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            for name in ["if-match", "if-none-match"] {
                 Mock::given(method("PUT"))
-                    .and(header_exists(header))
+                    .and(header_exists(name))
                     .respond_with(ResponseTemplate::new(412))
-                    .with_priority(1)
+                    .with_priority(2)
                     .mount(&server)
                     .await;
             }
         }
         Mock::given(method("PUT"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).insert_header("etag", REAL_ETAG))
             .with_priority(5)
             .mount(&server)
             .await;
@@ -236,6 +272,18 @@ mod tests {
             .mount(&server)
             .await;
         server
+    }
+
+    /// The altered `ETag` the fake refuses is the one the probe actually sends. Without
+    /// this the `enforcing` fake would answer `412` to it by falling through to the
+    /// `header_exists` arm, and would go on passing even if the probe stopped deriving
+    /// the value at all.
+    #[test]
+    fn the_enforcing_fake_refuses_the_exact_altered_etag_the_probe_sends() {
+        let (result, gauge) = checked(true, false);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(gauge, Some(1.0));
+        assert_ne!(REAL_ETAG, ALTERED_ETAG);
     }
 
     fn s3_for(server: &MockServer) -> S3Storage {
