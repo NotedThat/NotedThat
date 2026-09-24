@@ -119,6 +119,7 @@ async fn start_over(
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: addr,
+        metrics_listen_addr: None,
         storage: StorageConfig::Fs(fs_config.clone()),
         events: notedthat_server::config::EventsConfig::None,
         log_format: LogFormat::Pretty,

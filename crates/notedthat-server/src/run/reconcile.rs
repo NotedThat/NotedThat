@@ -179,6 +179,12 @@ impl ReconcileTrigger for Reconciler {
 /// nothing. A pass that could not list the bucket does the same — a partial listing
 /// would report every unlisted key as orphaned, the one outcome nothing would repair.
 async fn run_pass(inner: &Inner, kb: &KbSlug, cause: &str) {
+    // Dropped on every exit from this function, so a pass that ends early —
+    // a missing collection, an unreadable bucket, a worker that has gone — is
+    // still counted, with the outcome it actually had. A pass counted only on
+    // success would make a backend that fails every pass look like a backend
+    // that is not reconciling at all.
+    let mut pass = super::metrics::PassMetric::started(kb, cause);
     let indexed = match inner.store.indexed_objects(kb, None).await {
         Ok(indexed) => indexed,
         Err(notedthat_indexer::VectorStoreError::CollectionNotFound { .. }) => {
@@ -241,6 +247,7 @@ async fn run_pass(inner: &Inner, kb: &KbSlug, cause: &str) {
 
     // A completed pass, whatever it found, has enqueued every difference: nothing is
     // unobserved any more, and the report is worth showing (#97).
+    pass.completed();
     let report = reconciliation.report;
     inner.sink.health.reconciled(
         kb.as_str(),

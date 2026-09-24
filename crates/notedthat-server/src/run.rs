@@ -26,6 +26,8 @@ use tracing::info;
 mod events;
 mod fs_watch;
 mod mcp_http;
+mod metered;
+mod metrics;
 mod readiness;
 mod reconcile;
 
@@ -157,6 +159,12 @@ struct Infrastructure {
     readiness: readiness::ReadinessPoller,
     /// The `s3` backend's reconciliation passes; `None` on `fs` (D67).
     reconciler: Option<Arc<reconcile::Reconciler>>,
+    /// A sender on the indexing queue, held only to read its depth (D69).
+    ///
+    /// The metrics sampler needs `capacity`/`max_capacity`, and a `Sender` is
+    /// the only thing that has them. It keeps the channel open, so it must be
+    /// dropped before the drain — `serve` does that with the sampler's token.
+    indexer_tx: mpsc::Sender<IndexEvent>,
 }
 
 /// The `/readyz` prober, after provisioning: it starts from "ready" because
@@ -221,16 +229,23 @@ fn start_change_detection(
     }
 }
 
+// Wiring, and it is meant to read as one list: every backend, queue, token and
+// task this process needs, assembled in the order their dependencies allow.
+// Splitting it produces helpers with eight parameters and no independent
+// meaning, which is harder to follow than the list.
+#[allow(clippy::too_many_lines)]
 async fn build_infrastructure(
     config: Config,
     backends: backends::Backends,
 ) -> anyhow::Result<Infrastructure> {
-    let backends::Backends {
+    // Metered once, here, before anything clones them (D69).
+    let metered::MeteredBackends {
         storage,
         store,
-        embedder,
+        embed_index,
+        embed_query,
         events,
-    } = backends;
+    } = metered::meter(&config.storage, backends);
 
     let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
     let indexer_shutdown = CancellationToken::new();
@@ -284,8 +299,11 @@ async fn build_infrastructure(
 
     // Hybrid searcher shares the same embedder instance used at index time (§6.4, D18).
     // Using separate instances risks model or endpoint drift between write and query paths.
+    //
+    // `embed_index` and `embed_query` are two views of that one instance, not
+    // two instances: same endpoint and client, counted under two `phase` labels.
     let searcher: Arc<dyn notedthat_indexer::Searcher> = Arc::new(
-        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embedder.clone()),
+        notedthat_indexer::searcher::HybridSearcher::new(store.clone(), embed_query),
     );
 
     let state = AppState {
@@ -296,7 +314,7 @@ async fn build_infrastructure(
         authenticator: authenticator.clone(),
         max_body_size: MAX_BODY_BYTES,
         max_patchable_size: config.max_patchable_size,
-        indexer_tx,
+        indexer_tx: indexer_tx.clone(),
         searcher,
         events: events.clone(),
         index_health: index_health.clone(),
@@ -309,7 +327,7 @@ async fn build_infrastructure(
     let worker_handle = tokio::spawn(
         IndexerWorker::new(
             storage.clone(),
-            embedder.clone(),
+            embed_index,
             store.clone(),
             indexer_rx,
             indexer_shutdown.clone(),
@@ -340,6 +358,7 @@ async fn build_infrastructure(
         fs_watch: watch,
         readiness,
         reconciler,
+        indexer_tx,
     })
 }
 
@@ -479,6 +498,10 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
 /// Both callers validate `config.staging` before constructing or accepting
 /// backends, so this body may assume it is already valid.
 async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
+    // Before anything is built: provisioning's storage calls and the indexer's
+    // health record are measurements, and the facade discards them silently
+    // when no recorder is installed yet (D69).
+    metrics::install(&config)?;
     let Infrastructure {
         state,
         dav_state,
@@ -487,50 +510,107 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
         fs_watch,
         readiness,
         reconciler,
+        indexer_tx,
     } = build_infrastructure(config.clone(), backends).await?;
     let shutdown_token = CancellationToken::new();
     let readiness_handle = tokio::spawn(readiness.run(shutdown_token.child_token()));
-    let serve_result = async {
-        let listener = TcpListener::bind(config.listen_addr)
-            .await
-            .with_context(|| format!("failed to bind HTTP listener on {}", config.listen_addr))?;
-        let bound_addr = listener.local_addr()?;
-        let internal_api_url = mcp_http::internal_http_api_url(bound_addr);
+    // Sampled on its own token so the sender it holds is dropped the moment the
+    // sampler stops — a live sender would keep the queue open and the drain
+    // below would wait out its full timeout on a producer that is only counting.
+    let queue_sampler_shutdown = shutdown_token.child_token();
+    let queue_sampler = tokio::spawn(metrics::sample_queue_depth(
+        indexer_tx,
+        queue_sampler_shutdown.clone(),
+    ));
+    // Before the product listener: a metrics port already in use must refuse
+    // startup, rather than leaving the product surface open and the operator's
+    // scrape target quietly non-existent.
+    //
+    // Bound out here rather than inside the block below so that it outlives
+    // every way that block can end. Carried out of the block on the success
+    // path only, it was dropped on every error one — a failed metrics bind, a
+    // failed product bind, an accept-loop failure — which detached its two
+    // tasks: `shutdown_token` still wound them down, but nothing waited for
+    // them. Today the indexer drain below outlasts them either way, so this
+    // buys no observable behaviour and no test can tell the two apart; it is
+    // here so that the shutdown sequence owns every task it started rather
+    // than resting on the drain being slow.
+    let metrics_listener = metrics::start(&config, shutdown_token.child_token()).await;
+    let (serve_result, metrics_listener) = match metrics_listener {
+        // Not a `?`: nothing started, so there is nothing to join, but the
+        // cleanup below still has to run.
+        Err(error) => (Err(error), None),
+        Ok(metrics_listener) => {
+            let result = async {
+                let listener = TcpListener::bind(config.listen_addr)
+                    .await
+                    .with_context(|| {
+                        format!("failed to bind HTTP listener on {}", config.listen_addr)
+                    })?;
+                let bound_addr = listener.local_addr()?;
+                let internal_api_url = mcp_http::internal_http_api_url(bound_addr);
 
-        info!(http = %bound_addr, "notedthat-server listening");
+                info!(http = %bound_addr, "notedthat-server listening");
 
-        let app = build_router(state.clone())
-            .merge(build_dav_router(dav_state))
-            .merge(mcp_http::build_router(
-                &config,
-                state.authenticator.clone(),
-                &state.access_policies,
-                &internal_api_url,
-                shutdown_token.child_token(),
-                // What the server actually runs on, not `Config::events`:
-                // `run_with` takes its backends as given (D66).
-                state.events.is_some(),
-            )?);
+                let app = build_router(state.clone())
+                    .merge(build_dav_router(dav_state))
+                    .merge(mcp_http::build_router(
+                        &config,
+                        state.authenticator.clone(),
+                        &state.access_policies,
+                        &internal_api_url,
+                        shutdown_token.child_token(),
+                        // What the server actually runs on, not `Config::events`:
+                        // `run_with` takes its backends as given (D66).
+                        state.events.is_some(),
+                    )?)
+                    // After the merges, deliberately: applied inside
+                    // `build_router`'s own layer stack this would cover the API
+                    // and the root routes only, because WebDAV and MCP are
+                    // merged onto the app afterwards and a layer wraps what it
+                    // was applied to (D69).
+                    .layer(axum::middleware::from_fn(
+                        notedthat_api_http::metrics::track_requests,
+                    ));
 
-        let graceful_shutdown = shutdown_token.clone();
-        let signal_shutdown = shutdown_token.clone();
-        let shutdown_trigger = tokio::spawn(async move {
-            shutdown_signal().await;
-            signal_shutdown.cancel();
-        });
+                let graceful_shutdown = shutdown_token.clone();
+                let signal_shutdown = shutdown_token.clone();
+                let shutdown_trigger = tokio::spawn(async move {
+                    shutdown_signal().await;
+                    signal_shutdown.cancel();
+                });
 
-        let result = axum::serve(listener, app)
-            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
-            .await
-            .context("HTTP listener failed");
-        shutdown_trigger.abort();
-        result
-    }
-    .await;
+                let result = axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
+                    .await
+                    .context("HTTP listener failed");
+                shutdown_trigger.abort();
+                result
+            }
+            .await;
+            (result, metrics_listener)
+        }
+    };
+    // Cancelled before anything is joined. The metrics listener waits on this
+    // token, and `axum::serve` can return an error of its own — an accept-loop
+    // failure — without any shutdown having been signalled; joining before the
+    // cancel would then wait forever on a task nothing had told to stop, and
+    // every cleanup step below would be skipped with it.
     shutdown_token.cancel();
+    // Joined whether the run ended well or badly: this is the only thing that
+    // waits for the metrics socket to be released, and a caller that rebinds
+    // the address after `run_with` returns is what would notice if it did not.
+    if let Some(metrics_listener) = metrics_listener {
+        metrics_listener.join().await;
+    }
     // Cancelled with everything else; it holds no queue, so nothing waits on it but us.
     if let Err(e) = readiness_handle.await {
         tracing::error!(error = %e, "readiness poller panicked");
+    }
+    // Before the drain, like the watcher below and for the same reason: it holds
+    // a sender on the indexing queue.
+    if let Err(e) = queue_sampler.await {
+        tracing::error!(error = %e, "index queue sampler panicked");
     }
     // Before the drain, not after: the watcher holds a sender on the indexing queue, so
     // draining while it still runs would chase a live producer and never see the queue

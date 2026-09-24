@@ -82,7 +82,7 @@ Every mount option, including Windows and the `LOCK` caveat: [docs/WEBDAV.md](do
 - [Connecting clients](docs/CLIENTS.md) — Claude Code, claude.ai, Claude Desktop, Cursor, VS Code, Zed, n8n, Windmill, and any other MCP client
 - [Mounting a knowledge base](docs/WEBDAV.md) — WebDAV on Linux, macOS, Windows; rclone; Obsidian
 - [API reference](docs/API.md) — HTTP, WebDAV, MCP, events, and anonymous-read behavior
-- [Configuration](docs/CONFIGURATION.md) — environment, manifest access rules, OIDC, storage and events backends
+- [Configuration](docs/CONFIGURATION.md) — environment, manifest access rules, OIDC, storage and events backends, Prometheus metrics
 - [Running in production](docs/OPERATIONS.md) — reverse proxy and TLS, backpressure, backup and restore, capacity, upgrades, security posture
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
 - [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
@@ -207,6 +207,20 @@ A single-process deployment does not need the broker: `NOTEDTHAT_EVENTS_BACKEND=
 keeps the log in the server. See [Events backend](docs/CONFIGURATION.md#events-backend) and
 [the endpoint](docs/API.md#get-apiv1knowledgebaseskb_slugevents), including what a reverse
 proxy needs for a long-lived stream.
+
+### Compose with Prometheus
+
+Turns the server's metrics on and runs a Prometheus that scrapes them, so request rates,
+search latency and the index queue are on a dashboard rather than in a log:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.metrics.yml up --build -d
+open http://127.0.0.1:9090        # Prometheus; the server's own exposition is not published
+```
+
+Metrics are off in the default stack, and the exposition is unauthenticated — no credential is
+presented and none could be evaluated — so it lives on a listener of its own, never on the API
+port. See [Metrics](docs/CONFIGURATION.md#metrics).
 
 ### Compose with an S3-compatible store
 

@@ -59,6 +59,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use notedthat_core::metrics::{
+    label as metric_label, name as metric, watch_lost_reason as metric_reason,
+};
 use notedthat_core::{Error, KbSlug, ObjectPath, is_internal_path};
 use notify::{Config, Event, EventKind, RecursiveMode, Watcher, event::ModifyKind};
 use tokio::sync::mpsc;
@@ -339,6 +342,16 @@ fn handle_error(
     pending: &mut pending::Pending,
     now: Instant,
 ) {
+    // No `kb` label: both arms are watcher-wide failures, not a fault of any
+    // one knowledge base. The per-knowledge-base consequence is visible as
+    // `notedthat_index_stale_marks_total`, which the rescan below produces.
+    let reason = if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+        metric_reason::MAX_FILES_WATCH
+    } else {
+        metric_reason::ERROR
+    };
+    metrics::counter!(metric::FS_WATCH_LOST, metric_label::REASON => reason).increment(1);
+
     if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
         // The kernel refused a watch on a directory that appeared after startup, and
         // `notify` stops trying after the first refusal. Everything created below that

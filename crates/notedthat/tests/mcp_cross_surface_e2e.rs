@@ -63,6 +63,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
         kbs,
         tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
+        metrics_listen_addr: None,
         storage: notedthat_server::config::unroutable_storage_placeholder(),
         events: notedthat_server::config::EventsConfig::None,
         staging: StagingConfig::default(),

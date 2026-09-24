@@ -32,7 +32,10 @@
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use notedthat_core::search::SearchFilter;
-use qdrant_client::qdrant::{PointStruct, ScoredPoint};
+// Re-exported rather than merely imported: both appear in this trait's own
+// method signatures, so without them in the public API the trait cannot be
+// implemented outside this crate at all.
+pub use qdrant_client::qdrant::{PointStruct, ScoredPoint};
 
 /// Payload field types the search surface indexes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

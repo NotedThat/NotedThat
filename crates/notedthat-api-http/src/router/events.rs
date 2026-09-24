@@ -25,6 +25,8 @@ use notedthat_core::{
 };
 use serde::Deserialize;
 
+use notedthat_core::metrics::{label as metric_label, name as metric};
+
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -152,6 +154,48 @@ fn parse_last_event_id(req: &Request) -> Result<Option<EventId>, ApiError> {
         })
 }
 
+/// One live subscriber's place in `notedthat_events_subscribers` (D69).
+///
+/// The stream *is* the subscription: nothing is called when a client goes
+/// away, the response body is simply dropped. So the decrement has to be owned
+/// by the stream, and this is what owns it.
+///
+/// `kb` is a declared slug resolved through `KbAccess`; no principal, no peer
+/// address and no `Last-Event-ID` is recorded, because a subscriber's identity
+/// and its position are exactly what an exposition must not carry.
+struct Subscriber {
+    kb: String,
+}
+
+impl Subscriber {
+    fn enter(kb: String) -> Self {
+        metrics::gauge!(metric::EVENTS_SUBSCRIBERS, metric_label::KB => kb.clone()).increment(1.0);
+        Self { kb }
+    }
+}
+
+impl Drop for Subscriber {
+    fn drop(&mut self) {
+        metrics::gauge!(metric::EVENTS_SUBSCRIBERS, metric_label::KB => self.kb.clone())
+            .decrement(1.0);
+    }
+}
+
+/// Keep `guard` alive for exactly as long as `stream` is held or polled.
+///
+/// `unfold` moves the guard into the stream's own state, so it is dropped when
+/// the stream is — no manual `Pin` projection, which matters under this
+/// workspace's `unsafe_code = "forbid"`.
+fn guarded<S, G>(guard: G, stream: S) -> impl futures::Stream<Item = S::Item>
+where
+    S: futures::Stream + Unpin,
+    G: Send + 'static,
+{
+    futures::stream::unfold((stream, guard), |(mut stream, guard)| async move {
+        stream.next().await.map(|item| (item, (stream, guard)))
+    })
+}
+
 pub(super) async fn subscribe_events(
     State(state): State<AppState>,
     Path(kb_slug): Path<String>,
@@ -173,6 +217,7 @@ pub(super) async fn subscribe_events(
                 .into(),
         })));
     };
+    let kb_label = access.kb().as_str().to_string();
     let filter = EventFilter::parse(query).map_err(&err)?;
     let after = parse_last_event_id(&req).map_err(&err)?;
     let summary_visible = access.filter(Verb::List).covers_whole_kb();
@@ -183,11 +228,24 @@ pub(super) async fn subscribe_events(
         .map_err(|error| {
             err(match error {
                 SubscribeError::Gone { requested, oldest } => {
+                    // Counted here as well as by the HTTP family's `status`
+                    // label, because this is the one the `kb` breakdown is
+                    // worth having: a log that has aged past its subscribers
+                    // does it per knowledge base.
+                    metrics::counter!(
+                        metric::EVENTS_REPLAY_GONE,
+                        metric_label::KB => kb_label.clone(),
+                    )
+                    .increment(1);
                     ApiError::EventsGone { requested, oldest }
                 }
                 SubscribeError::Unavailable { message } => ApiError::EventsUnavailable { message },
             })
         })?;
+
+    // Counted only once `subscribe` has succeeded, so a `410` or an unavailable
+    // broker never registers a subscriber that does not exist.
+    let subscriber = Subscriber::enter(kb_label);
 
     // The first frame carries the retry hint. Then each event the caller may
     // see, in log order; an adapter error ends the stream with a comment, and
@@ -219,7 +277,7 @@ pub(super) async fn subscribe_events(
             futures::future::ready(frame.map(Ok::<Event, Infallible>))
         });
 
-    let mut response = Sse::new(head.chain(body))
+    let mut response = Sse::new(head.chain(guarded(subscriber, body)))
         .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
         .into_response();
     let headers = response.headers_mut();

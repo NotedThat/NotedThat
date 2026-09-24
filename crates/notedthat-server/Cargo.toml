@@ -31,11 +31,14 @@ notedthat-write = { path = "../notedthat-write", version = "0.10.0" }
 notedthat-events = { path = "../notedthat-events", version = "0.10.0" }
 anyhow.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 clap.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tower.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }
 thiserror.workspace = true
@@ -65,6 +68,9 @@ futures.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 bytes.workspace = true
+# A recorder the metered-wrapper tests can read back, to prove a dropped
+# call still records. Already in the tree under `metrics-exporter-prometheus`.
+metrics-util = { version = "0.20", features = ["debugging"] }
 temp-env = "0.3"
 tempfile.workspace = true
 # One persistent SeaweedFS/Qdrant pair for tests/phase3_access_e2e.rs, the

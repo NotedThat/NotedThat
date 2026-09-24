@@ -70,6 +70,8 @@ These have defaults and can be omitted.
 | Variable | Flag | Type | Default | Description |
 |----------|------|------|---------|-------------|
 | `NOTEDTHAT_LISTEN_ADDR` | `--listen-addr` | `host:port` (SocketAddr) | `0.0.0.0:8080` | Address and port the HTTP server binds to. Use `127.0.0.1:8080` to restrict to localhost. |
+| `NOTEDTHAT_METRICS_ENABLED` | `--metrics-enabled` | `true` or `false` | `false` | Serve Prometheus metrics on a second listener of their own. `true` or `false` exactly; anything else refuses startup and names the setting. Off means nothing is bound *and nothing is recorded* — enabling it later starts the counters at that restart. See [Metrics](#metrics). |
+| `NOTEDTHAT_METRICS_LISTEN_ADDR` | `--metrics-listen-addr` | `host:port` (SocketAddr) | `127.0.0.1:9090` | Address the metrics listener binds to. Loopback by default, because the exposition is unauthenticated. Supplying it while metrics are off refuses startup rather than binding nothing. See [Metrics](#metrics). |
 | `NOTEDTHAT_LOG_FORMAT` | `--log-format` | `pretty` or `json` | `pretty` | Log output format. `pretty` produces human-readable multi-line output. `json` produces one JSON object per log event, suitable for log aggregators. |
 | `RUST_LOG` | *(none — see above)* | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | `NOTEDTHAT_MAX_PATCHABLE_SIZE` | `--max-patchable-size` | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
@@ -169,6 +171,112 @@ none backend is selected, but these settings belong to the nats backend and woul
 NOTEDTHAT_NATS_URL (--nats-url). Unset them or set NOTEDTHAT_EVENTS_BACKEND=nats to start the
 server.
 ```
+
+## Metrics
+
+NotedThat can export Prometheus metrics. They are off by default, and when they are on they are
+served on a **second listener** — not on `NOTEDTHAT_LISTEN_ADDR`.
+
+| Variable | Flag | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `NOTEDTHAT_METRICS_ENABLED` | `--metrics-enabled` | No | `false` | `true` or `false` exactly. Any other value is a startup error. |
+| `NOTEDTHAT_METRICS_LISTEN_ADDR` | `--metrics-listen-addr` | No | `127.0.0.1:9090` | Where the metrics listener binds. Refused unless metrics are enabled. |
+
+**A separate listener, and loopback by default**, because the exposition is unauthenticated: there
+is no credential a scraper presents and no principal the exporter could evaluate. Putting
+`/metrics` on the product listener would mean everything that reaches NotedThat also reaches a
+description of its traffic, held off only by a path rule somebody could get wrong. A separate
+socket makes that boundary a property of the bind. `GET /metrics` on `NOTEDTHAT_LISTEN_ADDR` is
+`404`, with or without a credential, and every path other than `/metrics` on the metrics listener
+is `404` too.
+
+To be scraped from another host, bind it there deliberately —
+`NOTEDTHAT_METRICS_LISTEN_ADDR=0.0.0.0:9090` — and keep it behind whatever your network already
+uses to keep operator surfaces operator-only. A container is its own network namespace, so inside
+Compose or Kubernetes `0.0.0.0:9090` with no published port is reachable by the scraper and by
+nothing outside; `docker-compose.metrics.yml` does exactly that.
+
+**Nothing is recorded while metrics are off.** The instrumented code records through the `metrics`
+facade, whose macros are a no-op until a recorder is installed, and no recorder is installed unless
+`NOTEDTHAT_METRICS_ENABLED=true`. There is no accumulated history to collect after the fact; the
+counters begin at the restart that enabled them.
+
+**Setting the address while metrics are off refuses startup**, naming both settings, rather than
+binding nothing and leaving an operator to discover from an empty dashboard that their scrape
+target never existed:
+
+```
+Error: configuration error: NOTEDTHAT_METRICS_ENABLED (--metrics-enabled) is unset, so metrics are
+off, but NOTEDTHAT_METRICS_LISTEN_ADDR (--metrics-listen-addr) would be ignored: no metrics
+listener is opened. Unset it or set NOTEDTHAT_METRICS_ENABLED=true to start the server.
+```
+
+As everywhere else, **an empty value is still a value**: `NOTEDTHAT_METRICS_LISTEN_ADDR=` counts as
+supplied, and `NOTEDTHAT_METRICS_ENABLED=` is refused rather than read as off.
+
+### What the exposition carries, and what it never does
+
+Labels are bounded by construction: a knowledge base slug (bounded by `NOTEDTHAT_KBS`), a surface,
+an HTTP method, a route *template*, a status, an operation, an outcome, a backend name, a phase.
+**Never** an object key, a principal, a credential, a search query, a request id, a URL path or a
+subscriber's filters. Two reasons, both operational: an exposition is retained for months by
+whoever scrapes it and read by people who were granted nothing under your manifests' access rules,
+and an unbounded label is how a Prometheus falls over. `tests/metrics_labels_e2e.rs` puts named
+sentinel values into a running server — a unique object key, the service token, the WebDAV
+principal and password, a search phrase, a subscriber's prefix — exercises writes, a deletion, a
+search, an index failure, a subscriber and a queue-full refusal, and asserts every one of them is
+absent from the scraped text.
+
+Request duration is time to **response head**, not to last byte. The events route returns at once
+and then streams for hours, so measuring body completion would put hour-long observations in the
+histogram and pin the in-flight gauge at the subscriber count. A live stream's cost is
+`notedthat_events_subscribers`; a large read's backend cost is `notedthat_storage_*`.
+
+A storage call that answers `404`, `304` or `412` is counted as an outcome, not an error: those are
+how an idempotent delete and every conditional request work, and counting them would make the error
+rate track client caching rather than the backend's health. The vector store is treated the same
+way — a missing collection is `outcome="not_found"`, which both reconcilers handle by skipping the
+pass. What is left is the backend being unreachable, so that is what to alert on:
+
+```promql
+rate(notedthat_storage_operations_total{outcome="unavailable"}[5m]) > 0
+rate(notedthat_vector_store_operations_total{outcome="unavailable"}[5m]) > 0
+```
+
+`outcome="cancelled"` is the third kind: the caller gave up before the call answered — an
+abandoned search, a connection dropped mid-`GET`. It is recorded because the alternative is
+losing those calls entirely, and losing them selectively: a dropped future records nothing after
+its await, and the calls most likely to be abandoned are the slow ones, so the duration histograms
+would go quiet exactly when a backend is degrading. It is not a fault on its own — clients give
+up for their own reasons — but a rising share of it beside rising latency is the same story as
+`unavailable`, told from the caller's side.
+
+### Metric catalogue
+
+The full table is in `SPECIFICATIONS.md` §6.15. The families are: HTTP requests
+(`notedthat_http_*`), search (`notedthat_search_*`), embedding (`notedthat_embedding_*`), the index
+queue and worker (`notedthat_index_*`), the vector store (`notedthat_vector_store_*`), object
+change events (`notedthat_events_*`), reconciliation (`notedthat_reconcile_*`), the filesystem
+watcher (`notedthat_fs_watch_lost_total`), storage (`notedthat_storage_*`) and
+`notedthat_build_info`.
+
+### Scraping it
+
+```yaml
+scrape_configs:
+  - job_name: notedthat
+    static_configs:
+      - targets: ["notedthat-server:9090"]
+```
+
+Search P95 over five minutes, which is what §7.3's latency target is to be set from:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(notedthat_search_duration_seconds_bucket[5m])))
+```
+
+`sum by (le, kb)` breaks it down per knowledge base. `docker-compose.metrics.yml` runs a Prometheus
+with this scrape config already pointed at the server.
 
 ## Filesystem storage backend
 

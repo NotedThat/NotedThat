@@ -325,6 +325,95 @@ fn parse_mcp_anonymous(supplied: Option<&str>) -> Result<McpAnonymous, Error> {
     }
 }
 
+/// The default metrics bind: loopback, and deliberately so.
+const DEFAULT_METRICS_LISTEN_ADDR: &str = "127.0.0.1:9090";
+
+/// Parse `NOTEDTHAT_METRICS_ENABLED` and `NOTEDTHAT_METRICS_LISTEN_ADDR` into
+/// the one thing the server needs: where to serve the exposition, if anywhere.
+///
+/// Strict like every other selector (§6.5): a value that is neither `true` nor
+/// `false` refuses startup rather than reading as off, because a deployment
+/// that believes it is being scraped and is not looks exactly like a healthy
+/// one until someone needs the graph. An empty value is refused for the same
+/// reason — it says nothing about which was meant.
+///
+/// The address is refused when metrics are off, in the spirit of
+/// [`reject_unselected_settings`]: an operator who set a bind address has
+/// decided they want this served, and silently ignoring it would leave them
+/// waiting on a port nothing listens to.
+///
+/// The default is loopback, unlike [`Config::listen_addr`]'s `0.0.0.0`. The
+/// exposition carries no bearer and answers anyone who can reach it, so the
+/// safe bind is the one that reaches nobody, and exposing it is an edit an
+/// operator makes on purpose (D69).
+fn parse_metrics(
+    enabled: Option<&str>,
+    listen_addr: Option<&str>,
+) -> Result<Option<SocketAddr>, Error> {
+    let supplied = enabled.map(str::trim);
+    let enabled = match supplied {
+        // Absent and `false` are the same state — off — and the refusal below
+        // is what tells the two apart, where the difference is worth a word.
+        None | Some("false") => false,
+        Some("true") => true,
+        // Named apart from the generic refusal below: an empty value is almost
+        // always a variable that was passed through without one, and "must not
+        // be empty" points at that, where quoting `""` back does not.
+        Some("") => {
+            return Err(Error::Config {
+                message: format!("{} must not be empty", setting("NOTEDTHAT_METRICS_ENABLED")),
+            });
+        }
+        Some(value) => {
+            return Err(Error::Config {
+                message: format!(
+                    "{} is invalid: expected \"true\" or \"false\", got \"{value}\"",
+                    setting("NOTEDTHAT_METRICS_ENABLED")
+                ),
+            });
+        }
+    };
+
+    // Normalised once, before either branch reads it. The enabled path below
+    // used to trim and filter while this one tested the raw value, so the same
+    // empty string was the default with metrics on and a startup refusal with
+    // them off — and off is the default. Compose passes an unset variable
+    // through as `${VAR-}`, which arrives as the empty string, so an operator
+    // who never configured an address would be refused for one, exactly as
+    // `NOTEDTHAT_MCP_ANONYMOUS` next door is careful not to do. The refusal is
+    // for an address that really was supplied and really would be ignored.
+    let listen_addr = listen_addr.map(str::trim).filter(|value| !value.is_empty());
+
+    if !enabled {
+        if listen_addr.is_some() {
+            return Err(Error::Config {
+                message: format!(
+                    "{enabled_name} {state}, but {addr_name} would be ignored: no metrics \
+                     listener is opened. Unset it or set NOTEDTHAT_METRICS_ENABLED=true to \
+                     start the server.",
+                    enabled_name = setting("NOTEDTHAT_METRICS_ENABLED"),
+                    state = if supplied.is_some() {
+                        "is false"
+                    } else {
+                        "is unset, so metrics are off"
+                    },
+                    addr_name = setting("NOTEDTHAT_METRICS_LISTEN_ADDR"),
+                ),
+            });
+        }
+        return Ok(None);
+    }
+
+    let supplied = listen_addr.unwrap_or(DEFAULT_METRICS_LISTEN_ADDR);
+    let addr: SocketAddr = supplied.parse().map_err(|e| Error::Config {
+        message: format!(
+            "{} is invalid: {e}",
+            setting("NOTEDTHAT_METRICS_LISTEN_ADDR")
+        ),
+    })?;
+    Ok(Some(addr))
+}
+
 /// Refuse to start when settings belonging to an unselected backend are supplied.
 ///
 /// Reports every offender at once: the realistic case is a whole `NOTEDTHAT_S3_*` family
@@ -448,6 +537,15 @@ pub struct Config {
     /// milliseconds; also each probe's deadline (`NOTEDTHAT_READY_PROBE_INTERVAL_MS`;
     /// default 5000).
     pub ready_probe_interval_ms: u64,
+    /// Where the Prometheus exposition is served, or `None` while metrics are
+    /// off (`NOTEDTHAT_METRICS_ENABLED`, `NOTEDTHAT_METRICS_LISTEN_ADDR`; D69).
+    ///
+    /// One field rather than a flag beside an address, so "enabled, and here"
+    /// and "off" are the only two states anything downstream can see. The pair
+    /// of settings is reconciled once, in [`Self::from_cli`]; an address
+    /// supplied while the feature is off refuses startup rather than arriving
+    /// here as a value nobody reads.
+    pub metrics_listen_addr: Option<SocketAddr>,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
     /// Identity-provider settings (`NOTEDTHAT_OIDC_*`); `None` when no issuer is set.
@@ -773,6 +871,11 @@ impl Config {
             5_000,
         )?;
 
+        let metrics_listen_addr = parse_metrics(
+            cli.metrics_enabled.as_deref(),
+            cli.metrics_listen_addr.as_deref(),
+        )?;
+
         let staging =
             StagingConfig::from_setting(cli.upload_tmp_dir).map_err(|error| Error::Config {
                 message: error.to_string(),
@@ -797,6 +900,7 @@ impl Config {
             mcp_max_read_bytes,
             mcp_max_sessions,
             ready_probe_interval_ms,
+            metrics_listen_addr,
             staging,
             oidc,
         })
@@ -1128,7 +1232,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 55] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 57] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1143,6 +1247,8 @@ pub(crate) mod tests {
         "NOTEDTHAT_S3_ACCESS_KEY_ID",
         "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
         "NOTEDTHAT_LISTEN_ADDR",
+        "NOTEDTHAT_METRICS_ENABLED",
+        "NOTEDTHAT_METRICS_LISTEN_ADDR",
         "NOTEDTHAT_LOG_FORMAT",
         "NOTEDTHAT_S3_ENDPOINT_URL",
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
@@ -1210,6 +1316,8 @@ pub(crate) mod tests {
             ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("key")),
             ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("secret")),
             ("NOTEDTHAT_LISTEN_ADDR", None),
+            ("NOTEDTHAT_METRICS_ENABLED", None),
+            ("NOTEDTHAT_METRICS_LISTEN_ADDR", None),
             ("NOTEDTHAT_LOG_FORMAT", None),
             ("NOTEDTHAT_S3_ENDPOINT_URL", None),
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
@@ -1450,7 +1558,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 55);
+        assert_eq!(ALL_ENV_KEYS.len(), 57);
     }
 
     #[test]
@@ -2397,6 +2505,148 @@ pub(crate) mod tests {
             assert!(
                 table.iter().all(|(_, _, supplied)| !supplied),
                 "a default command line supplies nothing"
+            );
+        }
+    }
+
+    /// The metrics listener (D69).
+    mod metrics {
+        use super::*;
+
+        fn config_with(
+            overrides: &[(&str, Option<&str>)],
+        ) -> Result<super::super::Config, super::super::Error> {
+            run_with_env(overrides, Config::from_env)
+        }
+
+        #[test]
+        fn the_default_is_off_so_nothing_is_bound_and_nothing_is_recorded() {
+            let config = config_with(&[]).expect("a default configuration is valid");
+            assert!(config.metrics_listen_addr.is_none());
+        }
+
+        #[test]
+        fn enabling_it_binds_loopback_by_default() {
+            let config = config_with(&[("NOTEDTHAT_METRICS_ENABLED", Some("true"))])
+                .expect("metrics on their own are enough to enable the listener");
+            assert_eq!(
+                config
+                    .metrics_listen_addr
+                    .expect("an enabled listener has an address")
+                    .to_string(),
+                "127.0.0.1:9090",
+                "the default bind must stay loopback: the exposition is unauthenticated"
+            );
+        }
+
+        #[test]
+        fn an_explicit_address_is_taken_verbatim() {
+            let config = config_with(&[
+                ("NOTEDTHAT_METRICS_ENABLED", Some("true")),
+                ("NOTEDTHAT_METRICS_LISTEN_ADDR", Some("0.0.0.0:9187")),
+            ])
+            .expect("an operator may publish the listener deliberately");
+            assert_eq!(
+                config.metrics_listen_addr.map(|a| a.to_string()),
+                Some("0.0.0.0:9187".to_string())
+            );
+        }
+
+        /// §6.5: a mis-spelled value must not quietly read as off. A deployment
+        /// that believes it is being scraped and is not looks exactly like a
+        /// healthy one until someone needs the graph.
+        #[test]
+        fn an_unknown_value_is_refused_rather_than_defaulted() {
+            let error = config_with(&[("NOTEDTHAT_METRICS_ENABLED", Some("yes"))])
+                .expect_err("\"yes\" is not a value this setting takes");
+            let message = error.to_string();
+            assert!(
+                names_setting(&message, "NOTEDTHAT_METRICS_ENABLED", "is invalid"),
+                "{message}"
+            );
+            assert!(
+                message.contains("yes"),
+                "the refusal quotes the value: {message}"
+            );
+        }
+
+        #[test]
+        fn an_empty_value_is_refused_too() {
+            let error = config_with(&[("NOTEDTHAT_METRICS_ENABLED", Some(""))])
+                .expect_err("an empty value says nothing about which was meant");
+            assert!(
+                names_setting(
+                    &error.to_string(),
+                    "NOTEDTHAT_METRICS_ENABLED",
+                    "must not be empty"
+                ),
+                "{error}"
+            );
+        }
+
+        /// An address nothing binds is the same mistake as a setting nothing
+        /// reads, so it is refused the way an unselected backend's settings are.
+        #[test]
+        fn an_address_without_the_switch_is_refused_and_says_why() {
+            let error = config_with(&[("NOTEDTHAT_METRICS_LISTEN_ADDR", Some("0.0.0.0:9090"))])
+                .expect_err("an address alone opens no listener");
+            let message = error.to_string();
+            assert!(
+                message.contains("NOTEDTHAT_METRICS_LISTEN_ADDR"),
+                "{message}"
+            );
+            assert!(
+                message.contains("NOTEDTHAT_METRICS_ENABLED=true"),
+                "the refusal names the fix: {message}"
+            );
+        }
+
+        #[test]
+        fn an_address_while_explicitly_disabled_is_refused_too() {
+            let error = config_with(&[
+                ("NOTEDTHAT_METRICS_ENABLED", Some("false")),
+                ("NOTEDTHAT_METRICS_LISTEN_ADDR", Some("0.0.0.0:9090")),
+            ])
+            .expect_err("false plus an address is still an address nothing binds");
+            assert!(
+                names_setting(&error.to_string(), "NOTEDTHAT_METRICS_ENABLED", "is false"),
+                "{error}"
+            );
+        }
+
+        /// An empty value is no value, as it is for its siblings.
+        ///
+        /// Compose passes an unset variable through as `${VAR-}`, which reaches
+        /// the server as the empty string — the reason `NOTEDTHAT_MCP_ANONYMOUS`
+        /// documents "unset or empty means `auto`" and the two MCP bounds have
+        /// `_empty_or_blank_is_the_default_like_its_siblings`. Refusing here
+        /// would stop a deployment that names the variable without setting it,
+        /// over an address nobody configured. The refusal is for an address that
+        /// really was supplied and really would be ignored, which the test above
+        /// pins.
+        #[test]
+        fn an_empty_address_is_no_address() {
+            for blank in ["", "   "] {
+                let config = config_with(&[("NOTEDTHAT_METRICS_LISTEN_ADDR", Some(blank))])
+                    .expect("a blank address is no address, and metrics stay off");
+                assert_eq!(config.metrics_listen_addr, None, "{blank:?}");
+            }
+        }
+
+        #[test]
+        fn an_invalid_address_is_refused() {
+            let error = config_with(&[
+                ("NOTEDTHAT_METRICS_ENABLED", Some("true")),
+                ("NOTEDTHAT_METRICS_LISTEN_ADDR", Some("not-a-socket-addr")),
+            ])
+            .expect_err("the address is parsed, not trusted");
+            assert!(
+                names_setting(
+                    &error.to_string(),
+                    "NOTEDTHAT_METRICS_LISTEN_ADDR",
+                    "is invalid"
+                ),
+                "{error}"
             );
         }
     }

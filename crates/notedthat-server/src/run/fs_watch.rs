@@ -161,6 +161,11 @@ async fn reconcile_into(
     prefix: Option<&str>,
     cause: &str,
 ) {
+    // Before the first fallible call, so the two early returns below — a
+    // dropped collection, an unreadable index — are counted as `incomplete`
+    // rather than silently recording nothing, which is what the `s3` pass does
+    // for the same conditions.
+    let mut pass = super::metrics::PassMetric::started(kb, cause);
     let indexed = match store.indexed_objects(kb, prefix).await {
         Ok(indexed) => indexed,
         // Named apart from any other read failure because it is the one an operator can
@@ -223,6 +228,11 @@ async fn reconcile_into(
     let report = reconcile(storage, kb, prefix, &indexed, &changes_tx).await;
     drop(changes_tx);
     let _ = forwarder.await;
+    match &report {
+        Ok(Some(_)) => pass.completed(),
+        Ok(None) => pass.abandoned(),
+        Err(_) => {}
+    }
 
     match report {
         // A completed pass, whatever it found, has enqueued every difference: nothing
