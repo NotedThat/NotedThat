@@ -134,6 +134,7 @@ async fn fixture(scenario: &str) -> Fixture {
             secret_access_key: "any".to_string(),
             force_path_style: true,
             reconcile_on_startup: true,
+            allow_unenforced_conditional_writes: false,
         }
         .build_client(),
         TenantSlug::default(),
@@ -157,3 +158,39 @@ macro_rules! s3_scenario {
 }
 
 storage_integration_scenarios!(s3_scenario);
+
+/// The startup check (D70) is S3-only, so it runs here rather than as a shared scenario.
+/// `SeaweedFS` 4.18 enforces both preconditions (§8.1); this pins that the check says so
+/// against a real backend, not only against the fakes in `notedthat-storage-s3`, and
+/// that it leaves nothing behind.
+#[tokio::test]
+#[ignore = "requires a SeaweedFS testcontainer"]
+async fn seaweedfs_enforces_conditional_writes() {
+    use notedthat_core::Storage;
+    use notedthat_storage_s3::{ConditionalWrites, PROBE_KEY_PREFIX};
+
+    let fixture = fixture("seaweedfs_enforces_conditional_writes").await;
+    fixture
+        .storage
+        .ensure_bucket(&fixture.kb)
+        .await
+        .expect("bucket");
+
+    let found = fixture
+        .storage
+        .check_conditional_writes(&fixture.kb)
+        .await
+        .expect("check");
+
+    assert_eq!(found, ConditionalWrites::Enforced);
+    let left = fixture
+        .storage
+        .list_objects(&fixture.kb, Some(PROBE_KEY_PREFIX), 10, None)
+        .await
+        .expect("list");
+    assert!(
+        left.objects.is_empty(),
+        "the scratch object must be deleted: {:?}",
+        left.objects
+    );
+}

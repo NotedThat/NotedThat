@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime_api::http::Response as HttpResponse;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
@@ -13,9 +14,16 @@ use notedthat_core::{
     TenantSlug, derive_bucket_name,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const MANIFEST_KEY: &str = ".notedthat/manifest.json";
+/// Where [`S3Storage::check_conditional_writes`] puts its scratch object. Under
+/// `.notedthat/` so that a copy left behind by a failed delete is private (D48) and
+/// never indexed.
+pub const PROBE_KEY_PREFIX: &str = ".notedthat/conditional-write-probe-";
+const PROBE_BODY: &[u8] = b"conditional-write probe";
+/// A quoted `ETag` no object can carry: S3 `ETag`s are hex digests, and this is not hex.
+const PROBE_UNMATCHABLE_ETAG: &str = "\"notedthat-conditional-write-probe\"";
 const COPY_SOURCE_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -51,6 +59,139 @@ impl S3Storage {
     fn bucket_name(&self, kb: &KbSlug) -> String {
         derive_bucket_name(&self.tenant, kb)
     }
+
+    /// Find out whether `kb`'s bucket enforces the preconditions `NotedThat` forwards on a
+    /// conditional `PUT` (D70).
+    ///
+    /// Some S3-compatible backends parse `If-Match` and `If-None-Match` and then store
+    /// the object anyway (`SPECIFICATIONS.md` §8.1), so a conditional write that should
+    /// be `412` answers `200` and one of two concurrent writers is silently lost. Nothing
+    /// in a normal request can tell, so this asks directly: it stores a scratch object
+    /// under `.notedthat/`, overwrites it once with `If-None-Match: *` and once with an
+    /// `If-Match` naming an `ETag` it cannot have, and reads each answer. The scratch
+    /// object is deleted whatever the answers were.
+    ///
+    /// This is a write, unlike [`Storage::probe`], and calls the client directly so it
+    /// is not counted as a storage operation. One writer cannot provoke a failure that
+    /// only appears under contention; what it catches is a backend that does not enforce
+    /// the header at all.
+    ///
+    /// # Errors
+    ///
+    /// Any answer other than success, `412` or `501` to a conditional `PUT`, and any
+    /// failure of the unconditional one, is returned as the [`StorageError`] the rest of
+    /// the adapter would report for it.
+    pub async fn check_conditional_writes(
+        &self,
+        kb: &KbSlug,
+    ) -> Result<ConditionalWrites, StorageError> {
+        let bucket = self.bucket_name(kb);
+        let key = format!("{PROBE_KEY_PREFIX}{}", uuid::Uuid::now_v7());
+
+        let outcome = self.probe_preconditions(&bucket, &key).await;
+
+        if let Err(e) = self
+            .client
+            .delete_object()
+            .bucket(&bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            warn!(
+                bucket = %bucket,
+                key = %key,
+                error = %e,
+                "could not delete the conditional-write probe object; it is private and never indexed"
+            );
+        }
+        outcome
+    }
+
+    async fn probe_preconditions(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<ConditionalWrites, StorageError> {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from_static(PROBE_BODY))
+            .send()
+            .await
+            .map_err(|e| map_put_error(&e, bucket))?;
+
+        let if_none_match = self
+            .conditional_put(bucket, key, |req| req.if_none_match("*"))
+            .await?;
+        let if_match = self
+            .conditional_put(bucket, key, |req| req.if_match(PROBE_UNMATCHABLE_ETAG))
+            .await?;
+
+        Ok(match (if_match, if_none_match) {
+            (Precondition::Enforced, Precondition::Enforced) => ConditionalWrites::Enforced,
+            (Precondition::Unsupported, _) | (_, Precondition::Unsupported) => {
+                ConditionalWrites::Unsupported
+            }
+            (if_match, if_none_match) => ConditionalWrites::NotEnforced {
+                if_match: if_match == Precondition::Ignored,
+                if_none_match: if_none_match == Precondition::Ignored,
+            },
+        })
+    }
+
+    /// Overwrite the probe object under one precondition that cannot hold, and say
+    /// what the backend made of it.
+    async fn conditional_put(
+        &self,
+        bucket: &str,
+        key: &str,
+        condition: impl FnOnce(PutObjectFluentBuilder) -> PutObjectFluentBuilder,
+    ) -> Result<Precondition, StorageError> {
+        let req = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from_static(PROBE_BODY));
+        match condition(req).send().await {
+            Ok(_) => Ok(Precondition::Ignored),
+            Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 412 => {
+                Ok(Precondition::Enforced)
+            }
+            Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 501 => {
+                Ok(Precondition::Unsupported)
+            }
+            Err(e) => Err(map_put_error(&e, bucket)),
+        }
+    }
+}
+
+/// What a backend does with the preconditions on a conditional `PUT`, as
+/// [`S3Storage::check_conditional_writes`] found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionalWrites {
+    /// Both `If-Match` and `If-None-Match: *` are refused `412` when they do not hold.
+    Enforced,
+    /// At least one precondition was accepted and the object stored anyway. Each field
+    /// is `true` when that header was ignored.
+    NotEnforced {
+        /// A mismatched `If-Match` was stored rather than refused.
+        if_match: bool,
+        /// `If-None-Match: *` over an existing object was stored rather than refused.
+        if_none_match: bool,
+    },
+    /// The backend answered `501 Not Implemented` to a conditional `PUT`: it refuses the
+    /// header outright, so every conditional write would fail rather than be lost.
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Precondition {
+    Enforced,
+    Ignored,
+    Unsupported,
 }
 
 /// Convert an HTTP-date string (e.g., "Thu, 01 Jan 1970 00:00:00 GMT") to an
@@ -656,8 +797,9 @@ impl Storage for S3Storage {
     /// cannot be made to produce either on demand: `is_truncated=false` carrying a
     /// `NextContinuationToken` (warned about and ignored) and `is_truncated=true` carrying
     /// none (failed closed as [`StorageError::BackendUnavailable`], rather than silently
-    /// ending the walk). Asserting them needs a stubbed S3 response, which this crate has
-    /// no harness for.
+    /// ending the walk). Asserting them needs a stubbed S3 response; `wiremock` can serve
+    /// one, as `tests/missing_bucket.rs` and `tests/conditional_write_probe.rs` do, but
+    /// nobody has written these two yet.
     async fn list_objects(
         &self,
         kb: &KbSlug,

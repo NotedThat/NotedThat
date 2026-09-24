@@ -201,6 +201,11 @@ fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendK
             cli.s3_force_path_style.is_some(),
         ),
         ("NOTEDTHAT_S3_RECONCILE", S3, cli.s3_reconcile.is_some()),
+        (
+            "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
+            S3,
+            cli.s3_allow_unenforced_conditional_writes.is_some(),
+        ),
         ("NOTEDTHAT_FS_ROOT", Fs, cli.fs_root.is_some()),
         ("NOTEDTHAT_FS_METADATA", Fs, cli.fs_metadata.is_some()),
         ("NOTEDTHAT_FS_FILE_MODE", Fs, cli.fs_file_mode.is_some()),
@@ -489,6 +494,7 @@ pub fn unroutable_storage_placeholder() -> StorageConfig {
         secret_access_key: "any".to_string(),
         force_path_style: true,
         reconcile_on_startup: true,
+        allow_unenforced_conditional_writes: false,
     })
 }
 
@@ -713,6 +719,7 @@ impl Config {
                     endpoint_url: cli.s3_endpoint_url,
                     force_path_style: cli.s3_force_path_style,
                     reconcile: cli.s3_reconcile,
+                    allow_unenforced_conditional_writes: cli.s3_allow_unenforced_conditional_writes,
                 })?)
             }
             StorageBackendKind::Fs => {
@@ -1232,7 +1239,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 57] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 58] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1253,6 +1260,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_S3_ENDPOINT_URL",
         "NOTEDTHAT_S3_FORCE_PATH_STYLE",
         "NOTEDTHAT_S3_RECONCILE",
+        "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
         "NOTEDTHAT_EVENTS_BACKEND",
         "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
         "NOTEDTHAT_NATS_URL",
@@ -1322,6 +1330,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_S3_ENDPOINT_URL", None),
             ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
             ("NOTEDTHAT_S3_RECONCILE", None),
+            ("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES", None),
             ("NOTEDTHAT_EVENTS_BACKEND", None),
             ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", None),
             ("NOTEDTHAT_NATS_URL", None),
@@ -1558,7 +1567,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 57);
+        assert_eq!(ALL_ENV_KEYS.len(), 58);
     }
 
     #[test]
@@ -2254,6 +2263,55 @@ pub(crate) mod tests {
                     let error = Config::from_env().unwrap_err().to_string();
                     assert!(error.contains("belong to the s3 backend"), "{error}");
                     assert!(error.contains("NOTEDTHAT_S3_RECONCILE"), "{error}");
+                },
+            );
+        }
+
+        #[test]
+        fn s3_allow_unenforced_conditional_writes_defaults_off_and_is_parsed() {
+            const VAR: &str = "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES";
+            let cfg = run_with_env(&[(VAR, None)], Config::from_env).unwrap();
+            let StorageConfig::S3(s3) = &cfg.storage else {
+                panic!("the placeholder selects s3")
+            };
+            assert!(!s3.allow_unenforced_conditional_writes);
+
+            let cfg = run_with_env(&[(VAR, Some("true"))], Config::from_env).unwrap();
+            let StorageConfig::S3(s3) = &cfg.storage else {
+                panic!("the placeholder selects s3")
+            };
+            assert!(s3.allow_unenforced_conditional_writes);
+
+            let error = run_with_env(&[(VAR, Some("maybe"))], Config::from_env)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                names_setting(&error, VAR, "expected \"true\" or \"false\""),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn s3_allow_unenforced_conditional_writes_under_fs_is_refused() {
+            run_with_env(
+                &[
+                    ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
+                    ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
+                    ("NOTEDTHAT_S3_REGION", None),
+                    ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
+                    ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
+                    (
+                        "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
+                        Some("true"),
+                    ),
+                ],
+                || {
+                    let error = Config::from_env().unwrap_err().to_string();
+                    assert!(error.contains("belong to the s3 backend"), "{error}");
+                    assert!(
+                        error.contains("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES"),
+                        "{error}"
+                    );
                 },
             );
         }

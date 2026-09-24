@@ -52,6 +52,7 @@ impl Backends {
             secret_access_key: "any".to_string(),
             force_path_style: true,
             reconcile_on_startup: true,
+            allow_unenforced_conditional_writes: false,
         };
         let storage = S3Storage::new(s3_config.build_client(), TenantSlug::default());
 
