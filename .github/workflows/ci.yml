@@ -167,21 +167,27 @@ jobs:
   # image (docker.yml), but that sees the Debian layer, not the Cargo graph.
   # This job is the missing half.
   #
-  # Pull requests only, deliberately, and that has two consequences worth
+  # Runs on pull requests AND on pushes to `main`, and that split is worth
   # stating rather than discovering:
   #
   #   1. It does NOT gate a release. `release-plz-release` does not `needs:`
-  #      this job, so a tag cut after an advisory lands but before the next
-  #      pull request opens will publish eleven crates and a signed image
-  #      carrying it. That is a deliberate scope choice — releases here are
-  #      gated on `test`, `clippy`, `fmt`, `docker-build` and
-  #      `integration-test`, and this is not in that set.
-  #   2. `main` is unwatched between pull requests. An advisory filed against a
-  #      dependency nobody touched turns every OPEN pull request red at once,
-  #      with no run on `main` to tell an author it is not their diff. When
-  #      that happens the fix belongs on `main` — update the lockfile, or add
-  #      an `ignore` entry to deny.toml with a reason and a link — not in the
-  #      pull request that happened to be open.
+  #      this job, so a tag cut after an advisory lands will publish eleven
+  #      crates and a signed image carrying it. That is a deliberate scope
+  #      choice — releases here are gated on `test`, `clippy`, `fmt`,
+  #      `docker-build` and `integration-test`, and this is not in that set.
+  #      Running on `main` changes nothing about that, which is exactly why it
+  #      costs nothing to do: a red run here blocks no tag.
+  #   2. The `main` run is what tells an author a red check is not their diff.
+  #      An advisory filed against a dependency nobody touched turns every open
+  #      pull request red at once; without a run on `main` there is nothing to
+  #      compare against, and the author of an unrelated change goes looking
+  #      through their own diff for it. The fix belongs on `main` — update the
+  #      lockfile, or add an `ignore` entry to deny.toml with a reason and a
+  #      link — not in the pull request that happened to be open.
+  #   3. Neither trigger fires while the repository is quiet, and an advisory
+  #      does not wait for someone to push. `advisories.yml` runs the same
+  #      check on a schedule for that. It is a separate workflow because a
+  #      `schedule:` trigger here would fire every other job in this file too.
   #
   # The advisory database cannot be pinned, and pretending otherwise would be
   # worse than not pinning it: a database frozen at a commit only knows the
@@ -198,7 +204,6 @@ jobs:
   # of which is longer, so it adds nothing to the pull-request feedback time
   # #87 measured at about six minutes.
   advisories:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # A tripwire on a hung advisory-database fetch, not a budget on the check,
     # which takes about a second. Note this CANCELS rather than fails, which is
@@ -236,12 +241,26 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          db=$(find "${CARGO_HOME:-$HOME/.cargo}/advisory-dbs" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
-          if [ -z "$db" ]; then
+          # Tested before walked: `find` on a missing path exits non-zero, and
+          # under `set -e` with `pipefail` that aborted the step before the
+          # branch below could report why there was nothing to record — which
+          # is only ever the case when `cargo deny` failed before fetching a
+          # database, i.e. exactly the run this step exists to document.
+          dbs="${CARGO_HOME:-$HOME/.cargo}/advisory-dbs"
+          if [ ! -d "$dbs" ]; then
             echo "::warning::no advisory database was cloned; the check failed before fetching one"
             exit 0
           fi
-          echo "::notice::judged against RustSec advisory-db $(git -C "$db" rev-parse HEAD) ($(git -C "$db" log -1 --format=%cI))"
+          # Every database, not the first `find` happened to emit: `db-urls`
+          # names one source today, and if a second is ever added the recorded
+          # revision should not silently be whichever one came out first.
+          recorded=0
+          for db in "$dbs"/*/; do
+            [ -d "$db/.git" ] || continue
+            echo "::notice::judged against RustSec advisory-db $(basename "$db") $(git -C "$db" rev-parse HEAD) ($(git -C "$db" log -1 --format=%cI))"
+            recorded=1
+          done
+          [ "$recorded" = 1 ] || echo "::warning::$dbs exists but holds no git checkout to record"
 
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with

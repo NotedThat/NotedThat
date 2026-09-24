@@ -292,11 +292,22 @@ or the arm64 build breaks in a way amd64 never reveals.
 ## Dependency advisories
 
 The `advisories` job in `ci.yml` checks the committed `Cargo.lock` against the
-[RustSec advisory database](https://rustsec.org/) and fails the pull request if anything in the
-dependency graph carries an advisory or is yanked. It runs on pull requests only, so it does **not**
-gate a release, and `main` is unwatched between pull requests — an advisory filed against a
-dependency nobody touched first shows up on whatever pull request opens next. The job's comment in
-`ci.yml` explains why it is scoped that way.
+[RustSec advisory database](https://rustsec.org/) and fails the build on any **vulnerability**,
+**unmaintained** or **yanked** crate anywhere in the dependency graph — and on **unsound**
+advisories against workspace crates only, because `deny.toml` sets `unsound = "workspace"`.
+
+That last exception is worth knowing before you read a green run as "no advisories in the graph",
+because it is load-bearing right now: `Cargo.lock` carries `lru` 0.16.4 via `aws-sdk-s3`, which has
+RUSTSEC-2026-0253 (a use-after-free in `LruCache::pop()`), and the check still prints `advisories
+ok`. `deny.toml` explains the choice — widening it would make every pull request red over a bump
+only the AWS SDK can make. Unlike an `ignore` entry, it has no `unused-ignored-advisory` tripwire,
+so nothing will prompt a revisit when the SDK moves off `lru` 0.16; this paragraph is the only
+place that exception is recorded.
+
+It runs on pull requests and on pushes to `main`, and `advisories.yml` runs the same check on a
+weekday schedule so an advisory filed while the repository is quiet does not wait for the next
+push. None of them gates a release: `release-plz-release` does not `needs:` any of them, so a red
+advisory run blocks no tag. The job's comment in `ci.yml` explains the split.
 
 Same command CI runs, same config, no flags to remember:
 
@@ -313,9 +324,16 @@ cargo deny --locked check advisories
 ```
 
 The first run clones the advisory database into `$CARGO_HOME/advisory-dbs` (about 40 MB); later runs
-update it. Add `--offline` to judge against the copy you already have — `deny.toml` refuses one more
-than seven days old in that mode, so an offline pass is never a quietly stale one. A CI run prints
-the advisory-db revision it judged against, including when it fails, so a red run stays reproducible
+update it. To judge against the copy you already have, run
+
+```sh
+cargo deny --locked --offline check advisories
+```
+
+— `--offline` is a global flag and has to come **before** `check`; appended after `advisories` it is
+rejected with `unexpected argument '--offline' found`. In that mode `deny.toml` refuses a database
+more than seven days old, so an offline pass is never a quietly stale one. A CI run prints the
+advisory-db revision it judged against, including when it fails, so a red run stays reproducible
 after the fact.
 
 A failure is nearly always fixed by moving the lockfile, not by suppressing the finding:

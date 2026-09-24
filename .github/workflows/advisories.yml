@@ -1,0 +1,64 @@
+# The same advisory check `ci.yml` runs, on a clock.
+#
+# `ci.yml`'s `advisories` job covers every pull request and every push to
+# `main`, which is the whole of the repository's activity — but an advisory is
+# not published in response to activity. RUSTSEC files one against a dependency
+# nobody here has touched, and if the repository is quiet that week, nothing
+# looks at `Cargo.lock` until somebody happens to push. This is what looks.
+#
+# A separate workflow rather than `schedule:` in `ci.yml`, because a trigger
+# added there fires every job in that file — `test`, `clippy`, the integration
+# suite and the Docker build — to answer a question that compiles nothing.
+#
+# It gates nothing. Like the `ci.yml` job it feeds no `needs:`, so a red run
+# here blocks no tag and no merge; it exists to put the finding in front of
+# somebody while `main` is otherwise idle. The fix belongs on `main` — update
+# the lockfile, or add an `ignore` entry to deny.toml with a reason and a link.
+#
+# Keep the cargo-deny version in step with `ci.yml` and `DEVELOPMENT.md`.
+# Renovate bumps the action SHA but cannot see `tool:`.
+name: Advisories
+
+on:
+  schedule:
+    # 07:00 UTC on weekdays. Weekdays because a finding nobody reads until
+    # Monday is a finding that sat for two days; before the working day so it
+    # is already there rather than arriving mid-afternoon.
+    - cron: "0 7 * * 1-5"
+  # So it can be run on demand — after taking a fix, or to check a suspicion
+  # without opening a pull request.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories
+      - name: Record the advisory database revision this run judged against
+        if: always()
+        run: |
+          set -euo pipefail
+          dbs="${CARGO_HOME:-$HOME/.cargo}/advisory-dbs"
+          if [ ! -d "$dbs" ]; then
+            echo "::warning::no advisory database was cloned; the check failed before fetching one"
+            exit 0
+          fi
+          recorded=0
+          for db in "$dbs"/*/; do
+            [ -d "$db/.git" ] || continue
+            echo "::notice::judged against RustSec advisory-db $(basename "$db") $(git -C "$db" rev-parse HEAD) ($(git -C "$db" log -1 --format=%cI))"
+            recorded=1
+          done
+          [ "$recorded" = 1 ] || echo "::warning::$dbs exists but holds no git checkout to record"
