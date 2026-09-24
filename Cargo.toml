@@ -20,6 +20,25 @@ members = [
 [workspace.package]
 version = "0.10.0"
 edition = "2024"
+
+# Derived, not chosen: the maximum `rust-version` across the resolved dependency
+# graph — today the aws-sdk-s3 / aws-smithy-* family. Verified rather than
+# asserted: 1.90.0 is refused by Cargo naming those crates, 1.91.1 builds and
+# tests the whole workspace, and ci.yml's `test` matrix runs the suite on this
+# exact toolchain so a dependency that raises the floor fails CI instead of
+# shipping a manifest that lies to consumers. Edition 2024's own floor (1.85)
+# stopped being the binding constraint some time ago.
+#
+# A fact about today's tree, not a support promise — it may rise in any release,
+# and the CHANGELOG entry for the dependency bump is where that is said.
+#
+# Note this does NOT change resolution: MSRV-aware resolution is a resolver 3
+# feature and this workspace is on resolver 2, so declaring it only adds the
+# compile-time check. That is deliberate. Under resolver 3 Cargo would silently
+# hold a dependency back to an MSRV-compatible version, which for a project that
+# ships signed images is the worse failure — a declined security update that
+# looks like no update at all. Keep resolver 2 and let CI be the tripwire.
+rust-version = "1.91.1"
 license = "MPL-2.0"
 repository = "https://github.com/NotedThat/NotedThat"
 homepage = "https://github.com/NotedThat/NotedThat"

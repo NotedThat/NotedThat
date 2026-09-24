@@ -2,6 +2,7 @@
 name = "notedthat-events"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Object change event log adapters for NotedThat: in-process ring and NATS JetStream"

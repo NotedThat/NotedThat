@@ -9,16 +9,62 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # `toolchain` is a matrix because Cargo.toml declares a workspace
+  # `rust-version`, and that number is baked into all 11 published manifests.
+  # A declared MSRV that nothing compiles against is a claim, not a fact; this
+  # leg is what makes it true. When a dependency raises its own floor, this
+  # fails with "package X requires rustc N" instead of the project shipping a
+  # manifest that lies to consumers.
+  #
+  # Only `test` gets the matrix, on purpose:
+  #   * `fmt` has one canonical output and it is stable's — rustfmt is not
+  #     byte-stable across releases, so a second leg gives a false failure or a
+  #     meaningless pass.
+  #   * `clippy` runs `-D warnings` over the `pedantic` group, whose membership
+  #     moves between releases in both directions (see the 1.97
+  #     `manual_assert_eq` entry in CHANGELOG.md). A second toolchain there
+  #     reports lint churn, not defects.
+  #   * `package` verifies by building — a duplicate of this job's compile — and
+  #     what it uniquely checks (per-crate feature unification) is
+  #     toolchain-independent.
+  #   * `integration-test` needs containers and five minutes. An MSRV is a
+  #     compilation property; running SeaweedFS twice buys nothing.
+  #
+  # Note this gates releases: `release-plz-release` needs `test`, so a red MSRV
+  # leg blocks the tag and the crates.io publish. That is the intent — it is
+  # exactly the manifest claim that would otherwise ship unverified.
   test:
+    name: test (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    strategy:
+      # Both legs always report. "stable green, MSRV red" is a different
+      # diagnosis from "both red", and fail-fast would hide which one it is.
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.91.1"]
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      # `@master` rather than `@stable`: for this action the ref IS the
+      # toolchain, and GitHub does not allow an expression in `uses:`, so the
+      # toolchain has to arrive as an input instead — which only the `master`
+      # ref accepts. `stable` is a valid value for it.
+      #
+      # SHA-pinned because `master` moves with every commit to that repository,
+      # which would be a looser ref than the `@stable` it replaces. This matches
+      # how `Swatinem/rust-cache` below is already pinned; it is not a decision
+      # about the other tag-pinned actions in this repository.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # rust-cache already folds `rustc -vV` into its key, so the two legs
+          # cannot collide. This is for legibility in the cache listing.
+          key: ${{ matrix.toolchain }}
       - run: cargo test --workspace --locked
 
   clippy:
