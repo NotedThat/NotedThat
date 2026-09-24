@@ -15,6 +15,7 @@ mod llms;
 mod objects;
 mod well_known;
 
+use crate::bounds::{RequestBounds, bound};
 use crate::middleware::auth_middleware;
 use crate::state::AppState;
 use axum::Router;
@@ -92,10 +93,26 @@ impl MakeRequestId for MakeRequestUuidV7 {
     }
 }
 
-/// Build the complete axum [`Router`] with all routes and middleware.
+/// Build the complete axum [`Router`] with all routes and middleware, with no
+/// effective request bounds.
+///
+/// For routers built outside a running server. The server itself calls
+/// [`build_bounded_router`].
 pub fn build_router(state: AppState) -> Router {
+    build_bounded_router(state, &RequestBounds::unbounded())
+}
+
+/// Build the complete axum [`Router`], holding every route that answers once
+/// to `bounds` (D70).
+///
+/// The routes left out are left out by where they are registered, not by a
+/// path list: the events stream, which is meant to stay open for hours, and
+/// the two probes, which answer from memory and must stay reachable to an
+/// orchestrator when the listener is at its cap — a liveness probe refused
+/// `503` under load would restart the process for being busy.
+pub fn build_bounded_router(state: AppState, bounds: &RequestBounds) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
-    let api_routes = Router::new()
+    let bounded_api = Router::new()
         .route(ROUTE_KBS, get(list_kbs))
         .route(ROUTE_KB, get(list_objects))
         .route(
@@ -104,7 +121,6 @@ pub fn build_router(state: AppState) -> Router {
                 axum::extract::DefaultBodyLimit::max(crate::search_route::SEARCH_BODY_MAX_BYTES),
             ),
         )
-        .route(ROUTE_KB_EVENTS, get(subscribe_events))
         .route(ROUTE_KB_INDEX, get(get_index_health))
         .route(
             ROUTE_KB_INDEX_RECONCILE,
@@ -119,6 +135,10 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(patch_object.layer(DefaultBodyLimit::disable()))
                 .post(post_object.layer(DefaultBodyLimit::disable())),
         )
+        .route_layer(from_fn_with_state(bounds.clone(), bound));
+    let streaming_api = Router::new().route(ROUTE_KB_EVENTS, get(subscribe_events));
+    let api_routes = bounded_api
+        .merge(streaming_api)
         .layer(
             ServiceBuilder::new()
                 .layer(DefaultBodyLimit::max(helpers::body_limit_usize(
@@ -128,12 +148,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .with_state(state.clone());
 
-    // Request-id generation and tracing wrap every surface this router serves,
-    // including the unauthenticated root routes. Only `auth_middleware` and the
-    // API body limit stay nested on `/api/v1`.
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
+    let bounded_root = Router::new()
         .route("/llms.txt", get(llms_txt))
         .route(
             "/.well-known/oauth-protected-resource",
@@ -142,6 +157,15 @@ pub fn build_router(state: AppState) -> Router {
         .route(BROWSE_PREFIX, get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))
+        .route_layer(from_fn_with_state(bounds.clone(), bound));
+
+    // Request-id generation and tracing wrap every surface this router serves,
+    // including the unauthenticated root routes. Only `auth_middleware` and the
+    // API body limit stay nested on `/api/v1`.
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .merge(bounded_root)
         .nest(API_V1_PREFIX, api_routes)
         .layer(
             ServiceBuilder::new()
@@ -157,6 +181,97 @@ pub fn build_router(state: AppState) -> Router {
         // (see `notedthat_core::Authenticator`), because nesting it under
         // `/api/v1` would move the mount point.
         .with_state(state)
+}
+
+#[cfg(test)]
+mod bounded_routes {
+    use super::{RequestBounds, build_bounded_router};
+    use crate::state::AppState;
+    use crate::testing::InMemoryStorage;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request};
+    use notedthat_core::{Authenticator, KbSlug};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
+    use tower::ServiceExt;
+
+    fn state() -> AppState {
+        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let notes = KbSlug::try_new("notes").expect("valid slug");
+        AppState {
+            storage: Arc::new(InMemoryStorage::default()),
+            declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
+            access_policies: Arc::new(BTreeMap::new()),
+            kb_details: Arc::new(BTreeMap::new()),
+            authenticator: Arc::new(Authenticator::new("token")),
+            max_body_size: 1024,
+            max_patchable_size: 1024,
+            indexer_tx,
+            searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
+            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
+            reconcile: None,
+        }
+    }
+
+    /// Whether the in-flight cap is what answered.
+    async fn refused_by_the_cap(method: Method, path: &str) -> bool {
+        // No permits at all: every bounded route is refused before its
+        // handler runs, and anything that answers otherwise was never bounded.
+        let bounds = RequestBounds::new(Duration::from_secs(60), Arc::new(Semaphore::new(0)));
+        let response = build_bounded_router(state(), &bounds)
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8_lossy(&body).contains("limit of requests in flight")
+    }
+
+    #[tokio::test]
+    async fn every_route_that_answers_once_is_bounded() {
+        for (method, path) in [
+            (Method::GET, "/api/v1/knowledgebases"),
+            (Method::GET, "/api/v1/knowledgebases/notes"),
+            (Method::POST, "/api/v1/knowledgebases/notes/search"),
+            (Method::GET, "/api/v1/knowledgebases/notes/index"),
+            (Method::POST, "/api/v1/knowledgebases/notes/index/reconcile"),
+            (Method::GET, "/api/v1/knowledgebases/notes/a.md"),
+            (Method::PUT, "/api/v1/knowledgebases/notes/a.md"),
+            (Method::GET, "/llms.txt"),
+            (Method::GET, "/.well-known/oauth-protected-resource"),
+            (Method::GET, "/browse"),
+            (Method::GET, "/browse/notes/"),
+        ] {
+            assert!(
+                refused_by_the_cap(method.clone(), path).await,
+                "{method} {path} is not bounded"
+            );
+        }
+    }
+
+    /// The events stream stays open for hours and the probes must answer an
+    /// orchestrator under load, so none of them may draw a permit.
+    #[tokio::test]
+    async fn the_stream_and_the_probes_are_outside_the_bound() {
+        for path in ["/api/v1/knowledgebases/notes/events", "/healthz", "/readyz"] {
+            assert!(
+                !refused_by_the_cap(Method::GET, path).await,
+                "GET {path} is bounded"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

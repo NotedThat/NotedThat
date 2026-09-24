@@ -197,6 +197,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
                 &internal_http_api_url(backend_addr),
                 mcp_shutdown,
                 false,
+                &notedthat_api_http::bounds::RequestBounds::unbounded(),
             )
             .expect("MCP router should build"),
         );
@@ -263,4 +264,59 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
     .await
     .expect("active MCP connection should reach EOF within 15 seconds");
     backend.abort();
+}
+
+/// Only the legs that answer once draw a permit: `GET /mcp` is the session's
+/// notification stream and is meant to stay open for hours (D70).
+#[tokio::test]
+async fn only_the_mcp_request_legs_are_bounded() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request};
+    use tower::ServiceExt as _;
+
+    let config = test_config();
+    // No permits at all, so every bounded leg is refused before it runs.
+    let bounds = notedthat_api_http::bounds::RequestBounds::new(
+        Duration::from_secs(60),
+        Arc::new(tokio::sync::Semaphore::new(0)),
+    );
+    let app = build_router(
+        &config,
+        Arc::new(notedthat_core::Authenticator::new(config.api_token.clone())),
+        &BTreeMap::new(),
+        "http://127.0.0.1:1",
+        CancellationToken::new(),
+        false,
+        &bounds,
+    )
+    .expect("MCP router should build");
+
+    let refused_by_the_cap = |method: Method, path: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("host", "127.0.0.1")
+                        .header("authorization", "Bearer test-token")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .expect("test request is valid"),
+                )
+                .await
+                .expect("router is infallible");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            String::from_utf8_lossy(&body).contains("limit of requests in flight")
+        }
+    };
+
+    assert!(refused_by_the_cap(Method::POST, "/mcp").await);
+    assert!(refused_by_the_cap(Method::DELETE, "/mcp").await);
+    assert!(refused_by_the_cap(Method::GET, "/sse").await);
+    assert!(!refused_by_the_cap(Method::GET, "/mcp").await);
 }

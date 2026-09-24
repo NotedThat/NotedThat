@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{MethodFilter, any, get, on_service},
 };
+use notedthat_api_http::bounds::{RequestBounds, bound};
 use notedthat_core::{AccessPolicy, Authenticator, Principal};
 use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig,
@@ -28,6 +29,7 @@ pub(crate) fn build_router(
     internal_api_url: &str,
     cancellation_token: CancellationToken,
     events_enabled: bool,
+    bounds: &RequestBounds,
 ) -> anyhow::Result<axum::Router> {
     let client = NotedThatClient::new(internal_api_url, &config.api_token)
         .context("failed to build MCP HTTP API client")?
@@ -50,22 +52,29 @@ pub(crate) fn build_router(
     // server-to-client notification leg, DELETE to end a session. Auth is the
     // outermost layer, so a missing credential is 401 before rmcp answers
     // 400/404 about the session; the session bound sits between the two.
-    let mcp = on_service(
-        MethodFilter::GET
-            .or(MethodFilter::POST)
-            .or(MethodFilter::DELETE),
-        mcp_service.into_service(),
-    )
-    .route_layer(middleware::from_fn_with_state(sessions, bind_session))
-    .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
-    Ok(axum::Router::new()
-        .route("/mcp", mcp)
+    //
+    // One service, routed as two legs, because only one of them answers once.
+    // `GET` is the notification stream and is meant to stay open for hours,
+    // so it is registered without the request bounds (D70); `POST` and
+    // `DELETE` carry them, innermost, so a refused request has already been
+    // authenticated and matched to its session.
+    let service = mcp_service.into_service();
+    let stream_leg = on_service(MethodFilter::GET, service.clone());
+    let request_leg = on_service(MethodFilter::POST.or(MethodFilter::DELETE), service)
+        .route_layer(middleware::from_fn_with_state(bounds.clone(), bound));
+    let mcp = stream_leg
+        .merge(request_leg)
+        .route_layer(middleware::from_fn_with_state(sessions, bind_session))
+        .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
+    let legacy = axum::Router::new()
         .route(
             "/sse",
             get(legacy_transport_refusal).post(legacy_transport_refusal),
         )
         .route("/sse/", any(legacy_transport_refusal))
-        .route("/sse/{*path}", any(legacy_transport_refusal)))
+        .route("/sse/{*path}", any(legacy_transport_refusal))
+        .route_layer(middleware::from_fn_with_state(bounds.clone(), bound));
+    Ok(axum::Router::new().route("/mcp", mcp).merge(legacy))
 }
 
 /// Whether `/mcp` lets a request with no credential through, decided once.
