@@ -67,7 +67,7 @@ impl RequestBounds {
     #[must_use]
     pub fn unbounded() -> Self {
         Self::new(
-            Duration::from_secs(24 * 60 * 60),
+            Duration::from_hours(24),
             Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
         )
     }
