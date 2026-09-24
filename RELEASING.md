@@ -165,7 +165,48 @@ gh attestation verify oci://ghcr.io/notedthat/server:X.Y.Z --owner NotedThat
 ## Supply Chain Notes
 
 - `semver_check = false` — SemVer is not verified automatically; review breaking changes manually.
-- `dependencies_update = false` — release-plz does not bump dependencies; use Dependabot or manual updates.
+- `dependencies_update = false` — release-plz does not bump dependencies. Renovate does, via the shared
+  `github>NotedThat/.github` preset (scheduled before 8am Monday, non-major updates grouped per manager).
+  There is no Dependabot configuration in this repository.
+
+### Base image digests
+
+The Dockerfile pins both base images to immutable OCI **index** digests, with the publisher tag kept in
+front for readability. Docker resolves the digest and ignores the tag, so the tag is documentation.
+
+Renovate's docker manager refreshes an already-pinned digest on its own — `pinDigests` governs whether it
+*adds* a digest to a bare tag, not whether it updates one that is already there — so the normal path is to
+review and merge its PR. Check that the `FROM` line still reads `image:tag@sha256:...` and that the tag was
+not quietly changed along with the digest.
+
+To refresh by hand, or to check Renovate's PR:
+
+```sh
+# Resolve a tag to its current index digest.
+skopeo inspect --format '{{.Digest}}' docker://docker.io/library/debian:bookworm-slim
+skopeo inspect --format '{{.Digest}}' docker://docker.io/lukemathwalker/cargo-chef:latest-rust-1-bookworm
+
+# Confirm it is an INDEX, not one platform's manifest, and that it carries both
+# platforms we build. A per-platform digest here breaks the arm64 build with a
+# confusing "no matching manifest for linux/arm64" that amd64 never sees.
+skopeo inspect --raw docker://docker.io/library/debian@sha256:<new> \
+  | jq -r '.mediaType, [.manifests[].platform | select(.architecture != "unknown")]'
+
+# cargo-chef only: the pinned index also pins the compiler, which must stay at
+# or above `rust-version` in Cargo.toml.
+skopeo inspect --override-arch amd64 docker://docker.io/lukemathwalker/cargo-chef@sha256:<new> \
+  | jq -r '.Env[] | select(startswith("RUST_VERSION"))'
+```
+
+(`docker buildx imagetools inspect <ref> --raw` is the drop-in for anyone without skopeo.)
+
+Then edit the two `FROM` lines in `Dockerfile` and let CI's `docker-build` job prove the image still
+builds on both platforms before merging.
+
+What the pin does **not** buy: the runtime stage still runs `apt-get install ca-certificates curl`, which
+resolves against whatever the Debian mirror serves that day, and `# syntax=docker/dockerfile:1.7` is also
+a floating tag. The honest claim is that the same commit consumes the same base images — not that the
+build is bit-reproducible.
 - The GitHub Release body is owned by release-plz. `release.yml` uses `append_body: false` when uploading binary/installer assets so the CHANGELOG-generated body is never overwritten.
 
 ## Common Failures
