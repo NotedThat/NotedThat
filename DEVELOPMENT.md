@@ -279,7 +279,7 @@ trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
   --ignorefile .trivyignore.yaml notedthat-server:local
 
 # Secrets. Every hit is a hard fail; there is no "unfixed" for a leaked key.
-trivy image --scanners secret notedthat-server:local
+trivy image --scanners secret --ignorefile .trivyignore.yaml notedthat-server:local
 ```
 
 Both base images are pinned by digest. To bump them, follow

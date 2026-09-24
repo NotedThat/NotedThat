@@ -167,7 +167,11 @@ gh attestation verify oci://ghcr.io/notedthat/server:X.Y.Z --owner NotedThat
 - `semver_check = false` — SemVer is not verified automatically; review breaking changes manually.
 - `dependencies_update = false` — release-plz does not bump dependencies. Renovate does, via the shared
   `github>NotedThat/.github` preset (scheduled before 8am Monday, non-major updates grouped per manager).
+  Two kinds of update are taken out of that window in `renovate.json`, because something in CI gates on
+  them: anything with a known advisory, and base-image digest bumps (see below).
   There is no Dependabot configuration in this repository.
+- The GitHub Release body is owned by release-plz. `release.yml` uses `append_body: false` when uploading
+  binary/installer assets so the CHANGELOG-generated body is never overwritten.
 
 ### Base image digests
 
@@ -207,7 +211,38 @@ What the pin does **not** buy: the runtime stage still runs `apt-get install ca-
 resolves against whatever the Debian mirror serves that day, and `# syntax=docker/dockerfile:1.7` is also
 a floating tag. The honest claim is that the same commit consumes the same base images — not that the
 build is bit-reproducible.
-- The GitHub Release body is owned by release-plz. `release.yml` uses `append_body: false` when uploading binary/installer assets so the CHANGELOG-generated body is never overwritten.
+
+Because the base is pinned and the runtime stage does not `apt-get upgrade`, **a rebuild cannot take a
+Debian security fix** — only a new digest can. So the image scan in `docker.yml` going red means "bump the
+digest", never "re-run the job", and until that bump merges every pull request is red and
+`release-plz-release` is blocked. That is why the digest rule in `renovate.json` is unscheduled.
+
+### Multi-architecture publishing
+
+`docker.yml` builds each architecture on a native runner, pushes each by digest without a tag, and then a
+`merge` job assembles one manifest list, verifies it carries every platform a build leg recorded, signs it
+with `cosign --recursive` and attests the index digest.
+
+Two things to know before the next release.
+
+**The merge job runs for the first time on a real release.** `ci.yml` calls this workflow with
+`push: false`, and the merge job is `if: inputs.push`, so it is skipped on every pull request — the
+`Docker Build / Merge into a multi-platform manifest` check being skipped is expected, not a fault. Only
+`release.yml` passes `push: true`, and that runs *after* `release-plz-release` has pushed the tag and
+published the crates. So the digest-artifact download, `imagetools create` with `index:` annotations, the
+`{{json .Manifest}}` inspect templates, `cosign sign --recursive` and the index attestation all execute
+for the first time at a point where the release is already half-done. If the job fails there, the version
+ships its crates and binaries but no image, and `latest` stays on the previous release. **Watch the next
+release's Docker leg, and be ready to re-dispatch `docker.yml` against the tag that already exists** —
+nothing in it depends on the tag not existing yet.
+
+**A failed scan leaves an untagged manifest behind.** The per-architecture images are pushed by digest
+*before* they are scanned — deliberately, so the scan judges the published bytes rather than something
+built alongside them. A HIGH/CRITICAL finding therefore fails the job after the manifests are already in
+GHCR. Nothing references them: no tag resolves to them, they are unsigned, and the merge job never runs.
+But they are pullable by digest by anyone who has it, GHCR does not garbage-collect them, and every failed
+attempt leaves another pair. Nothing prunes them automatically — check the package's untagged versions
+after a failed release and delete them by hand.
 
 ## Common Failures
 

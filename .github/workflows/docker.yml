@@ -195,8 +195,25 @@ jobs:
       # makes this step red on every run forever, everyone learns to click past
       # it, and the scanner leaves the repo LESS safe than having none. With
       # ignore-unfixed a failure here has one precise meaning: a fix exists in
-      # the distribution and this image has not taken it. That is always
-      # actionable — rebuild, or bump the pinned base digest in the Dockerfile.
+      # the distribution and this image has not taken it.
+      #
+      # The remedy is to BUMP THE PINNED BASE DIGEST, and only that. Rebuilding
+      # does nothing: the `FROM` lines are pinned by digest and the runtime stage
+      # runs `apt-get install` without `upgrade`, so every rebuild resolves the
+      # same base layer. Saying "rebuild" here would send someone in a circle.
+      #
+      # The cost of that is a window: from the moment Debian publishes a fix,
+      # every pull request is red — whatever it touches — until the digest bump
+      # merges, and `release-plz-release` needs `docker-build`, so releases stop
+      # too. In `release.yml` the tag already exists when this runs, so a fix
+      # published between the CI run and the release run ships a version with
+      # crates and binaries but no image.
+      #
+      # The gate stays hard on both anyway, because a scan that is advisory on
+      # pull requests is one nobody reads. What shortens the window instead is
+      # `renovate.json`'s `vulnerabilityAlerts` rule, which is unscheduled: a
+      # base-image CVE raises the bump PR immediately rather than waiting for
+      # the Monday-morning window the other updates use.
       #
       # DB from the public.ecr.aws mirror rather than trivy's ghcr.io default:
       # that pull is anonymous, GHCR rate-limits anonymous pulls per source IP,
@@ -223,12 +240,20 @@ jobs:
       # point — it is a tripwire for the day someone adds a COPY of a config
       # file, an .env or a service-account key into the runtime stage. The only
       # moment it is worth anything is the moment nobody expects it.
+      #
+      # `trivyignores` is set here too. trivy-action only exports
+      # TRIVY_IGNOREFILE when that input is present, and trivy's own default is
+      # `.trivyignore`, not `.trivyignore.yaml` — so without this the `secrets:`
+      # block in that file is read by nothing, and a maintainer following the
+      # file's own instructions to suppress a false positive would watch it
+      # change nothing at all.
       - name: Scan the image for secrets
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.scan_ref.outputs.ref }}
           scanners: secret
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
           format: table
 
@@ -244,13 +269,18 @@ jobs:
         if: inputs.push
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           # Empty means the exporter silently produced nothing; the merge job
           # would then build a manifest list out of whatever legs did work.
           [ -n "${DIGEST}" ] || { echo "::error::build produced no digest" >&2; exit 1; }
-          mkdir -p /tmp/digests
+          mkdir -p /tmp/digests /tmp/platforms
           touch "/tmp/digests/${DIGEST#sha256:}"
+          # The platform this leg built, for the merge job to assert the
+          # published index against. Written here rather than listed there so
+          # the claim above — one matrix entry and no other edit — is true.
+          echo "${PLATFORM}" > "/tmp/platforms/${PLATFORM//\//-}"
 
       - name: Upload the digest
         if: inputs.push
@@ -258,6 +288,15 @@ jobs:
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload the platform
+        if: inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: platforms-${{ matrix.arch }}
+          path: /tmp/platforms/*
           if-no-files-found: error
           retention-days: 1
 
@@ -286,6 +325,12 @@ jobs:
         with:
           path: /tmp/digests
           pattern: digests-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: /tmp/platforms
+          pattern: platforms-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v4
@@ -370,7 +415,12 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           platforms=$(docker buildx imagetools inspect "${IMAGE}@${digest}" \
                        --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')
-          for want in linux/amd64 linux/arm64; do
+          # Expected set comes from the legs that ran, not from a list here: a
+          # platform added to the matrix is asserted without editing this file.
+          mapfile -t expected < <(cat /tmp/platforms/* | sed '/^$/d' | sort -u)
+          [ "${#expected[@]}" -gt 0 ] || { echo "::error::no build leg recorded a platform" >&2; exit 1; }
+          echo "expecting: ${expected[*]}"
+          for want in "${expected[@]}"; do
             case " ${platforms} " in
               *" ${want} "*) ;;
               *)

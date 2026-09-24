@@ -460,7 +460,7 @@ The image runs under `--read-only`. Exactly two paths need to be writable, and b
 
 | Path | Why | When |
 |---|---|---|
-| `NOTEDTHAT_FS_ROOT` (default `/var/lib/notedthat`) | Objects, `.notedthat.lock`, and the `.notedthat-meta/` shadow tree | `fs` backend only — an S3-backed deployment does not need it |
+| `NOTEDTHAT_FS_ROOT` (no default — the image creates `/var/lib/notedthat` for it, but the variable must be set) | Objects, `.notedthat.lock`, and the `.notedthat-meta/` shadow tree | `fs` backend only — an S3-backed deployment does not need it |
 | `NOTEDTHAT_UPLOAD_TMP_DIR` | WebDAV upload spooling and indexer snapshots | Always. Under `--read-only` the default (the platform temp dir) is not writable, so this becomes **mandatory** |
 
 ```sh

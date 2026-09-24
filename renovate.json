@@ -1,4 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>NotedThat/.github"]
+  "extends": ["github>NotedThat/.github"],
+  "vulnerabilityAlerts": {
+    "description": "A dependency with a known advisory does not wait for the shared preset's weekly window.",
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "Base-image digest bumps are unscheduled, because the image scan in .github/workflows/docker.yml gates on them. Both FROM lines in the Dockerfile are pinned by digest and the runtime stage does not apt-get upgrade, so a rebuild cannot take a Debian security fix — only a new digest can. Debian republishes bookworm-slim when it ships one, Renovate raises that as a digest update, and until it merges the scan is red on every pull request and releases are blocked. Leaving this in the Monday window would make that a week.",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "pinDigest"],
+      "schedule": ["at any time"],
+      "minimumReleaseAge": null,
+      "labels": ["base-image"]
+    }
+  ]
 }
