@@ -2001,6 +2001,13 @@ describes by default, which is what lets it push `notifications/resources/update
     identical read authority — whatever `anyone` grants — so nothing else crosses.
   - Still treat a session id as a credential: send it over TLS and do not log it. Sharing one
     between principals no longer works, which is the point.
+  - **A `404` for a session id means start a new session.** The session idled out, the server
+    restarted, or it is not yours; the answer is the same for all three by design. `initialize`
+    again, as the MCP specification requires, and re-subscribe, since subscriptions end with
+    their session. A client that switches to a different identity — another user, or from the
+    service token to a user — must `initialize` a new session rather than carry the old id
+    over; a token refresh for the same subject needs neither. See
+    [Connecting clients](CLIENTS.md#anything-else-that-speaks-mcp).
 - At most `NOTEDTHAT_MCP_MAX_SESSIONS` sessions per process (default **256**): a `POST` that
   would open another answers `503` with `Retry-After: 5`. Clients that keep their session id
   hold one slot each; a client that `initialize`s per request burns through them and idles them

@@ -258,8 +258,11 @@ The endpoint is a streamable-HTTP MCP server with sessions, the shape the MCP sp
 describes: `initialize` returns an `Mcp-Session-Id`, every later request carries it, answers are
 SSE-framed, and `GET /mcp` is where server-to-client notifications arrive. The session belongs to
 the credential that opened it, so an id is not shared between principals — refreshing an access
-token keeps the session, presenting it as someone else does not. Every client listed above does
-this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
+token keeps the session, presenting it as someone else does not. A request whose session is gone
+for its caller — idled out, ended by a restart, or opened by another principal — is answered
+`404`, and the client starts a new session with `initialize` and subscribes again; a client that
+switches to a different identity does the same rather than carrying the old id over. Every
+client listed above does this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
 transport is deliberately not offered ([why](API.md#streamable-http-transport)); a hand-rolled
 client needs the three-step dance in [the transport notes](API.md#streamable-http-transport).
 
