@@ -1265,24 +1265,54 @@ mod caller_identity {
             assert_eq!(mine.2, theirs.2);
         }
 
-        /// `initialize` with no credential at all — an anonymous caller must not
-        /// send an empty bearer and be refused for the wrong reason.
+        /// The owner kinds `every_pair_of_distinct_principals_is_refused` covers,
+        /// one per `Principal` variant the server can tell apart.
+        ///
+        /// Exhaustive on purpose, and the reason that test may claim no pair was
+        /// left out: the pairs are enumerated by hand from an array, so without
+        /// this a new principal kind would widen the gap in silence. Adding one
+        /// fails to compile here first, and the fix is to add it to `owners` too.
+        const OWNER_KINDS: fn(&Principal) -> &'static str = |principal| match principal {
+            Principal::Anyone => "anonymous",
+            Principal::SignedIn(Identity::ServiceToken) => "service",
+            Principal::SignedIn(Identity::User(_)) => "alice and bob",
+        };
+
         /// Every ordered pair of distinct owners the server can tell apart — two
         /// users, the service token and the anonymous caller — on every method.
         /// The tests above each pin one pair or one property; this one is what
-        /// says no pair was left out.
+        /// says no pair was left out, and the tripwire below is what keeps that
+        /// true as `Principal` grows.
         #[tokio::test]
         async fn every_pair_of_distinct_principals_is_refused() {
             // Given: one session per owner, on a deployment that admits the
             // anonymous caller (D59) beside bearers and the service token.
             let api = MockServer::start().await;
             let app = anonymous_app(&api.uri());
+            // One owner per `Principal` kind (see `OWNER_KINDS`), plus a second
+            // `User` for the user-to-user pair.
             let owners: [(&str, Option<&str>); 4] = [
                 ("alice", Some(ALICE_TOKEN)),
                 ("bob", Some(BOB_TOKEN)),
                 ("service", Some(SERVICE_TOKEN)),
                 ("anonymous", None),
             ];
+            // And every kind it names really is in that array — the compile-time
+            // half proves the match is exhaustive, this proves the array kept up.
+            for kind in [
+                Principal::Anyone,
+                Principal::SignedIn(Identity::ServiceToken),
+                Principal::SignedIn(Identity::User(notedthat_core::UserIdentity {
+                    subject: "alice".to_string(),
+                    groups: std::collections::BTreeSet::new(),
+                })),
+            ] {
+                let label = OWNER_KINDS(&kind);
+                assert!(
+                    owners.iter().any(|(name, _)| label.contains(name)),
+                    "no owner in the array stands for {label}"
+                );
+            }
             let mut sessions = Vec::new();
             for (name, bearer) in owners {
                 let id = match bearer {
@@ -1333,6 +1363,8 @@ mod caller_identity {
                 .to_owned()
         }
 
+        /// `initialize` with no credential at all — an anonymous caller must not
+        /// send an empty bearer and be refused for the wrong reason.
         async fn post_anonymous_initialize(
             app: &Router,
         ) -> (axum::response::Response, Option<serde_json::Value>) {

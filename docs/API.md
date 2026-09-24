@@ -2003,11 +2003,14 @@ describes by default, which is what lets it push `notifications/resources/update
     between principals no longer works, which is the point.
   - **A `404` for a session id means start a new session.** The session idled out, the server
     restarted, or it is not yours; the answer is the same for all three by design. `initialize`
-    again, as the MCP specification requires, and re-subscribe, since subscriptions end with
-    their session. A client that switches to a different identity — another user, or from the
-    service token to a user — must `initialize` a new session rather than carry the old id
-    over; a token refresh for the same subject needs neither. See
-    [Connecting clients](CLIENTS.md#anything-else-that-speaks-mcp).
+    again, as the MCP specification requires, re-subscribe, and call `resources/list` again if
+    you rely on `list_changed` — subscriptions end with their session, and so does the list
+    watch, which D66 starts only from a session's first `resources/list` and only for the
+    knowledge bases that list returned. A client that switches to a different identity — another
+    user, or from the service token to a user — must `initialize` a new session rather than
+    carry the old id over; a token refresh for the same subject needs neither. Only `POST` and
+    the `GET` leg answer `404`: a `DELETE` is `202` for any id, so it never tells a client whose
+    session it was. See [Connecting clients](CLIENTS.md#anything-else-that-speaks-mcp).
 - At most `NOTEDTHAT_MCP_MAX_SESSIONS` sessions per process (default **256**): a `POST` that
   would open another answers `503` with `Retry-After: 5`. Clients that keep their session id
   hold one slot each; a client that `initialize`s per request burns through them and idles them
