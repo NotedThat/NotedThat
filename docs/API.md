@@ -1494,7 +1494,7 @@ location /api/v1/ {
     proxy_pass         http://notedthat:8080;
     proxy_http_version 1.1;
     proxy_buffering    off;      # also set by the X-Accel-Buffering: no response header
-    proxy_read_timeout 0;        # the stream is idle between events; heartbeats every 15 s
+    proxy_read_timeout 1h;       # the stream is idle between events; heartbeats every 15 s
 }
 ```
 
@@ -2012,8 +2012,10 @@ curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $T" -H "Mcp-Session-Id
 ```
 
 Behind a reverse proxy, `/mcp` needs the same treatment as the events route: no response
-buffering and no read timeout on the `GET` leg (`proxy_buffering off`, `proxy_read_timeout 0`
-in nginx).
+buffering on the `GET` leg, and a read timeout comfortably above the 15-second keep-alive
+(`proxy_buffering off`, `proxy_read_timeout 1h` in nginx — `proxy_read_timeout 0` is an
+immediate `504`, not an infinite timeout). See [`docs/OPERATIONS.md`](OPERATIONS.md#the-reverse-proxy)
+for a complete proxy configuration.
 
 **SSE refusal:** The legacy SSE transport is not supported. The following requests return `405 Method Not Allowed`:
 
