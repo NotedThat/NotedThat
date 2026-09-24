@@ -76,7 +76,55 @@ These have defaults and can be omitted.
 | `RUST_LOG` | *(none — see above)* | tracing filter string | `info,notedthat=debug` | Controls log verbosity. Uses the standard `tracing-subscriber` filter syntax. Examples: `debug`, `warn`, `info,notedthat_api_http=trace`. |
 | `NOTEDTHAT_MAX_PATCHABLE_SIZE` | `--max-patchable-size` | positive integer (u64 bytes) | 104857600 (100 MiB) | Maximum object size eligible for PATCH operations, in bytes. Objects larger than this are rejected before any splice. PATCH results larger than this limit are also rejected (checked arithmetic, no allocation). Applies to PATCH only — PUT uses the router body limit. Must be ≤ 5 GiB (MAX_UPLOAD_BYTES). |
 | `NOTEDTHAT_UPLOAD_TMP_DIR` | `--upload-tmp-dir` | existing writable directory | platform temporary directory | Shared private staging directory for WebDAV upload spooling and indexer snapshots. Startup validates it before opening listeners or provisioning storage. |
+| `NOTEDTHAT_REQUEST_TIMEOUT_MS` | `--request-timeout-ms` | positive integer (ms) | `30000` | Longest a request may take to produce its response head; past it, `504 request_timeout`. Not `/webdav`, the events route, `GET /mcp` or the probes. See [Request bounds](#request-bounds). |
+| `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` | `--webdav-request-timeout-ms` | positive integer (ms) | `120000` | The same bound for `/webdav`, whose `PROPFIND` walks a collection before answering. See [Request bounds](#request-bounds). |
+| `NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT` | `--max-requests-in-flight` | positive integer | `512` | Most requests the listener works on at once, across every surface; past it, `503` with `Retry-After: 5`. See [Request bounds](#request-bounds). |
+| `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` | `--header-read-timeout-ms` | positive integer (ms) | `30000` | Longest a connection may take to send a complete request head before it is closed — and so also how long an idle kept-alive connection stays open. See [Request bounds](#request-bounds). |
 | `NOTEDTHAT_READY_PROBE_INTERVAL_MS` | `--ready-probe-interval-ms` | positive integer (ms) | `5000` | How often `/readyz`'s background prober checks the storage backend and Qdrant; also each probe's deadline, so keep it well above the backends' round-trip time (the in-process e2e uses `20`; a networked S3 or Qdrant needs hundreds of milliseconds at least, or every probe times out and `/readyz` sits at `503 timeout`). An outage is reported within twice this value. Must be > 0. See [Readiness](#readiness). |
+
+## Request bounds
+
+The listener bounds three things itself (D70), because it knows which of its routes are meant to
+stay open and a proxy in front of it does not:
+
+- **Time to the response head** — `NOTEDTHAT_REQUEST_TIMEOUT_MS` (default 30 s), and
+  `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` (default 120 s) on `/webdav`. A request that has not
+  produced its response head in that time is answered `504` in the usual error envelope:
+
+  ```json
+  { "error": "request_timeout", "message": "the request did not complete within 30000 ms", "request_id": "…" }
+  ```
+
+  There is no `Retry-After`: the same request would take as long again. The clock stops at the
+  response *head*, so a large download or a long MCP result is never cut off partway — the
+  expensive part of every route (a search's embedding call, a `PROPFIND` walk, a `PATCH`) runs
+  before the head. How long the body takes to transfer is left to the proxy.
+- **Requests in flight** — `NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT` (default 512), one count shared by
+  every surface. A request that arrives when it is reached is answered at once, not queued, with
+  `503 backend_unavailable` and `Retry-After: 5`, like every other capacity refusal on this
+  server. A permit is held until the response head, so a download in progress does not hold one.
+- **Time to send a request head** — `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). A
+  connection that has not sent a complete request head in that time is closed without an answer.
+  The same clock runs while a kept-alive connection idles between requests, so it is also the idle
+  timeout: keep a proxy's upstream keep-alive shorter than this (see
+  [What the proxy must get right](OPERATIONS.md#what-the-proxy-must-get-right)).
+
+**Exempt:** the API events route and `GET /mcp`, which are meant to stay open for hours, and
+`/healthz` and `/readyz`, which must answer an orchestrator when the listener is full. They are
+exempt by how they are routed, not by a list of paths, and do not count towards the in-flight cap.
+`POST /mcp` is bounded like any other request; an MCP tool call is also bounded where it does its
+work, since it reaches the API on this same listener, and a timeout there reaches the client as a
+`request_timeout` tool error.
+
+**Watching them:** with [metrics](#metrics) on, `notedthat_http_requests_refused_total` counts
+refusals by `surface`, `route` and `reason` (`timeout` or `in_flight`), and
+`notedthat_http_header_read_timeouts_total` counts closed connections. Refusals also appear in
+`notedthat_http_requests_total` under `503` and `504`. A steady `in_flight` count means the cap is
+below what the node can serve or a backend has slowed down; `timeout` on the search route usually
+means the embedding endpoint is slow.
+
+Each value must be a positive integer; `0` or anything unparseable refuses startup. Unset or empty
+means the default.
 
 ## Storage backend
 
@@ -894,9 +942,9 @@ back to raw Markdown indexing rather than requiring more staging memory.
 
 NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT:
 
-1. **The unified listener stops accepting new connections and finishes accepted work** — Axum
-   graceful shutdown completes API, WebDAV, and MCP requests on `NOTEDTHAT_LISTEN_ADDR` before
-   the bounded indexer drain begins.
+1. **The unified listener stops accepting new connections and finishes accepted work** — it
+   completes the API, WebDAV, and MCP requests already in progress on `NOTEDTHAT_LISTEN_ADDR`,
+   and closes idle connections at once, before the bounded indexer drain begins.
 2. **Indexer drain (up to 31 seconds)** — once the listeners have completed, the background indexer
    worker is signalled to stop and given up to 31 seconds to flush its queue. Any events not
    processed within this window are abandoned.
@@ -904,8 +952,11 @@ NotedThat performs a staged graceful shutdown when it receives SIGTERM or SIGINT
 Size a container's `terminationGracePeriodSeconds` (Kubernetes) or `stop_grace_period` (Docker
 Compose) for the longest allowed in-flight request plus the 31-second indexer drain and operational
 margin. The bundled Compose configuration uses `45s`, leaving 14 seconds beyond the drain budget;
-deployments that permit longer requests must configure a larger grace period. Standalone Docker
-users can set the equivalent timeout with `docker run --stop-timeout 45`.
+deployments that permit longer requests must configure a larger grace period. The longest a
+request can run before its response head is the [request timeout](#request-bounds) — 30 s, but
+120 s on `/webdav`, so a deployment whose WebDAV clients run long `PROPFIND`s needs a grace period
+of at least `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` plus the drain. Standalone Docker users can set
+the equivalent timeout with `docker run --stop-timeout 45`.
 
 ## WebDAV operational notes
 
@@ -913,7 +964,9 @@ users can set the equivalent timeout with `docker run --stop-timeout 45`.
 
 WebDAV `PROPFIND` on large knowledge bases walks the storage cursor server-side, making multiple paginated requests to the storage backend before returning a single `207 Multi-Status` response.
 
-**Reverse-proxy timeout:** For knowledge bases with more than 1 000 objects, set your reverse proxy's read timeout to at least 120 seconds:
+**Server timeout:** `/webdav` has a request timeout of its own, `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` (default 120 s), separate from the 30 s the other surfaces get; a `PROPFIND` that has not answered by then is `504`. Raise it for a knowledge base that takes longer to list, and raise the proxy's to match. See [Request bounds](#request-bounds).
+
+**Reverse-proxy timeout:** For knowledge bases with more than 1 000 objects, set your reverse proxy's read timeout to at least 120 seconds — and no lower than `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS`, or the proxy gives up before the server answers:
 
 - **nginx:** `proxy_read_timeout 120s;`
 - **Traefik:** `readTimeout = "120s"` in the service configuration
@@ -1070,6 +1123,7 @@ Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) must be an absolute pa
 Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is invalid: expected "none", "memory" or "nats", got "kafka"
 Error: configuration error: NOTEDTHAT_NATS_URL (--nats-url) is required
 Error: configuration error: NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs) is invalid: expected a positive number of seconds, got "7d"
+Error: configuration error: NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT (--max-requests-in-flight) must be > 0
 ```
 
 Each names the environment variable and the flag that overrides it, because which one you used is
@@ -1151,7 +1205,9 @@ exposure change is not. See the upgrade notes in [API.md](API.md).
 - **Upload buffer sizes:** Fixed at 16 MiB. Configurable buffer sizes are planned for a later
   release.
 - **Rate limits:** No built-in per-client or global rate limiter. Operators exposing anonymous
-  search must configure rate and burst controls at their reverse proxy.
+  search must configure rate and burst controls at their reverse proxy. The listener does bound
+  how long one request may take and how many run at once (see [Request bounds](#request-bounds)),
+  which limits the damage of a burst but is not a rate limit.
 - **TLS:** The server speaks plain HTTP. Terminate TLS at a reverse proxy (Traefik, nginx, Caddy).
 - **Multiple service tokens:** There is one `NOTEDTHAT_API_TOKEN`. Per-person credentials come
   from an OIDC provider (see [OIDC authentication](#oidc-authentication)), not from a second token.
