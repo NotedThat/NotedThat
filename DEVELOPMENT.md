@@ -27,6 +27,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 # Format check (mirrors CI)
 cargo fmt --all -- --check
 
+# Dependency advisories (mirrors CI)
+cargo deny --locked check advisories
+
 # Format in place
 cargo fmt --all
 ```
@@ -285,6 +288,54 @@ trivy image --scanners secret --ignorefile .trivyignore.yaml notedthat-server:lo
 Both base images are pinned by digest. To bump them, follow
 [Base image digests](RELEASING.md#base-image-digests) — the digest must be the multi-platform **index**,
 or the arm64 build breaks in a way amd64 never reveals.
+
+## Dependency advisories
+
+The `advisories` job in `ci.yml` checks the committed `Cargo.lock` against the
+[RustSec advisory database](https://rustsec.org/) and fails the pull request if anything in the
+dependency graph carries an advisory or is yanked. It runs on pull requests only, so it does **not**
+gate a release, and `main` is unwatched between pull requests — an advisory filed against a
+dependency nobody touched first shows up on whatever pull request opens next. The job's comment in
+`ci.yml` explains why it is scoped that way.
+
+Same command CI runs, same config, no flags to remember:
+
+```sh
+# The version CI pins. cargo-deny is not a workspace dependency, so this is a
+# one-off install — and the version moves by hand in two places, here and
+# ci.yml, because Renovate cannot see the `tool:` input the workflow uses.
+cargo install --locked cargo-deny@0.20.2
+
+# Everything that shapes the check lives in deny.toml, which is why there is
+# nothing else on this line. `--locked` is the same assertion every other cargo
+# call in CI makes: judge the lockfile that ships.
+cargo deny --locked check advisories
+```
+
+The first run clones the advisory database into `$CARGO_HOME/advisory-dbs` (about 40 MB); later runs
+update it. Add `--offline` to judge against the copy you already have — `deny.toml` refuses one more
+than seven days old in that mode, so an offline pass is never a quietly stale one. A CI run prints
+the advisory-db revision it judged against, including when it fails, so a red run stays reproducible
+after the fact.
+
+A failure is nearly always fixed by moving the lockfile, not by suppressing the finding:
+
+```sh
+# The advisory names its own fix. Take it:
+cargo update -p <crate>
+
+# When a plain update stops below the advisory's floor — something else in the
+# graph is holding the crate back — name the version and let Cargo move what it
+# has to:
+cargo update -p <crate> --precise <version>
+```
+
+Suppressing is the exception. It belongs in `deny.toml`'s `ignore` list, never as a flag on the
+command line where nobody reads it, and every entry needs a reason and, where the fix is upstream, a
+link — so the next person can tell a considered deferral from an unreviewed one. An entry also fails
+the check the day the advisory stops matching the tree, so a suppression rots loudly: delete it, do
+not extend it. `deny.toml` likewise records why the `licenses`, `bans` and `sources` checks are off,
+and why `unsound` stays at its narrower scope; those are decisions, not defaults.
 
 ## Dependency Ownership Rules
 

@@ -1,0 +1,76 @@
+# Configuration for `cargo deny check advisories`, run by the `advisories` job in
+# .github/workflows/ci.yml on every pull request.
+#
+# Only the `advisories` check runs. The other three are deliberately not enabled,
+# and that is a decision rather than a default nobody looked at:
+#
+#   * `licenses` — the workspace is MPL-2.0 and publishes eleven crates to
+#     crates.io, so the dependency tree's licences genuinely do matter here.
+#     Turning the check on means classifying ~490 packages in one sitting and
+#     maintaining an allow-list that goes stale quietly. Worth doing; not worth
+#     bundling into the change whose job is to stop shipping known-vulnerable
+#     dependencies. It should arrive on its own, with its own argument.
+#   * `bans` — duplicate versions in a tree this size are a tidiness signal, not
+#     a security one. A red check that means "tidy up" is one people learn to
+#     click past, and then it is worth less than nothing. Same reasoning as
+#     `ignore-unfixed` on the Trivy image scan.
+#   * `sources` — every dependency comes from crates.io today, and nothing in the
+#     tree uses a git source or a path outside the workspace. There is nothing
+#     for this check to find until that changes.
+#
+# Enabling any of them is one more word in the workflow's `check` arguments plus
+# the corresponding section below.
+
+[graph]
+# Deliberately a SUPERSET of what ships, not a match for it: `cargo test`,
+# `cargo package` and the Dockerfile all build default features only. An
+# advisory reachable just through a feature nothing enables today is one flag
+# away from being reachable, and unlike a compile there is no cost to looking.
+all-features = true
+
+[advisories]
+# The source is pinned so the database cannot be silently redirected. Its
+# CONTENTS float, necessarily — see the note above the job in ci.yml.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# Vulnerabilities are always errors and have no setting. These two are the
+# informational classes that do, and they get different answers on purpose.
+#
+# An abandoned crate is abandoned whoever pulled it in, so `unmaintained` is
+# "all" — cargo-deny's default, restated because it is a choice.
+unmaintained = "all"
+# `unsound` stays at cargo-deny's narrower default, and here that is currently
+# load-bearing rather than incidental: aws-sdk-s3 1.137.0 pulls lru 0.16.4,
+# which carries RUSTSEC-2026-0253 (use-after-free in `LruCache::pop()`, fixed
+# in 0.18.2). Widening this to "all" makes every pull request red over a bump
+# only the AWS SDK can make. An unsound crate this workspace chose itself is
+# ours to answer for; one four levels down is not. Worth revisiting if that
+# ever stops being a single crate.
+unsound = "workspace"
+
+# A yank is a maintainer saying "do not use this", which is worth hearing even
+# when no advisory was filed. Every cargo invocation in CI passes `--locked`, so
+# without this a yanked release stays in Cargo.lock indefinitely and nothing
+# ever mentions it.
+yanked = "deny"
+
+# The failure mode of every suppression file is an entry that outlives its
+# reason. This makes an entry fail the check the moment it stops matching the
+# tree, so the run that makes a suppression unnecessary is the run that forces
+# its removal — it rots loudly instead of quietly, the same bargain
+# `.trivyignore.yaml` strikes with `expired_at`.
+unused-ignored-advisory = "deny"
+
+# Only consulted when the database is not being fetched, i.e. a local
+# `--offline` run; CI always fetches. Seven days rather than the 90-day default
+# because an offline pass against a database from three months ago is a pass
+# that means nothing, and it is the local runs that are most likely to be stale.
+maximum-db-staleness = "P7D"
+
+# Every entry carries a reason, and a link wherever the fix is upstream. An entry
+# with neither cannot be reviewed and should be refused in review. Suppressing an
+# advisory belongs here, in the tree, and never as a flag on the command line
+# where nobody reads it.
+ignore = [
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained; the repository was archived in August 2025. Not a direct dependency: it arrives as tonic 0.12.3 <- qdrant-client 1.15.0, so there is nothing to act on here until qdrant-client moves to a tonic that dropped it. The replacement is rustls-pki-types' PemObject, which is upstream's call to make, not ours. Announcement: https://github.com/rustls/pemfile/issues/61" },
+]

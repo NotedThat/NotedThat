@@ -160,6 +160,89 @@ jobs:
           print(f"checked {len(sys.argv) - 1} packaged manifests: no workspace dev-dependencies kept")
           PY
 
+  # Dependency advisories were noticed here but never gated. GitHub's alerts
+  # raise a notification and Renovate raises an update PR; neither fails
+  # anything, so a known-vulnerable dependency could sit in Cargo.lock for as
+  # long as nobody happened to read the notification. Trivy scans the built
+  # image (docker.yml), but that sees the Debian layer, not the Cargo graph.
+  # This job is the missing half.
+  #
+  # Pull requests only, deliberately, and that has two consequences worth
+  # stating rather than discovering:
+  #
+  #   1. It does NOT gate a release. `release-plz-release` does not `needs:`
+  #      this job, so a tag cut after an advisory lands but before the next
+  #      pull request opens will publish eleven crates and a signed image
+  #      carrying it. That is a deliberate scope choice — releases here are
+  #      gated on `test`, `clippy`, `fmt`, `docker-build` and
+  #      `integration-test`, and this is not in that set.
+  #   2. `main` is unwatched between pull requests. An advisory filed against a
+  #      dependency nobody touched turns every OPEN pull request red at once,
+  #      with no run on `main` to tell an author it is not their diff. When
+  #      that happens the fix belongs on `main` — update the lockfile, or add
+  #      an `ignore` entry to deny.toml with a reason and a link — not in the
+  #      pull request that happened to be open.
+  #
+  # The advisory database cannot be pinned, and pretending otherwise would be
+  # worse than not pinning it: a database frozen at a commit only knows the
+  # advisories that existed when it was frozen, which is precisely the thing
+  # being defended against. What IS pinned is the tool (an exact cargo-deny
+  # version below) and the database's SOURCE (`db-urls` in deny.toml), so the
+  # check cannot be silently redirected. The honest statement is that this job
+  # is not reproducible across time by design, and a green run is a claim about
+  # today only.
+  #
+  # Nothing is compiled — cargo-deny reads Cargo.lock and the advisory database
+  # — so there is no toolchain step and no rust-cache, for the same reason
+  # `fmt` has none. It runs alongside `test`, `clippy` and `package`, every one
+  # of which is longer, so it adds nothing to the pull-request feedback time
+  # #87 measured at about six minutes.
+  advisories:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # A tripwire on a hung advisory-database fetch, not a budget on the check,
+    # which takes about a second. Note this CANCELS rather than fails, which is
+    # harmless only because nothing `needs:` this job — and is the first thing
+    # that stops being harmless if the release gate above is ever wired to it.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Pinned to an exact cargo-deny version rather than using
+      # EmbarkStudios/cargo-deny-action, which is a Docker action: it builds an
+      # image on the runner every run and resolves the graph under whatever
+      # toolchain its Dockerfile pins, rather than the `@stable` every other job
+      # here uses. Installing the binary also keeps the command below
+      # byte-identical to the one in DEVELOPMENT.md — a scanner nobody can run
+      # locally is a scanner people argue with instead of fix.
+      #
+      # Renovate bumps the action SHA but CANNOT see `tool:`, so the cargo-deny
+      # version moves by hand, in two places: here and DEVELOPMENT.md.
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny@0.20.2
+      # Everything that shapes this check lives in deny.toml, deliberately: a
+      # flag here would be a suppression that never appears in a review.
+      # `--locked` is the same assertion every other cargo call in CI makes —
+      # judge the lockfile that ships, not what the resolver would pick today.
+      - run: cargo deny --locked check advisories
+      # The database cannot be pinned, so record which one judged this run.
+      # `if: always()` because a red run is precisely the one worth reproducing
+      # months later, and without this the evidence is gone.
+      - name: Record the advisory database revision this run judged against
+        if: always()
+        run: |
+          set -euo pipefail
+          db=$(find "${CARGO_HOME:-$HOME/.cargo}/advisory-dbs" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
+          if [ -z "$db" ]; then
+            echo "::warning::no advisory database was cloned; the check failed before fetching one"
+            exit 0
+          fi
+          echo "::notice::judged against RustSec advisory-db $(git -C "$db" rev-parse HEAD) ($(git -C "$db" log -1 --format=%cI))"
+
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
   # push=false — no GHCR login, no cosign, no secrets required (safe for
