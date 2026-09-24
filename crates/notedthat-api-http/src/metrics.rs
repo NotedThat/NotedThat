@@ -130,13 +130,20 @@ impl Drop for InFlight {
     }
 }
 
-/// Count and time every request on every surface.
-pub async fn track_requests(req: Request, next: Next) -> Response {
+/// The `route` and `surface` labels for a request, as every HTTP series
+/// records them.
+pub(crate) fn route_and_surface(req: &Request) -> (String, &'static str) {
     let route = req
         .extensions()
         .get::<MatchedPath>()
         .map_or_else(|| ROUTE_UNMATCHED.to_string(), |m| m.as_str().to_string());
     let surface = surface_of(&route, req.headers().get(SOURCE_HEADER));
+    (route, surface)
+}
+
+/// Count and time every request on every surface.
+pub async fn track_requests(req: Request, next: Next) -> Response {
+    let (route, surface) = route_and_surface(&req);
     let method = method_label(req.method());
 
     let _in_flight = InFlight::enter(surface);

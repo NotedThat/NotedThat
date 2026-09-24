@@ -30,6 +30,10 @@ pub mod name {
     pub const HTTP_REQUEST_DURATION: &str = "notedthat_http_request_duration_seconds";
     /// Requests in flight right now.
     pub const HTTP_IN_FLIGHT: &str = "notedthat_http_requests_in_flight";
+    /// Requests the listener refused to finish, by why (D70).
+    pub const HTTP_REQUESTS_REFUSED: &str = "notedthat_http_requests_refused_total";
+    /// Connections closed for taking too long to send a request head (D70).
+    pub const HTTP_HEADER_READ_TIMEOUTS: &str = "notedthat_http_header_read_timeouts_total";
 
     /// Searches answered.
     pub const SEARCH_REQUESTS: &str = "notedthat_search_requests_total";
@@ -224,6 +228,18 @@ pub mod index_outcome {
     pub const FAILED: &str = "failed";
 }
 
+/// Values for the `reason` label on a refused request (D70).
+///
+/// A refusal still counts under [`name::HTTP_REQUESTS`] with its status; this
+/// family says which bound refused it, so a `503` from the in-flight cap can
+/// be told apart from one a backend answered.
+pub mod refused_reason {
+    /// The request did not produce a response head within its timeout: `504`.
+    pub const TIMEOUT: &str = "timeout";
+    /// The listener already had as many requests in flight as it allows: `503`.
+    pub const IN_FLIGHT: &str = "in_flight";
+}
+
 /// Values for the `reason` label on a lost filesystem watch (D50).
 pub mod watch_lost_reason {
     /// The kernel's per-user watch limit was reached.
@@ -360,6 +376,8 @@ mod tests {
         name::HTTP_REQUESTS,
         name::HTTP_REQUEST_DURATION,
         name::HTTP_IN_FLIGHT,
+        name::HTTP_REQUESTS_REFUSED,
+        name::HTTP_HEADER_READ_TIMEOUTS,
         name::SEARCH_REQUESTS,
         name::SEARCH_DURATION,
         name::SEARCH_HITS,

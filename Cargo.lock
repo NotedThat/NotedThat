@@ -2554,6 +2554,7 @@ dependencies = [
  "http 1.4.2",
  "httpdate",
  "metrics",
+ "metrics-util",
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-events",

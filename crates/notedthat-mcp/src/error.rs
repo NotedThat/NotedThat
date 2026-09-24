@@ -63,9 +63,14 @@ pub enum McpToolError {
         /// Number of matches found for the replacement `old_string`.
         count: u64,
     },
-    /// 503 — backend (S3 / Qdrant) unavailable.
+    /// 503 — backend (S3 / Qdrant) unavailable, or the server is at its limit
+    /// of requests in flight.
     #[error("backend_unavailable")]
     BackendUnavailable,
+    /// 504 — the API call did not produce a response within the server's
+    /// request timeout (D70). Not retried: the same call would take as long.
+    #[error("request_timeout: {0}")]
+    RequestTimeout(String),
     /// 500 / other — internal server error.
     #[error("internal_error: {0}")]
     InternalError(String),
@@ -119,6 +124,11 @@ impl From<McpToolError> for ErrorData {
             McpToolError::BackendUnavailable => {
                 ErrorData::new(ErrorCode::INTERNAL_ERROR, "backend_unavailable", None)
             }
+            McpToolError::RequestTimeout(msg) => ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("request_timeout: {msg}"),
+                None,
+            ),
             McpToolError::InternalError(msg) => {
                 ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None)
             }
@@ -203,6 +213,7 @@ pub(crate) async fn map_response(
             _ => McpToolError::InvalidRequest(message),
         },
         503 => McpToolError::BackendUnavailable,
+        504 => McpToolError::RequestTimeout(message),
         _ => McpToolError::InternalError(format!("HTTP {}: {message}", status.as_u16())),
     })
 }
@@ -225,6 +236,7 @@ mod tests {
             McpToolError::NoMatch("hello".into()),
             McpToolError::AmbiguousMatch { count: 3 },
             McpToolError::BackendUnavailable,
+            McpToolError::RequestTimeout("slow".into()),
             McpToolError::InternalError("boom".into()),
             McpToolError::Forbidden,
             McpToolError::ResponseTooLarge {
@@ -372,6 +384,7 @@ mod tests {
             (416, |e| matches!(e, McpToolError::RangeNotSatisfiable)),
             (500, |e| matches!(e, McpToolError::InternalError(_))),
             (503, |e| matches!(e, McpToolError::BackendUnavailable)),
+            (504, |e| matches!(e, McpToolError::RequestTimeout(_))),
         ];
 
         for (status, check_fn) in test_cases {
