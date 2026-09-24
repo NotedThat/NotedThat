@@ -116,6 +116,11 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_MCP_MAX_READ_BYTES", value_name = "BYTES")]
     pub mcp_max_read_bytes: Option<String>,
 
+    /// Most MCP sessions this process holds at once; a `POST` that would open
+    /// another is refused until one ends [default: 256].
+    #[arg(long, env = "NOTEDTHAT_MCP_MAX_SESSIONS", value_name = "COUNT")]
+    pub mcp_max_sessions: Option<String>,
+
     /// OIDC issuer URL, spelled exactly as the provider's `iss` claim. Enables
     /// identity-provider bearer tokens.
     #[arg(long, env = "NOTEDTHAT_OIDC_ISSUER", value_name = "URL")]

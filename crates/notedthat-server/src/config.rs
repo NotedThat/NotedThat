@@ -441,6 +441,9 @@ pub struct Config {
     /// Most bytes one MCP object read may fetch (`NOTEDTHAT_MCP_MAX_READ_BYTES`; default 16 MiB,
     /// the API body cap). Larger objects are read in slices.
     pub mcp_max_read_bytes: u64,
+    /// Most MCP sessions this process holds at once (`NOTEDTHAT_MCP_MAX_SESSIONS`; default 256).
+    /// An `initialize` past the bound is refused `503` with `Retry-After: 5` (D38).
+    pub mcp_max_sessions: usize,
     /// How often `/readyz`'s poller probes the storage backend and Qdrant, in
     /// milliseconds; also each probe's deadline (`NOTEDTHAT_READY_PROBE_INTERVAL_MS`;
     /// default 5000).
@@ -743,6 +746,27 @@ impl Config {
                 message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_READ_BYTES")),
             });
         }
+        // Neither `fs` nor `s3` owns this one, so it is deliberately absent
+        // from `backend_owned_settings`: it bounds the transport, not a backend.
+        let mcp_max_sessions = match cli
+            .mcp_max_sessions
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            None => notedthat_mcp::DEFAULT_MAX_SESSIONS,
+            Some(value) => value.parse::<usize>().map_err(|_e| Error::Config {
+                message: format!(
+                    "{} must be a valid positive integer",
+                    setting("NOTEDTHAT_MCP_MAX_SESSIONS")
+                ),
+            })?,
+        };
+        if mcp_max_sessions == 0 {
+            return Err(Error::Config {
+                message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_SESSIONS")),
+            });
+        }
         let ready_probe_interval_ms = parse_millis(
             "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
             cli.ready_probe_interval_ms.as_deref(),
@@ -771,6 +795,7 @@ impl Config {
             mcp_anonymous,
             max_patchable_size,
             mcp_max_read_bytes,
+            mcp_max_sessions,
             ready_probe_interval_ms,
             staging,
             oidc,
@@ -1103,7 +1128,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 54] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 55] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1140,6 +1165,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
         "NOTEDTHAT_MCP_ANONYMOUS",
         "NOTEDTHAT_MCP_MAX_READ_BYTES",
+        "NOTEDTHAT_MCP_MAX_SESSIONS",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
@@ -1206,6 +1232,7 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
             ("NOTEDTHAT_MCP_ANONYMOUS", None),
             ("NOTEDTHAT_MCP_MAX_READ_BYTES", None),
+            ("NOTEDTHAT_MCP_MAX_SESSIONS", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
@@ -1423,7 +1450,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 54);
+        assert_eq!(ALL_ENV_KEYS.len(), 55);
     }
 
     #[test]
@@ -1473,6 +1500,75 @@ pub(crate) mod tests {
                 fragment
             ));
         }
+    }
+
+    #[test]
+    fn mcp_max_sessions_defaults_to_the_documented_bound() {
+        let cfg = run_with_env(&[("NOTEDTHAT_MCP_MAX_SESSIONS", None)], Config::from_env).unwrap();
+        assert_eq!(cfg.mcp_max_sessions, notedthat_mcp::DEFAULT_MAX_SESSIONS);
+        assert_eq!(cfg.mcp_max_sessions, 256);
+    }
+
+    #[test]
+    fn mcp_max_sessions_accepts_an_explicit_count() {
+        let cfg = run_with_env(
+            &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some("1024"))],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.mcp_max_sessions, 1024);
+    }
+
+    #[test]
+    fn mcp_max_sessions_empty_or_blank_is_the_default_like_its_siblings() {
+        for value in ["", "   "] {
+            let cfg = run_with_env(
+                &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))],
+                Config::from_env,
+            )
+            .unwrap();
+            assert_eq!(
+                cfg.mcp_max_sessions,
+                notedthat_mcp::DEFAULT_MAX_SESSIONS,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_max_sessions_rejects_zero_and_non_numbers() {
+        for (value, fragment) in [
+            ("0", "must be > 0"),
+            ("-1", "must be a valid positive integer"),
+            ("many", "must be a valid positive integer"),
+            ("1.5", "must be a valid positive integer"),
+        ] {
+            let result = run_with_env(
+                &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))],
+                Config::from_env,
+            );
+            assert!(matches!(result, Err(Error::Config { .. })), "{value:?}");
+            assert!(
+                names_setting(
+                    &result.unwrap_err().to_string(),
+                    "NOTEDTHAT_MCP_MAX_SESSIONS",
+                    fragment
+                ),
+                "{value:?}"
+            );
+        }
+    }
+
+    /// The session bound is neither `fs`'s nor `s3`'s, so it must not be in the
+    /// list that refuses a setting the active backend does not own — the list a
+    /// new `NOTEDTHAT_*` variable is most often wrongly added to.
+    #[test]
+    fn mcp_max_sessions_is_not_a_backend_owned_setting() {
+        assert!(
+            !backend_owned_settings(&ServerCli::default())
+                .iter()
+                .any(|(name, _, _)| *name == "NOTEDTHAT_MCP_MAX_SESSIONS")
+        );
     }
 
     #[test]

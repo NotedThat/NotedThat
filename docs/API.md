@@ -1964,7 +1964,8 @@ describes by default, which is what lets it push `notifications/resources/update
   `Mcp-Session-Id` header. Every later request and notification must send that header back. A
   `POST` without it, other than `initialize`, is `422`; `GET` or `DELETE` without it is `400`;
   an id the server does not know is `404` (the session ended, or the server restarted — start
-  over with `initialize`).
+  over with `initialize`). An id that belongs to a *different* principal is answered
+  identically, on purpose — see the binding bullet below.
 - Every `POST` answer is `text/event-stream`: the JSON-RPC response is the `data:` of a frame,
   preceded by a priming frame (`id: 0`, `retry:`, empty `data:`). Send
   `Accept: application/json, text/event-stream`. A notification (`notifications/initialized`)
@@ -1982,19 +1983,30 @@ describes by default, which is what lets it push `notifications/resources/update
   has no working notification leg, so its subscriptions are dropped and a later
   `resources/subscribe` on that session is refused (`backend_unavailable`) rather than accepted
   and left silent.
-- **A session id is not bound to the credential that opened it.** rmcp binds nothing to a
-  session, so any valid credential — including the anonymous caller where `anyone` is granted —
-  that presents a session id can attach that session's `GET` leg or `unsubscribe` from it. Tool
-  calls are unaffected: each acts as the credential presented on its own request. The
-  notification leg is not: a forwarder runs as the session owner's credential, so whoever
-  attaches the leg reads which object URIs that principal subscribed to and exactly when those
-  objects change — for objects they may not read themselves — and `list_changed` leaks write
-  timing the same way. Session ids are rmcp-generated UUIDs, so this is not guessable, but
-  treat a session id as a credential: send it over TLS, do not log it, and do not share it
-  between principals. Binding the two is a follow-up ([#179](https://github.com/NotedThat/NotedThat/issues/179), SPECIFICATIONS.md §7.4).
-- At most **256 sessions** per process: a `POST` that would open another answers `503` with
-  `Retry-After: 5`. Clients that keep their session id hold one slot each; a client that
-  `initialize`s per request burns through them and idles them out five minutes later.
+- **A session answers only to the principal that opened it (D68).** The server records the
+  session against the principal `initialize` resolved to, and a request presenting that id as
+  anyone else is answered exactly as an unknown id is: `404` on `POST` and on the `GET` leg,
+  and `202` on `DELETE` with the session left untouched — the answer rmcp gives a `DELETE` for
+  any id it does not know. The two are deliberately indistinguishable, so a session id is not
+  an oracle for which sessions exist.
+  - The binding is on the **subject**, not the bearer. Refreshing an access token mid-session
+    keeps the session, its notification leg and its subscriptions, and a refresh that changes
+    your groups keeps them too — a client is expected to hold one session for the life of its
+    connection and rotate its token underneath it.
+  - The service token is one owner: whatever holds it holds all of its sessions.
+  - Every caller presenting **no** credential is one owner, since nothing distinguishes two of
+    them. On a deployment that admits anonymous callers, one anonymous client can still attach
+    another's leg and learn which public URIs it subscribed to and when they changed. Both hold
+    identical read authority — whatever `anyone` grants — so nothing else crosses.
+  - Still treat a session id as a credential: send it over TLS and do not log it. Sharing one
+    between principals no longer works, which is the point.
+- At most `NOTEDTHAT_MCP_MAX_SESSIONS` sessions per process (default **256**): a `POST` that
+  would open another answers `503` with `Retry-After: 5`. Clients that keep their session id
+  hold one slot each; a client that `initialize`s per request burns through them and idles them
+  out five minutes later. The bound is soft — concurrent `initialize`s can overshoot it — and
+  per process rather than per caller, so one caller can still hold every slot
+  ([#179](https://github.com/NotedThat/NotedThat/issues/179)). What a session costs, and how to
+  size the setting, is in [CONFIGURATION.md](CONFIGURATION.md#what-a-session-costs).
 
 A minimal exchange with curl (the notification leg, then a subscription, then a write):
 
@@ -2349,5 +2361,5 @@ All MCP errors carry one of these codes:
 - **Non-atomic MOVE**: GET → PUT → DELETE; partial failure is possible
 - **No `display_name`/`description`/`perms`** on `list_knowledgebases` responses (HTTP list endpoint v1 limitation)
 - **Subscriptions are per session and unreplayed**: they end with the session, a new session starts with none, and `list_changed` fires on modifies as well as creates and deletes
-- **A session id is not bound to a credential**: another authenticated caller presenting a session id can attach its notification leg and read which resources that session subscribed to, and when they change. Tool calls are unaffected. See [Transports](#transports) and [#179](https://github.com/NotedThat/NotedThat/issues/179)
+- **Anonymous sessions share one owner, and the session bound is per process**: a session answers only to the principal that opened it (D68), but every credential-less caller is the same principal, so on a deployment admitting anonymous callers one can attach another's notification leg and read which public resources it subscribed to. Sessions are budgeted per process rather than per principal, so one caller can hold every slot. See [Transports](#transports) and [#179](https://github.com/NotedThat/NotedThat/issues/179)
 - **`tools/list` is static**: an anonymous caller is shown the mutating tools too and learns they are refused only by calling one; grants are per knowledge base and per path, so a filtered list would be a false signal anyway

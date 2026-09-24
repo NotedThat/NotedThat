@@ -115,6 +115,7 @@ fn test_config(
         mcp_anonymous: McpAnonymous::Auto,
         max_patchable_size: 10 * 1024 * 1024,
         mcp_max_read_bytes: 16 * 1024 * 1024,
+        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
         ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: Some(oidc),
@@ -175,9 +176,23 @@ impl Server {
         Self::start_as(resource, false, McpAnonymous::Auto).await
     }
 
+    /// A server whose writes are announced, so a session can subscribe (D66).
+    async fn start_with_events() -> Self {
+        Self::start_inner(None, false, McpAnonymous::Auto, true).await
+    }
+
     /// A server whose one knowledge base additionally grants `anyone`
     /// `list` and `read` when `public`, under the given MCP anonymous mode.
     async fn start_as(resource: Option<String>, public: bool, mcp_anonymous: McpAnonymous) -> Self {
+        Self::start_inner(resource, public, mcp_anonymous, false).await
+    }
+
+    async fn start_inner(
+        resource: Option<String>,
+        public: bool,
+        mcp_anonymous: McpAnonymous,
+        events: bool,
+    ) -> Self {
         let issuer = issuer().await;
         let storage = Arc::new(InMemoryStorage::default());
         seed(&storage).await;
@@ -199,7 +214,8 @@ impl Server {
             storage,
             store: Arc::new(InMemoryVectorStore::new()),
             embedder: Arc::new(StubEmbedder::new(EMBEDDING_DIM as usize)),
-            events: None,
+            events: events
+                .then(|| Arc::new(notedthat_events::MemoryPublisher::new(1024)) as Arc<_>),
         };
         let handle = tokio::spawn(async move {
             notedthat_server::run::run_with(config, backends)
@@ -611,5 +627,166 @@ async fn an_mcp_tool_call_with_an_oidc_token_sees_only_that_identitys_grants() {
     assert!(
         intern_writes.to_string().contains("forbidden"),
         "{intern_writes}"
+    );
+}
+
+/// A second bearer for the same identity — what an OIDC client holds after a
+/// refresh. `claims` stamps `iat`/`exp` in whole seconds, so minting twice for
+/// the same subject and groups inside one second returns the *same* string and
+/// would test nothing; different groups make the bearer genuinely different and
+/// prove the binding keys on the subject alone.
+fn refreshed(server: &Server, subject: &str) -> String {
+    server.token(subject, &["editors", "on-call"])
+}
+
+#[tokio::test]
+async fn an_mcp_session_answers_only_to_the_principal_that_opened_it() {
+    // Given — alice's session, and ivan, who holds a valid credential of his
+    // own on the same deployment.
+    let server = Server::start().await;
+    let alice = server.token("alice", &["editors"]);
+    let intern = server.token("ivan", &["interns"]);
+    let hers = notedthat_mcp::testing::McpSession::connect(&server.base, &alice);
+    hers.session_init().await;
+    let id = hers
+        .session_id()
+        .expect("a stateful transport issues a session id");
+
+    // When — ivan presents her session id on each of the three methods.
+    let his = notedthat_mcp::testing::McpSession::connect(&server.base, &intern);
+    his.adopt_session(&id);
+    let on_a_call = his
+        .send(
+            1,
+            "tools/call",
+            &serde_json::json!({ "name": "list_knowledgebases" }),
+        )
+        .await;
+    let on_the_leg = his.open_notifications().await;
+    let on_a_delete = his.close().await;
+
+    // Then — the two that rmcp refuses for an unknown id are refused, and the
+    // one it accepts for any id is accepted while doing nothing. Neither tells
+    // him whether the session exists.
+    assert_eq!(
+        on_a_call.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "a tool call on another principal's session"
+    );
+    assert_eq!(
+        on_the_leg.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "the notification leg is the one that leaks, so it is the one that matters"
+    );
+    assert_eq!(
+        on_a_delete.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "a DELETE answers as it does for an id nobody holds"
+    );
+
+    // And — alice still has her session and her leg. Before the binding, his
+    // DELETE would have ended it.
+    let still_hers = hers
+        .send(
+            2,
+            "tools/call",
+            &serde_json::json!({ "name": "list_knowledgebases" }),
+        )
+        .await;
+    assert_eq!(still_hers.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        hers.open_notifications().await.status(),
+        reqwest::StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_refreshed_token_keeps_its_mcp_session_and_its_notification_leg() {
+    // Given — alice's session, opened with the bearer she held then.
+    let server = Server::start().await;
+    let alice = server.token("alice", &["editors"]);
+    let session = notedthat_mcp::testing::McpSession::connect(&server.base, &alice);
+    session.session_init().await;
+    let id = session.session_id().expect("session id");
+
+    // When — she refreshes: a different bearer for the same subject, carrying
+    // different groups. A client keeps one MCP session for the life of its
+    // connection and rotates its token underneath it, which is why the binding
+    // cannot be on the bearer.
+    let after =
+        notedthat_mcp::testing::McpSession::connect(&server.base, &refreshed(&server, "alice"));
+    after.adopt_session(&id);
+
+    // Then — it is still her session, on every method.
+    let call = after
+        .send(
+            1,
+            "tools/call",
+            &serde_json::json!({ "name": "list_knowledgebases" }),
+        )
+        .await;
+    assert_eq!(
+        call.status(),
+        reqwest::StatusCode::OK,
+        "the refreshed token kept the session"
+    );
+    assert_eq!(
+        after.open_notifications().await.status(),
+        reqwest::StatusCode::OK,
+        "and kept its notification leg"
+    );
+    assert_eq!(after.close().await.status(), reqwest::StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn another_principal_cannot_read_a_sessions_resource_notifications() {
+    // Given — alice subscribed to an object, with her notification leg open.
+    // This is the leak the binding closes, in the shape it actually takes: not
+    // an object's bytes, but which URIs she watches and when they change.
+    let server = Server::start_with_events().await;
+    let alice = server.token("alice", &["editors"]);
+    let intern = server.token("ivan", &["interns"]);
+    let hers = notedthat_mcp::testing::McpSession::connect(&server.base, &alice);
+    let mut her_stream = hers.notifications().await;
+    let id = hers.session_id().expect("session id");
+    let subscribed = hers
+        .request(
+            1,
+            "resources/subscribe",
+            &serde_json::json!({ "uri": format!("notedthat://{}/handbook.md", kb()) }),
+        )
+        .await;
+    assert!(subscribed.get("error").is_none(), "{subscribed}");
+
+    // When — ivan holds her session id and reaches for the leg it feeds.
+    let his = notedthat_mcp::testing::McpSession::connect(&server.base, &intern);
+    his.adopt_session(&id);
+    let refused = his.open_notifications().await;
+
+    // Then — he never gets a stream to read, so there is nothing to leak.
+    assert_eq!(refused.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // And — the object changes, and the notification goes to its subscriber,
+    // which is the half a refusal must not have broken.
+    let written = server
+        .client
+        .put(format!(
+            "{}/api/v1/knowledgebases/{}/handbook.md",
+            server.base,
+            kb()
+        ))
+        .header("Authorization", format!("Bearer {alice}"))
+        .header("Content-Type", "text/markdown")
+        .body("updated under a bound session")
+        .send()
+        .await
+        .expect("PUT");
+    assert!(written.status().is_success(), "{}", written.status());
+
+    let notified = her_stream.next(Duration::from_secs(5)).await;
+    assert_eq!(notified["method"], "notifications/resources/updated");
+    assert_eq!(
+        notified["params"]["uri"],
+        format!("notedthat://{}/handbook.md", kb())
     );
 }

@@ -127,6 +127,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size,
         mcp_max_read_bytes: 16 * 1024 * 1024,
+        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
         ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,

@@ -66,6 +66,17 @@ impl McpSession {
         self.session_id.lock().expect("session id lock").clone()
     }
 
+    /// Present `session_id` as this caller's own, without opening one.
+    ///
+    /// No real client does this — a session id is issued to the caller that
+    /// asked for it. It exists so a test can be the *second* principal, holding
+    /// an id it was never given, which is the case the D68 binding refuses. It
+    /// also stops the raw helpers initializing a session of their own, since
+    /// they only do that when there is none.
+    pub fn adopt_session(&self, session_id: &str) {
+        *self.session_id.lock().expect("session id lock") = Some(session_id.to_owned());
+    }
+
     /// The `/mcp` URL this session talks to.
     #[must_use]
     pub fn mcp_url(&self) -> &str {

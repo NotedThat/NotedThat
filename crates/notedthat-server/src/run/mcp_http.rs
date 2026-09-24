@@ -12,7 +12,7 @@ use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig,
     auth::{McpAuth, authenticate_caller},
     client::NotedThatClient,
-    http::admit_session,
+    http::bind_session,
     sse_refusal::refusal_body,
 };
 use std::collections::BTreeMap;
@@ -37,9 +37,10 @@ pub(crate) fn build_router(
         config.mcp_http_allowed_origins.clone(),
         cancellation_token,
     )
-    .context("failed to build MCP HTTP service config")?;
+    .context("failed to build MCP HTTP service config")?
+    .with_max_sessions(config.mcp_max_sessions);
     let mcp_service = McpHttpService::new(client, &mcp_config, events_enabled);
-    let sessions = mcp_service.session_manager();
+    let sessions = mcp_service.sessions();
     let anonymous = anonymous_admitted(config.mcp_anonymous, access_policies);
     let auth = Arc::new(McpAuth {
         authenticator,
@@ -55,7 +56,7 @@ pub(crate) fn build_router(
             .or(MethodFilter::DELETE),
         mcp_service.into_service(),
     )
-    .route_layer(middleware::from_fn_with_state(sessions, admit_session))
+    .route_layer(middleware::from_fn_with_state(sessions, bind_session))
     .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
     Ok(axum::Router::new()
         .route("/mcp", mcp)

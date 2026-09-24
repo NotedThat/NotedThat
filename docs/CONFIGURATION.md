@@ -1132,6 +1132,23 @@ is no stdio binary; a client that can only spawn a command is bridged with `mcp-
 | `NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS` | `--mcp-http-allowed-hosts` | comma-separated strings | (unset) | Allowed `Host` header values. When unset or empty, defaults to `["127.0.0.1", "localhost", "::1"]` (loopback-only). Non-empty values replace the default entirely and form an exclusive allowlist. |
 | `NOTEDTHAT_MCP_ANONYMOUS` | `--mcp-anonymous` | `auto` or `never` | `auto` (unset or empty means `auto`) | Whether `POST /mcp` admits a request with no `Authorization` header. `auto`: yes, when at least one declared knowledge base grants `anyone` some verb; the tools then act as the anonymous caller and the `anyone` rules decide. `never`: always `401`, so an OAuth-capable client is challenged on connect even on a deployment with public knowledge bases. Any other value refuses startup. |
 | `NOTEDTHAT_MCP_MAX_READ_BYTES` | `--mcp-max-read-bytes` | positive integer (u64 bytes) | 16777216 (16 MiB) | Most bytes one MCP object read (`read` tool, `resources/read`, the copy inside `move`) may fetch from the API. A larger object is refused with `response_too_large`, whose message names the `read` tool's slice arguments; a slice within the budget is served. The default equals the API body cap, so anything written through the API reads back whole — only objects that arrived over WebDAV or straight into an `fs` tree can be larger. A binary resource is base64-encoded on top of this, about four thirds of the budget at most; a text `read` returns its text in both halves of the result (`content` and `structuredContent`), so that response is up to twice this. |
+| `NOTEDTHAT_MCP_MAX_SESSIONS` | `--mcp-max-sessions` | positive integer | `256` (unset or empty means 256) | Most MCP sessions one process holds at once. A `POST` that would open another — one carrying no `Mcp-Session-Id` — is refused `503` with `Retry-After: 5` until a session ends or idles out. A **soft** bound: the count and the session's creation are not atomic, so concurrent `initialize`s can overshoot it by however many were in flight, and it is per process rather than per caller. Zero, a negative number or a non-empty non-number refuses startup; an empty or blank value is the default, as it is for its siblings — Compose expands an unset `${NOTEDTHAT_MCP_MAX_SESSIONS-}` to the empty string. See [what a session costs](#what-a-session-costs) before raising it. |
+
+#### What a session costs
+
+A session is not one connection. While it lives it holds:
+
+- one inbound `GET /mcp` connection for its notification leg, for as long as the client keeps it
+  open — and that leg is itself a request on the same listener;
+- one loopback `GET /api/v1/knowledgebases/{kb}/events` stream per knowledge base it has
+  subscriptions in, so `1 + kbs` connections rather than one, each of which is another inbound
+  request on that same listener.
+
+And it does not necessarily idle out. rmcp's five-minute idle timer counts *messages*, not an open
+leg, so a session with live subscriptions is kept alive by a server `ping` every 60 s and holds its
+slot until the client disappears; a session with none is closed after five minutes idle. Size
+`NOTEDTHAT_MCP_MAX_SESSIONS` against the process's file-descriptor limit and the number of
+knowledge bases clients subscribe in, not against the number of users.
 
 ### Who may call `/mcp`
 
@@ -1182,7 +1199,8 @@ Do not expose the unified listener directly to the internet without TLS terminat
 The unified listener mounts streamable MCP at `/mcp`: `POST` for requests, `GET` for the
 session's notification leg, `DELETE` to end a session ([sessions](API.md#streamable-http-transport)).
 Legacy SSE paths (`POST /sse`, `GET /sse`, `/sse/*`) return HTTP 405 with a JSON error body
-directing clients to use `POST /mcp`. A process holds at most 256 MCP sessions; with an
+directing clients to use `POST /mcp`. A process holds at most `NOTEDTHAT_MCP_MAX_SESSIONS` MCP sessions (default 256, and
+[what a session costs](#what-a-session-costs) is what to size it against); with an
 [events backend](#events-backend) configured, sessions may subscribe to resources.
 
 ### Example: public MCP through the shared TLS upstream

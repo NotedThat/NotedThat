@@ -256,8 +256,10 @@ Three things about that shape, each from `mcp-remote`'s own README:
 
 The endpoint is a streamable-HTTP MCP server with sessions, the shape the MCP specification
 describes: `initialize` returns an `Mcp-Session-Id`, every later request carries it, answers are
-SSE-framed, and `GET /mcp` is where server-to-client notifications arrive. Every client listed
-above does this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
+SSE-framed, and `GET /mcp` is where server-to-client notifications arrive. The session belongs to
+the credential that opened it, so an id is not shared between principals — refreshing an access
+token keeps the session, presenting it as someone else does not. Every client listed above does
+this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
 transport is deliberately not offered ([why](API.md#streamable-http-transport)); a hand-rolled
 client needs the three-step dance in [the transport notes](API.md#streamable-http-transport).
 
