@@ -91,6 +91,28 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_READY_PROBE_INTERVAL_MS", value_name = "MS")]
     pub ready_probe_interval_ms: Option<String>,
 
+    /// Longest a request may take to produce its response head, in
+    /// milliseconds; past it the answer is `504`. `GET /mcp` and the events
+    /// route are exempt [default: 30000].
+    #[arg(long, env = "NOTEDTHAT_REQUEST_TIMEOUT_MS", value_name = "MS")]
+    pub request_timeout_ms: Option<String>,
+
+    /// The same bound for `/webdav`, whose `PROPFIND` walks a whole collection
+    /// before answering [default: 120000].
+    #[arg(long, env = "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", value_name = "MS")]
+    pub webdav_request_timeout_ms: Option<String>,
+
+    /// Most requests the listener works on at once; past it the answer is
+    /// `503` with `Retry-After`. The two streaming routes do not count
+    /// [default: 512].
+    #[arg(long, env = "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", value_name = "COUNT")]
+    pub max_requests_in_flight: Option<String>,
+
+    /// Longest a connection may take to send a complete request head, in
+    /// milliseconds, before it is closed [default: 10000].
+    #[arg(long, env = "NOTEDTHAT_HEADER_READ_TIMEOUT_MS", value_name = "MS")]
+    pub header_read_timeout_ms: Option<String>,
+
     /// Private staging directory for uploads and index snapshots [default: the
     /// platform temporary directory].
     #[arg(long, env = "NOTEDTHAT_UPLOAD_TMP_DIR", value_name = "DIR")]

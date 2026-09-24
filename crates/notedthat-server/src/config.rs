@@ -552,10 +552,129 @@ pub struct Config {
     /// supplied while the feature is off refuses startup rather than arriving
     /// here as a value nobody reads.
     pub metrics_listen_addr: Option<SocketAddr>,
+    /// How long one request may take and how many may run at once on the
+    /// product listener (D70).
+    pub request_bounds: RequestBoundsConfig,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
     /// Identity-provider settings (`NOTEDTHAT_OIDC_*`); `None` when no issuer is set.
     pub oidc: Option<OidcSettings>,
+}
+
+/// Limits on one request to the product listener (D70).
+///
+/// Both request limits end when the response head is produced, not when the
+/// body has been sent: a large download or a streamed MCP result is not cut
+/// short, and the expensive part of every bounded route runs before its head.
+/// `GET /mcp` and the API events route are exempt from both, by being routed
+/// outside the layer that enforces them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestBoundsConfig {
+    /// Longest a request may take to produce its response head
+    /// (`NOTEDTHAT_REQUEST_TIMEOUT_MS`; default 30 s). Past it: `504`.
+    pub request_timeout: Duration,
+    /// The same bound for `/webdav` (`NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS`;
+    /// default 120 s), because `PROPFIND` walks a whole collection first.
+    pub webdav_request_timeout: Duration,
+    /// Most requests in flight at once across every bounded route
+    /// (`NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT`; default 512). Past it: `503` with
+    /// `Retry-After: 5`.
+    pub max_requests_in_flight: usize,
+    /// Longest a connection may take to send a complete request head
+    /// (`NOTEDTHAT_HEADER_READ_TIMEOUT_MS`; default 10 s). Past it the
+    /// connection is closed; there is no request to answer.
+    pub header_read_timeout: Duration,
+}
+
+impl RequestBoundsConfig {
+    /// Default for [`Self::request_timeout`].
+    pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Default for [`Self::webdav_request_timeout`]: the proxy timeout
+    /// `docs/CONFIGURATION.md` has long recommended for a large `PROPFIND`.
+    pub const DEFAULT_WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+    /// Default for [`Self::max_requests_in_flight`].
+    pub const DEFAULT_MAX_REQUESTS_IN_FLIGHT: usize = 512;
+    /// Default for [`Self::header_read_timeout`].
+    pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Takes the four settings rather than the whole [`ServerCli`], which
+    /// [`Config::from_cli`] has partly moved out of by the time it gets here.
+    fn from_settings(
+        request_timeout_ms: Option<&String>,
+        webdav_request_timeout_ms: Option<&String>,
+        max_requests_in_flight: Option<&String>,
+        header_read_timeout_ms: Option<&String>,
+    ) -> Result<Self, Error> {
+        let millis = |var: &str, supplied: Option<&String>, default: Duration| {
+            let default = u64::try_from(default.as_millis()).unwrap_or(u64::MAX);
+            parse_millis(var, non_blank(supplied), default).map(Duration::from_millis)
+        };
+        let max_requests_in_flight = match non_blank(max_requests_in_flight) {
+            None => Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT,
+            Some(value) => value.parse::<usize>().map_err(|_e| Error::Config {
+                message: format!(
+                    "{} must be a valid positive integer",
+                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT")
+                ),
+            })?,
+        };
+        if max_requests_in_flight == 0 {
+            return Err(Error::Config {
+                message: format!(
+                    "{} must be > 0",
+                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT")
+                ),
+            });
+        }
+        // A semaphore holds at most this many permits; asking for more panics
+        // at startup rather than refusing it with a name attached.
+        if max_requests_in_flight > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(Error::Config {
+                message: format!(
+                    "{} must be at most {}",
+                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT"),
+                    tokio::sync::Semaphore::MAX_PERMITS
+                ),
+            });
+        }
+        Ok(Self {
+            request_timeout: millis(
+                "NOTEDTHAT_REQUEST_TIMEOUT_MS",
+                request_timeout_ms,
+                Self::DEFAULT_REQUEST_TIMEOUT,
+            )?,
+            webdav_request_timeout: millis(
+                "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
+                webdav_request_timeout_ms,
+                Self::DEFAULT_WEBDAV_REQUEST_TIMEOUT,
+            )?,
+            max_requests_in_flight,
+            header_read_timeout: millis(
+                "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
+                header_read_timeout_ms,
+                Self::DEFAULT_HEADER_READ_TIMEOUT,
+            )?,
+        })
+    }
+}
+
+impl Default for RequestBoundsConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout: Self::DEFAULT_REQUEST_TIMEOUT,
+            webdav_request_timeout: Self::DEFAULT_WEBDAV_REQUEST_TIMEOUT,
+            max_requests_in_flight: Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT,
+            header_read_timeout: Self::DEFAULT_HEADER_READ_TIMEOUT,
+        }
+    }
+}
+
+/// A supplied value, or `None` when it is absent, empty or blank — Compose
+/// passes an unset variable through as `${VAR-}`, an empty string.
+fn non_blank(supplied: Option<&String>) -> Option<&str> {
+    supplied
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 /// Settings removed when the API, `WebDAV`, and MCP surfaces moved onto one
@@ -878,6 +997,15 @@ impl Config {
             5_000,
         )?;
 
+        // Like the session bound, these bound the transport rather than a
+        // backend, so none of them is in `backend_owned_settings`.
+        let request_bounds = RequestBoundsConfig::from_settings(
+            cli.request_timeout_ms.as_ref(),
+            cli.webdav_request_timeout_ms.as_ref(),
+            cli.max_requests_in_flight.as_ref(),
+            cli.header_read_timeout_ms.as_ref(),
+        )?;
+
         let metrics_listen_addr = parse_metrics(
             cli.metrics_enabled.as_deref(),
             cli.metrics_listen_addr.as_deref(),
@@ -908,6 +1036,7 @@ impl Config {
             mcp_max_sessions,
             ready_probe_interval_ms,
             metrics_listen_addr,
+            request_bounds,
             staging,
             oidc,
         })
@@ -1239,7 +1368,7 @@ where
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 58] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 62] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1282,6 +1411,10 @@ pub(crate) mod tests {
         "NOTEDTHAT_MCP_MAX_SESSIONS",
         "NOTEDTHAT_MAX_PATCHABLE_SIZE",
         "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
+        "NOTEDTHAT_REQUEST_TIMEOUT_MS",
+        "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
+        "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+        "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
         "NOTEDTHAT_OIDC_ISSUER",
         "NOTEDTHAT_OIDC_AUDIENCE",
@@ -1352,6 +1485,10 @@ pub(crate) mod tests {
             ("NOTEDTHAT_MCP_MAX_SESSIONS", None),
             ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
             ("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None),
+            ("NOTEDTHAT_REQUEST_TIMEOUT_MS", None),
+            ("NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", None),
+            ("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", None),
+            ("NOTEDTHAT_HEADER_READ_TIMEOUT_MS", None),
             ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
             ("NOTEDTHAT_OIDC_ISSUER", None),
             ("NOTEDTHAT_OIDC_AUDIENCE", None),
@@ -1567,7 +1704,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 58);
+        assert_eq!(ALL_ENV_KEYS.len(), 62);
     }
 
     #[test]
@@ -1686,6 +1823,119 @@ pub(crate) mod tests {
                 .iter()
                 .any(|(name, _, _)| *name == "NOTEDTHAT_MCP_MAX_SESSIONS")
         );
+    }
+
+    const REQUEST_BOUND_SETTINGS: [&str; 4] = [
+        "NOTEDTHAT_REQUEST_TIMEOUT_MS",
+        "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
+        "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+        "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
+    ];
+
+    #[test]
+    fn request_bounds_default_to_the_documented_values() {
+        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        assert_eq!(cfg.request_bounds, RequestBoundsConfig::default());
+        assert_eq!(cfg.request_bounds.request_timeout, Duration::from_secs(30));
+        assert_eq!(
+            cfg.request_bounds.webdav_request_timeout,
+            Duration::from_secs(120)
+        );
+        assert_eq!(cfg.request_bounds.max_requests_in_flight, 512);
+        assert_eq!(
+            cfg.request_bounds.header_read_timeout,
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn request_bounds_accept_explicit_values() {
+        let cfg = run_with_env(
+            &[
+                ("NOTEDTHAT_REQUEST_TIMEOUT_MS", Some("1500")),
+                ("NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", Some("600000")),
+                ("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some("64")),
+                ("NOTEDTHAT_HEADER_READ_TIMEOUT_MS", Some("2500")),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.request_bounds,
+            RequestBoundsConfig {
+                request_timeout: Duration::from_millis(1500),
+                webdav_request_timeout: Duration::from_secs(600),
+                max_requests_in_flight: 64,
+                header_read_timeout: Duration::from_millis(2500),
+            }
+        );
+    }
+
+    #[test]
+    fn request_bounds_empty_or_blank_is_the_default() {
+        for value in ["", "   "] {
+            let overrides: Vec<_> = REQUEST_BOUND_SETTINGS
+                .iter()
+                .map(|name| (*name, Some(value)))
+                .collect();
+            let cfg = run_with_env(&overrides, Config::from_env).unwrap();
+            assert_eq!(
+                cfg.request_bounds,
+                RequestBoundsConfig::default(),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_bounds_refuse_zero_and_non_numbers() {
+        for name in REQUEST_BOUND_SETTINGS {
+            let not_a_number = if name == "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT" {
+                "must be a valid positive integer"
+            } else {
+                "must be a valid u64"
+            };
+            for (value, fragment) in [
+                ("0", "must be > 0"),
+                ("-1", not_a_number),
+                ("soon", not_a_number),
+                ("1.5", not_a_number),
+            ] {
+                let result = run_with_env(&[(name, Some(value))], Config::from_env);
+                assert!(
+                    matches!(result, Err(Error::Config { .. })),
+                    "{name}={value:?}"
+                );
+                assert!(
+                    names_setting(&result.unwrap_err().to_string(), name, fragment),
+                    "{name}={value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn max_requests_in_flight_refuses_more_than_a_semaphore_holds() {
+        let too_many = (tokio::sync::Semaphore::MAX_PERMITS + 1).to_string();
+        let result = run_with_env(
+            &[("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some(too_many.as_str()))],
+            Config::from_env,
+        );
+        assert!(names_setting(
+            &result.unwrap_err().to_string(),
+            "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+            "must be at most"
+        ));
+    }
+
+    /// They bound the transport, not a backend, so an `fs` deployment must be
+    /// able to set them as freely as an `s3` one.
+    #[test]
+    fn request_bounds_are_not_backend_owned_settings() {
+        let owned = backend_owned_settings(&ServerCli::default());
+        for name in REQUEST_BOUND_SETTINGS {
+            assert!(!owned.iter().any(|(owned, _, _)| *owned == name), "{name}");
+        }
     }
 
     #[test]
