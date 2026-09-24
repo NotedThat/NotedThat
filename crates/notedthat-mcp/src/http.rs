@@ -1178,14 +1178,7 @@ mod caller_identity {
             // anonymous session.
             let api = MockServer::start().await;
             let app = anonymous_app(&api.uri());
-            let (response, message) = post_anonymous_initialize(&app).await;
-            assert_eq!(response.status(), StatusCode::OK, "{message:?}");
-            let session = response
-                .headers()
-                .get(SESSION_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .expect("an anonymous session id")
-                .to_owned();
+            let session = open_anonymous_session(&app).await;
 
             // When / Then: a second credential-less request drives it. There is no
             // credential to tell two anonymous callers apart, so the binding does
@@ -1274,6 +1267,72 @@ mod caller_identity {
 
         /// `initialize` with no credential at all — an anonymous caller must not
         /// send an empty bearer and be refused for the wrong reason.
+        /// Every ordered pair of distinct owners the server can tell apart — two
+        /// users, the service token and the anonymous caller — on every method.
+        /// The tests above each pin one pair or one property; this one is what
+        /// says no pair was left out.
+        #[tokio::test]
+        async fn every_pair_of_distinct_principals_is_refused() {
+            // Given: one session per owner, on a deployment that admits the
+            // anonymous caller (D59) beside bearers and the service token.
+            let api = MockServer::start().await;
+            let app = anonymous_app(&api.uri());
+            let owners: [(&str, Option<&str>); 4] = [
+                ("alice", Some(ALICE_TOKEN)),
+                ("bob", Some(BOB_TOKEN)),
+                ("service", Some(SERVICE_TOKEN)),
+                ("anonymous", None),
+            ];
+            let mut sessions = Vec::new();
+            for (name, bearer) in owners {
+                let id = match bearer {
+                    Some(token) => open_session(&app, token).await,
+                    None => open_anonymous_session(&app).await,
+                };
+                sessions.push((name, bearer, id));
+            }
+
+            // When / Then: every other owner presents it. `POST` and `GET` are
+            // refused as an unknown id is; `DELETE` is accepted and does nothing,
+            // as rmcp answers a `DELETE` for any id.
+            for (opener, _, id) in &sessions {
+                for (presenter, bearer, _) in &sessions {
+                    if opener == presenter {
+                        continue;
+                    }
+                    for (method, expected) in [
+                        (Method::POST, StatusCode::NOT_FOUND),
+                        (Method::GET, StatusCode::NOT_FOUND),
+                        (Method::DELETE, StatusCode::ACCEPTED),
+                    ] {
+                        let (status, _, _) = raw(&app, method.clone(), *bearer, Some(id)).await;
+                        assert_eq!(
+                            status, expected,
+                            "{presenter} presenting {opener}'s session on {method}"
+                        );
+                    }
+                }
+            }
+
+            // And: every owner still has its session, so none of those `DELETE`s
+            // ended one.
+            for (opener, bearer, id) in &sessions {
+                let (status, _, _) = raw(&app, Method::GET, *bearer, Some(id)).await;
+                assert_eq!(status, StatusCode::OK, "{opener} lost its own session");
+            }
+        }
+
+        async fn open_anonymous_session(app: &Router) -> String {
+            let (response, message) = post_anonymous_initialize(app).await;
+            assert_eq!(response.status(), StatusCode::OK, "{message:?}");
+            response
+                .headers()
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .expect("an anonymous session id")
+                .to_owned()
+        }
+
         async fn post_anonymous_initialize(
             app: &Router,
         ) -> (axum::response::Response, Option<serde_json::Value>) {
