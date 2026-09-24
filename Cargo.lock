@@ -2671,6 +2671,7 @@ dependencies = [
  "anyhow",
  "async-nats",
  "async-trait",
+ "aws-sdk-s3",
  "axum 0.8.9",
  "base64",
  "bytes",

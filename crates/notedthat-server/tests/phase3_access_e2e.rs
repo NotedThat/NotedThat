@@ -170,6 +170,9 @@ async fn assert_readyz_holds_against_real_backends(
                 "checks": {
                     "storage": { "backend": "s3", "status": "ok" },
                     "search": { "backend": "qdrant", "status": "ok" },
+                    // SeaweedFS 4.18 enforces both preconditions, so the startup
+                    // check (D70) found every bucket safe.
+                    "conditional_writes": { "backend": "s3", "status": "ok" },
                 }
             })
         );

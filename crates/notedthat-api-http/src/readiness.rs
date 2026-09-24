@@ -16,6 +16,11 @@
 //! backend *answered* with "not found" leaves the replica ready, because it is
 //! up and every other knowledge base keeps serving. The check still says so
 //! (`degraded`, `not_found`), for the operator who deleted a bucket.
+//!
+//! One check is not probed at all. On the `s3` backend the server asks each bucket
+//! once, at startup, whether it enforces the preconditions on a conditional `PUT`
+//! (D70); a deployment that chose to run on one that does not is reported
+//! `degraded` (`preconditions_not_enforced`) for as long as the process lives.
 
 use serde::Serialize;
 
@@ -32,6 +37,10 @@ pub enum Unready {
     /// base's bucket or directory deleted after startup. Reported, but not a
     /// readiness failure — the backend is up.
     NotFound,
+    /// A bucket stores a `PUT` whose `If-Match` or `If-None-Match` does not hold,
+    /// found at startup and accepted by the operator (D70). Reported, but not a
+    /// readiness failure — every request is served, and concurrent writes can be lost.
+    PreconditionsNotEnforced,
 }
 
 impl Unready {
@@ -41,7 +50,7 @@ impl Unready {
     pub fn is_outage(self) -> bool {
         match self {
             Self::Timeout | Self::Unreachable => true,
-            Self::NotFound => false,
+            Self::NotFound | Self::PreconditionsNotEnforced => false,
         }
     }
 
@@ -52,6 +61,7 @@ impl Unready {
             Self::Timeout => "timeout",
             Self::Unreachable => "unreachable",
             Self::NotFound => "not_found",
+            Self::PreconditionsNotEnforced => "preconditions_not_enforced",
         }
     }
 }
@@ -125,6 +135,10 @@ pub struct ReadinessSnapshot {
     pub storage: Check,
     /// The vector store behind search and indexing.
     pub search: Check,
+    /// Whether every bucket enforces conditional writes, as found once at startup on
+    /// the `s3` backend (D70). `None` on `fs`, which enforces them itself. Never
+    /// rewritten by the poller.
+    pub conditional_writes: Option<Check>,
 }
 
 impl ReadinessSnapshot {
@@ -135,19 +149,34 @@ impl ReadinessSnapshot {
         Self {
             storage: Check::ok(storage_backend),
             search: Check::ok(search_backend),
+            conditional_writes: None,
         }
+    }
+
+    /// The same snapshot, carrying the startup finding on conditional writes.
+    #[must_use]
+    pub fn with_conditional_writes(mut self, check: Check) -> Self {
+        self.conditional_writes = Some(check);
+        self
     }
 
     /// Whether every check leaves the replica ready (see [`Check::is_ready`]).
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.storage.is_ready() && self.search.is_ready()
+        self.storage.is_ready()
+            && self.search.is_ready()
+            && self.conditional_writes.as_ref().is_none_or(Check::is_ready)
     }
 
     /// Whether any check is degraded (see [`Check::is_degraded`]).
     #[must_use]
     pub fn is_degraded(&self) -> bool {
-        self.storage.is_degraded() || self.search.is_degraded()
+        self.storage.is_degraded()
+            || self.search.is_degraded()
+            || self
+                .conditional_writes
+                .as_ref()
+                .is_some_and(Check::is_degraded)
     }
 }
 
@@ -184,6 +213,10 @@ mod tests {
             (Unready::Timeout, "timeout"),
             (Unready::Unreachable, "unreachable"),
             (Unready::NotFound, "not_found"),
+            (
+                Unready::PreconditionsNotEnforced,
+                "preconditions_not_enforced",
+            ),
         ] {
             assert_eq!(reason.as_str(), expected);
             assert_eq!(serde_json::to_value(reason).unwrap(), expected);
@@ -209,6 +242,7 @@ mod tests {
         let witness_gone = ReadinessSnapshot {
             storage: Check::unready("fs", Unready::NotFound),
             search: Check::ok("qdrant"),
+            conditional_writes: None,
         };
         assert!(witness_gone.is_ready(), "the backend answered; it is up");
         assert!(
@@ -220,13 +254,26 @@ mod tests {
             let storage_down = ReadinessSnapshot {
                 storage: Check::unready("s3", reason),
                 search: Check::ok("qdrant"),
+                conditional_writes: None,
             };
             assert!(!storage_down.is_ready());
             let search_down = ReadinessSnapshot {
                 storage: Check::ok("fs"),
                 search: Check::unready("qdrant", reason),
+                conditional_writes: None,
             };
             assert!(!search_down.is_ready());
         }
+    }
+
+    #[test]
+    fn unenforced_conditional_writes_are_degraded_and_still_ready() {
+        let snapshot = ReadinessSnapshot::ok("s3", "qdrant")
+            .with_conditional_writes(Check::unready("s3", Unready::PreconditionsNotEnforced));
+        assert!(snapshot.is_ready(), "every request is still served");
+        assert!(snapshot.is_degraded());
+        let enforced =
+            ReadinessSnapshot::ok("s3", "qdrant").with_conditional_writes(Check::ok("s3"));
+        assert!(!enforced.is_degraded());
     }
 }

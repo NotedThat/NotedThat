@@ -78,6 +78,8 @@ tempfile.workspace = true
 # here runs on the in-process backends.
 testcontainers = { workspace = true }
 wiremock.workspace = true
+# A client pointed at a wiremock S3 endpoint, for the conditional-write check (D70).
+aws-sdk-s3.workspace = true
 base64.workspace = true
 
 [lints]

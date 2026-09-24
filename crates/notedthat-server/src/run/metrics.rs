@@ -206,6 +206,10 @@ fn describe_all() {
         "How long a storage backend call took."
     );
     describe_counter!(name::STORAGE_ERRORS, "Storage calls that failed.");
+    describe_gauge!(
+        name::STORAGE_CONDITIONAL_WRITES_ENFORCED,
+        "1 when the knowledge base's bucket enforced If-Match and If-None-Match at startup, 0 when it did not (s3 only)."
+    );
 
     describe_gauge!(name::BUILD_INFO, "Always 1; the build is in the labels.");
 }
