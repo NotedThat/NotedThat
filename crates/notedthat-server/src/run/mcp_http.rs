@@ -33,6 +33,12 @@ pub(crate) fn build_router(
 ) -> anyhow::Result<axum::Router> {
     let client = NotedThatClient::new(internal_api_url, &config.api_token)
         .context("failed to build MCP HTTP API client")?
+        // Derived from the API's own deadline, not fixed: a tool call reaches
+        // the API on this same listener, so the API's `504` is what should
+        // answer a stalled one — and it only arrives if this client is still
+        // waiting for it (D70).
+        .with_api_timeout(config.request_bounds.request_timeout)
+        .context("failed to build MCP HTTP API client")?
         .with_max_read_bytes(config.mcp_max_read_bytes);
     let mcp_config = McpHttpServiceConfig::new(
         config.mcp_http_allowed_hosts.clone(),

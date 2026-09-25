@@ -95,23 +95,38 @@ stay open and a proxy in front of it does not:
   { "error": "request_timeout", "message": "the request did not complete within 30000 ms", "request_id": "…" }
   ```
 
-  There is no `Retry-After`: the same request would take as long again. The clock stops at the
-  response *head*, so a large download or a long MCP result is never cut off partway — the
-  expensive part of every route (a search's embedding call, a `PROPFIND` walk, a `PATCH`) runs
-  before the head. How long the body takes to transfer is left to the proxy.
+  There is no `Retry-After`: the same request would take as long again. The clock **starts** once
+  the request body has finished arriving and **stops** at the response head, so it measures the
+  server's own work: neither a slow upload nor a large download is cut off for being slow to
+  transfer. The expensive part of every route (a search's embedding call, a `PROPFIND` walk, a
+  `PATCH`) runs between those two points. Body transfer is bounded instead by the idle rule below,
+  and response-body transfer is left to the proxy.
 - **Requests in flight** — `NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT` (default 512), one count shared by
   every surface. A request that arrives when it is reached is answered at once, not queued, with
   `503 backend_unavailable` and `Retry-After: 5`, like every other capacity refusal on this
   server. A permit is held until the response head, so a download in progress does not hold one.
-- **Time to send a request head** — `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). A
-  connection that has not sent a complete request head in that time is closed without an answer.
-  The same clock runs while a kept-alive connection idles between requests, so it is also the idle
-  timeout: keep a proxy's upstream keep-alive shorter than this (see
+- **Time to send a request head, and the gap between body frames** —
+  `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). A connection that has not sent a complete
+  request head in that time is closed without an answer. The same bound applies to the pause
+  between two frames of a request body: a body that stops arriving for longer is answered `408
+  request_timeout`, and the partial upload is discarded rather than stored. What it measures is
+  how long the *client* is taking, which is why the request timeout above does not run while a
+  body is still arriving — a large upload over a slow uplink is bounded by the gaps, not by its
+  total size. The same clock runs while a kept-alive connection idles between requests, so it is
+  also the idle timeout: keep a proxy's upstream keep-alive shorter than this (see
   [What the proxy must get right](OPERATIONS.md#what-the-proxy-must-get-right)).
 
 **Exempt:** the API events route and `GET /mcp`, which are meant to stay open for hours, and
 `/healthz` and `/readyz`, which must answer an orchestrator when the listener is full. They are
 exempt by how they are routed, not by a list of paths, and do not count towards the in-flight cap.
+Unmatched paths are outside it too, so the cap bounds concurrent *matched* requests.
+
+**Where the cap can be reached without a credential.** On `/api/v1`, `/mcp` and `/webdav` the
+bound runs inside authentication, so a bad or missing credential is refused `401` or `403` without
+drawing a permit. `/browse`, `/llms.txt` and `/.well-known/oauth-protected-resource` decide
+authorization inside the handler — an anonymous caller is a legitimate caller there — so they draw
+a permit first. Rate limiting at the proxy is what covers those (see
+[What's not configurable](#whats-not-configurable-in-m2)).
 `POST /mcp` is bounded like any other request; an MCP tool call is also bounded where it does its
 work, since it reaches the API on this same listener, and a timeout there reaches the client as a
 `request_timeout` tool error.

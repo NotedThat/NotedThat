@@ -17,6 +17,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
+use futures::StreamExt as _;
+use notedthat_core::{
+    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
+    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+};
 use notedthat_events::MemoryPublisher;
 use notedthat_indexer::testing::StubEmbedder;
 use notedthat_indexer::{Embedder, EmbedderError};
@@ -229,6 +234,13 @@ async fn a_stuck_search_holds_the_cap_until_its_timeout_answers_504() {
         .await
         .expect("PROPFIND");
     assert_eq!(propfind.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value = propfind.json().await.expect("JSON refusal");
+    assert!(
+        body["request_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "a WebDAV refusal carries a request id like every other: {body}"
+    );
+
+    assert_anonymous_propfind_is_401(&server).await;
 
     // … while both streams still open: a full listener does not stop anyone
     // from listening …
@@ -272,6 +284,29 @@ async fn a_stuck_search_holds_the_cap_until_its_timeout_answers_504() {
     send_half_a_head(&server.base_url).await;
 
     assert_refusals_counted(metrics_addr).await;
+}
+
+/// While the listener is full, a credential-less `PROPFIND` must still be
+/// `401` rather than `503`: the bound sits *inside* `WebDAV`'s Basic auth
+/// (D70), so an unauthenticated flood cannot take permits from the semaphore
+/// every surface shares. Only distinguishable when the cap is already reached,
+/// which is why it lives inside the stuck-search scenario.
+async fn assert_anonymous_propfind_is_401(server: &PatchServer) {
+    let anonymous = server
+        .client
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a method"),
+            format!("{}/webdav/{}/", server.base_url, server.kb),
+        )
+        .header("Depth", "1")
+        .send()
+        .await
+        .expect("PROPFIND");
+    assert_eq!(
+        anonymous.status(),
+        StatusCode::UNAUTHORIZED,
+        "an unauthenticated PROPFIND must be refused before it draws a permit"
+    );
 }
 
 /// Every refusal the stuck-search test provoked is in the exposition, by
@@ -323,4 +358,270 @@ async fn a_connection_that_never_finishes_its_request_head_is_closed() {
         .await
         .expect("healthz");
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// A body that arrives slowly but steadily must not be cut off: the request
+/// timeout measures the server's work, not the client's uplink. Before D70's
+/// body handling this was a `504` at the deadline, part-way through staging.
+#[tokio::test]
+async fn an_upload_slower_than_the_request_timeout_still_succeeds() {
+    // Given: a request timeout far shorter than this upload will take, and a
+    // client-idle bound comfortably longer than the gap between chunks.
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, in_memory_backends(), |config| {
+        config.request_bounds.request_timeout = Duration::from_millis(300);
+        config.request_bounds.header_read_timeout = Duration::from_secs(5);
+    })
+    .await;
+
+    // When: eight chunks, 150 ms apart — 1.2 s of transfer, four times the
+    // deadline, with no gap longer than the idle bound.
+    let chunks = futures::stream::iter(0..8).then(|i| async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok::<_, std::io::Error>(format!("chunk {i}\n"))
+    });
+    let response = bearer(
+        server
+            .client
+            .put(format!(
+                "{}/api/v1/knowledgebases/{}/slow.md",
+                server.base_url, server.kb
+            ))
+            .header("content-type", "text/markdown")
+            .body(reqwest::Body::wrap_stream(chunks)),
+    )
+    .send()
+    .await
+    .expect("slow upload");
+
+    // Then: it is stored, not refused.
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "{:?}",
+        response.text().await
+    );
+    let read = bearer(server.client.get(format!(
+        "{}/api/v1/knowledgebases/{}/slow.md",
+        server.base_url, server.kb
+    )))
+    .send()
+    .await
+    .expect("read back");
+    assert_eq!(read.status(), StatusCode::OK);
+    assert!(read.text().await.expect("body").contains("chunk 7"));
+}
+
+/// The other half of the same bound: a body that stops arriving is refused, so
+/// deferring the deadline past the body does not leave a stalled upload holding
+/// a permit for as long as it likes.
+///
+/// Driven over a raw socket rather than through `reqwest`, because what is
+/// being tested is a pause the client makes mid-body, and that has to be this
+/// test's own doing rather than something a client library may buffer away.
+#[tokio::test]
+async fn an_upload_that_stalls_mid_body_is_refused() {
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, in_memory_backends(), |config| {
+        // Long enough that the request timeout cannot be what answers.
+        config.request_bounds.request_timeout = Duration::from_secs(30);
+        config.request_bounds.header_read_timeout = Duration::from_millis(400);
+    })
+    .await;
+
+    let addr = server
+        .base_url
+        .strip_prefix("http://")
+        .expect("an http base URL");
+    let mut socket = tokio::net::TcpStream::connect(addr).await.expect("connect");
+
+    // A complete head announcing a chunked body, then one chunk, then nothing:
+    // no terminating `0\r\n\r\n`, so the body never ends.
+    socket
+        .write_all(
+            format!(
+                "PUT /api/v1/knowledgebases/{}/stalled.md HTTP/1.1\r\n\
+                 Host: localhost\r\n\
+                 Authorization: Bearer {API_TOKEN}\r\n\
+                 Content-Type: text/markdown\r\n\
+                 Transfer-Encoding: chunked\r\n\r\n\
+                 5\r\nfirst\r\n",
+                server.kb
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("head and first chunk");
+
+    // Then: the server gives up on the body rather than waiting on it. It
+    // answers 408 and closes, or closes outright; either is the bound firing,
+    // and neither is the 30 s request timeout, which this returns far inside.
+    let mut buffer = Vec::new();
+    let read = tokio::time::timeout(WAIT, socket.read_to_end(&mut buffer))
+        .await
+        .expect("the server should not wait on a body that stopped arriving");
+    let answer = String::from_utf8_lossy(&buffer);
+    assert!(
+        read.is_err() || buffer.is_empty() || answer.contains("408"),
+        "expected a 408 or a close, got: {answer}"
+    );
+    assert!(
+        !answer.contains("201"),
+        "a body that never finished must not be stored: {answer}"
+    );
+}
+
+/// Every `Storage` call delegated, except `list_objects`, which never answers.
+///
+/// A `PROPFIND` walks the collection through `list_objects` before it can reply,
+/// so this stands in for the case `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` exists
+/// for: a knowledge base large enough that listing it outlasts the deadline
+/// every other surface gets.
+struct StallsOnList {
+    inner: Arc<dyn Storage>,
+    started: Arc<Notify>,
+}
+
+#[async_trait]
+impl Storage for StallsOnList {
+    async fn list_objects(
+        &self,
+        _kb: &KbSlug,
+        _prefix: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<ListResponse, StorageError> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+
+    async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        self.inner.ensure_bucket(kb).await
+    }
+    async fn probe(&self, kb: &KbSlug) -> Result<(), StorageError> {
+        self.inner.probe(kb).await
+    }
+    async fn read_manifest(&self, kb: &KbSlug) -> Result<KbManifest, StorageError> {
+        self.inner.read_manifest(kb).await
+    }
+    async fn write_manifest(&self, kb: &KbSlug, manifest: &KbManifest) -> Result<(), StorageError> {
+        self.inner.write_manifest(kb, manifest).await
+    }
+    async fn head_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectMeta, StorageError> {
+        self.inner.head_object(kb, path, conditionals).await
+    }
+    async fn get_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<ByteRange>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectRead, StorageError> {
+        self.inner.get_object(kb, path, range, conditionals).await
+    }
+    async fn get_object_stream(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        range: Option<ByteRange>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<ObjectStream, StorageError> {
+        self.inner
+            .get_object_stream(kb, path, range, conditionals)
+            .await
+    }
+    async fn put_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        bytes: bytes::Bytes,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        self.inner
+            .put_object(kb, path, bytes, content_type, conditionals)
+            .await
+    }
+    async fn put_staged_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        body: StagedBody,
+        content_type: Option<&str>,
+        conditionals: ConditionalHeaders,
+    ) -> Result<PutOutcome, StorageError> {
+        self.inner
+            .put_staged_object(kb, path, body, content_type, conditionals)
+            .await
+    }
+    async fn copy_object(
+        &self,
+        kb: &KbSlug,
+        source: &ObjectPath,
+        destination: &ObjectPath,
+        options: CopyObjectOptions,
+    ) -> Result<PutOutcome, StorageError> {
+        self.inner
+            .copy_object(kb, source, destination, options)
+            .await
+    }
+    async fn delete_object(
+        &self,
+        kb: &KbSlug,
+        path: &ObjectPath,
+        conditionals: ConditionalHeaders,
+    ) -> Result<(), StorageError> {
+        self.inner.delete_object(kb, path, conditionals).await
+    }
+}
+
+/// `/webdav` is held to its own, longer deadline — not the one every other
+/// surface gets.
+///
+/// Nothing else pins this: the suite's other `WebDAV` case is refused by the
+/// *cap*, and the unit tests never build the DAV router, so turning
+/// `webdav_request_timeout` into `request_timeout` at the call site would have
+/// gone unnoticed while CONFIGURATION.md and OPERATIONS.md tell operators to
+/// size their proxy timeout and stop grace period from it.
+#[tokio::test]
+async fn webdav_gets_its_own_longer_timeout() {
+    let started = Arc::new(Notify::new());
+    let backends = notedthat_server::run::Backends {
+        storage: Arc::new(StallsOnList {
+            inner: in_memory_backends().storage,
+            started: Arc::clone(&started),
+        }),
+        ..in_memory_backends()
+    };
+    // A short deadline for everything else, and a much longer one for WebDAV.
+    let short = Duration::from_millis(300);
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, backends, move |config| {
+        config.request_bounds.request_timeout = short;
+        config.request_bounds.webdav_request_timeout = Duration::from_secs(3);
+    })
+    .await;
+
+    let began = std::time::Instant::now();
+    let propfind = server
+        .client
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a method"),
+            format!("{}/webdav/{}/", server.base_url, server.kb),
+        )
+        .header("Authorization", basic_auth())
+        .header("Depth", "1")
+        .send()
+        .await
+        .expect("PROPFIND");
+    let took = began.elapsed();
+
+    assert_eq!(propfind.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert!(
+        took > short * 3,
+        "a PROPFIND answered in {took:?} was cut by the {short:?} request timeout, \
+         not by the WebDAV one"
+    );
 }

@@ -247,7 +247,8 @@ All error responses use the same JSON envelope:
 | 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
 | 500 | `internal_error` | Unexpected server error |
 | 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write); or the server is at its limit of requests in flight (`Retry-After: 5`, nothing was done — retry) |
-| 504 | `request_timeout` | The request did not produce a response within the server's request timeout (`NOTEDTHAT_REQUEST_TIMEOUT_MS`, default 30 s). No `Retry-After`: the same request would take as long again. A write may or may not have been applied — reconcile with `HEAD` before retrying it. The events route is never answered this way ([request bounds](CONFIGURATION.md#request-bounds)) |
+| 408 | `request_timeout` | The request body stopped arriving for longer than `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). The partial upload is discarded, not stored. A slow but steady upload is not affected: the bound is the gap between frames, not the total |
+| 504 | `request_timeout` | The request did not produce a response within the server's request timeout (`NOTEDTHAT_REQUEST_TIMEOUT_MS`, default 30 s), measured from the moment the request body finished arriving. No `Retry-After`: the same request would take as long again. A write may or may not have been applied — reconcile with `HEAD` before retrying it. The events route is never answered this way ([request bounds](CONFIGURATION.md#request-bounds)) |
 
 ## Limits
 

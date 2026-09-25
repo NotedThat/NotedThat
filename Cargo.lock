@@ -2767,6 +2767,7 @@ dependencies = [
  "bytes",
  "dav-server",
  "futures",
+ "notedthat-api-http",
  "notedthat-core",
  "notedthat-indexer",
  "notedthat-write",

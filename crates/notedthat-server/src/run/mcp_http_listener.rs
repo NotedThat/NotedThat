@@ -201,9 +201,12 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
             )
             .expect("MCP router should build"),
         );
+    // The accept loop the product listener actually runs (D70), not
+    // `axum::serve` — otherwise this test stopped covering the shutdown
+    // sequence the moment `run.rs` moved off it, and `serve.rs`'s graceful
+    // drain would have no test at all.
     let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
+        crate::run::serve::serve(listener, app, Duration::from_secs(30), graceful_shutdown)
             .await
             .context("unified listener failed")
     });
@@ -277,6 +280,7 @@ async fn only_the_mcp_request_legs_are_bounded() {
     let config = test_config();
     // No permits at all, so every bounded leg is refused before it runs.
     let bounds = notedthat_api_http::bounds::RequestBounds::new(
+        Duration::from_secs(60),
         Duration::from_secs(60),
         Arc::new(tokio::sync::Semaphore::new(0)),
     );

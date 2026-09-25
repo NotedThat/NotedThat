@@ -172,16 +172,17 @@ streaming routes need.
 | No response buffering | `GET /mcp` and the events route are long-lived; a buffering proxy delivers nothing until the stream ends, which it never does |
 | Read timeout above 15 s | Both streams heartbeat every 15 s. A short timeout cuts them mid-stream |
 | Read timeout above the server's own | The server answers a request that runs too long itself: `504` after `NOTEDTHAT_REQUEST_TIMEOUT_MS` (30 s), or `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` (120 s) on `/webdav`. A proxy that gives up first turns that into its own bare `504` with no request id. The streams are exempt from the server's timeout, so the proxy's ceiling is the only one they have |
-| Upstream keep-alive below 30 s | The server closes a connection that has been idle for `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (30 s). A proxy that keeps idle upstream connections longer will now and then send a request down one the server has just closed |
+| Upstream keep-alive below 30 s | The server closes a connection that has been idle for `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (30 s). A proxy that keeps idle upstream connections longer will now and then send a request down one the server has just closed. The same bound applies to gaps in a request body, so a proxy that streams uploads must not stall one for longer either |
 | No cache ignoring `Vary: Authorization` | `/browse` serves different pages to anonymous and credentialed callers at one URL |
 | Rate limiting | There is no application rate limiter. Configure rate and burst limits here before exposing anonymous `search` |
 
 **Which limit belongs where.** The server bounds what only it can see: how long a connection may
 take to send its request head, how long a request may take to produce its response head, and how
 many requests it works on at once — with the two streams and the probes exempt, because it knows
-which routes those are and a proxy does not. The proxy keeps TLS, rate limiting, request and
-response body transfer time, and the per-client limits the server cannot apply before it has
-authenticated anyone. See [Request bounds](CONFIGURATION.md#request-bounds).
+which routes those are and a proxy does not. The proxy keeps TLS, rate limiting, response body transfer time, and the
+per-client limits the server cannot apply on the surfaces that authorize inside the handler.
+Request bodies are the one thing that moved: the server bounds the gaps while one arrives, so a
+slow upload is no longer racing the request timeout. See [Request bounds](CONFIGURATION.md#request-bounds).
 
 The API events route sets `X-Accel-Buffering: no`, which nginx honours by itself. **`GET /mcp`
 does not** — rmcp sets no buffering hint — so `proxy_buffering off` is required for the MCP

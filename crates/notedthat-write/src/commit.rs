@@ -5,6 +5,7 @@ use notedthat_core::{
     Storage, StorageError,
 };
 use notedthat_indexer::IndexEvent;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
@@ -124,6 +125,44 @@ pub async fn commit_copy(
     Ok(outcome)
 }
 
+/// Holds the `Upsert` for a write whose bytes are already stored, and enqueues
+/// it from `Drop` if the normal path never got there.
+///
+/// Only ever fires on cancellation: [`after_write`] disarms it the moment it
+/// takes the event to send properly, so the ordinary path — including every
+/// queue-full and queue-closed case, which need the health view and the error
+/// this cannot produce — is untouched. What it covers is the future being
+/// dropped between the store and the enqueue.
+struct EnqueueOnDrop {
+    indexer_tx: Sender<IndexEvent>,
+    event: Option<IndexEvent>,
+}
+
+impl EnqueueOnDrop {
+    /// Take the event for the normal enqueue; nothing happens on drop after.
+    fn disarm(&mut self) -> IndexEvent {
+        self.event.take().expect("disarmed once")
+    }
+}
+
+impl Drop for EnqueueOnDrop {
+    fn drop(&mut self) {
+        let Some(event) = self.event.take() else {
+            return;
+        };
+        // Best effort by construction: there is no caller left to return an
+        // error to, and a full queue here means the same as it does anywhere
+        // else — the reconciliation pass is the backstop.
+        if self.indexer_tx.try_send(event).is_err() {
+            tracing::warn!(
+                target: "notedthat::indexing",
+                "INDEX_ENQUEUE_LOST_ON_CANCEL: a write was cancelled after its bytes were stored \
+                 and its Upsert could not be queued; reconciliation will repair it"
+            );
+        }
+    }
+}
+
 /// Report a durable write: publish, then index.
 ///
 /// Publishing first is what lets the worker's `object.indexed` for this
@@ -151,6 +190,26 @@ pub(crate) async fn after_write(
     // announces the version and, an `Upsert` never being skipped, indexes it
     // again — an `object.indexed` with no `object.written` before it is the
     // same class of thing as a duplicate, and subscribers tolerate both.
+    // Armed before the publish, disarmed by the enqueue below.
+    //
+    // `publish` can await for seconds (the NATS client's own timeout), and a
+    // caller that gives up in that window — a client disconnect, or the
+    // request timeout D70 added — drops this future where it stands. The bytes
+    // are already stored by then, so without this the object would be durable
+    // and unsearchable, with nothing to repair it on `s3` until the next
+    // reconciliation pass. `try_send` is synchronous, so `Drop` can still do
+    // it; this is the same bargain D69 strikes for metered calls, for the same
+    // reason.
+    let mut enqueue = EnqueueOnDrop {
+        indexer_tx: sinks.indexer_tx.clone(),
+        event: Some(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: path.clone(),
+            etag: outcome.etag.clone().unwrap_or_default(),
+            mtime: current_unix_seconds(),
+        }),
+    };
+
     let published = match sinks.events {
         Some(events) => {
             let event = ObjectEvent::written(
@@ -167,12 +226,7 @@ pub(crate) async fn after_write(
         None => Ok(()),
     };
 
-    let event = IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: path.clone(),
-        etag: outcome.etag.clone().unwrap_or_default(),
-        mtime: current_unix_seconds(),
-    };
+    let event = enqueue.disarm();
     match sinks.indexer_tx.try_send(event) {
         Ok(()) => {
             if let Some(health) = sinks.index_health {
@@ -283,7 +337,10 @@ mod tests {
     use crate::WriteEffect;
     use async_trait::async_trait;
     use bytes::Bytes;
-    use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
+    use notedthat_core::{
+        EventId, EventPublisher, EventSource, EventStream, KbManifest, ListResponse, ObjectEvent,
+        ObjectMeta, ObjectRead, PublishError, SubscribeError,
+    };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
@@ -586,6 +643,81 @@ mod tests {
                 .contains_key("test-kb/c.md"),
             "stored object should remain after enqueue backpressure"
         );
+    }
+
+    /// A write cancelled between storing the bytes and enqueuing the `Upsert`
+    /// must still enqueue it. The window is `publish`, which can await for
+    /// seconds against a slow or unreachable broker, and D70's request timeout
+    /// drops the handler where it stands — leaving, without the guard, an
+    /// object that is durable and unsearchable with nothing on `s3` to repair
+    /// it until the next reconciliation pass.
+    #[tokio::test]
+    async fn a_write_cancelled_while_publishing_still_enqueues_its_upsert() {
+        /// A broker that accepts the connection and then never answers.
+        struct NeverAnswers;
+
+        #[async_trait::async_trait]
+        impl EventPublisher for NeverAnswers {
+            async fn publish(&self, _event: ObjectEvent) -> Result<EventId, PublishError> {
+                std::future::pending().await
+            }
+            async fn subscribe(
+                &self,
+                _kb: &KbSlug,
+                _after: Option<EventId>,
+            ) -> Result<EventStream, SubscribeError> {
+                unreachable!("this test never subscribes")
+            }
+            fn ready(&self) -> bool {
+                true
+            }
+            fn backend_name(&self) -> &'static str {
+                "never-answers"
+            }
+        }
+
+        let storage = TestStorage::default();
+        let kb = kb();
+        let path = path_named("cancelled.md");
+        let (indexer_tx, mut rx) = mpsc::channel(4);
+        let events = NeverAnswers;
+        let sinks = WriteSinks {
+            indexer_tx: &indexer_tx,
+            events: Some(&events),
+            index_health: None,
+            source: EventSource::Http,
+        };
+
+        // Given a commit whose publish never returns, when the caller gives up
+        // on it — exactly what the request timeout does.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            commit(
+                &storage,
+                &sinks,
+                &kb,
+                &path,
+                Bytes::from_static(b"# Cancelled"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            ),
+        )
+        .await;
+        assert!(cancelled.is_err(), "the publish should never have returned");
+
+        // Then: the bytes are stored …
+        assert!(
+            storage
+                .head_object(&kb, &path, ConditionalHeaders::default())
+                .await
+                .is_ok(),
+            "the store completed before the publish that was cancelled"
+        );
+        // … and the index was told about them anyway.
+        match rx.try_recv().expect("an Upsert must have been enqueued") {
+            IndexEvent::Upsert { object_key, .. } => assert_eq!(object_key, path),
+            other => panic!("expected an Upsert, got {other:?}"),
+        }
     }
 
     #[tokio::test]

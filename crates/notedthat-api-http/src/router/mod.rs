@@ -110,6 +110,11 @@ pub fn build_router(state: AppState) -> Router {
 /// the two probes, which answer from memory and must stay reachable to an
 /// orchestrator when the listener is at its cap — a liveness probe refused
 /// `503` under load would restart the process for being busy.
+///
+/// The corollary, since it is the one way this goes wrong quietly: a route
+/// added to the outer `Router::new()` below, beside the probes, is unbounded,
+/// and so is any unmatched path. `bounded_routes::only_the_probes_are_outside`
+/// is what keeps the first of those deliberate.
 pub fn build_bounded_router(state: AppState, bounds: &RequestBounds) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
     let bounded_api = Router::new()
@@ -221,7 +226,11 @@ mod bounded_routes {
     async fn refused_by_the_cap(method: Method, path: &str) -> bool {
         // No permits at all: every bounded route is refused before its
         // handler runs, and anything that answers otherwise was never bounded.
-        let bounds = RequestBounds::new(Duration::from_secs(60), Arc::new(Semaphore::new(0)));
+        let bounds = RequestBounds::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Arc::new(Semaphore::new(0)),
+        );
         let response = build_bounded_router(state(), &bounds)
             .oneshot(
                 Request::builder()
@@ -259,6 +268,39 @@ mod bounded_routes {
                 "{method} {path} is not bounded"
             );
         }
+    }
+
+    /// The outer router is the unbounded one, so what is registered there is
+    /// the one thing that can escape the cap without anybody deciding it.
+    ///
+    /// A source-level check, because axum exposes no way to enumerate a
+    /// router's routes — the same bargain `notedthat-webdav`'s
+    /// `test_router_disables_autoindex` strikes. It fails when a route is
+    /// added beside the probes, which is exactly when someone should be made
+    /// to choose rather than to inherit.
+    #[test]
+    fn only_the_probes_are_outside() {
+        let source = include_str!("mod.rs");
+        // Between the comment introducing the outer router and the merge of
+        // `bounded_root` into it: the routes it registers for itself.
+        let outer = source
+            .split("API body limit stay nested")
+            .nth(1)
+            .and_then(|after| after.split(".merge(bounded_root)").next())
+            .expect("the outer router");
+        let registered: Vec<&str> = outer
+            .lines()
+            .filter(|line| line.trim_start().starts_with(".route(\""))
+            .collect();
+        assert_eq!(
+            registered,
+            [
+                "        .route(\"/healthz\", get(healthz))",
+                "        .route(\"/readyz\", get(readyz))"
+            ],
+            "a route registered outside the bounded sub-routers draws no permit; \
+             add it to `bounded_api` or `bounded_root` instead, or say here why not"
+        );
     }
 
     /// The events stream stays open for hours and the probes must answer an

@@ -112,3 +112,114 @@ fn is_connection_error(error: &io::Error) -> bool {
             | io::ErrorKind::ConnectionReset
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::serve;
+    use axum::Router;
+    use axum::routing::get;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
+
+    /// The half of the drain that is easy to lose: a request already being
+    /// worked on when the shutdown arrives must still get its whole response.
+    ///
+    /// Dropping `graceful_shutdown()` from the select would leave this passing
+    /// only for connections that happened to be idle — `connections.wait()`
+    /// returns for those either way — so this holds one open across the
+    /// cancellation on purpose.
+    #[tokio::test]
+    async fn a_request_in_flight_at_shutdown_still_gets_its_response() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/slow",
+            get({
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                move || {
+                    let started = Arc::clone(&started);
+                    let release = Arc::clone(&release);
+                    async move {
+                        started.notify_one();
+                        release.notified().await;
+                        "finished anyway"
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve(
+            listener,
+            app,
+            Duration::from_secs(30),
+            shutdown.clone(),
+        ));
+
+        // Given: a request the server has started but not answered.
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        client
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("request");
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("the handler should have been reached");
+
+        // When: the server is asked to stop while it is still working.
+        shutdown.cancel();
+        // Give the accept loop a moment to notice, so the release below cannot
+        // be what lets the response through.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.notify_one();
+
+        // Then: the response arrives in full, and the server returns.
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut answer))
+            .await
+            .expect("the connection should close once the response is sent")
+            .expect("read");
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.contains("200 OK"), "{answer}");
+        assert!(answer.contains("finished anyway"), "{answer}");
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the drain should return once every connection has closed")
+            .expect("join")
+            .expect("serve");
+    }
+
+    /// And the other half: the socket is released before the drain, so a
+    /// caller that rebinds the address once `serve` returns is not refused.
+    #[tokio::test]
+    async fn the_address_is_free_once_serve_returns() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve(
+            listener,
+            Router::new().route("/", get(|| async { "ok" })),
+            Duration::from_secs(30),
+            shutdown.clone(),
+        ));
+
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("drain")
+            .expect("join")
+            .expect("serve");
+
+        TcpListener::bind(addr)
+            .await
+            .expect("the address must be free once serve has returned");
+    }
+}

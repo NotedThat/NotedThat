@@ -2,6 +2,7 @@
 
 use axum::{Router, middleware::from_fn, middleware::from_fn_with_state, routing::any};
 use dav_server::DavHandler;
+use notedthat_api_http::bounds::{RequestBounds, bound};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -20,8 +21,26 @@ use crate::{
     state::WebDavState,
 };
 
-/// Build the `WebDAV` router scoped to `/webdav` and its descendants.
+/// Build the `WebDAV` router scoped to `/webdav` and its descendants, with no
+/// effective request bounds.
+///
+/// For routers built outside a running server. The server calls
+/// [`build_bounded_router`].
 pub fn build_router(state: WebDavState) -> Router {
+    build_bounded_router(state, &RequestBounds::unbounded())
+}
+
+/// Build the `WebDAV` router, holding every route to `bounds` (D70).
+///
+/// The layer is applied here, inside this stack, rather than by the caller with
+/// `Router::route_layer`, because `route_layer` wraps the whole `MethodRouter` —
+/// including the layers below — and would put the bound *outside*
+/// `basic_auth_middleware`. An unauthenticated `PROPFIND` would then draw a permit
+/// from the semaphore every surface shares before its credential was looked at, which
+/// is the starvation the cap exists to prevent and the opposite of what D70 says.
+/// Below the auth layer it is also below `SetRequestIdLayer`, so a refusal carries a
+/// request id like every other.
+pub fn build_bounded_router(state: WebDavState, bounds: &RequestBounds) -> Router {
     let storage_state = Arc::new(state.clone());
     let dav_handler = DavHandler::builder()
         .filesystem(Box::new(WebDavStorage::new(Arc::clone(&storage_state))))
@@ -55,6 +74,8 @@ pub fn build_router(state: WebDavState) -> Router {
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .layer(PropagateRequestIdLayer::x_request_id())
             .layer(from_fn_with_state(state.clone(), basic_auth_middleware))
+            // Below auth, deliberately — see this function's doc comment.
+            .layer(from_fn_with_state(bounds.clone(), bound))
             .layer(TraceLayer::new_for_http())
             .layer(from_fn_with_state(
                 state.clone(),

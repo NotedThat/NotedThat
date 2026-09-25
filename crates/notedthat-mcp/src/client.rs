@@ -3,6 +3,7 @@
 use crate::error::{McpToolError, map_response};
 use bytes::Bytes;
 use serde::Deserialize;
+use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
@@ -48,6 +49,16 @@ pub struct NotedThatClient {
     pub(crate) max_read_bytes: u64,
 }
 
+/// The tool-call client's deadline when nothing overrides it, matching the
+/// default `NOTEDTHAT_REQUEST_TIMEOUT_MS` plus [`API_TIMEOUT_MARGIN`].
+const DEFAULT_API_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// How far the tool-call client's deadline sits beyond the server's, so the
+/// API's own `504` is what answers a stalled call rather than a transport
+/// error from this side. Covers connect, the request head and auth, all of
+/// which run before the server's clock starts.
+const API_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
 impl NotedThatClient {
     /// Create a new client.
     ///
@@ -72,7 +83,7 @@ impl NotedThatClient {
         }
 
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(DEFAULT_API_TIMEOUT)
             .build()
             .map_err(ConfigError::ClientBuild)?;
         let stream_http = reqwest::Client::builder()
@@ -88,6 +99,30 @@ impl NotedThatClient {
             token: Some(token_trimmed.to_string()),
             max_read_bytes: DEFAULT_MAX_READ_BYTES,
         })
+    }
+
+    /// Give the tool-call client a deadline derived from the server's own.
+    ///
+    /// Every tool call reaches the API over loopback on the same listener, so
+    /// the API's request timeout is what should answer a stalled one — as a
+    /// `504`, which `map_response` turns into a `request_timeout` tool error
+    /// (D70). That only happens if this client is still waiting when it
+    /// arrives, and its clock starts first: before connect, before the head is
+    /// sent, before auth, while the server's starts when `bound` runs. Equal
+    /// deadlines therefore go to `reqwest`, and the tool reports a transport
+    /// error instead — and an operator who raises
+    /// `NOTEDTHAT_REQUEST_TIMEOUT_MS` for a slow embedder would find tool
+    /// calls still cut off at 30 s.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::ClientBuild`] if the HTTP client cannot be built.
+    pub fn with_api_timeout(mut self, request_timeout: Duration) -> Result<Self, ConfigError> {
+        self.http = reqwest::Client::builder()
+            .timeout(request_timeout + API_TIMEOUT_MARGIN)
+            .build()
+            .map_err(ConfigError::ClientBuild)?;
+        Ok(self)
     }
 
     /// Cap what one object read may fetch from the API, in bytes.
