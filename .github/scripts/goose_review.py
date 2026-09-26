@@ -320,14 +320,27 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             if remaining < 30:
                 print(f"::warning::{label}: no time left for another round", file=sys.stderr)
                 return None
+            # An investigating round is cut off early enough to leave time for
+            # the answer; the answering round may use what is left.
+            limit = remaining if finalising else remaining - FINAL_MARGIN_S
             try:
+                if limit <= 0:
+                    raise subprocess.TimeoutExpired(command, 0)
                 result = subprocess.run(
-                    command, input=stdin, capture_output=True, text=True, env=env, timeout=remaining
+                    command, input=stdin, capture_output=True, text=True, env=env, timeout=limit
                 )
                 stdout, stderr = result.stdout, result.stderr
             except subprocess.TimeoutExpired:
-                print(f"::warning::{label}: stopped at the phase deadline without an answer", file=sys.stderr)
-                return None
+                if finalising:
+                    print(f"::warning::{label}: stopped at the phase deadline without an answer", file=sys.stderr)
+                    return None
+                # Goose keeps the session as it goes, so what the run read so
+                # far is still there to answer from.
+                print(f"::notice::{label}: investigation cut off near the deadline, asking for the answer", file=sys.stderr)
+                finalising = True
+                command = ["goose", "run", "--resume", "-n", session, *common(FINAL_TURNS), "-i", "-"]
+                stdin = FINAL_PROMPT
+                continue
             log(label, round_no, stdin, stdout, stderr)
 
             transcript = parse_transcript(stdout) or {}
