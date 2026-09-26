@@ -10,6 +10,35 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/NotedThat/NotedThat/compare/v0.11.0...v0.12.0) - 2026-09-26
+
+### Added
+
+- *(server)* settings for request timeouts and the in-flight cap ([#192](https://github.com/NotedThat/NotedThat/pull/192))
+- *(api-http)* bound a request's time to response head and the requests in flight ([#192](https://github.com/NotedThat/NotedThat/pull/192))
+- *(storage-s3)* [**breaking**] ask the probe both halves of the question
+- *(storage-s3)* [**breaking**] ask a bucket whether it enforces conditional writes
+- *(server)* bound every route that answers once, leave the streams out by routing ([#192](https://github.com/NotedThat/NotedThat/pull/192))
+- *(server)* [**breaking**] refuse to start on a bucket that does not enforce conditional writes
+- *(server)* time out a connection that does not send its request head ([#192](https://github.com/NotedThat/NotedThat/pull/192))
+
+### Fixed
+
+- *(bounds)* stop the deadline eating uploads, and put it behind auth
+- *(api-http)* spell the unbounded timeout in hours, as clippy 1.98 asks
+- *(mcp)* pin the owner set by type, and correct what a 404 promises
+- *(test)* give the conditional-write E2E the request_bounds field
+
+### Other
+
+- Merge pull request #198 from NotedThat/feat/pin-base-image-digests
+- declare rust-version 1.91.1 and prove it in CI
+- renumber the request bounds decision to D71
+- Merge pull request #196 from NotedThat/feat/s3-conditional-write-probe
+- *(mcp)* pin the stalled tool call on the server's 504, not reqwest's
+- *(mcp)* refuse a session to every other principal, anonymous included
+- *(server)* the request bounds end to end ([#192](https://github.com/NotedThat/NotedThat/pull/192))
+
 ## [0.11.0](https://github.com/NotedThat/NotedThat/compare/v0.10.0...v0.11.0) - 2026-09-24
 
 ### Added
