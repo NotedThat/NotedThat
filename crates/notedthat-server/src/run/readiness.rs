@@ -97,14 +97,21 @@ impl Slot {
 impl ReadinessPoller {
     /// Publishes every check ok at once — startup provisioning has just reached
     /// both backends — and hands back the receiver the HTTP state holds.
+    ///
+    /// `conditional_writes` is what the `s3` backend's startup check found (D70). It
+    /// is published as given and never probed again: the loop owns only storage and
+    /// search.
     pub(super) fn new(
         storage: Arc<dyn Storage>,
         store: Arc<dyn VectorStore>,
         witness: KbSlug,
         storage_backend: &'static str,
         interval: Duration,
+        conditional_writes: Option<Check>,
     ) -> (Self, ReadinessReceiver) {
-        let (tx, rx) = watch::channel(ReadinessSnapshot::ok(storage_backend, SEARCH_BACKEND));
+        let mut initial = ReadinessSnapshot::ok(storage_backend, SEARCH_BACKEND);
+        initial.conditional_writes = conditional_writes;
+        let (tx, rx) = watch::channel(initial);
         (
             Self {
                 storage,
@@ -259,7 +266,7 @@ mod tests {
         CancellationToken,
         tokio::task::JoinHandle<()>,
     ) {
-        let (poller, rx) = ReadinessPoller::new(storage, store, kb(), "fs", TICK);
+        let (poller, rx) = ReadinessPoller::new(storage, store, kb(), "fs", TICK, None);
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(poller.run(shutdown.child_token()));
         (rx, shutdown, handle)
@@ -292,6 +299,39 @@ mod tests {
         let snapshot = rx.borrow().clone();
         assert_eq!(snapshot, ReadinessSnapshot::ok("fs", "qdrant"));
         assert!(snapshot.is_ready());
+        shutdown.cancel();
+        handle.await.unwrap();
+    }
+
+    /// The startup finding on conditional writes is never probed again (D70), so no
+    /// storage or search publish may overwrite it.
+    #[tokio::test]
+    async fn a_conditional_writes_finding_survives_every_probe() {
+        let (storage, store) = provisioned().await;
+        let finding = Check::unready("s3", Unready::PreconditionsNotEnforced);
+        let (poller, mut rx) = ReadinessPoller::new(
+            Arc::new(storage.clone()),
+            Arc::new(store),
+            kb(),
+            "s3",
+            TICK,
+            Some(finding.clone()),
+        );
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(poller.run(shutdown.child_token()));
+
+        storage.set_reachable(false);
+        let down = wait_for(&mut rx, "storage unreachable", |s| {
+            s.storage.outcome == Err(Unready::Unreachable)
+        })
+        .await;
+        assert_eq!(down.conditional_writes, Some(finding.clone()));
+
+        storage.set_reachable(true);
+        let back = wait_for(&mut rx, "storage ok again", |s| s.storage.outcome.is_ok()).await;
+        assert_eq!(back.conditional_writes, Some(finding));
+        assert!(back.is_ready() && back.is_degraded());
+
         shutdown.cancel();
         handle.await.unwrap();
     }
@@ -417,6 +457,7 @@ mod tests {
             kb(),
             "fs",
             Duration::from_secs(60),
+            None,
         );
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(poller.run(shutdown.child_token()));

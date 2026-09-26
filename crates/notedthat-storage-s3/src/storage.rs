@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime_api::http::Response as HttpResponse;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
@@ -13,9 +14,16 @@ use notedthat_core::{
     TenantSlug, derive_bucket_name,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const MANIFEST_KEY: &str = ".notedthat/manifest.json";
+/// Where [`S3Storage::check_conditional_writes`] puts its scratch object. Under
+/// `.notedthat/` so that a copy left behind by a failed delete is private (D48) and
+/// never indexed.
+pub const PROBE_KEY_PREFIX: &str = ".notedthat/conditional-write-probe-";
+const PROBE_BODY: &[u8] = b"conditional-write probe";
+/// A quoted `ETag` no object can carry: S3 `ETag`s are hex digests, and this is not hex.
+const PROBE_UNMATCHABLE_ETAG: &str = "\"notedthat-conditional-write-probe\"";
 const COPY_SOURCE_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -51,6 +59,294 @@ impl S3Storage {
     fn bucket_name(&self, kb: &KbSlug) -> String {
         derive_bucket_name(&self.tenant, kb)
     }
+
+    /// Find out whether `kb`'s bucket enforces the preconditions `NotedThat` forwards on a
+    /// conditional `PUT` (D70).
+    ///
+    /// Some S3-compatible backends parse `If-Match` and `If-None-Match` and then store
+    /// the object anyway (`SPECIFICATIONS.md` §8.1), so a conditional write that should
+    /// be `412` answers `200` and one of two concurrent writers is silently lost. Nothing
+    /// in a normal request can tell, so this asks directly.
+    ///
+    /// It stores a scratch object under `.notedthat/` and then overwrites it three times,
+    /// because enforcement is a claim in **both** directions and only asking half of it
+    /// cannot tell a backend that compares correctly from one that never matches at all:
+    ///
+    /// | Overwrite | Expected |
+    /// |---|---|
+    /// | `If-Match` naming the `ETag` the first `PUT` returned | stored |
+    /// | `If-Match` naming that `ETag` with one hex digit altered | `412` |
+    /// | `If-None-Match: *` over the object that now exists | `412` |
+    ///
+    /// The first is what catches an `ETag` representation mismatch — a backend that
+    /// returns an unquoted or weak `ETag` while comparing against the strong quoted form
+    /// refuses every legitimate conditional write, which is as broken as ignoring the
+    /// header and looks identical to enforcement if you only ever send values that cannot
+    /// match. Altering the real `ETag` rather than inventing a literal also keeps the
+    /// value syntactically valid, so a backend that rejects a malformed `ETag` with `400`
+    /// no longer fails the check.
+    ///
+    /// The scratch object is deleted whatever the answers were, including every version
+    /// it wrote on a versioned bucket.
+    ///
+    /// This is a write, unlike [`Storage::probe`], and calls the client directly so it
+    /// is not counted as a storage operation. One writer cannot provoke a failure that
+    /// only appears under contention; what it catches is a backend that does not enforce
+    /// the header at all.
+    ///
+    /// # Errors
+    ///
+    /// Any answer other than success, `412` or `501` to a conditional `PUT`, and any
+    /// failure of the unconditional one, is returned as the [`StorageError`] the rest of
+    /// the adapter would report for it.
+    pub async fn check_conditional_writes(
+        &self,
+        kb: &KbSlug,
+    ) -> Result<ConditionalWrites, StorageError> {
+        let bucket = self.bucket_name(kb);
+        let key = format!("{PROBE_KEY_PREFIX}{}", uuid::Uuid::now_v7());
+
+        let mut wrote = Vec::new();
+        let outcome = self.probe_preconditions(&bucket, &key, &mut wrote).await;
+        self.remove_probe(&bucket, &key, &wrote).await;
+        outcome
+    }
+
+    /// Delete the scratch object, and on a versioned bucket every version of it.
+    ///
+    /// A plain `DeleteObject` on a versioned bucket only adds a delete marker, so each
+    /// version the probe wrote would stay stored — billed, listed by
+    /// `ListObjectVersions`, and picked up by lifecycle and backup tooling — under a key
+    /// that is never reused, once per knowledge base per restart. So every version id a
+    /// `PUT` returned is removed by id, and so is the delete marker's own.
+    ///
+    /// On an unversioned bucket no `PUT` returns a version id and `wrote` is empty, which
+    /// leaves exactly the single unconditional delete this did before.
+    ///
+    /// Failures are logged, never returned: the probe's answer is what the caller asked
+    /// for, and the key is private (D48) and never indexed.
+    async fn remove_probe(&self, bucket: &str, key: &str, wrote: &[String]) {
+        let mut versions: Vec<&str> = wrote.iter().map(String::as_str).collect();
+        let marker;
+        match self
+            .client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(deleted) => {
+                marker = deleted.version_id().map(str::to_owned);
+                if let Some(id) = marker.as_deref().filter(|id| *id != "null") {
+                    versions.push(id);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    bucket = %bucket,
+                    key = %key,
+                    error = %e,
+                    "could not delete the conditional-write probe object; it is private and never indexed"
+                );
+            }
+        }
+        for version in versions {
+            if let Err(e) = self
+                .client
+                .delete_object()
+                .bucket(bucket)
+                .key(key)
+                .version_id(version)
+                .send()
+                .await
+            {
+                warn!(
+                    bucket = %bucket,
+                    key = %key,
+                    version_id = %version,
+                    error = %e,
+                    "could not delete a version of the conditional-write probe object; on a \
+                     versioned bucket it remains stored until a lifecycle rule removes it"
+                );
+            }
+        }
+    }
+
+    /// The three overwrites, and the one judgement made from all of them.
+    ///
+    /// Every version id a `PUT` returns is pushed onto `wrote`, so the caller can remove
+    /// them even when this returns early with an error.
+    async fn probe_preconditions(
+        &self,
+        bucket: &str,
+        key: &str,
+        wrote: &mut Vec<String>,
+    ) -> Result<ConditionalWrites, StorageError> {
+        let stored = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from_static(PROBE_BODY))
+            .send()
+            .await
+            .map_err(|e| map_put_error(&e, bucket))?;
+        record_version(wrote, stored.version_id());
+        let etag = stored.e_tag().unwrap_or_default().to_owned();
+        let altered = altered_etag(&etag);
+
+        // A precondition that holds. Asked first, because if this is refused nothing
+        // below distinguishes enforcement from a backend that never matches.
+        let matching = self
+            .conditional_put(bucket, key, wrote, |req| req.if_match(&etag))
+            .await?;
+        let mismatched = self
+            .conditional_put(bucket, key, wrote, |req| req.if_match(&altered))
+            .await?;
+        let existing = self
+            .conditional_put(bucket, key, wrote, |req| req.if_none_match("*"))
+            .await?;
+
+        // Order matters, and it is the order of how badly each outcome ends.
+        //
+        // A precondition that was ignored comes first: that is the silent one, the
+        // case where a write is lost and nobody is told, and an operator reading
+        // `Unsupported` for it would be told the opposite of the risk they have. A
+        // backend answering `501` to one header while storing the other does exist —
+        // it is the old S3 behaviour several S3-compatibles copied — so this is not a
+        // theoretical ordering.
+        let if_match = mismatched == Answer::Stored;
+        let if_none_match = existing == Answer::Stored;
+        Ok(if if_match || if_none_match {
+            ConditionalWrites::NotEnforced {
+                if_match,
+                if_none_match,
+            }
+        } else if matching == Answer::Unsupported
+            || mismatched == Answer::Unsupported
+            || existing == Answer::Unsupported
+        {
+            ConditionalWrites::Unsupported
+        } else if matching == Answer::Refused {
+            ConditionalWrites::AlwaysRefused
+        } else {
+            ConditionalWrites::Enforced
+        })
+    }
+
+    /// Overwrite the probe object under one precondition, and say what the backend
+    /// made of it.
+    async fn conditional_put(
+        &self,
+        bucket: &str,
+        key: &str,
+        wrote: &mut Vec<String>,
+        condition: impl FnOnce(PutObjectFluentBuilder) -> PutObjectFluentBuilder,
+    ) -> Result<Answer, StorageError> {
+        let req = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from_static(PROBE_BODY));
+        match condition(req).send().await {
+            Ok(stored) => {
+                record_version(wrote, stored.version_id());
+                Ok(Answer::Stored)
+            }
+            Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 412 => {
+                Ok(Answer::Refused)
+            }
+            Err(SdkError::ServiceError(e)) if e.raw().status().as_u16() == 501 => {
+                Ok(Answer::Unsupported)
+            }
+            Err(e) => Err(map_put_error(&e, bucket)),
+        }
+    }
+}
+
+/// Keep a version id worth deleting later. `"null"` is what an unversioned bucket
+/// reports for the only version there is, and deleting that by id is not the same
+/// request as deleting the object.
+fn record_version(wrote: &mut Vec<String>, version_id: Option<&str>) {
+    if let Some(id) = version_id.filter(|id| *id != "null") {
+        wrote.push(id.to_owned());
+    }
+}
+
+/// The same `ETag` with its first hex digit changed: syntactically whatever the backend
+/// handed us, and guaranteed not to match the object.
+///
+/// Falls back to [`PROBE_UNMATCHABLE_ETAG`] when there is no hex digit to alter, which
+/// covers an absent or unrecognisable `ETag` — better a value that cannot match than one
+/// that might, since a value equal to the real `ETag` would be stored and misread as the
+/// backend ignoring the header.
+fn altered_etag(etag: &str) -> String {
+    let mut altered = String::with_capacity(etag.len());
+    let mut changed = false;
+    for c in etag.chars() {
+        if !changed && c.is_ascii_hexdigit() {
+            altered.push(if c == '0' { '1' } else { '0' });
+            changed = true;
+        } else {
+            altered.push(c);
+        }
+    }
+    if changed {
+        altered
+    } else {
+        PROBE_UNMATCHABLE_ETAG.to_string()
+    }
+}
+
+/// What a backend does with the preconditions on a conditional `PUT`, as
+/// [`S3Storage::check_conditional_writes`] found it.
+///
+/// Only [`Self::Enforced`] lets the server start without the operator saying so: the
+/// other three all mean a conditional write does not do what the API promises, and they
+/// are kept apart because the operator's diagnosis differs even where the decision does
+/// not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionalWrites {
+    /// A precondition that holds is honoured, and one that does not is refused `412`,
+    /// for both `If-Match` and `If-None-Match: *`.
+    Enforced,
+    /// At least one precondition was accepted and the object stored anyway. Each field
+    /// is `true` when that header was ignored.
+    ///
+    /// The one outcome that loses a write in silence, and so the one reported whenever
+    /// it is found — including alongside a `501` to the *other* header, which is a real
+    /// combination rather than a theoretical one.
+    NotEnforced {
+        /// A mismatched `If-Match` was stored rather than refused.
+        if_match: bool,
+        /// `If-None-Match: *` over an existing object was stored rather than refused.
+        if_none_match: bool,
+    },
+    /// The backend answered `501 Not Implemented` to a conditional `PUT`: it refuses the
+    /// header outright, so every conditional write would fail rather than be lost.
+    Unsupported,
+    /// The backend refused `412` even for an `If-Match` naming the `ETag` it had just
+    /// returned, so no conditional write can ever succeed.
+    ///
+    /// Distinct from [`Self::Unsupported`] only in how it is spelled on the wire — the
+    /// remedy is the same — but a backend that answers `412` looks exactly like one that
+    /// enforces correctly unless something sends a precondition that ought to hold. The
+    /// usual cause is an `ETag` representation mismatch: returned unquoted or weak,
+    /// compared as strong and quoted, or the reverse.
+    AlwaysRefused,
+}
+
+/// What one conditional `PUT` was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// `2xx` — the object was written under this precondition.
+    Stored,
+    /// `412` — the precondition was evaluated and did not hold.
+    Refused,
+    /// `501` — the backend does not implement the header.
+    Unsupported,
 }
 
 /// Convert an HTTP-date string (e.g., "Thu, 01 Jan 1970 00:00:00 GMT") to an
@@ -656,8 +952,9 @@ impl Storage for S3Storage {
     /// cannot be made to produce either on demand: `is_truncated=false` carrying a
     /// `NextContinuationToken` (warned about and ignored) and `is_truncated=true` carrying
     /// none (failed closed as [`StorageError::BackendUnavailable`], rather than silently
-    /// ending the walk). Asserting them needs a stubbed S3 response, which this crate has
-    /// no harness for.
+    /// ending the walk). Asserting them needs a stubbed S3 response; `wiremock` can serve
+    /// one, as `tests/missing_bucket.rs` and `tests/conditional_write_probe.rs` do, but
+    /// nobody has written these two yet.
     async fn list_objects(
         &self,
         kb: &KbSlug,

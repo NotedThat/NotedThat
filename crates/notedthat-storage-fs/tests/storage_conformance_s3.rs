@@ -78,6 +78,7 @@ async fn s3_storage_and_fs_storage_agree() {
             secret_access_key: "any".to_string(),
             force_path_style: true,
             reconcile_on_startup: true,
+            allow_unenforced_conditional_writes: false,
         }
         .build_client(),
         TenantSlug::default(),

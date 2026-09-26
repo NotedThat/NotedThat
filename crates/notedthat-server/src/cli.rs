@@ -217,6 +217,17 @@ pub struct ServerCli {
     )]
     pub s3_reconcile: Option<String>,
 
+    /// Start even when a bucket stores a `PUT` whose `If-Match` or `If-None-Match` does
+    /// not hold, reporting it instead of refusing [default: false].
+    #[arg(
+        long,
+        env = "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = BOOL_FLAG,
+    )]
+    pub s3_allow_unenforced_conditional_writes: Option<String>,
+
     /// Absolute path of the storage root. Required with the `fs` backend.
     #[arg(long, env = "NOTEDTHAT_FS_ROOT", value_name = "DIR")]
     pub fs_root: Option<OsString>,

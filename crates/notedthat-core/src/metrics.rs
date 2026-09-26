@@ -99,6 +99,10 @@ pub mod name {
     pub const STORAGE_DURATION: &str = "notedthat_storage_operation_duration_seconds";
     /// Storage calls that failed, by the kind of failure.
     pub const STORAGE_ERRORS: &str = "notedthat_storage_errors_total";
+    /// `1` when a knowledge base's bucket refused a `PUT` whose precondition did not
+    /// hold, `0` when it stored it anyway; set once at startup on `s3` (D70).
+    pub const STORAGE_CONDITIONAL_WRITES_ENFORCED: &str =
+        "notedthat_storage_conditional_writes_enforced";
 
     /// Always `1`; carries what this build is as labels.
     pub const BUILD_INFO: &str = "notedthat_build_info";
@@ -385,6 +389,7 @@ mod tests {
         name::STORAGE_OPERATIONS,
         name::STORAGE_DURATION,
         name::STORAGE_ERRORS,
+        name::STORAGE_CONDITIONAL_WRITES_ENFORCED,
         name::BUILD_INFO,
     ];
 

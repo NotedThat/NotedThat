@@ -92,6 +92,7 @@ One backend is active per process, chosen at startup.
 | `NOTEDTHAT_S3_ENDPOINT_URL` | `--s3-endpoint-url` | No | (AWS default) | Custom S3-compatible endpoint. Required for SeaweedFS, MinIO, Ceph, Garage and R2. |
 | `NOTEDTHAT_S3_FORCE_PATH_STYLE` | `--s3-force-path-style` | No | `false` | Path-style addressing (`endpoint/bucket/key`). Set `true` for SeaweedFS, MinIO and most self-hosted stores. `true` or `false` exactly; anything else refuses startup and names the setting. |
 | `NOTEDTHAT_S3_RECONCILE` | `--s3-reconcile` | No | `true` | Compare every knowledge base's bucket against the search index once at startup, re-indexing objects changed outside NotedThat. `true` or `false` exactly. The on-demand pass (`POST …/index/reconcile`) is available either way. See [S3 reconciliation](#s3-reconciliation). |
+| `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES` | `--s3-allow-unenforced-conditional-writes` | No | `false` | Start even when a bucket stores a `PUT` whose `If-Match` or `If-None-Match` does not hold, instead of refusing. Concurrent writes on such a backend can be silently lost. `true` or `false` exactly. See [S3 conditional writes](#s3-conditional-writes). |
 | `NOTEDTHAT_FS_ROOT` | `--fs-root` | Yes, when `fs` | — | Absolute path of the storage root. |
 | `NOTEDTHAT_FS_METADATA` | `--fs-metadata` | No | `sidecar` | Where per-object metadata is kept. `sidecar` is the only accepted value today. |
 | `NOTEDTHAT_FS_FILE_MODE` | `--fs-file-mode` | No | `0644` | Octal mode for created object files. |
@@ -260,6 +261,12 @@ change events (`notedthat_events_*`), reconciliation (`notedthat_reconcile_*`), 
 watcher (`notedthat_fs_watch_lost_total`), storage (`notedthat_storage_*`) and
 `notedthat_build_info`.
 
+One storage gauge is set once, at startup, and never again:
+`notedthat_storage_conditional_writes_enforced{kb}` is `1` for each knowledge base whose bucket
+enforced conditional writes and `0` for one that did not and was accepted with
+`NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES` ([S3 conditional writes](#s3-conditional-writes)).
+It exists on `s3` only. `min(notedthat_storage_conditional_writes_enforced) == 0` is the alert.
+
 ### Scraping it
 
 ```yaml
@@ -364,6 +371,68 @@ its `last_reconcile` (see [the API's state model](API.md#get-apiv1knowledgebases
 
 Turning watching off with `NOTEDTHAT_FS_WATCH=false` restores the older behaviour, where only
 writes through the API, WebDAV or MCP update the search index.
+
+### S3 conditional writes
+
+Every conditional write — `PUT` with `If-Match` or `If-None-Match: *`, `PATCH`, MCP `edit`,
+`append` and `replace`, WebDAV writes — is only as safe as the object store's enforcement of those
+headers: NotedThat forwards them and adds no lock of its own. Some S3-compatible stores parse them
+and store the object anyway (Garage, SeaweedFS older than 4.09 — see
+[`SPECIFICATIONS.md` §8.1](../SPECIFICATIONS.md)), so a write that should be refused `412`
+answers `200` and one of two concurrent writers is lost without anyone being told.
+
+So at startup, before provisioning, the `s3` backend **asks each bucket** (D70): it writes a
+scratch object at `.notedthat/conditional-write-probe-<id>` and then overwrites it three times,
+because enforcement is a claim in both directions and asking only half of it cannot tell a store
+that compares correctly from one that never matches at all:
+
+| Overwrite | A store that enforces them |
+|---|---|
+| `If-Match` naming the `ETag` the first `PUT` returned | stores it |
+| `If-Match` naming that `ETag` with one hex digit altered | refuses `412` |
+| `If-None-Match: *` over the object that now exists | refuses `412` |
+
+It then deletes the object. A bucket that answers all three that way passes. One that **stores**
+either of the last two:
+
+- **refuses startup** by default, naming the knowledge base, the header it ignored and the setting
+  below;
+- **starts** with `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true`, and says so for as long
+  as the process runs: `S3_CONDITIONAL_WRITES_NOT_ENFORCED` in the log at startup (target
+  `notedthat::storage`), a `conditional_writes` check that is `degraded` with reason
+  `preconditions_not_enforced` in [`/readyz`](#readiness), and
+  `notedthat_storage_conditional_writes_enforced{kb="…"} 0` in the [metrics](#metric-catalogue).
+
+Two more answers are refused the same way, because the surfaces cannot be used as documented on
+either, though neither loses a write in silence:
+
+- **`501 Not Implemented`** to a conditional `PUT` — the store does not implement the header, so
+  every conditional write fails rather than being lost.
+- **`412` to the first overwrite too** — the store refuses even an `If-Match` naming the `ETag` it
+  just returned, so no conditional write can ever succeed. The usual cause is an `ETag`
+  representation mismatch: returned unquoted or weak, compared as strong and quoted, or the
+  reverse. Sending a precondition that *ought* to hold is the only way to see this; a store that
+  answers `412` to everything is otherwise indistinguishable from one that enforces correctly.
+
+**Permissions.** The check needs `s3:PutObject` under `.notedthat/`, which provisioning already
+requires to write the manifest, **and `s3:DeleteObject` under `.notedthat/`, which provisioning
+does not** — it never deletes anything. A deployment whose IAM policy grants `DeleteObject` on
+content keys but not under `.notedthat/` therefore needs a new permission: without it the probe
+still answers correctly, but logs a warning on every start and leaves one
+`.notedthat/conditional-write-probe-<id>` per knowledge base behind. The key is fresh each time,
+so those accumulate. They are private like everything under `.notedthat/` and are never indexed.
+
+**Versioned buckets.** On a bucket with versioning enabled, a plain delete only adds a delete
+marker, so the probe removes each version it wrote by id, and the marker too. Nothing is left
+behind — but if the deletes fail (see permissions above), what remains is one noncurrent version
+per overwrite rather than one object, and a lifecycle rule for noncurrent versions under
+`.notedthat/conditional-write-probe-` is the way to sweep them.
+
+**What it cannot see.** One writer at startup can prove a store ignores the headers; it cannot
+provoke a failure that only happens when two writers race — RustFS's lock timeouts under load, or
+a store that refuses a lone mismatch but has no atomicity under contention. For those,
+[§8.1](../SPECIFICATIONS.md) is still the reference, and choosing the store is still the
+deployer's call.
 
 ### S3 reconciliation
 
@@ -785,6 +854,10 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
 
 - `OIDC issuer discovered` — with the issuer, the JWKS URL and the number of keys, at `info`.
 - `OIDC key set refreshed` / `OIDC key set refresh failed; keeping the previous keys`.
+- `S3_CONDITIONAL_WRITES_NOT_ENFORCED` — a bucket stored a conditional `PUT` it should have
+  refused, and `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true` let the server start anyway;
+  the knowledge base and the ignored header are named. Without the setting the same finding
+  refuses startup. See [S3 conditional writes](#s3-conditional-writes).
 - `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` — a manifest names a `group:` or `user:` rule and no
   issuer is configured; the rule can never match, and the base is named. Not a refusal, because
   manifests live in buckets that outlive one deployment's configuration.
@@ -944,7 +1017,8 @@ backend and Qdrant, each probe bounded by that same interval, and publishes the 
 `/readyz` reads the latest result and never probes on request, so an orchestrator can poll it
 as often as it likes. An outage is reported within twice the interval, recovery within one,
 and neither needs a restart. The body names each check, its backend, a status of `ok`, `degraded` or `unavailable`,
-and — when it is not `ok` — one of `timeout`, `unreachable`, `not_found` or `disconnected`; the
+and — when it is not `ok` — one of `timeout`, `unreachable`, `not_found`,
+`preconditions_not_enforced` or `disconnected`; the
 backend's own error goes to the log (`READINESS_LOST` or `READINESS_DEGRADED`, once per failure,
 and `READINESS_RESTORED`), never to the unauthenticated response. See [`docs/API.md`](API.md#get-readyz) for the body.
 
@@ -959,6 +1033,10 @@ What each probe is:
   It cannot see a read-only remount or a full disk; readiness means reachable, not writable.
 - **`qdrant`** — the `HealthCheck` RPC, through the same channel and API key as every other call.
 - **events** — the broker's connection state, when an events backend is configured.
+- **`conditional_writes`** (`s3` only) — not a probe. It repeats what the startup check found
+  ([S3 conditional writes](#s3-conditional-writes)): `ok`, or `degraded` with
+  `preconditions_not_enforced` for the life of the process when a bucket that does not enforce
+  them was accepted. Never `unavailable`, because every request is still served.
 
 A `not_found` on `storage` means the bucket or directory that existed at startup has since been
 deleted; nothing re-creates it while the process runs, so restart to re-provision. It is

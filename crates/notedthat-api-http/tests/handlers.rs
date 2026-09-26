@@ -192,6 +192,7 @@ async fn readyz_is_unavailable_while_storage_is_unreachable() {
     let (status, json) = readyz(app_reporting(ReadinessSnapshot {
         storage: Check::unready("s3", Unready::Unreachable),
         search: Check::ok("qdrant"),
+        conditional_writes: None,
     }))
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -208,6 +209,7 @@ async fn readyz_is_unavailable_while_search_times_out() {
     let (status, json) = readyz(app_reporting(ReadinessSnapshot {
         storage: Check::ok("fs"),
         search: Check::unready("qdrant", Unready::Timeout),
+        conditional_writes: None,
     }))
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -222,6 +224,7 @@ async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
     let (status, json) = readyz(app_reporting(ReadinessSnapshot {
         storage: Check::unready("fs", Unready::NotFound),
         search: Check::ok("qdrant"),
+        conditional_writes: None,
     }))
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -236,6 +239,41 @@ async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
 }
 
 #[tokio::test]
+async fn readyz_is_degraded_on_a_bucket_that_does_not_enforce_conditional_writes() {
+    // Found once at startup and accepted by the operator (D70): every request is still
+    // served, so the replica stays ready, but the body says so at the top.
+    let (status, json) = readyz(app_reporting(
+        ReadinessSnapshot::ok("s3", "qdrant")
+            .with_conditional_writes(Check::unready("s3", Unready::PreconditionsNotEnforced)),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["status"], "degraded", "{json}");
+    assert_eq!(
+        json["checks"]["conditional_writes"],
+        serde_json::json!({
+            "backend": "s3",
+            "status": "degraded",
+            "reason": "preconditions_not_enforced",
+        })
+    );
+}
+
+#[tokio::test]
+async fn readyz_reports_enforced_conditional_writes_as_ok() {
+    let (status, json) = readyz(app_reporting(
+        ReadinessSnapshot::ok("s3", "qdrant").with_conditional_writes(Check::ok("s3")),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(
+        json["checks"]["conditional_writes"],
+        serde_json::json!({ "backend": "s3", "status": "ok" })
+    );
+}
+
+#[tokio::test]
 async fn readyz_says_nothing_about_a_failure_beyond_its_reason() {
     // The route is unauthenticated: a check carries a fixed reason and never
     // the backend's own message, which could quote an endpoint or a credential.
@@ -245,6 +283,7 @@ async fn readyz_says_nothing_about_a_failure_beyond_its_reason() {
         receiver_for(ReadinessSnapshot {
             storage: Check::unready("s3", Unready::NotFound),
             search: Check::unready("qdrant", Unready::Unreachable),
+            conditional_writes: None,
         }),
     ))
     .await;
@@ -257,8 +296,14 @@ async fn readyz_says_nothing_about_a_failure_beyond_its_reason() {
             .collect();
         assert_eq!(keys, ["backend", "reason", "status"], "{name}");
         assert!(
-            ["timeout", "unreachable", "not_found", "disconnected"]
-                .contains(&check["reason"].as_str().unwrap()),
+            [
+                "timeout",
+                "unreachable",
+                "not_found",
+                "preconditions_not_enforced",
+                "disconnected"
+            ]
+            .contains(&check["reason"].as_str().unwrap()),
             "{name}: {check}"
         );
     }

@@ -23,5 +23,5 @@
 pub mod config;
 pub mod storage;
 
-pub use config::{S3_ENV_VARS, S3Config, S3Settings};
-pub use storage::S3Storage;
+pub use config::{S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV, S3_ENV_VARS, S3Config, S3Settings};
+pub use storage::{ConditionalWrites, PROBE_KEY_PREFIX, S3Storage};

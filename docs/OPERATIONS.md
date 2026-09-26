@@ -483,8 +483,24 @@ committing to the deployment.
   [`SPECIFICATIONS.md` §8.1](../SPECIFICATIONS.md) that is **Garage** (always — structurally
   impossible without a consensus algorithm, and a documented design choice),
   **SeaweedFS < 4.09**, and **RustFS 1.0.0-beta.8** under lock-timeout contention. `PATCH`
-  inherits the same exposure, because its final write is a conditional `PUT`. There is no startup
-  probe for this; verifying a backend is the deployer's gate.
+  inherits the same exposure, because its final write is a conditional `PUT`.
+
+  Whether the server checks this depends on your release. **Up to and including v0.11.0 it does
+  not**, and verifying a backend is the deployer's gate. **From the release that carries
+  [#190](https://github.com/NotedThat/NotedThat/issues/190) it does** (D70) — that release is the
+  thing to check for, not a version number, so this does not go stale again: at startup each
+  bucket is asked whether it honours a `PUT` whose `If-Match` holds and refuses one whose
+  `If-Match` or `If-None-Match` does not, and one that stores it anyway **refuses startup** — so
+  upgrading a deployment on such a backend
+  stops it until you either move to a backend that enforces them or set
+  `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true` to accept the risk. With that setting
+  the finding stays visible: `S3_CONDITIONAL_WRITES_NOT_ENFORCED` in the log, `/readyz`
+  `degraded` (`preconditions_not_enforced`), and
+  `notedthat_storage_conditional_writes_enforced{kb} 0`, which is the thing to alert on
+  ([S3 conditional writes](CONFIGURATION.md#s3-conditional-writes)). A single writer at startup
+  cannot provoke a failure that only happens under contention, so RustFS's lock timeouts, and any
+  store that refuses a lone mismatch but has no atomicity, still pass the check — §8.1 remains the
+  reference for those.
 - **MCP sessions.** A process holds a fixed maximum of sessions and one caller can hold all of
   them; the bound is per process, and a budget per principal is a follow-up. Every anonymous
   caller is one owner, so they share each other's sessions by construction. Through v0.10.0 a

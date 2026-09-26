@@ -3,7 +3,8 @@
 //! `/readyz` covers the storage backend, the vector store and a configured
 //! event broker (D39, D55, D64). It does not cover the `fs` watcher (a lost
 //! watch is logged, D50), the embedder, or how fresh the index is — that is
-//! per knowledge base, at `GET /api/v1/knowledgebases/{kb}/index` (D62).
+//! per knowledge base, at `GET /api/v1/knowledgebases/{kb}/index` (D62). On the
+//! `s3` backend it also repeats what startup found about conditional writes (D70).
 
 use axum::Json;
 use axum::extract::State;
@@ -28,6 +29,12 @@ pub(super) async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     let mut checks = serde_json::Map::new();
     checks.insert("storage".to_string(), snapshot.storage.to_json());
     checks.insert("search".to_string(), snapshot.search.to_json());
+    if let Some(conditional_writes) = &snapshot.conditional_writes {
+        checks.insert(
+            "conditional_writes".to_string(),
+            conditional_writes.to_json(),
+        );
+    }
     if let Some(events) = &state.events {
         let connected = events.ready();
         ready &= connected;

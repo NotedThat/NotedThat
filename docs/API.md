@@ -488,6 +488,12 @@ What it covers:
 - **`storage`** — the selected backend (`s3` or `fs`) is reachable, probed through the bucket
   (or directory) of the knowledge base whose slug sorts first.
 - **`search`** — Qdrant answers its health check.
+- **`conditional_writes`** — present only on the `s3` backend. Not probed: it repeats what the
+  startup check found about whether each bucket enforces `If-Match` and `If-None-Match` on a
+  `PUT` (D70). A bucket that does not refuses startup, so this is `ok` unless the operator
+  accepted one with `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES`, in which case it is
+  `degraded` (`preconditions_not_enforced`) for the life of the process — concurrent writes on
+  that deployment can be silently lost. It names no knowledge base; the log and the metrics do.
 - **`events`** — present only when an event backend is configured
   (`NOTEDTHAT_EVENTS_BACKEND`); its connection is up.
 
@@ -503,10 +509,12 @@ when readiness says `ok` but search looks stale, look there.
 Each check carries the backend's selector value, a `status` of `ok`, `degraded` or
 `unavailable`, and, when it is not `ok`, one of a fixed set of reasons: `timeout` (the probe
 did not answer in time), `unreachable` (it answered with an error or could not be reached),
-`not_found` (the probed bucket or directory is gone), `disconnected` (events only). Only
-`timeout`, `unreachable` and `disconnected` make the replica unready; `not_found` is `degraded`:
-the backend answered, so it is up and every other knowledge base keeps serving, and the
-response stays `200` while telling the operator what was deleted. The backend's own error message is never returned — the route is unauthenticated —
+`not_found` (the probed bucket or directory is gone), `preconditions_not_enforced`
+(`conditional_writes` only), `disconnected` (events only). Only `timeout`, `unreachable` and
+`disconnected` make the replica unready; `not_found` is `degraded`: the backend answered, so it
+is up and every other knowledge base keeps serving, and the response stays `200` while telling
+the operator what was deleted. `preconditions_not_enforced` is `degraded` for the same reason:
+every request is served, and the body says what the deployment accepted. The backend's own error message is never returned — the route is unauthenticated —
 but is logged once when a check fails (`READINESS_LOST`) and once when it recovers
 (`READINESS_RESTORED`).
 
@@ -517,7 +525,7 @@ but is logged once when a check fails (`READINESS_LOST`) and once when it recove
 | Status | Body |
 |--------|------|
 | 200 OK | `{"status": "ok", "checks": {…}}` — every check `ok` |
-| 200 OK | `{"status": "degraded", "checks": {…}}` — every backend answered, but a check is `degraded` (its bucket or directory is gone); the replica keeps serving |
+| 200 OK | `{"status": "degraded", "checks": {…}}` — every backend answered, but a check is `degraded` (its bucket or directory is gone, or conditional writes are not enforced); the replica keeps serving |
 | 503 Service Unavailable | `{"status": "unavailable", "checks": {…}}` — at least one check `unavailable` |
 
 **Example:**

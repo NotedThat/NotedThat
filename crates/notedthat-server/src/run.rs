@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+mod conditional_writes;
 mod events;
 mod fs_watch;
 mod mcp_http;
@@ -74,11 +75,15 @@ pub use backends::Backends;
 /// so a failure means bad configuration rather than an unreachable service. The
 /// filesystem backend's root is proven usable and claimed earlier, by
 /// [`open_storage_root`], so that stays true here.
+///
+/// On `s3` the concrete [`S3Storage`] comes back beside the backends as well, for the
+/// startup check only it can run (D70); `Backends` holds trait objects alone.
 fn backends_from_config(
     config: &Config,
     root: Option<&RootLock>,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
-) -> anyhow::Result<backends::Backends> {
+) -> anyhow::Result<(backends::Backends, Option<Arc<S3Storage>>)> {
+    let mut s3_storage = None;
     let storage: Arc<dyn notedthat_core::Storage> = match &config.storage {
         StorageConfig::S3(s3) => {
             info!(
@@ -87,10 +92,12 @@ fn backends_from_config(
                 path_style = s3.force_path_style,
                 "storage backend selected"
             );
-            Arc::new(S3Storage::new(
+            let s3 = Arc::new(S3Storage::new(
                 s3.build_client(),
                 config.tenant_slug.clone(),
-            ))
+            ));
+            s3_storage = Some(s3.clone());
+            s3
         }
         StorageConfig::Fs(fs) => {
             let root = root.context(
@@ -135,12 +142,15 @@ fn backends_from_config(
         OpenAiCompatibleEmbedder::new(embedder_config).context("failed to build embedder")?,
     );
 
-    Ok(backends::Backends {
-        storage,
-        store,
-        embedder,
-        events,
-    })
+    Ok((
+        backends::Backends {
+            storage,
+            store,
+            embedder,
+            events,
+        },
+        s3_storage,
+    ))
 }
 
 /// Build infrastructure components (indexer, provisioning, app state) over `backends`.
@@ -175,6 +185,7 @@ fn readiness_poller(
     kb_list: &[notedthat_core::KbSlug],
     storage: &Arc<dyn notedthat_core::Storage>,
     store: &Arc<dyn VectorStore>,
+    conditional_writes: Option<notedthat_api_http::readiness::Check>,
 ) -> anyhow::Result<(
     readiness::ReadinessPoller,
     notedthat_api_http::readiness::ReadinessReceiver,
@@ -191,6 +202,7 @@ fn readiness_poller(
         witness,
         config.storage.kind().as_str(),
         Duration::from_millis(config.ready_probe_interval_ms),
+        conditional_writes,
     ))
 }
 
@@ -237,6 +249,7 @@ fn start_change_detection(
 async fn build_infrastructure(
     config: Config,
     backends: backends::Backends,
+    s3_storage: Option<Arc<S3Storage>>,
 ) -> anyhow::Result<Infrastructure> {
     // Metered once, here, before anything clones them (D69).
     let metered::MeteredBackends {
@@ -255,6 +268,25 @@ async fn build_infrastructure(
     let declared_kbs = Arc::new(config.kbs.clone());
 
     let kb_list: Vec<_> = config.kbs.values().cloned().collect();
+
+    // Before provisioning, so a backend that would lose concurrent writes is refused
+    // before anything else is touched (D70). Only `run` has a concrete `S3Storage`;
+    // `run_with`'s substitutes have nothing to ask.
+    let conditional_writes = match (&config.storage, &s3_storage) {
+        // Boxed: its SDK futures would otherwise be carried inline in every caller's
+        // startup future, which already sits at clippy's `large_futures` limit.
+        (StorageConfig::S3(s3), Some(s3_storage)) => Some(
+            Box::pin(conditional_writes::check(
+                s3_storage,
+                &config.tenant_slug,
+                &kb_list,
+                s3.allow_unenforced_conditional_writes,
+            ))
+            .await?,
+        ),
+        _ => None,
+    };
+
     let provisioner = QdrantProvisioner::new(store.clone());
     let snapshot = provision_kbs(
         storage.as_ref(),
@@ -271,7 +303,8 @@ async fn build_infrastructure(
 
     let authenticator = build_authenticator(&config, &access_policies).await?;
 
-    let (readiness, readiness_rx) = readiness_poller(&config, &kb_list, &storage, &store)?;
+    let (readiness, readiness_rx) =
+        readiness_poller(&config, &kb_list, &storage, &store, conditional_writes)?;
 
     let dav_state = WebDavState {
         authenticator: authenticator.clone(),
@@ -438,8 +471,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     // reached refuses startup rather than running without its log (D39).
     let events = events::connect(&config.events).await?;
 
-    let backends = backends_from_config(&config, storage_root.as_ref(), events)?;
-    serve(config, backends).await
+    let (backends, s3_storage) = backends_from_config(&config, storage_root.as_ref(), events)?;
+    serve(config, backends, s3_storage).await
 }
 
 /// Prove the filesystem storage root is usable and claim it for this process.
@@ -490,14 +523,18 @@ pub async fn run_with(config: Config, backends: Backends) -> anyhow::Result<()> 
         .await
         .context("failed to validate NOTEDTHAT_UPLOAD_TMP_DIR")?;
 
-    serve(config, backends).await
+    serve(config, backends, None).await
 }
 
 /// Shared startup body behind [`run`] and `run_with`.
 ///
 /// Both callers validate `config.staging` before constructing or accepting
 /// backends, so this body may assume it is already valid.
-async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<()> {
+async fn serve(
+    config: Config,
+    backends: backends::Backends,
+    s3_storage: Option<Arc<S3Storage>>,
+) -> anyhow::Result<()> {
     // Before anything is built: provisioning's storage calls and the indexer's
     // health record are measurements, and the facade discards them silently
     // when no recorder is installed yet (D69).
@@ -511,7 +548,7 @@ async fn serve(config: Config, backends: backends::Backends) -> anyhow::Result<(
         readiness,
         reconciler,
         indexer_tx,
-    } = build_infrastructure(config.clone(), backends).await?;
+    } = build_infrastructure(config.clone(), backends, s3_storage).await?;
     let shutdown_token = CancellationToken::new();
     let readiness_handle = tokio::spawn(readiness.run(shutdown_token.child_token()));
     // Sampled on its own token so the sender it holds is dropped the moment the
