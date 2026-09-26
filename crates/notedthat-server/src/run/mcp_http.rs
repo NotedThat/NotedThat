@@ -22,6 +22,26 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// The client every tool call reaches the API with, over loopback on this
+/// same listener.
+///
+/// Its own function because the one thing worth checking about it — that its
+/// deadline is *derived* from `NOTEDTHAT_REQUEST_TIMEOUT_MS` rather than fixed
+/// — is invisible once it has been folded into a `Router`. A fixed deadline
+/// races the API's `504`, and the client's clock starts first, so the caller
+/// gets a transport error where D70 and `docs/API.md` promise a
+/// `request_timeout`; a raised server timeout would not reach MCP at all.
+pub(crate) fn tool_call_client(
+    config: &Config,
+    internal_api_url: &str,
+) -> anyhow::Result<NotedThatClient> {
+    Ok(NotedThatClient::new(internal_api_url, &config.api_token)
+        .context("failed to build MCP HTTP API client")?
+        .with_api_timeout(config.request_bounds.request_timeout)
+        .context("failed to build MCP HTTP API client")?
+        .with_max_read_bytes(config.mcp_max_read_bytes))
+}
+
 pub(crate) fn build_router(
     config: &Config,
     authenticator: Arc<Authenticator>,
@@ -31,15 +51,7 @@ pub(crate) fn build_router(
     events_enabled: bool,
     bounds: &RequestBounds,
 ) -> anyhow::Result<axum::Router> {
-    let client = NotedThatClient::new(internal_api_url, &config.api_token)
-        .context("failed to build MCP HTTP API client")?
-        // Derived from the API's own deadline, not fixed: a tool call reaches
-        // the API on this same listener, so the API's `504` is what should
-        // answer a stalled one — and it only arrives if this client is still
-        // waiting for it (D70).
-        .with_api_timeout(config.request_bounds.request_timeout)
-        .context("failed to build MCP HTTP API client")?
-        .with_max_read_bytes(config.mcp_max_read_bytes);
+    let client = tool_call_client(config, internal_api_url)?;
     let mcp_config = McpHttpServiceConfig::new(
         config.mcp_http_allowed_hosts.clone(),
         config.mcp_http_allowed_origins.clone(),

@@ -47,17 +47,32 @@ pub struct NotedThatClient {
     pub(crate) token: Option<String>,
     /// Most bytes one object read may fetch; see [`Self::read_body_bounded`].
     pub(crate) max_read_bytes: u64,
+    /// The deadline [`Self::http`] was built with; see [`Self::api_timeout`].
+    api_timeout: Duration,
 }
 
-/// The tool-call client's deadline when nothing overrides it, matching the
-/// default `NOTEDTHAT_REQUEST_TIMEOUT_MS` plus [`API_TIMEOUT_MARGIN`].
-const DEFAULT_API_TIMEOUT: Duration = Duration::from_secs(35);
+/// The server request timeout this client assumes when nothing tells it one:
+/// `NOTEDTHAT_REQUEST_TIMEOUT_MS`'s own default. A client built by
+/// [`NotedThatClient::new`] alone — every test constructor — then keeps the
+/// same relationship to it that [`NotedThatClient::with_api_timeout`] gives a
+/// configured one.
+const DEFAULT_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The tool-call client's deadline when nothing overrides it.
+const DEFAULT_API_TIMEOUT: Duration = api_timeout_from(DEFAULT_SERVER_REQUEST_TIMEOUT);
 
 /// How far the tool-call client's deadline sits beyond the server's, so the
 /// API's own `504` is what answers a stalled call rather than a transport
 /// error from this side. Covers connect, the request head and auth, all of
 /// which run before the server's clock starts.
 const API_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
+/// The tool-call deadline for a server whose request timeout is
+/// `request_timeout`. Always longer than it: that ordering is the whole point,
+/// and `the_tool_call_deadline_always_outlasts_the_server_timeout` pins it.
+const fn api_timeout_from(request_timeout: Duration) -> Duration {
+    request_timeout.saturating_add(API_TIMEOUT_MARGIN)
+}
 
 impl NotedThatClient {
     /// Create a new client.
@@ -98,6 +113,7 @@ impl NotedThatClient {
             base_url: parsed,
             token: Some(token_trimmed.to_string()),
             max_read_bytes: DEFAULT_MAX_READ_BYTES,
+            api_timeout: DEFAULT_API_TIMEOUT,
         })
     }
 
@@ -118,11 +134,22 @@ impl NotedThatClient {
     ///
     /// Returns [`ConfigError::ClientBuild`] if the HTTP client cannot be built.
     pub fn with_api_timeout(mut self, request_timeout: Duration) -> Result<Self, ConfigError> {
+        self.api_timeout = api_timeout_from(request_timeout);
         self.http = reqwest::Client::builder()
-            .timeout(request_timeout + API_TIMEOUT_MARGIN)
+            .timeout(self.api_timeout)
             .build()
             .map_err(ConfigError::ClientBuild)?;
         Ok(self)
+    }
+
+    /// The deadline one tool call's API request is given.
+    ///
+    /// Exposed because it is a derived value with a contract — it must outlast
+    /// the server request timeout it came from — and the caller that derives
+    /// it, `run::mcp_http`, is the only place that can be checked.
+    #[must_use]
+    pub fn api_timeout(&self) -> Duration {
+        self.api_timeout
     }
 
     /// Cap what one object read may fetch from the API, in bytes.
@@ -148,6 +175,7 @@ impl NotedThatClient {
             base_url: self.base_url.clone(),
             token: Some(token.to_string()),
             max_read_bytes: self.max_read_bytes,
+            api_timeout: self.api_timeout,
         }
     }
 
@@ -165,6 +193,7 @@ impl NotedThatClient {
             base_url: self.base_url.clone(),
             token: None,
             max_read_bytes: self.max_read_bytes,
+            api_timeout: self.api_timeout,
         }
     }
 
@@ -352,6 +381,60 @@ pub const SOURCE_VALUE: &str = "mcp";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one thing the derivation must guarantee: whatever the server's
+    /// request timeout is, this client is still waiting when the server's own
+    /// `504` arrives. Equal deadlines are not enough — the client's clock
+    /// starts before connect, the head and auth, the server's when `bound`
+    /// runs — so the margin is what makes a stalled tool call a
+    /// `request_timeout` rather than a transport error (D70).
+    #[test]
+    fn the_tool_call_deadline_always_outlasts_the_server_timeout() {
+        for request_timeout in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            DEFAULT_SERVER_REQUEST_TIMEOUT,
+            Duration::from_secs(600),
+            Duration::MAX,
+        ] {
+            assert!(
+                api_timeout_from(request_timeout) >= request_timeout,
+                "a {request_timeout:?} server timeout derives a shorter deadline"
+            );
+        }
+        // Saturating at `Duration::MAX` is the one case where the two are
+        // equal; every reachable setting has room for the margin.
+        assert!(DEFAULT_API_TIMEOUT > DEFAULT_SERVER_REQUEST_TIMEOUT);
+        assert!(api_timeout_from(Duration::from_secs(600)) > Duration::from_secs(600));
+    }
+
+    /// A client built without [`NotedThatClient::with_api_timeout`] — every
+    /// test constructor, and anything that forgets — is still no shorter than
+    /// a server left on its default.
+    #[test]
+    fn the_default_client_deadline_outlasts_the_default_server_timeout() {
+        let client = NotedThatClient::new("http://localhost:8080", "tok").unwrap();
+        assert_eq!(client.api_timeout(), DEFAULT_API_TIMEOUT);
+        assert!(client.api_timeout() > DEFAULT_SERVER_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn with_api_timeout_derives_from_the_server_timeout_it_is_given() {
+        let client = NotedThatClient::new("http://localhost:8080", "tok")
+            .unwrap()
+            .with_api_timeout(Duration::from_secs(90))
+            .unwrap();
+        assert_eq!(
+            client.api_timeout(),
+            api_timeout_from(Duration::from_secs(90))
+        );
+        // And it survives the per-caller clones the MCP service makes.
+        assert_eq!(
+            client.with_token("other").api_timeout(),
+            client.api_timeout()
+        );
+        assert_eq!(client.anonymous().api_timeout(), client.api_timeout());
+    }
 
     #[test]
     fn url_normalization_trailing_slash_stripped() {

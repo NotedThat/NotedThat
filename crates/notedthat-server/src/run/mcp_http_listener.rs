@@ -1,4 +1,4 @@
-use super::mcp_http::{build_router, internal_http_api_url};
+use super::mcp_http::{build_router, internal_http_api_url, tool_call_client};
 use crate::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use anyhow::Context as _;
 use axum::{Router, routing::get};
@@ -117,6 +117,38 @@ fn internal_http_api_url_uses_actual_bound_socket() {
     assert_eq!(internal_http_api_url(wildcard_v4), "http://127.0.0.1:49123");
     assert_eq!(internal_http_api_url(wildcard_v6), "http://[::1]:49124");
     assert_eq!(internal_http_api_url(concrete), "http://192.0.2.10:49125");
+}
+
+/// The tool-call client's deadline follows `NOTEDTHAT_REQUEST_TIMEOUT_MS`.
+///
+/// The E2E case (`a_stalled_tool_call_is_answered_by_the_servers_504`) cannot
+/// see this: it turns the server timeout *down*, and a client left on its
+/// built-in default would outlast that one too and still pass. What it cannot
+/// survive is the timeout being raised — an operator giving a slow embedder
+/// 90 s would find tool calls still cut off at the fixed default — so the
+/// check is that two configurations derive two different deadlines, each
+/// outlasting its own.
+#[test]
+fn the_tool_call_clients_deadline_follows_the_configured_request_timeout() {
+    let derived = |request_timeout| {
+        let mut config = test_config();
+        config.request_bounds.request_timeout = request_timeout;
+        tool_call_client(&config, "http://127.0.0.1:49126")
+            .expect("the tool-call client builds")
+            .api_timeout()
+    };
+
+    let long = Duration::from_secs(90);
+    let short = Duration::from_secs(5);
+    assert!(
+        derived(long) > long,
+        "a 90 s request timeout must leave the client waiting past the server's 504"
+    );
+    assert!(derived(short) > short);
+    assert!(
+        derived(long) > derived(short),
+        "the deadline is fixed, not derived from the configured request timeout"
+    );
 }
 
 /// `initialize` a session and hand back the `Mcp-Session-Id` header the

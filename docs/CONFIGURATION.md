@@ -129,7 +129,10 @@ a permit first. Rate limiting at the proxy is what covers those (see
 [What's not configurable](#whats-not-configurable-in-m2)).
 `POST /mcp` is bounded like any other request; an MCP tool call is also bounded where it does its
 work, since it reaches the API on this same listener, and a timeout there reaches the client as a
-`request_timeout` tool error.
+`request_timeout` tool error. The deadline MCP gives that loopback call is derived from
+`NOTEDTHAT_REQUEST_TIMEOUT_MS` — it plus a small margin, since MCP's clock starts before connect,
+the head and auth while the server's starts later — so raising the setting for a slow embedder
+raises it for tool calls too, and the API's `504` is what answers rather than a transport error.
 
 **Watching them:** with [metrics](#metrics) on, `notedthat_http_requests_refused_total` counts
 refusals by `surface`, `route` and `reason` (`timeout` or `in_flight`), and

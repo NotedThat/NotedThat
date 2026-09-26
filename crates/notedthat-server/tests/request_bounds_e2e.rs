@@ -311,6 +311,12 @@ async fn assert_anonymous_propfind_is_401(server: &PatchServer) {
 
 /// Every refusal the stuck-search test provoked is in the exposition, by
 /// route and reason, and so is the connection closed for its half-sent head.
+///
+/// Counted at least once, never exactly once: the recorder is the *process's*,
+/// installed globally and shared by every server this binary starts, so
+/// another test running alongside can raise any of these. The label set is
+/// what is being pinned — that a refusal is attributed to its route and its
+/// reason — not the arithmetic.
 async fn assert_refusals_counted(metrics_addr: std::net::SocketAddr) {
     let exposition = reqwest::get(format!("http://{metrics_addr}/metrics"))
         .await
@@ -319,24 +325,30 @@ async fn assert_refusals_counted(metrics_addr: std::net::SocketAddr) {
         .await
         .expect("exposition");
     for expected in [
-        r#"notedthat_http_requests_refused_total{surface="api",route="/api/v1/knowledgebases",reason="in_flight"} 1"#,
-        r#"notedthat_http_requests_refused_total{surface="webdav",route="/webdav/{*path}",reason="in_flight"} 1"#,
-        r#"notedthat_http_requests_refused_total{surface="api",route="/api/v1/knowledgebases/{kb_slug}/search",reason="timeout"} 1"#,
+        r#"notedthat_http_requests_refused_total{surface="api",route="/api/v1/knowledgebases",reason="in_flight"}"#,
+        r#"notedthat_http_requests_refused_total{surface="webdav",route="/webdav/{*path}",reason="in_flight"}"#,
+        r#"notedthat_http_requests_refused_total{surface="api",route="/api/v1/knowledgebases/{kb_slug}/search",reason="timeout"}"#,
     ] {
         assert!(
-            exposition.lines().any(|line| line == expected),
+            counter(&exposition, expected) >= 1.0,
             "missing {expected} in:\n{exposition}"
         );
     }
-    // Another test in this binary may have closed one too: the recorder is
-    // the process's.
-    let closed: f64 = exposition
+    assert!(
+        counter(&exposition, "notedthat_http_header_read_timeouts_total") >= 1.0,
+        "{exposition}"
+    );
+}
+
+/// The value of the counter whose name and labels are exactly `series`, or
+/// zero when the exposition does not carry it.
+fn counter(exposition: &str, series: &str) -> f64 {
+    exposition
         .lines()
-        .find_map(|line| line.strip_prefix("notedthat_http_header_read_timeouts_total "))
-        .expect("the header-read timeout counter")
-        .parse()
-        .expect("a count");
-    assert!(closed >= 1.0, "{closed}");
+        .find_map(|line| line.strip_prefix(series))
+        .map_or(0.0, |rest| {
+            rest.trim().parse().expect("a counter value follows")
+        })
 }
 
 /// A client that opens a connection and never finishes its request head is
@@ -466,6 +478,72 @@ async fn an_upload_that_stalls_mid_body_is_refused() {
     assert!(
         !answer.contains("201"),
         "a body that never finished must not be stored: {answer}"
+    );
+}
+
+/// A tool call whose search never answers must come back as the
+/// `request_timeout` tool error D70 and `docs/API.md` promise — which only
+/// happens if the API's own `504` reaches the MCP client before that client
+/// gives up on its own.
+///
+/// The two deadlines are the whole point. The MCP tool-call client's clock
+/// starts before connect, before the head and before auth; the server's starts
+/// when `bound` runs. So a client deadline merely *equal* to the server's wins
+/// the race, the tool reports `transport error: ... operation timed out`, and
+/// the documented error is unreachable. Give the client back a fixed deadline
+/// no longer than the server's and this test fails.
+#[tokio::test]
+async fn a_stalled_tool_call_is_answered_by_the_servers_504() {
+    // Given: a server whose request timeout is a half-second, and an embedder
+    // that never answers, so a search can only end at that deadline.
+    let timeout = Duration::from_millis(500);
+    let started = Arc::new(Notify::new());
+    let backends = notedthat_server::run::Backends {
+        embedder: Arc::new(StalledEmbedder {
+            inner: StubEmbedder::new(4),
+            started: Arc::clone(&started),
+        }),
+        ..in_memory_backends()
+    };
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, backends, move |config| {
+        config.request_bounds.request_timeout = timeout;
+    })
+    .await;
+
+    // When: the `search` tool is called over MCP.
+    let answer = server
+        .mcp
+        .call_tool(
+            1,
+            "search",
+            &serde_json::json!({ "kb": [server.kb.clone()], "query": "anything" }),
+        )
+        .await;
+
+    // Then: the call failed with the API's own refusal, named as D70 names it
+    // and worded by `bound` — not by `reqwest`, which would report a transport
+    // error and never the code a client is told to expect.
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with("request_timeout:"),
+        "a stalled tool call should be a request_timeout: {answer}"
+    );
+    assert!(
+        message.contains(&format!("within {} ms", timeout.as_millis())),
+        "the deadline that answered should be the server's, not the client's: {answer}"
+    );
+    assert!(
+        message.contains(&format!("knowledge base {:?}", server.kb)),
+        "a per-KB failure names its knowledge base: {answer}"
+    );
+
+    // The embedder really was reached: the search stalled where it was meant
+    // to, rather than the tool failing earlier for some other reason.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), started.notified())
+            .await
+            .is_ok(),
+        "the search should have reached the stalled embedder"
     );
 }
 
