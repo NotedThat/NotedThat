@@ -454,10 +454,59 @@ caller can hold every slot.
 
 Send session ids over TLS and keep them out of logs on any release.
 
+### A read-only root filesystem
+
+The image runs under `--read-only`. Exactly two paths need to be writable, and both are mounts:
+
+| Path | Why | When |
+|---|---|---|
+| `NOTEDTHAT_FS_ROOT` (no default — the image creates `/var/lib/notedthat` for it, but the variable must be set) | Objects, `.notedthat.lock`, and the `.notedthat-meta/` shadow tree | `fs` backend only — an S3-backed deployment does not need it |
+| `NOTEDTHAT_UPLOAD_TMP_DIR` | WebDAV upload spooling and indexer snapshots | Always. Under `--read-only` the default (the platform temp dir) is not writable, so this becomes **mandatory** |
+
+```sh
+docker volume create notedthat-data
+docker volume create notedthat-staging
+
+docker run --rm --read-only \
+  --stop-timeout 45 \
+  -p 8080:8080 \
+  -v notedthat-data:/var/lib/notedthat \
+  -v notedthat-staging:/var/lib/notedthat-staging \
+  -e NOTEDTHAT_STORAGE_BACKEND=fs \
+  -e NOTEDTHAT_FS_ROOT=/var/lib/notedthat \
+  -e NOTEDTHAT_UPLOAD_TMP_DIR=/var/lib/notedthat-staging \
+  --env-file .env \
+  ghcr.io/notedthat/server:<version>
+```
+
+Both mount points exist in the image owned by uid 10001, which is what makes this work: Docker seeds a
+fresh named volume with the image's ownership **only when the path already exists in the image**. Mount a
+volume at a path the image lacks and it arrives `root:root`, uid 10001 cannot write, and startup refuses.
+
+Nothing else in the image is written at runtime. The server reads no home or config directory — which is
+why `--home-dir /nonexistent` has never mattered — and the `HEALTHCHECK`'s `curl` writes nothing.
+
+**Do not reach for `--tmpfs` here.** It is the reflex for a read-only rootfs and it will start the server,
+but a `tmpfs` staging directory is host RAM, and
+[the sizing rule](CONFIGURATION.md#upload-and-index-staging-directory) wants 5 GiB for every concurrent
+maximum-size upload. A read-only root filesystem is a production hardening posture, which is precisely
+where turning an upload burst into an OOM kill matters most. Use disk-backed mounts, as above; `--tmpfs`
+is defensible for a smoke test and nowhere else.
+
+The failure mode is loud, which is the useful part. Run under `--read-only` without setting
+`NOTEDTHAT_UPLOAD_TMP_DIR` and startup refuses before any listener binds:
+
+```
+staging configuration error: staging directory is unusable: Read-only file system (os error 30)
+```
+
+Nothing degrades silently, so a misconfigured hardened deployment cannot look healthy.
+
 ### The rest
 
 Run the published image rather than a build of your own where you can: it runs as a non-root user,
-publishes one port, and is cosign-signed with SLSA L2 provenance. Keep Qdrant and the object store
+runs under a read-only root filesystem with two writable mounts (above), publishes one port, is built
+for `linux/amd64` and `linux/arm64` under one tag, and is cosign-signed with SLSA L2 provenance. Keep Qdrant and the object store
 on a private network — Qdrant carries your document vectors, and the bundled one is
 unauthenticated. `/healthz` and `/readyz` are unauthenticated by design and deliberately say
 nothing about the backends beyond a status and a reason; the backend's own error, which can quote

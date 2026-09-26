@@ -9,6 +9,12 @@
 #
 # The reusable-workflow contract keeps both call sites in sync: one Dockerfile,
 # one build recipe, one place to change platforms or labels.
+#
+# Shape: a per-architecture `build` matrix on NATIVE runners, then a `merge` job
+# that assembles one manifest list and signs it. Deliberately NOT QEMU — an
+# emulated aarch64 codegen of this dependency tree is measured in tens of
+# minutes, where a native arm runner is comparable to the amd64 one and is free
+# for public repositories.
 name: Docker
 
 on:
@@ -31,21 +37,48 @@ on:
         type: string
         default: ""
 
+env:
+  IMAGE: ghcr.io/notedthat/server
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # A backstop against a runaway runner, NOT a budget tripwire. Read the note
+    # on `integration-test` in ci.yml first: a timeout CANCELS the job, and a
+    # cancelled dependency silently SKIPS release-plz — no release, and nothing
+    # reported as broken. So this is set far above any plausible cold build. If
+    # a real budget is ever wanted here it has to be a step that FAILS on
+    # elapsed time, not a job timeout.
+    timeout-minutes: 45
+    strategy:
+      # Not fail-fast: "amd64 fine, arm64 broken" is exactly the information
+      # this matrix exists to produce, and cancelling the sibling throws it away.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            # Free for public repositories. If this label is ever unavailable or
+            # the arm pool is saturated the job QUEUES rather than failing, and
+            # eventually hits timeout-minutes above — which on a push to main is
+            # a release outage, not infrastructure noise. Read a cancelled arm
+            # leg that way.
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
-      id-token: write
-      actions: write
-      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      # No setup-qemu-action, on purpose — see the header. Each leg builds its
+      # own architecture natively.
       - uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
@@ -56,10 +89,269 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image tags and labels
+      # The image version, resolved without docker/metadata-action. Tags belong
+      # to the manifest list, not to a per-arch child, so metadata-action now
+      # lives in exactly one place: the merge job. The only thing this job
+      # needed from it was the version string for the build arg.
+      #
+      # This is a stricter gate than the old empty-version check: it rejects a
+      # tag_name that is not a release tag BEFORE a single layer is built,
+      # rather than after.
+      - name: Resolve the image version
+        id: version
+        env:
+          PUSH: ${{ inputs.push }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          # `ci-validation` on push=false runs so an image that leaks into
+          # someone's local cache is visibly not a release.
+          if [ "${PUSH}" != "true" ]; then
+            echo "version=ci-validation" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${TAG_NAME}" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::tag_name='${TAG_NAME}' is not a vX.Y.Z release tag; refusing to build a release image with no version" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Exporter depends on the mode:
+      #   push=true  — push an UNTAGGED, content-addressed manifest.
+      #                `push-by-digest` is the only way two independently built
+      #                architectures end up in one tagged manifest list: if each
+      #                leg pushed `:1.2.3` itself, the second would overwrite the
+      #                first and the tag would silently be single-arch.
+      #   push=false — load into this runner's own daemon and nothing else. No
+      #                registry, no credentials, fork-PR safe. The trivy steps
+      #                below scan that local image.
+      #
+      # provenance/sbom false, deliberately: build-push-action turns BuildKit
+      # attestations on by default when pushing, and an image carrying them is
+      # exported as a single-entry INDEX rather than a plain manifest.
+      # `imagetools create` would then nest indexes inside the release index,
+      # producing a manifest list whose children are lists — which many clients
+      # refuse to pull. SLSA provenance is attached once, to the merged index,
+      # in the merge job; that is the better subject anyway.
+      #
+      # `tags:` is absent and must stay absent — BuildKit rejects a tag together
+      # with push-by-digest.
+      - name: Build ${{ matrix.platform }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          outputs: >-
+            ${{ inputs.push
+              && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE)
+              || format('type=docker,name={0}:scan', env.IMAGE) }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.version.outputs.version }}
+            IMAGE_REVISION=${{ github.sha }}
+          # The `scope` is load-bearing. BuildKit's gha cache backend scopes by
+          # git ref, NOT by platform, so without this both legs would read and
+          # write one shared cache index: the amd64 `cargo chef cook` layer and
+          # the arm64 one are different binaries under the same key, whichever
+          # leg finishes last wins, and every later build of BOTH architectures
+          # is cold and then thrashes the cache again.
+          #
+          # mode=max so the `cargo chef cook` intermediate stage is cached —
+          # that stage is the entire point of the Dockerfile's layout, and
+          # mode=min would export only the runtime layers and leave every build
+          # recompiling the whole dependency tree.
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      # What gets scanned differs by mode, and each is the real artifact:
+      #   push=true  — the digest just published, pulled back from GHCR.
+      #                Scanning the published bytes is a stronger claim than
+      #                scanning something built alongside them.
+      #   push=false — the image in this runner's daemon; nothing was published
+      #                and nothing may be (fork PRs have no credentials).
+      - name: Resolve the image reference to scan
+        id: scan_ref
+        env:
+          PUSH: ${{ inputs.push }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "${PUSH}" = "true" ]; then
+            echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${IMAGE}:scan" >> "$GITHUB_OUTPUT"
+          fi
+
+      # HIGH and CRITICAL only, and `ignore-unfixed` on purpose.
+      #
+      # debian:bookworm-slim permanently carries HIGH CVEs that Debian has
+      # triaged as no-DSA / will-not-fix: there is no fixed package to move to
+      # and there will not be one before bookworm goes EOL. Gating on those
+      # makes this step red on every run forever, everyone learns to click past
+      # it, and the scanner leaves the repo LESS safe than having none. With
+      # ignore-unfixed a failure here has one precise meaning: a fix exists in
+      # the distribution and this image has not taken it.
+      #
+      # The remedy is to BUMP THE PINNED BASE DIGEST, and only that. Rebuilding
+      # does nothing: the `FROM` lines are pinned by digest and the runtime stage
+      # runs `apt-get install` without `upgrade`, so every rebuild resolves the
+      # same base layer. Saying "rebuild" here would send someone in a circle.
+      #
+      # The cost of that is a window: from the moment Debian publishes a fix,
+      # every pull request is red — whatever it touches — until the digest bump
+      # merges, and `release-plz-release` needs `docker-build`, so releases stop
+      # too. In `release.yml` the tag already exists when this runs, so a fix
+      # published between the CI run and the release run ships a version with
+      # crates and binaries but no image.
+      #
+      # The gate stays hard on both anyway, because a scan that is advisory on
+      # pull requests is one nobody reads. What shortens the window instead is
+      # `renovate.json`'s `vulnerabilityAlerts` rule, which is unscheduled: a
+      # base-image CVE raises the bump PR immediately rather than waiting for
+      # the Monday-morning window the other updates use.
+      #
+      # DB from the public.ecr.aws mirror rather than trivy's ghcr.io default:
+      # that pull is anonymous, GHCR rate-limits anonymous pulls per source IP,
+      # and GitHub-hosted runners share a small pool of them.
+      - name: Scan the image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+          TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db
+        with:
+          scan-type: image
+          image-ref: ${{ steps.scan_ref.outputs.ref }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+          format: table
+
+      # Secrets have no severity and no "unfixed": every hit is a hard fail.
+      #
+      # The stages that see the source tree are discarded, so today this scans a
+      # Debian base plus one stripped binary and finds nothing. That is the
+      # point — it is a tripwire for the day someone adds a COPY of a config
+      # file, an .env or a service-account key into the runtime stage. The only
+      # moment it is worth anything is the moment nobody expects it.
+      #
+      # `trivyignores` is set here too. trivy-action only exports
+      # TRIVY_IGNOREFILE when that input is present, and trivy's own default is
+      # `.trivyignore`, not `.trivyignore.yaml` — so without this the `secrets:`
+      # block in that file is read by nothing, and a maintainer following the
+      # file's own instructions to suppress a false positive would watch it
+      # change nothing at all.
+      - name: Scan the image for secrets
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.scan_ref.outputs.ref }}
+          scanners: secret
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+          format: table
+
+      # An empty file named after the digest. Looks like a typo otherwise: the
+      # merge job globs these, so the manifest list is built from whatever the
+      # matrix actually produced rather than from a hard-coded platform list.
+      # Adding a platform later is one matrix entry and no other edit.
+      #
+      # Note `steps.build.outputs.digest` is only meaningful under the
+      # push-by-digest exporter; in validation mode the `type=docker` exporter
+      # has no registry digest, which is why this step is `if: inputs.push`.
+      - name: Record the per-arch digest for the manifest merge
         if: inputs.push
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          # Empty means the exporter silently produced nothing; the merge job
+          # would then build a manifest list out of whatever legs did work.
+          [ -n "${DIGEST}" ] || { echo "::error::build produced no digest" >&2; exit 1; }
+          mkdir -p /tmp/digests /tmp/platforms
+          touch "/tmp/digests/${DIGEST#sha256:}"
+          # The platform this leg built, for the merge job to assert the
+          # published index against. Written here rather than listed there so
+          # the claim above — one matrix entry and no other edit — is true.
+          echo "${PLATFORM}" > "/tmp/platforms/${PLATFORM//\//-}"
+
+      - name: Upload the digest
+        if: inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload the platform
+        if: inputs.push
+        uses: actions/upload-artifact@v7
+        with:
+          name: platforms-${{ matrix.arch }}
+          path: /tmp/platforms/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge into a multi-platform manifest
+    # push=false has nothing in a registry to merge — by design, because fork
+    # PRs get no credentials. This job is SKIPPED there, not failed, and a
+    # skipped job leaves the reusable workflow's own conclusion at `success`,
+    # so ci.yml's `needs: docker-build` gate is unchanged by this rewrite.
+    #
+    # Do NOT give this job `if: always()`: `if: inputs.push` alone is what keeps
+    # it skipped rather than cancelled, and cancelled is the state that silently
+    # eats release-plz.
+    if: inputs.push
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      actions: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: /tmp/platforms
+          pattern: platforms-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The one place tags are defined. DOCKER_METADATA_ANNOTATIONS_LEVELS=index
+      # makes metadata-action emit its OCI metadata as annotations on the
+      # manifest list: the child images already carry the equivalent as LABELs
+      # from the Dockerfile, and an index has no labels, only annotations.
+      # Without this, ghcr.io's package page shows nothing.
+      - name: Generate image tags and annotations
         id: meta
         uses: docker/metadata-action@v6
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ghcr.io/notedthat/server
           tags: |
@@ -78,7 +370,6 @@ jobs:
       # `value` inputs cannot be parsed as semver — usually because tag_name
       # was passed empty. Fail loudly here rather than pushing an untagged image.
       - name: Verify resolved version is non-empty
-        if: inputs.push
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           TAG_NAME: ${{ inputs.tag_name }}
@@ -87,25 +378,58 @@ jobs:
             echo "ERROR: docker/metadata-action produced empty version (tag_name=${TAG_NAME})" >&2
             exit 1
           fi
-          echo "Building image version: ${VERSION}"
+          echo "Publishing image version: ${VERSION}"
 
-      # IMAGE_VERSION defaults to `ci-validation` on `push=false` runs so images
-      # built during PR/main validation are visibly distinguishable from real
-      # releases if they leak into anyone's local Docker cache.
-      - name: Build${{ inputs.push && ' and push' || '' }}
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ inputs.push }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            IMAGE_VERSION=${{ inputs.push && steps.meta.outputs.version || 'ci-validation' }}
-            IMAGE_REVISION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create the manifest list
+        working-directory: /tmp/digests
+        env:
+          TAGS_JSON: ${{ steps.meta.outputs.json }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -er '.tags[]' <<<"$TAGS_JSON")
+          mapfile -t annotations < <(printf '%s\n' "$ANNOTATIONS" | sed '/^$/d')
+          # Tags from metadata-action, children from whatever digest files the
+          # matrix uploaded. Neither list is hard-coded here.
+          docker buildx imagetools create \
+            "${tags[@]/#/--tag=}" \
+            "${annotations[@]/#/--annotation=}" \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      # Resolve what the tag now points at — the index digest — and prove the
+      # index really is multi-platform before anything signs it.
+      #
+      # The quiet failure this guards is a manifest list that lost a platform:
+      # the tag still resolves, `docker pull` still works on an amd64 laptop,
+      # and arm64 users get "no matching manifest for linux/arm64". Asserting
+      # the platform set is cheap; trusting that both legs ran is what produces
+      # a broken `latest` nobody notices for a week.
+      - name: Resolve and verify the published index
+        id: index
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+                    --format '{{json .Manifest}}' | jq -er '.digest')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          platforms=$(docker buildx imagetools inspect "${IMAGE}@${digest}" \
+                       --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')
+          # Expected set comes from the legs that ran, not from a list here: a
+          # platform added to the matrix is asserted without editing this file.
+          mapfile -t expected < <(cat /tmp/platforms/* | sed '/^$/d' | sort -u)
+          [ "${#expected[@]}" -gt 0 ] || { echo "::error::no build leg recorded a platform" >&2; exit 1; }
+          echo "expecting: ${expected[*]}"
+          for want in "${expected[@]}"; do
+            case " ${platforms} " in
+              *" ${want} "*) ;;
+              *)
+                echo "::error::published index ${digest} is missing ${want} (has: ${platforms})" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "index ${digest} carries: ${platforms}"
 
       - name: Install Cosign
         if: inputs.sign
@@ -113,22 +437,37 @@ jobs:
         with:
           cosign-release: "v2.4.0"
 
-      - name: Sign the image (keyless via Sigstore/Fulcio)
+      # Signed subject: the manifest LIST, because that is what a tag resolves
+      # to. `cosign verify ghcr.io/notedthat/server:1.2.3` resolves the tag to
+      # the index digest and looks for a signature on THAT — sign only the
+      # children and the documented verify command fails.
+      #
+      # `--recursive` signs the index and every child. The children matter for
+      # the other half of the consumer population: an admission controller has
+      # usually already resolved the tag down to a platform-specific digest by
+      # the time it verifies, and would reject an index-only signature as
+      # unsigned. Two extra Fulcio round-trips, and both paths work.
+      - name: Sign the manifest list and its children (keyless via Sigstore/Fulcio)
         if: inputs.sign
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.index.outputs.digest }}
         run: |
-          cosign sign --yes "ghcr.io/notedthat/server@${DIGEST}"
+          cosign sign --yes --recursive "ghcr.io/notedthat/server@${DIGEST}"
 
-      # SLSA L2 build provenance attestation, pushed as a referrer on the same
-      # image digest. Bundled with `sign` because attestation without a
-      # signature (or vice versa) is a footgun — the two together are the
-      # single "trustable image" primitive. Verify with:
+      # SLSA L2 build provenance attestation, pushed as a referrer on the index
+      # digest — the same subject, for the same reason:
       #   gh attestation verify oci://ghcr.io/notedthat/server:TAG --owner NotedThat
+      # resolves the tag to the index. One attestation there covers the tag for
+      # every platform.
+      #
+      # Still bundled with `sign`: attestation without a signature (or vice
+      # versa) is a footgun — the two together are the single "trustable image"
+      # primitive. That is now a property of one index digest rather than of one
+      # amd64 image.
       - name: Generate SLSA provenance attestation for the image
         if: inputs.sign
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/notedthat/server
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true

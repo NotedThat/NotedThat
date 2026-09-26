@@ -118,7 +118,9 @@ jobs:
 
       # Select a toolchain rather than inheriting whatever rustc each runner or
       # build container happens to ship — images drift, and the dependency tree
-      # has a real MSRV floor (aws-sdk-s3 currently needs 1.91.1).
+      # has a real MSRV floor. The floor itself lives in one place: `rust-version`
+      # in the root Cargo.toml, checked by ci.yml's `test` matrix. Do not restate
+      # the number here; a second copy only drifts.
       - name: Ensure a Rust toolchain new enough for the dependency tree
         shell: bash
         run: |

@@ -21,11 +21,24 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Stage 1: chef — Rust toolchain + cargo-chef, pinned via the official image.
-# `latest-rust-1-bookworm` tracks the latest 1.x stable release, matching CI
-# (`dtolnay/rust-toolchain@stable`). Edition 2024 requires rustc >= 1.85.
+# Stage 1: chef — Rust toolchain + cargo-chef, pinned by digest.
+#
+# The digest is the reference this build resolves; the tag beside it is there so
+# a human can tell at a glance what the digest is supposed to be, and is NOT
+# what Docker looks up. Renovate's docker manager keeps both halves current and
+# raises the bump as an ordinary PR, so a base-image change is a reviewable
+# commit rather than something that happens silently between two builds of the
+# same source (§ Supply Chain Notes in RELEASING.md).
+#
+# Consequence worth knowing: this also pins the compiler the image builds with
+# (currently 1.98.1), which no longer tracks `dtolnay/rust-toolchain@stable` in
+# CI the way the floating tag used to. That gap is covered from the other side
+# — `rust-version` in the workspace manifest states the floor the crates
+# support, and CI's `test` job runs it alongside stable.
+#
+# Edition 2024 requires rustc >= 1.85.
 # ------------------------------------------------------------------------------
-FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm@sha256:5a37e174ceb7ccbebd6d0024049e9308f4de399bbcabbc3c6c649c70486880d5 AS chef
 WORKDIR /app
 
 # ------------------------------------------------------------------------------
@@ -70,8 +83,14 @@ RUN cargo build --release --locked \
 #
 # The Rust binary handles SIGTERM/SIGINT itself via tokio::signal, so no
 # tini/dumb-init init wrapper is needed — the server IS PID 1.
+#
+# Pinned by digest for the same reason as the chef stage above. Note what the
+# pin does and does not buy: it fixes the starting layer, not the packages
+# `apt-get install` puts on top of it, which still resolve against whatever the
+# Debian mirror serves at build time. So this gives stable, traceable inputs
+# rather than a bit-reproducible image.
 # ------------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends \
@@ -89,6 +108,16 @@ RUN groupadd --system --gid 10001 notedthat \
 # named volume mounted here is writable without any host-side chown. A bind mount still
 # has to be writable by uid 10001.
 RUN install -d -o 10001 -g 10001 -m 0755 /var/lib/notedthat
+
+# Mount point for the upload/index staging directory. Nothing is written here
+# unless NOTEDTHAT_UPLOAD_TMP_DIR points at it; the default staging directory
+# is still the platform temp dir, so behaviour is unchanged for every existing
+# caller. It exists because Docker seeds a fresh named volume with the image's
+# ownership only when the path already exists in the image — mount a volume at
+# a path the image lacks and it arrives root-owned, uid 10001 cannot write, and
+# startup refuses. That matters under `--read-only`, where the default /tmp is
+# not writable: see "A read-only root filesystem" in docs/OPERATIONS.md.
+RUN install -d -o 10001 -g 10001 -m 0700 /var/lib/notedthat-staging
 
 COPY --from=builder /app/target/release/notedthat-server /usr/local/bin/notedthat-server
 

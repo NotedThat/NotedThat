@@ -1,0 +1,19 @@
+# Suppressions for the image scan in .github/workflows/docker.yml.
+#
+# `ignore-unfixed: true` in that workflow already drops every CVE with no fix
+# available, so this file is NOT where Debian's permanent will-not-fix backlog
+# goes. It stays empty most of the time, and that is the healthy state.
+#
+# It exists for one case: a CVE that HAS a fix which we have decided not to take
+# right now — the fix is not in bookworm yet, the affected code path is not
+# reachable from this binary, a release is mid-flight. Every entry carries an
+# `expired_at`, so trivy starts reporting the CVE again on that date and the
+# suppression rots loudly instead of quietly. Re-justify it or drop it; do not
+# extend a date without writing down why.
+#
+#   vulnerabilities:
+#     - id: CVE-0000-00000
+#       statement: why this is not acted on yet, and what would change that
+#       expired_at: 2026-12-31
+vulnerabilities: []
+secrets: []

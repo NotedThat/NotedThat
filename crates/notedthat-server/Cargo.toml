@@ -2,6 +2,7 @@
 name = "notedthat-server"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "NotedThat server library — HTTP API, WebDAV, and remote MCP in one process"

@@ -281,7 +281,7 @@ Use the upload, read, and search commands from the Compose flow against this ser
 
 ### Docker image
 
-Once the first tagged release exists, the server image is published to GHCR at `ghcr.io/notedthat/server`. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation.
+Once the first tagged release exists, the server image is published to GHCR at `ghcr.io/notedthat/server`, built for `linux/amd64` and `linux/arm64` under one tag. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation on the manifest list, so verifying the tag covers every platform.
 
 ```sh
 docker pull ghcr.io/notedthat/server:latest
@@ -304,6 +304,9 @@ docker run --rm --stop-timeout 45 --add-host=host.docker.internal:host-gateway \
 The image publishes one HTTP port, **8080**: the API is under `/api/v1`, WebDAV is under
 `/webdav`, and streamable MCP is at `POST /mcp`. Public deployments should terminate TLS once at
 a reverse proxy and forward the complete path space to this upstream.
+
+The image also runs under a read-only root filesystem; see
+[running in production](docs/OPERATIONS.md#a-read-only-root-filesystem) for the two mounts it needs.
 
 The default temporary directory stages uploads and index snapshots. For production-sized uploads,
 ensure its backing filesystem has at least 5 GiB for every concurrent maximum-size upload, plus

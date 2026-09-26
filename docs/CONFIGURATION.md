@@ -870,6 +870,10 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
 
 `NOTEDTHAT_UPLOAD_TMP_DIR` selects one private directory used by both WebDAV uploads and
 the background indexer. If it is unset, NotedThat uses the platform temporary directory.
+Under a read-only container root filesystem that default is not writable, so this variable becomes
+mandatory and must point at a mount — see
+[a read-only root filesystem](OPERATIONS.md#a-read-only-root-filesystem), which also explains why
+`tmpfs` is the wrong answer there despite being the obvious one.
 The server refuses startup when the selected path is missing, is not a directory, or is not
 writable; this happens before listener binding and storage provisioning.
 

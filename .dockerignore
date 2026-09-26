@@ -44,3 +44,7 @@ compose.*.yml
 .env
 .env.*
 !.env.example
+
+# Core dumps (gitignored, but Docker does not read .gitignore)
+core
+core.*
