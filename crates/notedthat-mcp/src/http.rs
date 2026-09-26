@@ -1178,14 +1178,7 @@ mod caller_identity {
             // anonymous session.
             let api = MockServer::start().await;
             let app = anonymous_app(&api.uri());
-            let (response, message) = post_anonymous_initialize(&app).await;
-            assert_eq!(response.status(), StatusCode::OK, "{message:?}");
-            let session = response
-                .headers()
-                .get(SESSION_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .expect("an anonymous session id")
-                .to_owned();
+            let session = open_anonymous_session(&app).await;
 
             // When / Then: a second credential-less request drives it. There is no
             // credential to tell two anonymous callers apart, so the binding does
@@ -1270,6 +1263,104 @@ mod caller_identity {
             let theirs = raw(&app, Method::GET, Some(BOB_TOKEN), Some(UNKNOWN_SESSION)).await;
             assert_eq!(mine.0, StatusCode::NOT_FOUND);
             assert_eq!(mine.2, theirs.2);
+        }
+
+        /// The owner kinds `every_pair_of_distinct_principals_is_refused` covers,
+        /// one per `Principal` variant the server can tell apart.
+        ///
+        /// Exhaustive on purpose, and the reason that test may claim no pair was
+        /// left out: the pairs are enumerated by hand from an array, so without
+        /// this a new principal kind would widen the gap in silence. Adding one
+        /// fails to compile here first, and the fix is to add it to `owners` too.
+        const OWNER_KINDS: fn(&Principal) -> &'static str = |principal| match principal {
+            Principal::Anyone => "anonymous",
+            Principal::SignedIn(Identity::ServiceToken) => "service",
+            Principal::SignedIn(Identity::User(_)) => "alice and bob",
+        };
+
+        /// Every ordered pair of distinct owners the server can tell apart — two
+        /// users, the service token and the anonymous caller — on every method.
+        /// The tests above each pin one pair or one property; this one is what
+        /// says no pair was left out, and the tripwire below is what keeps that
+        /// true as `Principal` grows.
+        #[tokio::test]
+        async fn every_pair_of_distinct_principals_is_refused() {
+            // Given: one session per owner, on a deployment that admits the
+            // anonymous caller (D59) beside bearers and the service token.
+            let api = MockServer::start().await;
+            let app = anonymous_app(&api.uri());
+            // One owner per `Principal` kind (see `OWNER_KINDS`), plus a second
+            // `User` for the user-to-user pair.
+            let owners: [(&str, Option<&str>); 4] = [
+                ("alice", Some(ALICE_TOKEN)),
+                ("bob", Some(BOB_TOKEN)),
+                ("service", Some(SERVICE_TOKEN)),
+                ("anonymous", None),
+            ];
+            // And every kind it names really is in that array — the compile-time
+            // half proves the match is exhaustive, this proves the array kept up.
+            for kind in [
+                Principal::Anyone,
+                Principal::SignedIn(Identity::ServiceToken),
+                Principal::SignedIn(Identity::User(notedthat_core::UserIdentity {
+                    subject: "alice".to_string(),
+                    groups: std::collections::BTreeSet::new(),
+                })),
+            ] {
+                let label = OWNER_KINDS(&kind);
+                assert!(
+                    owners.iter().any(|(name, _)| label.contains(name)),
+                    "no owner in the array stands for {label}"
+                );
+            }
+            let mut sessions = Vec::new();
+            for (name, bearer) in owners {
+                let id = match bearer {
+                    Some(token) => open_session(&app, token).await,
+                    None => open_anonymous_session(&app).await,
+                };
+                sessions.push((name, bearer, id));
+            }
+
+            // When / Then: every other owner presents it. `POST` and `GET` are
+            // refused as an unknown id is; `DELETE` is accepted and does nothing,
+            // as rmcp answers a `DELETE` for any id.
+            for (opener, _, id) in &sessions {
+                for (presenter, bearer, _) in &sessions {
+                    if opener == presenter {
+                        continue;
+                    }
+                    for (method, expected) in [
+                        (Method::POST, StatusCode::NOT_FOUND),
+                        (Method::GET, StatusCode::NOT_FOUND),
+                        (Method::DELETE, StatusCode::ACCEPTED),
+                    ] {
+                        let (status, _, _) = raw(&app, method.clone(), *bearer, Some(id)).await;
+                        assert_eq!(
+                            status, expected,
+                            "{presenter} presenting {opener}'s session on {method}"
+                        );
+                    }
+                }
+            }
+
+            // And: every owner still has its session, so none of those `DELETE`s
+            // ended one.
+            for (opener, bearer, id) in &sessions {
+                let (status, _, _) = raw(&app, Method::GET, *bearer, Some(id)).await;
+                assert_eq!(status, StatusCode::OK, "{opener} lost its own session");
+            }
+        }
+
+        async fn open_anonymous_session(app: &Router) -> String {
+            let (response, message) = post_anonymous_initialize(app).await;
+            assert_eq!(response.status(), StatusCode::OK, "{message:?}");
+            response
+                .headers()
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .expect("an anonymous session id")
+                .to_owned()
         }
 
         /// `initialize` with no credential at all — an anonymous caller must not

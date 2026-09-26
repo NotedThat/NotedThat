@@ -258,10 +258,17 @@ The endpoint is a streamable-HTTP MCP server with sessions, the shape the MCP sp
 describes: `initialize` returns an `Mcp-Session-Id`, every later request carries it, answers are
 SSE-framed, and `GET /mcp` is where server-to-client notifications arrive. The session belongs to
 the credential that opened it, so an id is not shared between principals — refreshing an access
-token keeps the session, presenting it as someone else does not. Every client listed above does
-this on its own. Point the client at the URL, send the bearer, done. The legacy SSE
-transport is deliberately not offered ([why](API.md#streamable-http-transport)); a hand-rolled
-client needs the three-step dance in [the transport notes](API.md#streamable-http-transport).
+token keeps the session, presenting it as someone else does not. A `POST`, or the `GET`
+notification leg, whose session is gone for its caller — idled out, ended by a restart, or opened
+by another principal — is answered `404`; a `DELETE` is answered `202` either way, since rmcp
+answers any id that way, so it is no signal that the id was yours. After a `404` the client starts
+a new session with `initialize`, subscribes again, and calls `resources/list` again if it relies on
+`list_changed`, since both the subscriptions and the list watch end with their session; a client
+that switches to a different identity does the same rather than carrying the old id over. Every
+client listed above keeps the session id on its own; a hand-rolled one must also handle the `404`.
+Point the client at the URL, send the bearer, done. The legacy SSE transport is deliberately not
+offered ([why](API.md#streamable-http-transport)); a hand-rolled client needs the three-step dance
+in [the transport notes](API.md#streamable-http-transport).
 
 With an events backend, the server also pushes resource notifications
 ([Subscriptions](API.md#subscriptions)): Claude Desktop, Claude Code and the MCP Inspector
