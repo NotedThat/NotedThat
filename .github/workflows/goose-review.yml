@@ -52,7 +52,9 @@ jobs:
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
     runs-on: ubuntu-latest
-    # A tripwire, not an estimate: a small PR takes a few minutes per lane.
+    # The review is bounded by time, not turns: checks keep investigating
+    # while their share of 35 minutes lasts, verification gets 12, and the
+    # rest is setup and posting. A small PR finishes well inside it.
     timeout-minutes: 60
     continue-on-error: true
     strategy:
@@ -135,6 +137,30 @@ jobs:
           echo "XDG_CONFIG_HOME=$RUNNER_TEMP/goose-config" >> "$GITHUB_ENV"
           echo "GOOSE_REVIEW_LOG_DIR=$RUNNER_TEMP/goose-logs" >> "$GITHUB_ENV"
 
+      # What the review prompts tell the model it can use (see TOOLS in
+      # goose_review.py): ripgrep and fd from Ubuntu, ast-grep for Rust
+      # syntax-aware search, and the locked dependencies' sources so it can
+      # read what a library call really does. `cargo fetch` only downloads;
+      # nothing of the PR is built or run. git, jq and the Rust toolchain come
+      # with the runner.
+      - name: Install the reviewer's tools
+        env:
+          AST_GREP_VERSION: 0.45.3
+          AST_GREP_SHA256: f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ripgrep fd-find
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -sf "$(command -v fdfind)" "$RUNNER_TEMP/bin/fd"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o ast-grep.zip \
+            "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP_VERSION/app-x86_64-unknown-linux-gnu.zip"
+          echo "$AST_GREP_SHA256  ast-grep.zip" | sha256sum -c -
+          unzip -q -o ast-grep.zip ast-grep -d bin
+          cd "$GITHUB_WORKSPACE"
+          cargo fetch --locked
+          rg --version | head -1; fd --version; "$RUNNER_TEMP/bin/ast-grep" --version
+
       # The templates carry placeholders; the routes come from secrets.
       - name: Configure the Goose providers
         env:
@@ -162,7 +188,7 @@ jobs:
           python3 .github/scripts/goose_review.py review
           --base "${{ github.event.pull_request.base.sha }}"
           --provider "${{ matrix.provider }}" --model "${{ matrix.model }}"
-          --jobs "${{ matrix.jobs }}" --context "$RUNNER_TEMP/pr.md"
+          --jobs "${{ matrix.jobs }}" --budget-minutes 35 --context "$RUNNER_TEMP/pr.md"
           --out "$RUNNER_TEMP/findings.jsonl" --status "$RUNNER_TEMP/status.json"
 
       - name: Verify (${{ matrix.verify-model }})
@@ -172,7 +198,7 @@ jobs:
           python3 .github/scripts/goose_review.py verify
           --base "${{ github.event.pull_request.base.sha }}"
           --provider "${{ matrix.verify-provider }}" --model "${{ matrix.verify-model }}"
-          --context "$RUNNER_TEMP/pr.md"
+          --budget-minutes 12 --context "$RUNNER_TEMP/pr.md"
           --in "$RUNNER_TEMP/findings.jsonl" --out "$RUNNER_TEMP/verified.jsonl"
           --status "$RUNNER_TEMP/status.json"
 

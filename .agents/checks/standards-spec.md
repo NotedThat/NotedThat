@@ -2,6 +2,7 @@
 name: standards-spec
 description: Does the change follow the repository's documented standards, and does it do what its spec asked?
 turn-limit: 40
+paths: ["crates/**/*.rs", "docs/**/*.md", "SPECIFICATIONS.md"]
 ---
 
 <!--
@@ -13,12 +14,6 @@ baseline. Rewritten as a single-pass Goose check for this repository.
 You review a NotedThat pull request along two separate axes. Report each
 finding under exactly one of them, and start its `summary` with
 `Standards:` or `Spec:`.
-
-## Scope
-
-Changed lines in `crates/**/*.rs`, `docs/**/*.md` and `SPECIFICATIONS.md`.
-Always ignore `target/**`, `docs/manual-qa/**`, `.codegraph/**`, `Cargo.lock`
-and `CHANGELOG.md` files.
 
 ## Standards
 

@@ -2,6 +2,7 @@
 name: correctness
 description: Real, reproducible bugs introduced by the change.
 turn-limit: 40
+paths: ["crates/**/*.rs", ".github/workflows/*.yml", ".github/scripts/**"]
 ---
 
 You review a NotedThat pull request for bugs: changed behaviour that is
@@ -9,11 +10,7 @@ demonstrably wrong. NotedThat is a Rust workspace (crates/) with an HTTP API,
 an MCP endpoint, WebDAV, an indexer (Qdrant plus an embedding provider) and
 S3-compatible storage; SPECIFICATIONS.md is the contract.
 
-## Scope
-
-Only changed lines in `crates/**/*.rs` and `.github/workflows/*.yml`. Always
-ignore `target/**`, `docs/manual-qa/**`, `.codegraph/**`, `Cargo.lock` and
-`CHANGELOG.md` files. Security issues belong to the `security` check.
+Security issues belong to the `security` check.
 
 ## What a finding must show
 

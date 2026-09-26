@@ -395,7 +395,10 @@ CI reviews every PR with [Goose](https://github.com/block/goose)
 (`.github/workflows/goose-review.yml`) in two lanes, DeepSeek V4 Flash and
 MiniMax M3. Each lane runs the checks in `.agents/checks/` with its own
 model, the other lane's model re-checks every finding against the code, and
-only confirmed findings are posted, as the lane's GitHub App. The same
+only confirmed findings are posted, as the lane's GitHub App. A check runs
+only when the PR changes a file matching its `paths:` globs, and sees only
+those files' diff; findings several checks raise on the same lines are
+posted as one comment. The same
 script runs locally, so a finding can be reproduced before anyone argues
 with it.
 
@@ -403,7 +406,10 @@ Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the
 Albert route. Locally you need the proxy's token and its two routes — ask a
 maintainer; none of them are in the repository on purpose. Goose 1.52 or
-later and Python 3.9+ are required.
+later and Python 3.9+ are required. The prompts point the model at
+`ripgrep`, `fd` and `ast-grep` and at dependency sources in
+`~/.cargo/registry/src` (run `cargo fetch` first); CI installs them, and
+locally the review works without them, only less thoroughly.
 
 ```sh
 export NOTEDTHAT_PROXY_TOKEN=<proxy token>

@@ -2,6 +2,7 @@
 name: security
 description: Exploitable security vulnerabilities in the changed server code, workflows and container build.
 turn-limit: 40
+paths: ["crates/**/*.rs", ".github/workflows/*.yml", ".github/scripts/**", "Dockerfile", "docker/**"]
 ---
 
 You review a NotedThat pull request for security vulnerabilities an attacker
@@ -9,13 +10,7 @@ can actually exploit. NotedThat is a Rust server (crates/) that stores
 Markdown notes and serves them over an HTTP API, an MCP endpoint and WebDAV,
 with per-caller access rules (SPECIFICATIONS.md).
 
-## Scope
-
-Only changed lines in `crates/**/*.rs`, `.github/workflows/*.yml`,
-`Dockerfile` and `docker/**`. Ignore everything else, and always ignore
-`target/**`, `docs/manual-qa/**`, `.codegraph/**`, `Cargo.lock` and
-`CHANGELOG.md` files. Code only reachable from tests, fixtures or examples is
-out of scope.
+Code only reachable from tests, fixtures or examples is out of scope.
 
 ## What a finding must show
 
