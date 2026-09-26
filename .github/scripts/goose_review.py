@@ -339,7 +339,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 for c in m.get("content", [])
                 if c.get("type") == "text" and c.get("text", "").strip()
             ]
-            final = texts[-1] if texts else ""
+            final = redact(texts[-1]) if texts else ""
             errored = final.startswith("Ran into this error")
             # Gemma sometimes ends a turn on a thinking block right after a tool
             # result, with no text at all: it stopped mid-investigation, so it
@@ -399,7 +399,7 @@ def log(label: str, round_no: int, prompt: str, stdout: str, stderr: str) -> Non
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     Path(log_dir, f"{name}.round{round_no}.log").write_text(
-        f"{prompt}\n\n===== stdout =====\n{stdout}\n===== stderr =====\n{stderr}"
+        redact(f"{prompt}\n\n===== stdout =====\n{stdout}\n===== stderr =====\n{stderr}")
     )
 
 
@@ -489,9 +489,11 @@ def cmd_review(args: argparse.Namespace) -> None:
     out = Path(args.out)
     Path(args.status).unlink(missing_ok=True)
     if not diff.strip():
+        # Every changed file is excluded or deleted: nothing was reviewed,
+        # which must not read as a clean review.
         out.write_text("")
-        write_status(args.status, checks_run=[], checks_failed=[])
-        print("empty diff, nothing to review", file=sys.stderr)
+        write_status(args.status, checks_run=[], checks_skipped=[c.name for c in checks], checks_failed=[])
+        print("no reviewable change (every file excluded or deleted)", file=sys.stderr)
         return
     context = pr_context(args.context)
     base_sha = subprocess.run(
@@ -581,6 +583,15 @@ def merge_overlapping(findings: list[dict]) -> list[dict]:
         merged.append(lead)
     merged.sort(key=lambda f: (-SEVERITIES.index(f["severity"]), f["path"], f["line_start"]))
     return merged
+
+
+def redact(text: str) -> str:
+    """Remove the proxy token from anything the model wrote. The agent has
+    it in its environment, and a prompt-injected run could copy it into a
+    finding -- which would be posted on a public pull request, where GitHub
+    does not mask secrets -- or into a transcript kept as an artifact."""
+    token = os.environ.get("NOTEDTHAT_PROXY_TOKEN", "")
+    return text.replace(token, "[redacted]") if len(token) >= 8 else text
 
 
 def read_status(path: str) -> dict:
