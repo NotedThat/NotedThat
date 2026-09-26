@@ -264,6 +264,25 @@ def diff_files(diff: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def finding_hunks(chunk: str, findings: list[dict], margin: int = 3) -> str:
+    """One file's diff reduced to its header and the hunks within `margin`
+    lines of any of `findings`; a note instead when none is."""
+    parts = re.split(r"(?m)^(?=@@ )", chunk)
+    header, hunks = parts[0], parts[1:]
+    kept = []
+    for hunk in hunks:
+        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", hunk)
+        if not m:
+            continue
+        start = int(m.group(1))
+        end = start + max(int(m.group(2) or 1), 1) - 1
+        if any(f["line_start"] - margin <= end and start <= f["line_end"] + margin for f in findings):
+            kept.append(hunk)
+    if not kept:
+        return header + "[no changed hunk at these findings' lines]\n"
+    return header + "".join(kept)
+
+
 def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
     """Group whole per-file diffs into batches of at most `limit` characters.
 
@@ -721,13 +740,22 @@ def cmd_verify(args: argparse.Namespace) -> None:
     files = diff_files(diff)
 
     def batch_diff(batch: list[dict]) -> str:
-        """The diff of the files this batch's findings are on, not of the
-        whole change: on a large change the first batch of it may not hold
-        them at all, and the verifier would then reject real findings as
-        being about unchanged code."""
-        paths = {f["path"] for f in batch}
-        own = "".join(chunk for path, chunk in files if path in paths)
-        return split_diff(own)[0] if len(own) > MAX_DIFF_CHARS else own
+        """The hunks this batch's findings are on, not the whole change nor
+        whole files: on a large change a cut-off diff may not hold them,
+        and the verifier would then reject real findings as being about
+        unchanged code. The verifier reads the rest from the checkout."""
+        parts = [
+            finding_hunks(chunk, own)
+            for path, chunk in files
+            if (own := [f for f in batch if f["path"] == path])
+        ]
+        # Only a single hunk this large still needs cutting; each file then
+        # keeps an equal share, so every finding's file stays shown.
+        if sum(map(len, parts)) > MAX_DIFF_CHARS:
+            share = MAX_DIFF_CHARS // len(parts)
+            note = "\n[... truncated; read the file for the rest ...]\n"
+            parts = [p if len(p) <= share else p[:share - len(note)] + note for p in parts]
+        return "".join(parts)
 
     # A few findings per run: one run over thirteen spent its whole turn
     # budget investigating and never answered.
