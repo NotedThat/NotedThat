@@ -60,9 +60,9 @@ MAX_DIFF_CHARS = 60_000
 FINAL_MARGIN_S = 4 * 60  # kept back at the end for the answer itself
 FINAL_TURNS = 3
 CONTINUE_PROMPT = (
-    "That round of turns is used up, but you still have time. Continue investigating "
-    "where you left off, and give the JSON answer described in the first message "
-    "when you are done.\n"
+    "You stopped before giving your answer, and you still have time. Continue "
+    "investigating where you left off, and give the JSON answer described in the "
+    "first message when you are done.\n"
 )
 FINAL_PROMPT = (
     "Your time for this review is up. Stop investigating now and give your answer: "
@@ -289,7 +289,8 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
     (time.monotonic()) is not close; then it is asked for its answer. A
     rate-limited round is resumed after the limit's minute. A run that ends
     in prose without the `answer_key` JSON object (Mistral sums up its
-    investigation instead) is asked once for just that object.
+    investigation instead) is asked once for just that object; one that
+    ends with no text at all (Gemma stops on a thinking block) is continued.
 
     With GOOSE_REVIEW_LOG_DIR set, each round's prompt and full JSON
     transcript (tool calls included) are kept there.
@@ -340,7 +341,11 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             ]
             final = texts[-1] if texts else ""
             errored = final.startswith("Ran into this error")
-            out_of_turns = final.startswith("I've reached the maximum number of actions")
+            # Gemma sometimes ends a turn on a thinking block right after a tool
+            # result, with no text at all: it stopped mid-investigation, so it
+            # is continued like a run that ran out of turns.
+            stalled = status == "completed" and not final
+            out_of_turns = final.startswith("I've reached the maximum number of actions") or stalled
             error = final if errored else stderr.strip()[-300:]
             if status == "completed" and final and not errored and not out_of_turns:
                 if last_json_object(final, answer_key) is not None or asked_for_json:
