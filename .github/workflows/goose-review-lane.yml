@@ -51,18 +51,9 @@ jobs:
       GOOSE_TELEMETRY_ENABLED: "false"
     steps:
       # Everything after this step can reach only the endpoints listed. The
-      # proxy host is not a secret on its own (the routes and token are),
-      # but it is kept out of the file like them: the allow-list gets it
-      # from the route secret.
-      - name: Resolve the proxy host
-        id: proxy
-        env:
-          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
-          MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
-        run: |
-          hosts=$(printf '%s\n%s\n' "$THIRDPARTY" "$MINIMAX" | sed -E 's#^https?://([^/:]+).*#\1:443#' | sort -u | tr '\n' ' ')
-          echo "hosts=$hosts" >> "$GITHUB_OUTPUT"
-
+      # policy is applied at job start, before any step runs, so the proxy's
+      # host comes from an org variable rather than being derived from the
+      # route secrets; like the routes, it stays out of this file.
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
@@ -75,7 +66,7 @@ jobs:
             static.crates.io:443
             results-receiver.actions.githubusercontent.com:443
             *.blob.core.windows.net:443
-            ${{ steps.proxy.outputs.hosts }}
+            ${{ vars.GOOSE_PROXY_EGRESS }}
 
       # The PR head itself, not the merge commit: review comments are
       # anchored to head_sha's line numbers.
