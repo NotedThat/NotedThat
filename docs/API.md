@@ -246,7 +246,9 @@ All error responses use the same JSON envelope:
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
 | 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
 | 500 | `internal_error` | Unexpected server error |
-| 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); or the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write) |
+| 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write); or the server is at its limit of requests in flight (`Retry-After: 5`, nothing was done — retry) |
+| 408 | `request_timeout` | The request body stopped arriving for longer than `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). The partial upload is discarded, not stored. A slow but steady upload is not affected: the bound is the gap between frames, not the total |
+| 504 | `request_timeout` | The request did not produce a response within the server's request timeout (`NOTEDTHAT_REQUEST_TIMEOUT_MS`, default 30 s), measured from the moment the request body finished arriving. No `Retry-After`: the same request would take as long again. A write may or may not have been applied — reconcile with `HEAD` before retrying it. The events route is never answered this way ([request bounds](CONFIGURATION.md#request-bounds)) |
 
 ## Limits
 
@@ -2026,6 +2028,8 @@ describes by default, which is what lets it push `notifications/resources/update
   per process rather than per caller, so one caller can still hold every slot
   ([#179](https://github.com/NotedThat/NotedThat/issues/179)). What a session costs, and how to
   size the setting, is in [CONFIGURATION.md](CONFIGURATION.md#what-a-session-costs).
+- `POST` and `DELETE` are held to the listener's [request bounds](CONFIGURATION.md#request-bounds);
+  the `GET` notification leg is not, and does not count towards the in-flight cap.
 
 A minimal exchange with curl (the notification leg, then a subscription, then a write):
 
@@ -2372,7 +2376,8 @@ All MCP errors carry one of these codes:
 | `payload_too_large` | 413 | Content exceeds server limit (16 MiB) |
 | `range_not_satisfiable` | 416 | Byte range beyond object size |
 | `response_too_large` | — | The object exceeds `NOTEDTHAT_MCP_MAX_READ_BYTES`; the message names the object's size, the budget and the `read` tool's slice arguments. Raised by the MCP server itself, not by the API. |
-| `backend_unavailable` | 503 | S3 or Qdrant unavailable |
+| `backend_unavailable` | 503 | S3 or Qdrant unavailable, or the server at its limit of requests in flight |
+| `request_timeout` | 504 | The API call behind the tool did not answer within the server's request timeout |
 | `internal_error` | 500 | Unexpected server error |
 
 ### v1 Limitations

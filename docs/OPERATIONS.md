@@ -97,6 +97,10 @@ header and the API does not.
 upstream notedthat {
     server 127.0.0.1:8080;
     keepalive 32;
+    # Below the server's NOTEDTHAT_HEADER_READ_TIMEOUT_MS (30 s), which is
+    # also how long it keeps an idle connection. nginx's own default is 60 s,
+    # long enough to reuse a connection the server has just closed.
+    keepalive_timeout 20s;
 }
 
 server {
@@ -146,6 +150,8 @@ notes.example.com {
 		flush_interval -1
 		transport http {
 			read_timeout 1h
+			# Below the server's idle timeout; Caddy's default is 2 minutes.
+			keepalive 20s
 		}
 	}
 }
@@ -165,8 +171,18 @@ streaming routes need.
 | Preserve `Last-Event-ID` | Resumes the events stream at a position instead of replaying from now |
 | No response buffering | `GET /mcp` and the events route are long-lived; a buffering proxy delivers nothing until the stream ends, which it never does |
 | Read timeout above 15 s | Both streams heartbeat every 15 s. A short timeout cuts them mid-stream |
+| Read timeout above the server's own | The server answers a request that runs too long itself: `504` after `NOTEDTHAT_REQUEST_TIMEOUT_MS` (30 s), or `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` (120 s) on `/webdav`. A proxy that gives up first turns that into its own bare `504` with no request id. The streams are exempt from the server's timeout, so the proxy's ceiling is the only one they have |
+| Upstream keep-alive below 30 s | The server closes a connection that has been idle for `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (30 s). A proxy that keeps idle upstream connections longer will now and then send a request down one the server has just closed. The same bound applies to gaps in a request body, so a proxy that streams uploads must not stall one for longer either |
 | No cache ignoring `Vary: Authorization` | `/browse` serves different pages to anonymous and credentialed callers at one URL |
 | Rate limiting | There is no application rate limiter. Configure rate and burst limits here before exposing anonymous `search` |
+
+**Which limit belongs where.** The server bounds what only it can see: how long a connection may
+take to send its request head, how long a request may take to produce its response head, and how
+many requests it works on at once — with the two streams and the probes exempt, because it knows
+which routes those are and a proxy does not. The proxy keeps TLS, rate limiting, response body transfer time, and the
+per-client limits the server cannot apply on the surfaces that authorize inside the handler.
+Request bodies are the one thing that moved: the server bounds the gaps while one arrives, so a
+slow upload is no longer racing the request timeout. See [Request bounds](CONFIGURATION.md#request-bounds).
 
 The API events route sets `X-Accel-Buffering: no`, which nginx honours by itself. **`GET /mcp`
 does not** — rmcp sets no buffering hint — so `proxy_buffering off` is required for the MCP
@@ -316,6 +332,8 @@ bigger node, and on `fs` a second process is refused outright.
 | Dimension | Ceiling | Set by |
 |---|---|---|
 | Knowledge bases | One bucket each. On AWS the account quota is the real limit: 10,000 buckets, of which 2,000 are free and the rest cost about $0.10/month each — roughly $800/month at the ceiling, and `ListBuckets` paginates past 10k. Unlimited in practice on SeaweedFS, Garage, R2 and RustFS | [`SPECIFICATIONS.md` §8.4](../SPECIFICATIONS.md) |
+| Requests in flight | `NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT` across every surface; past it, `503` with `Retry-After` at once. The streams and the probes do not count | [Request bounds](CONFIGURATION.md#request-bounds) |
+| Time per request | To the response head: `NOTEDTHAT_REQUEST_TIMEOUT_MS`, and `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` on `/webdav`; past it, `504`. The body's transfer is not bounded here | [Request bounds](CONFIGURATION.md#request-bounds) |
 | Concurrent MCP clients | One session each, capped per process; a client that re-`initialize`s per request burns slots and idles them out minutes later | [MCP endpoint](CONFIGURATION.md#mcp-endpoint) |
 | Pending index work | A fixed-size queue; past it, writes answer `503` | [Indexer backpressure](CONFIGURATION.md#indexer-backpressure) |
 | API request body | Capped, and the cap is not configurable. WebDAV is exempt and takes far larger bodies | [What's not configurable](CONFIGURATION.md#whats-not-configurable-in-m2) |
@@ -328,7 +346,8 @@ bigger node, and on `fs` a second process is refused outright.
 The numbers those rows point at are owned by `docs/CONFIGURATION.md` and change there first.
 
 Two things that are *not* limits but shape capacity: WebDAV `PROPFIND` walks the whole collection
-server-side before answering, so a large knowledge base wants a generous proxy timeout
+server-side before answering, so a large knowledge base wants a generous WebDAV timeout, on the
+server and on the proxy alike
 ([PROPFIND on large knowledge bases](CONFIGURATION.md#webdav-propfind-on-large-knowledge-bases));
 and `/browse` caps a page at ten thousand keys and renders a notice rather than failing.
 

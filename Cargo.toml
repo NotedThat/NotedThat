@@ -48,6 +48,7 @@ authors = ["NotedThat Contributors"]
 [workspace.dependencies]
 # Workspace crates
 notedthat-core = { path = "crates/notedthat-core", version = "0.11.0" }
+notedthat-api-http = { path = "crates/notedthat-api-http", version = "0.11.0" }
 notedthat-indexer = { path = "crates/notedthat-indexer", version = "0.11.0" }
 notedthat-write = { path = "crates/notedthat-write", version = "0.11.0" }
 notedthat-events = { path = "crates/notedthat-events", version = "0.11.0" }

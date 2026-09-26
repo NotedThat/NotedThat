@@ -2,6 +2,7 @@
 #![deny(missing_docs)]
 
 pub(crate) mod authz;
+pub mod bounds;
 pub mod error;
 pub mod metrics;
 pub mod middleware;

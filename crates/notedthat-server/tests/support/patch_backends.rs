@@ -129,6 +129,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
         max_patchable_size,
         mcp_max_read_bytes: 16 * 1024 * 1024,
         mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
+        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
         ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,

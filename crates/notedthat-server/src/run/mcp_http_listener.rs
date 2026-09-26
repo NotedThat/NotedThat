@@ -1,4 +1,4 @@
-use super::mcp_http::{build_router, internal_http_api_url};
+use super::mcp_http::{build_router, internal_http_api_url, tool_call_client};
 use crate::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
 use anyhow::Context as _;
 use axum::{Router, routing::get};
@@ -65,6 +65,7 @@ fn test_config() -> Config {
         max_patchable_size: 100 * 1024 * 1024,
         mcp_max_read_bytes: 16 * 1024 * 1024,
         mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
+        request_bounds: crate::config::RequestBoundsConfig::default(),
         ready_probe_interval_ms: 5_000,
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
@@ -116,6 +117,38 @@ fn internal_http_api_url_uses_actual_bound_socket() {
     assert_eq!(internal_http_api_url(wildcard_v4), "http://127.0.0.1:49123");
     assert_eq!(internal_http_api_url(wildcard_v6), "http://[::1]:49124");
     assert_eq!(internal_http_api_url(concrete), "http://192.0.2.10:49125");
+}
+
+/// The tool-call client's deadline follows `NOTEDTHAT_REQUEST_TIMEOUT_MS`.
+///
+/// The E2E case (`a_stalled_tool_call_is_answered_by_the_servers_504`) cannot
+/// see this: it turns the server timeout *down*, and a client left on its
+/// built-in default would outlast that one too and still pass. What it cannot
+/// survive is the timeout being raised — an operator giving a slow embedder
+/// 90 s would find tool calls still cut off at the fixed default — so the
+/// check is that two configurations derive two different deadlines, each
+/// outlasting its own.
+#[test]
+fn the_tool_call_clients_deadline_follows_the_configured_request_timeout() {
+    let derived = |request_timeout| {
+        let mut config = test_config();
+        config.request_bounds.request_timeout = request_timeout;
+        tool_call_client(&config, "http://127.0.0.1:49126")
+            .expect("the tool-call client builds")
+            .api_timeout()
+    };
+
+    let long = Duration::from_secs(90);
+    let short = Duration::from_secs(5);
+    assert!(
+        derived(long) > long,
+        "a 90 s request timeout must leave the client waiting past the server's 504"
+    );
+    assert!(derived(short) > short);
+    assert!(
+        derived(long) > derived(short),
+        "the deadline is fixed, not derived from the configured request timeout"
+    );
 }
 
 /// `initialize` a session and hand back the `Mcp-Session-Id` header the
@@ -196,12 +229,16 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
                 &internal_http_api_url(backend_addr),
                 mcp_shutdown,
                 false,
+                &notedthat_api_http::bounds::RequestBounds::unbounded(),
             )
             .expect("MCP router should build"),
         );
+    // The accept loop the product listener actually runs (D71), not
+    // `axum::serve` — otherwise this test stopped covering the shutdown
+    // sequence the moment `run.rs` moved off it, and `serve.rs`'s graceful
+    // drain would have no test at all.
     let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
+        crate::run::serve::serve(listener, app, Duration::from_secs(30), graceful_shutdown)
             .await
             .context("unified listener failed")
     });
@@ -262,4 +299,60 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
     .await
     .expect("active MCP connection should reach EOF within 15 seconds");
     backend.abort();
+}
+
+/// Only the legs that answer once draw a permit: `GET /mcp` is the session's
+/// notification stream and is meant to stay open for hours (D71).
+#[tokio::test]
+async fn only_the_mcp_request_legs_are_bounded() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request};
+    use tower::ServiceExt as _;
+
+    let config = test_config();
+    // No permits at all, so every bounded leg is refused before it runs.
+    let bounds = notedthat_api_http::bounds::RequestBounds::new(
+        Duration::from_secs(60),
+        Duration::from_secs(60),
+        Arc::new(tokio::sync::Semaphore::new(0)),
+    );
+    let app = build_router(
+        &config,
+        Arc::new(notedthat_core::Authenticator::new(config.api_token.clone())),
+        &BTreeMap::new(),
+        "http://127.0.0.1:1",
+        CancellationToken::new(),
+        false,
+        &bounds,
+    )
+    .expect("MCP router should build");
+
+    let refused_by_the_cap = |method: Method, path: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("host", "127.0.0.1")
+                        .header("authorization", "Bearer test-token")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .expect("test request is valid"),
+                )
+                .await
+                .expect("router is infallible");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            String::from_utf8_lossy(&body).contains("limit of requests in flight")
+        }
+    };
+
+    assert!(refused_by_the_cap(Method::POST, "/mcp").await);
+    assert!(refused_by_the_cap(Method::DELETE, "/mcp").await);
+    assert!(refused_by_the_cap(Method::GET, "/sse").await);
+    assert!(!refused_by_the_cap(Method::GET, "/mcp").await);
 }

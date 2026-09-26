@@ -227,6 +227,40 @@ struct ErrorBody<'a> {
     request_id: String,
 }
 
+/// A refusal made by a layer that may run before its surface assigns a
+/// request id, so the id is carried when there is one and omitted when not.
+#[derive(Serialize)]
+struct RefusalBody<'a> {
+    error: &'a str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+}
+
+/// A refusal in the D38 envelope, for a request no handler was allowed to
+/// finish (D71).
+///
+/// A `503` carries `Retry-After: 5`, as every other capacity refusal on this
+/// server does: the same request will succeed once load drops. Nothing else
+/// does, since a request that timed out will not get faster by being repeated.
+pub(crate) fn refusal(
+    status: StatusCode,
+    error: &str,
+    message: String,
+    request_id: Option<String>,
+) -> Response {
+    let body = Json(RefusalBody {
+        error,
+        message,
+        request_id,
+    });
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        (status, [(RETRY_AFTER, "5")], body).into_response()
+    } else {
+        (status, body).into_response()
+    }
+}
+
 #[derive(Serialize)]
 struct ReplaceAmbiguousBody<'a> {
     error: &'a str,

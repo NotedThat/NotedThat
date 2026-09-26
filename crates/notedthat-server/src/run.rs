@@ -5,7 +5,8 @@ use crate::oidc::OidcVerifier;
 use crate::provision::provision_kbs;
 use anyhow::Context;
 use notedthat_api_http::{
-    router::{MAX_BODY_BYTES, build_router},
+    bounds::RequestBounds,
+    router::{MAX_BODY_BYTES, build_bounded_router},
     state::AppState,
 };
 use notedthat_core::{Authenticator, ProtectedResource};
@@ -15,7 +16,7 @@ use notedthat_indexer::{
 };
 use notedthat_storage_fs::{FsStorage, RootLock};
 use notedthat_storage_s3::S3Storage;
-use notedthat_webdav::{router::build_router as build_dav_router, state::WebDavState};
+use notedthat_webdav::{router::build_bounded_router as build_dav_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -31,6 +32,7 @@ mod metered;
 mod metrics;
 mod readiness;
 mod reconcile;
+mod serve;
 
 #[cfg(test)]
 #[path = "run/mcp_http_listener.rs"]
@@ -589,8 +591,20 @@ async fn serve(
 
                 info!(http = %bound_addr, "notedthat-server listening");
 
-                let app = build_router(state.clone())
-                    .merge(build_dav_router(dav_state))
+                let bounds = request_bounds(&config);
+                let app = build_bounded_router(state.clone(), &bounds)
+                    // `/webdav` has no streaming route, so the whole surface is
+                    // bounded — with its own, longer timeout, since `PROPFIND`
+                    // walks a collection before it answers.
+                    //
+                    // Handed to the router rather than wrapped around it:
+                    // `route_layer` here would sit outside that crate's own
+                    // `basic_auth_middleware`, so an unauthenticated `PROPFIND`
+                    // would draw a permit before its credential was looked at.
+                    .merge(build_dav_router(
+                        dav_state,
+                        &bounds.with_timeout(config.request_bounds.webdav_request_timeout),
+                    ))
                     .merge(mcp_http::build_router(
                         &config,
                         state.authenticator.clone(),
@@ -600,6 +614,7 @@ async fn serve(
                         // What the server actually runs on, not `Config::events`:
                         // `run_with` takes its backends as given (D66).
                         state.events.is_some(),
+                        &bounds,
                     )?)
                     // After the merges, deliberately: applied inside
                     // `build_router`'s own layer stack this would cover the API
@@ -617,10 +632,14 @@ async fn serve(
                     signal_shutdown.cancel();
                 });
 
-                let result = axum::serve(listener, app)
-                    .with_graceful_shutdown(async move { graceful_shutdown.cancelled().await })
-                    .await
-                    .context("HTTP listener failed");
+                let result = serve::serve(
+                    listener,
+                    app,
+                    config.request_bounds.header_read_timeout,
+                    graceful_shutdown,
+                )
+                .await
+                .context("HTTP listener failed");
                 shutdown_trigger.abort();
                 result
             }
@@ -661,6 +680,23 @@ async fn serve(
     }
     complete_shutdown(indexer_shutdown, worker_handle).await;
     serve_result
+}
+
+/// The request bounds every surface on the listener draws from (D71).
+///
+/// One semaphore behind every value built from this, so the in-flight cap is
+/// the listener's, not a surface's: a flood of `PROPFIND`s and a flood of
+/// searches compete for the same permits.
+fn request_bounds(config: &Config) -> RequestBounds {
+    RequestBounds::new(
+        config.request_bounds.request_timeout,
+        // The same bound hyper applies to the request head, applied to the gaps
+        // between body frames: both measure how long the client is taking.
+        config.request_bounds.header_read_timeout,
+        Arc::new(tokio::sync::Semaphore::new(
+            config.request_bounds.max_requests_in_flight,
+        )),
+    )
 }
 
 async fn complete_shutdown(

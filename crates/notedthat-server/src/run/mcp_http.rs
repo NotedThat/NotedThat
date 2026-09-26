@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{MethodFilter, any, get, on_service},
 };
+use notedthat_api_http::bounds::{RequestBounds, bound};
 use notedthat_core::{AccessPolicy, Authenticator, Principal};
 use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig,
@@ -21,6 +22,26 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// The client every tool call reaches the API with, over loopback on this
+/// same listener.
+///
+/// Its own function because the one thing worth checking about it — that its
+/// deadline is *derived* from `NOTEDTHAT_REQUEST_TIMEOUT_MS` rather than fixed
+/// — is invisible once it has been folded into a `Router`. A fixed deadline
+/// races the API's `504`, and the client's clock starts first, so the caller
+/// gets a transport error where D71 and `docs/API.md` promise a
+/// `request_timeout`; a raised server timeout would not reach MCP at all.
+pub(crate) fn tool_call_client(
+    config: &Config,
+    internal_api_url: &str,
+) -> anyhow::Result<NotedThatClient> {
+    Ok(NotedThatClient::new(internal_api_url, &config.api_token)
+        .context("failed to build MCP HTTP API client")?
+        .with_api_timeout(config.request_bounds.request_timeout)
+        .context("failed to build MCP HTTP API client")?
+        .with_max_read_bytes(config.mcp_max_read_bytes))
+}
+
 pub(crate) fn build_router(
     config: &Config,
     authenticator: Arc<Authenticator>,
@@ -28,10 +49,9 @@ pub(crate) fn build_router(
     internal_api_url: &str,
     cancellation_token: CancellationToken,
     events_enabled: bool,
+    bounds: &RequestBounds,
 ) -> anyhow::Result<axum::Router> {
-    let client = NotedThatClient::new(internal_api_url, &config.api_token)
-        .context("failed to build MCP HTTP API client")?
-        .with_max_read_bytes(config.mcp_max_read_bytes);
+    let client = tool_call_client(config, internal_api_url)?;
     let mcp_config = McpHttpServiceConfig::new(
         config.mcp_http_allowed_hosts.clone(),
         config.mcp_http_allowed_origins.clone(),
@@ -50,22 +70,29 @@ pub(crate) fn build_router(
     // server-to-client notification leg, DELETE to end a session. Auth is the
     // outermost layer, so a missing credential is 401 before rmcp answers
     // 400/404 about the session; the session bound sits between the two.
-    let mcp = on_service(
-        MethodFilter::GET
-            .or(MethodFilter::POST)
-            .or(MethodFilter::DELETE),
-        mcp_service.into_service(),
-    )
-    .route_layer(middleware::from_fn_with_state(sessions, bind_session))
-    .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
-    Ok(axum::Router::new()
-        .route("/mcp", mcp)
+    //
+    // One service, routed as two legs, because only one of them answers once.
+    // `GET` is the notification stream and is meant to stay open for hours,
+    // so it is registered without the request bounds (D71); `POST` and
+    // `DELETE` carry them, innermost, so a refused request has already been
+    // authenticated and matched to its session.
+    let service = mcp_service.into_service();
+    let stream_leg = on_service(MethodFilter::GET, service.clone());
+    let request_leg = on_service(MethodFilter::POST.or(MethodFilter::DELETE), service)
+        .route_layer(middleware::from_fn_with_state(bounds.clone(), bound));
+    let mcp = stream_leg
+        .merge(request_leg)
+        .route_layer(middleware::from_fn_with_state(sessions, bind_session))
+        .route_layer(middleware::from_fn_with_state(auth, authenticate_caller));
+    let legacy = axum::Router::new()
         .route(
             "/sse",
             get(legacy_transport_refusal).post(legacy_transport_refusal),
         )
         .route("/sse/", any(legacy_transport_refusal))
-        .route("/sse/{*path}", any(legacy_transport_refusal)))
+        .route("/sse/{*path}", any(legacy_transport_refusal))
+        .route_layer(middleware::from_fn_with_state(bounds.clone(), bound));
+    Ok(axum::Router::new().route("/mcp", mcp).merge(legacy))
 }
 
 /// Whether `/mcp` lets a request with no credential through, decided once.

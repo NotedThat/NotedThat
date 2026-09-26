@@ -194,6 +194,7 @@ fn config(listen_addr: std::net::SocketAddr, reconcile_on_startup: bool) -> Conf
         ready_probe_interval_ms: 5_000,
         mcp_max_read_bytes: 16 * 1024 * 1024,
         mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
+        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
         staging: notedthat_core::StagingConfig::default(),
         oidc: None,
     }

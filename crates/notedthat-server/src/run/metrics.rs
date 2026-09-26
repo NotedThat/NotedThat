@@ -122,6 +122,14 @@ fn describe_all() {
          duration is its subscriber gauge, not this."
     );
     describe_gauge!(name::HTTP_IN_FLIGHT, "Requests in flight.");
+    describe_counter!(
+        name::HTTP_REQUESTS_REFUSED,
+        "Requests refused by a listener bound, by reason: timeout (504) or in_flight (503)."
+    );
+    describe_counter!(
+        name::HTTP_HEADER_READ_TIMEOUTS,
+        "Connections closed for not sending a complete request head in time."
+    );
 
     describe_counter!(name::SEARCH_REQUESTS, "Searches answered.");
     describe_histogram!(

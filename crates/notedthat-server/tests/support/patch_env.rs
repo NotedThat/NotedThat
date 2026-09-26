@@ -59,8 +59,19 @@ impl PatchServer {
         max_patchable_size: u64,
         backends: notedthat_server::run::Backends,
     ) -> Self {
+        Self::start_with_config(max_patchable_size, backends, |_| {}).await
+    }
+
+    /// A server over `backends` whose configuration `adjust` changes first —
+    /// for a test about a setting the defaults do not exercise.
+    pub async fn start_with_config(
+        max_patchable_size: u64,
+        backends: notedthat_server::run::Backends,
+        adjust: impl FnOnce(&mut notedthat_server::config::Config),
+    ) -> Self {
         let runtime = patch_backends::start_runtime_with_backends(max_patchable_size, backends);
-        let config = runtime.config;
+        let mut config = runtime.config;
+        adjust(&mut config);
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);
         let mcp_url = format!("{base_url}/mcp");
