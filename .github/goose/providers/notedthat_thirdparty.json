@@ -1,8 +1,8 @@
 {
-  "name": "notedthat_albert",
+  "name": "notedthat_thirdparty",
   "engine": "openai",
-  "display_name": "Albert (egress proxy)",
-  "description": "Albert's OpenAI-compatible API through the NotedThat egress proxy",
+  "display_name": "Third-party endpoint (egress proxy)",
+  "description": "A third-party OpenAI-compatible endpoint through the NotedThat egress proxy",
   "api_key_env": "NOTEDTHAT_PROXY_TOKEN",
   "base_url": "https://example.invalid",
   "base_path": "example.invalid/chat/completions",

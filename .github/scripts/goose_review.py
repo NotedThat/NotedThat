@@ -70,7 +70,7 @@ FINAL_PROMPT = (
     "established so far. Leave out anything you could not confirm.\n"
 )
 
-# Albert limits DeepSeek's input tokens per minute, and every agent turn
+# The third-party endpoint limits DeepSeek's input tokens per minute, and every agent turn
 # resends the whole conversation; a run that hits the limit is resumed once
 # the minute has rolled over.
 RATE_LIMIT_ATTEMPTS = 8

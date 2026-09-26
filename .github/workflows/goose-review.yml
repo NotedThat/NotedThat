@@ -1,9 +1,9 @@
 # LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
 #
-# Four lanes run, one per model: DeepSeek V4 Flash (via Albert) as
+# Four lanes run, one per model: DeepSeek V4 Flash (third-party endpoint) as
 # warden-deepseek-v4[bot] and MiniMax M3 as warden-minimax-m3[bot] -- the
 # apps and their secrets keep their Warden names -- and Mistral Medium 3.5
-# and Gemma 4 31B (both via Albert) as github-actions[bot] until they have
+# and Gemma 4 31B (same endpoint) as github-actions[bot] until they have
 # apps of their own. Every review and comment is signed with its model.
 #
 # Each lane runs the checks in .agents/checks/ that cover the changed files
@@ -15,10 +15,10 @@
 #
 # Every model call goes through our self-hosted egress proxy, never to a
 # provider directly. The proxy holds the provider keys (GOOSE_PROXY_TOKEN is
-# the proxy's own token), paces requests per model -- Albert allows DeepSeek
+# the proxy's own token), paces requests per model -- the third-party endpoint allows DeepSeek
 # 50 a minute and the MiniMax plan shares one budget, and over-limit
 # requests queue instead of failing -- and inserts `tool_choice: "auto"` on
-# the Albert route, whose gateway otherwise defaults it to "none" and leaves
+# the third-party route, whose gateway otherwise defaults it to "none" and leaves
 # every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
 # secrets, kept out of the repository on purpose.
 #
@@ -65,19 +65,19 @@ jobs:
       matrix:
         include:
           - lane: deepseek
-            provider: notedthat_albert
+            provider: notedthat_thirdparty
             model: deepseek-v4-flash-0731
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
             app: DEEPSEEK
-            # Albert caps DeepSeek at 246,000 input tokens a minute, and every
+            # The endpoint caps DeepSeek at 246,000 input tokens a minute, and every
             # agent turn resends the whole conversation: three checks at once
             # hit it on #207. The script also retries a rate-limited run.
             jobs: 2
           - lane: minimax
             provider: notedthat_minimax
             model: MiniMax-M3
-            verify-provider: notedthat_albert
+            verify-provider: notedthat_thirdparty
             verify-model: deepseek-v4-flash-0731
             app: MINIMAX
             jobs: 3
@@ -86,16 +86,16 @@ jobs:
           # No GitHub App yet (`app` empty): they post as github-actions[bot],
           # every comment signed with the model that wrote it.
           - lane: mistral
-            provider: notedthat_albert
+            provider: notedthat_thirdparty
             model: mistral-medium-3-5
-            verify-provider: notedthat_albert
+            verify-provider: notedthat_thirdparty
             verify-model: gemma-4-31b-it
             app: ""
             jobs: 2
           - lane: gemma
-            provider: notedthat_albert
+            provider: notedthat_thirdparty
             model: gemma-4-31b-it
-            verify-provider: notedthat_albert
+            verify-provider: notedthat_thirdparty
             verify-model: mistral-medium-3-5
             app: ""
             jobs: 2
@@ -116,10 +116,10 @@ jobs:
       - name: Check the proxy secrets
         env:
           GOOSE_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-          GOOSE_ALBERT_BASE_URL: ${{ secrets.GOOSE_ALBERT_BASE_URL }}
+          GOOSE_THIRDPARTY_BASE_URL: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
           GOOSE_MINIMAX_BASE_URL: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: |
-          for name in GOOSE_PROXY_TOKEN GOOSE_ALBERT_BASE_URL GOOSE_MINIMAX_BASE_URL; do
+          for name in GOOSE_PROXY_TOKEN GOOSE_THIRDPARTY_BASE_URL GOOSE_MINIMAX_BASE_URL; do
             if [ -z "${!name}" ]; then
               echo "::error::the $name secret is empty or not shared with this repository"
               exit 1
@@ -131,10 +131,10 @@ jobs:
       - name: Preflight the proxy routes
         env:
           TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-          ALBERT: ${{ secrets.GOOSE_ALBERT_BASE_URL }}
+          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
           MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: |
-          for route in ALBERT MINIMAX; do
+          for route in THIRDPARTY MINIMAX; do
             status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
               -H "Authorization: Bearer $TOKEN" "${!route%/}/models") || rc=$?
             echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
@@ -185,11 +185,11 @@ jobs:
       # The templates carry placeholders; the routes come from secrets.
       - name: Configure the Goose providers
         env:
-          ALBERT: ${{ secrets.GOOSE_ALBERT_BASE_URL }}
+          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
           MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: |
           out="$XDG_CONFIG_HOME/goose/custom_providers"
-          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_albert.json "$ALBERT" "$out"
+          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_thirdparty.json "$THIRDPARTY" "$out"
           .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json "$MINIMAX" "$out"
 
       # Title and body go through the environment into a file: PR text is

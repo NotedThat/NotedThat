@@ -404,7 +404,7 @@ with it.
 
 Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the
-Albert route. Locally you need the proxy's token and its two routes — ask a
+third-party route. Locally you need the proxy's token and its two routes — ask a
 maintainer; none of them are in the repository on purpose. Goose 1.52 or
 later and Python 3.9+ are required. The prompts point the model at
 `ripgrep`, `fd` and `ast-grep` and at dependency sources in
@@ -416,12 +416,12 @@ export NOTEDTHAT_PROXY_TOKEN=<proxy token>
 
 # Install the two providers into your Goose config, pointed at the proxy routes
 dir="${XDG_CONFIG_HOME:-$HOME/.config}/goose/custom_providers"
-.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_albert.json <Albert route> "$dir"
+.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_thirdparty.json <third-party route> "$dir"
 .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json <MiniMax route> "$dir"
 
 # Review everything changed since origin/main, as the DeepSeek lane would
 python3 .github/scripts/goose_review.py review --base origin/main \
-  --provider notedthat_albert --model deepseek-v4-flash-0731
+  --provider notedthat_thirdparty --model deepseek-v4-flash-0731
 python3 .github/scripts/goose_review.py verify --base origin/main \
   --provider notedthat_minimax --model MiniMax-M3
 
@@ -435,13 +435,13 @@ Set `GOOSE_REVIEW_LOG_DIR=<dir>` to keep every run's prompt and full
 transcript, tool calls included. `goose review --checks-only` reads the same
 checks, but gives them no tools: they see only the diff.
 
-Two provider settings are load-bearing. Each Albert model sets
+Two provider settings are load-bearing. Each third-party model sets
 `request_params.max_tokens`, because Goose otherwise asks for up to 384,000
-output tokens and Albert rejects any request whose prompt plus `max_tokens`
+output tokens and the endpoint rejects any request whose prompt plus `max_tokens`
 exceeds the model's length (131,072 for DeepSeek). `context_limit` is that
 length minus `max_tokens`: Goose compacts a long review conversation at 80%
-of it, which must be a size Albert still accepts. And both entries
-must go through the proxy: Albert's gateway turns a missing `tool_choice`
+of it, which must be a size the endpoint still accepts. And both entries
+must go through the proxy: the third-party gateway turns a missing `tool_choice`
 into `"none"`, and the proxy is what puts `"auto"` back.
 
 `findings.jsonl`, `verified.jsonl` and `review-status.json` are git-ignored.

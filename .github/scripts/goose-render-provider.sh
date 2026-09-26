@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render a Goose provider template from .github/goose/providers/ for one
-# egress-proxy route, e.g. https://proxy.example/albert.
+# egress-proxy route, e.g. https://proxy.example/thirdparty.
 #
 # Goose takes only the origin from `base_url` and drops any path, so the
 # route's path goes in front of `base_path` instead. The templates carry
