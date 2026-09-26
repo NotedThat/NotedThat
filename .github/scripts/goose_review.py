@@ -75,6 +75,11 @@ FINAL_PROMPT = (
 # the minute has rolled over.
 RATE_LIMIT_ATTEMPTS = 8
 RATE_LIMIT_WAIT_S = 65
+JSON_PROMPT = (
+    "Your last message did not contain the JSON answer. Give it now: only the JSON "
+    "object described in the first message, reflecting the conclusions you reached, "
+    "with no prose and no code fences.\n"
+)
 RESUME_PROMPT = (
     "The previous turn was cut off by a provider rate limit. Continue where you left "
     "off, and end with the JSON answer described in the first message.\n"
@@ -268,7 +273,7 @@ def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
 
 
 def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: str,
-              deadline: float, share_s: float) -> str | None:
+              deadline: float, share_s: float, answer_key: str) -> str | None:
     """One headless Goose review run with the developer extension.
 
     Returns the text of the model's final message, or None when the run did
@@ -282,7 +287,9 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
     than restarted: after each round of `round_turns` turns it is told to
     continue while it is within `share_s` seconds and the phase `deadline`
     (time.monotonic()) is not close; then it is asked for its answer. A
-    rate-limited round is resumed after the limit's minute.
+    rate-limited round is resumed after the limit's minute. A run that ends
+    in prose without the `answer_key` JSON object (Mistral sums up its
+    investigation instead) is asked once for just that object.
 
     With GOOSE_REVIEW_LOG_DIR set, each round's prompt and full JSON
     transcript (tool calls included) are kept there.
@@ -303,6 +310,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
         command = ["goose", "run", "-n", session, *common(round_turns), "-i", "-"]
         stdin = prompt
         finalising = False
+        asked_for_json = False
         rate_limited = 0
         round_no = 0
         while True:
@@ -335,7 +343,15 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             out_of_turns = final.startswith("I've reached the maximum number of actions")
             error = final if errored else stderr.strip()[-300:]
             if status == "completed" and final and not errored and not out_of_turns:
-                return final
+                if last_json_object(final, answer_key) is not None or asked_for_json:
+                    return final
+                if deadline - time.monotonic() < 60:
+                    return final
+                print(f"::notice::{label}: answer has no JSON, asking for it", file=sys.stderr)
+                asked_for_json = True
+                command = ["goose", "run", "--resume", "-n", session, *common(FINAL_TURNS), "-i", "-"]
+                stdin = JSON_PROMPT
+                continue
 
             now = time.monotonic()
             resume = ["goose", "run", "--resume", "-n", session]
@@ -508,7 +524,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         share_s = shares.start()
         try:
             prompt = prompt.replace("{time_budget}", time_budget(share_s / 60), 1)
-            return run_goose(prompt, args.provider, args.model, check.turn_limit, label, deadline, share_s)
+            return run_goose(prompt, args.provider, args.model, check.turn_limit, label, deadline, share_s, "findings")
         finally:
             shares.finish()
 
@@ -616,7 +632,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
             f"{time_budget(share_s / 60)}{VERIFY_PROMPT}\n{TOOLS.format(base=base_sha)}\n"
             f"{pr_context(args.context)}## Findings\n\n{listing}\n\n## Diff\n\n```diff\n{shown_diff}```\n"
         )
-        text = run_goose(prompt, args.provider, args.model, VERIFY_TURNS, f"verify#{n}", deadline, share_s)
+        text = run_goose(prompt, args.provider, args.model, VERIFY_TURNS, f"verify#{n}", deadline, share_s, "verdicts")
         answer = last_json_object(text, "verdicts") if text else None
         if answer is None:
             print(f"::warning::verify#{n}: no verdicts JSON in the answer; its {len(batch)} finding(s) are withheld", file=sys.stderr)
@@ -766,8 +782,19 @@ def cmd_post(args: argparse.Namespace) -> None:
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
     body.append("\n<sub>Advisory only; it never blocks merging.</sub>" + sign)
     review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join(body), "comments": comments}
+    # A clean result is not posted -- a PR should not collect a "no
+    # findings" review per lane per push -- but a review that did not cover
+    # everything is, so a failure never looks like a clean result.
+    noteworthy = bool(findings) or bool(failed) or bool(status.get("withheld"))
+    summary = f"### Goose review ({args.lane}, `{args.model}`)\n\n{headline}.\n"
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+            out.write(summary + ("" if noteworthy else "\nNothing posted on the pull request.\n"))
 
     if args.dry_run:
+        if not noteworthy:
+            print(f"nothing to post: {headline}")
+            return
         planned = [
             {"reply_to": f"{c['path']}:{c['line']}", "body": comment_body(a, sign)}
             for c, also in zip(comments, threads)
@@ -801,6 +828,9 @@ def cmd_post(args: argparse.Namespace) -> None:
                 "variables": {"id": node_id},
             },
         )
+    if not noteworthy:
+        print(f"nothing to post ({headline}); {len(stale)} earlier review(s) collapsed")
+        return
 
     status, data = github("POST", f"{base}/reviews", token, review)
     if status == 422 and comments:
