@@ -75,6 +75,17 @@ FINAL_PROMPT = (
 # the minute has rolled over.
 RATE_LIMIT_ATTEMPTS = 8
 RATE_LIMIT_WAIT_S = 65
+# A check that answers within the first quarter of its time has usually read
+# the obvious and stopped (Gemma: six tool calls in 21 seconds). It gets one
+# more round to look again before its answer counts.
+SECOND_LOOK_FRACTION = 0.25
+SECOND_LOOK_PROMPT = (
+    "Before this answer counts, take a second look. Go through every changed hunk in "
+    "the diff and say to yourself whether you opened the code around it and what "
+    "calls it; open what you skipped, and the tests that pin its behaviour. Then give "
+    "the JSON answer described in the first message again, complete: keep the findings "
+    "that still hold, drop those that do not, add what you found.\n"
+)
 JSON_PROMPT = (
     "Your last message did not contain the JSON answer. Give it now: only the JSON "
     "object described in the first message, reflecting the conclusions you reached, "
@@ -313,6 +324,8 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
         stdin = prompt
         finalising = False
         asked_for_json = False
+        first_answer = None
+        second_look = answer_key != "findings"  # verification answers are not re-asked
         rate_limited = 0
         round_no = 0
         while True:
@@ -320,7 +333,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             remaining = deadline - time.monotonic()
             if remaining < 30:
                 print(f"::warning::{label}: no time left for another round", file=sys.stderr)
-                return None
+                return first_answer
             # An investigating round is cut off early enough to leave time for
             # the answer; the answering round may use what is left.
             limit = remaining if finalising else remaining - FINAL_MARGIN_S
@@ -332,9 +345,9 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 )
                 stdout, stderr = result.stdout, result.stderr
             except subprocess.TimeoutExpired:
-                if finalising:
-                    print(f"::warning::{label}: stopped at the phase deadline without an answer", file=sys.stderr)
-                    return None
+                if finalising or first_answer:
+                    print(f"::warning::{label}: stopped at the phase deadline", file=sys.stderr)
+                    return first_answer
                 # Goose keeps the session as it goes, so what the run read so
                 # far is still there to answer from.
                 print(f"::notice::{label}: investigation cut off near the deadline, asking for the answer", file=sys.stderr)
@@ -362,8 +375,20 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             out_of_turns = final.startswith("I've reached the maximum number of actions") or stalled
             error = final if errored else stderr.strip()[-300:]
             if status == "completed" and final and not errored and not out_of_turns:
-                if last_json_object(final, answer_key) is not None or asked_for_json:
+                answered = last_json_object(final, answer_key) is not None
+                elapsed = time.monotonic() - started
+                if answered and not second_look and not finalising \
+                        and elapsed < share_s * SECOND_LOOK_FRACTION and deadline - time.monotonic() > FINAL_MARGIN_S:
+                    print(f"::notice::{label}: answered after {round(elapsed)}s, asking for a second look", file=sys.stderr)
+                    second_look = True
+                    command = ["goose", "run", "--resume", "-n", session, *common(round_turns), "-i", "-"]
+                    stdin = SECOND_LOOK_PROMPT
+                    first_answer = final
+                    continue
+                if answered:
                     return final
+                if asked_for_json:
+                    return first_answer or final
                 if deadline - time.monotonic() < 60:
                     return final
                 print(f"::notice::{label}: answer has no JSON, asking for it", file=sys.stderr)
@@ -392,6 +417,9 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 command = [*resume, *common(FINAL_TURNS if finalising else round_turns), "-i", "-"]
                 stdin = FINAL_PROMPT if finalising else RESUME_PROMPT
                 continue
+            if first_answer:
+                print(f"::notice::{label}: second look gave no answer; keeping the first", file=sys.stderr)
+                return first_answer
             print(f"::warning::{label}: run ended without an answer ({status or 'no status'}): {error or 'no output'}", file=sys.stderr)
             return None
 
@@ -792,7 +820,9 @@ def body_line(f: dict, where: str) -> str:
 
 
 def cmd_post(args: argparse.Namespace) -> None:
-    findings = read_findings(args.input)
+    # No findings file at all: the review job failed before writing one.
+    missing = not Path(args.input).exists()
+    findings = [] if missing else read_findings(args.input)
     token = os.environ.get("GH_TOKEN", "")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
     marker = f"<!-- goose-review:{args.lane} -->"
@@ -821,7 +851,9 @@ def cmd_post(args: argparse.Namespace) -> None:
     ran, failed = status.get("checks_run"), status.get("checks_failed") or []
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     tally = ", ".join(f"{n} {s}" for s, n in reversed(counts.items()) if n) or "no findings"
-    if ran == [] and status.get("checks_skipped"):
+    if missing:
+        headline = "the review did not run: its job failed (see the workflow log)"
+    elif ran == [] and status.get("checks_skipped"):
         headline = "no check covers the files this pull request changes"
     elif ran and len(failed) == len(ran):
         headline = "the review did not run: no check finished (see the workflow log)"
@@ -840,7 +872,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     # A clean result is not posted -- a PR should not collect a "no
     # findings" review per lane per push -- but a review that did not cover
     # everything is, so a failure never looks like a clean result.
-    noteworthy = bool(findings) or bool(failed) or bool(status.get("withheld"))
+    noteworthy = missing or bool(findings) or bool(failed) or bool(status.get("withheld"))
     summary = f"### Goose review ({args.lane}, `{args.model}`)\n\n{headline}.\n"
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:

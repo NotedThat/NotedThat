@@ -392,15 +392,18 @@ list from `cargo metadata`.
 ## Running the Goose review (LLM review) locally
 
 CI reviews every PR with [Goose](https://github.com/block/goose)
-(`.github/workflows/goose-review.yml`) in two lanes, DeepSeek V4 Flash and
-MiniMax M3. Each lane runs the checks in `.agents/checks/` with its own
-model, the other lane's model re-checks every finding against the code, and
-only confirmed findings are posted, as the lane's GitHub App. A check runs
-only when the PR changes a file matching its `paths:` globs, and sees only
-those files' diff; findings several checks raise on the same lines are
-posted as one comment. The same
-script runs locally, so a finding can be reproduced before anyone argues
-with it.
+(`.github/workflows/goose-review.yml`) in four lanes, one per model:
+DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and Gemma 4 31B. Each lane
+runs the checks in `.agents/checks/` with its own model, a model of another
+family re-checks every finding against the code, and only confirmed
+findings are posted; a lane with nothing to report posts nothing. A check
+runs only when the PR changes a file matching its `paths:` globs, and sees
+only those files' diff; findings several checks raise on the same lines
+become one thread. Each lane
+(`.github/workflows/goose-review-lane.yml`) reviews in a job with a
+read-only token and its network limited to GitHub, crates.io and the
+proxy, and posts from a second job that runs no model. The same script runs
+locally, so a finding can be reproduced before anyone argues with it.
 
 Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the

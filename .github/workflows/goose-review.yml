@@ -9,17 +9,18 @@
 # Each lane runs the checks in .agents/checks/ that cover the changed files
 # with its own model, then a model of another family re-checks each finding
 # against the code and only the confirmed ones are posted: a lane never
-# verifies itself, the same rule the Warden profiles followed. .github/scripts/goose_review.py does all three
-# steps; its docstring says why it drives `goose run` itself instead of
-# using `goose review` (whose checks get no tools and cannot read the repo).
+# verifies itself, the same rule the Warden profiles followed.
+# .github/scripts/goose_review.py does all three steps; its docstring says
+# why it drives `goose run` itself instead of using `goose review` (whose
+# checks get no tools and cannot read the repo).
 #
 # Every model call goes through our self-hosted egress proxy, never to a
 # provider directly. The proxy holds the provider keys (GOOSE_PROXY_TOKEN is
-# the proxy's own token), paces requests per model -- the third-party endpoint allows DeepSeek
-# 50 a minute and the MiniMax plan shares one budget, and over-limit
-# requests queue instead of failing -- and inserts `tool_choice: "auto"` on
-# the third-party route, whose gateway otherwise defaults it to "none" and leaves
-# every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
+# the proxy's own token), paces requests per model -- the third-party
+# endpoint allows DeepSeek 50 a minute and the MiniMax plan shares one
+# budget, and over-limit requests queue instead of failing -- and inserts
+# `tool_choice: "auto"` on the third-party route, whose gateway otherwise
+# defaults it to "none" and leaves every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
 # secrets, kept out of the repository on purpose.
 #
 # Advisory only: it posts COMMENT reviews, never requests changes, and the
@@ -36,16 +37,17 @@ concurrency:
   group: goose-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# The job token writes pull request reviews only for lanes without a GitHub
-# App of their own (they post as github-actions[bot]); the others post with
-# their app's token. No step the model runs in is given either token.
+# Each lane is .github/workflows/goose-review-lane.yml: a `review` job with
+# a read-only token and its network limited to GitHub, crates.io and the
+# proxy, and a `post` job that alone may write to the pull request. These
+# are the most any lane's jobs may use.
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  review:
-    name: review (${{ matrix.lane }})
+  lane:
+    name: ${{ matrix.lane }}
     # Fork PRs get no secrets; release PRs are generated; drafts wait until
     # they are marked ready (the ready_for_review trigger picks them up).
     if: >-
@@ -54,12 +56,6 @@ jobs:
       && !startsWith(github.head_ref, 'release-plz-')
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
-    runs-on: ubuntu-latest
-    # The review is bounded by time, not turns: checks keep investigating
-    # while their share of 35 minutes lasts, verification gets 12, and the
-    # rest is setup and posting. A small PR finishes well inside it.
-    timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -70,9 +66,9 @@ jobs:
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
             app: DEEPSEEK
-            # The endpoint caps DeepSeek at 246,000 input tokens a minute, and every
-            # agent turn resends the whole conversation: three checks at once
-            # hit it on #207. The script also retries a rate-limited run.
+            # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
+            # every agent turn resends the whole conversation: three checks at
+            # once hit it on #207. The script also resumes a rate-limited run.
             jobs: 2
           - lane: minimax
             provider: notedthat_minimax
@@ -99,160 +95,13 @@ jobs:
             verify-model: mistral-medium-3-5
             app: ""
             jobs: 2
-    env:
-      GOOSE_VERSION: v1.52.0
-      GOOSE_SHA256: 4aee1f770b405c44194c0e9407df1fb06bda4c50eee935f0d8fd10731821cc5e
-      # No keyring on the runner; the key comes from the provider's env var.
-      GOOSE_DISABLE_KEYRING: "1"
-    steps:
-      # The PR head itself, not the merge commit: review comments are
-      # anchored to head_sha's line numbers.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check the proxy secrets
-        env:
-          GOOSE_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-          GOOSE_THIRDPARTY_BASE_URL: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
-          GOOSE_MINIMAX_BASE_URL: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
-        run: |
-          for name in GOOSE_PROXY_TOKEN GOOSE_THIRDPARTY_BASE_URL GOOSE_MINIMAX_BASE_URL; do
-            if [ -z "${!name}" ]; then
-              echo "::error::the $name secret is empty or not shared with this repository"
-              exit 1
-            fi
-          done
-
-      # Both routes, because every lane uses both models (one reviews, the
-      # other verifies). Prints only the status, never the URL.
-      - name: Preflight the proxy routes
-        env:
-          TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
-          MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
-        run: |
-          for route in THIRDPARTY MINIMAX; do
-            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
-              -H "Authorization: Bearer $TOKEN" "${!route%/}/models") || rc=$?
-            echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
-            if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
-              echo "::error::the $route route is not usable from this runner"
-              exit 1
-            fi
-          done
-
-      - name: Install Goose ${{ env.GOOSE_VERSION }}
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -sSfL -o goose.tar.gz \
-            "https://github.com/block/goose/releases/download/$GOOSE_VERSION/goose-x86_64-unknown-linux-gnu.tar.gz"
-          echo "$GOOSE_SHA256  goose.tar.gz" | sha256sum -c -
-          mkdir -p bin && tar xzf goose.tar.gz -C bin ./goose
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/bin/goose" --version
-          # Config (with our custom providers) and per-run transcripts live
-          # outside the checkout the agent works in.
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/goose-config" >> "$GITHUB_ENV"
-          echo "GOOSE_REVIEW_LOG_DIR=$RUNNER_TEMP/goose-logs" >> "$GITHUB_ENV"
-
-      # What the review prompts tell the model it can use (see TOOLS in
-      # goose_review.py): ripgrep and fd from Ubuntu, ast-grep for Rust
-      # syntax-aware search, and the locked dependencies' sources so it can
-      # read what a library call really does. `cargo fetch` only downloads;
-      # nothing of the PR is built or run. git, jq and the Rust toolchain come
-      # with the runner.
-      - name: Install the reviewer's tools
-        env:
-          AST_GREP_VERSION: 0.45.3
-          AST_GREP_SHA256: f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ripgrep fd-find
-          mkdir -p "$RUNNER_TEMP/bin"
-          ln -sf "$(command -v fdfind)" "$RUNNER_TEMP/bin/fd"
-          cd "$RUNNER_TEMP"
-          curl -sSfL -o ast-grep.zip \
-            "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP_VERSION/app-x86_64-unknown-linux-gnu.zip"
-          echo "$AST_GREP_SHA256  ast-grep.zip" | sha256sum -c -
-          unzip -q -o ast-grep.zip ast-grep -d bin
-          cd "$GITHUB_WORKSPACE"
-          cargo fetch --locked
-          rg --version | head -1; fd --version; "$RUNNER_TEMP/bin/ast-grep" --version
-
-      # The templates carry placeholders; the routes come from secrets.
-      - name: Configure the Goose providers
-        env:
-          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
-          MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
-        run: |
-          out="$XDG_CONFIG_HOME/goose/custom_providers"
-          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_thirdparty.json "$THIRDPARTY" "$out"
-          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json "$MINIMAX" "$out"
-
-      # Title and body go through the environment into a file: PR text is
-      # never interpolated into a script, and the prompts mark it as data.
-      - name: Collect the PR description
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-          BODY: ${{ github.event.pull_request.body }}
-        run: printf '# %s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr.md"
-
-      # The agent has a shell in this checkout, so nothing here may hold a
-      # GitHub write token: the app token is created only after this step.
-      - name: Review (${{ matrix.model }})
-        env:
-          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-        run: >
-          python3 .github/scripts/goose_review.py review
-          --base "${{ github.event.pull_request.base.sha }}"
-          --provider "${{ matrix.provider }}" --model "${{ matrix.model }}"
-          --jobs "${{ matrix.jobs }}" --budget-minutes 35 --context "$RUNNER_TEMP/pr.md"
-          --out "$RUNNER_TEMP/findings.jsonl" --status "$RUNNER_TEMP/status.json"
-
-      - name: Verify (${{ matrix.verify-model }})
-        env:
-          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
-        run: >
-          python3 .github/scripts/goose_review.py verify
-          --base "${{ github.event.pull_request.base.sha }}"
-          --provider "${{ matrix.verify-provider }}" --model "${{ matrix.verify-model }}"
-          --budget-minutes 12 --context "$RUNNER_TEMP/pr.md"
-          --in "$RUNNER_TEMP/findings.jsonl" --out "$RUNNER_TEMP/verified.jsonl"
-          --status "$RUNNER_TEMP/status.json"
-
-      - name: Create the ${{ matrix.lane }} app token
-        if: matrix.app != ''
-        id: bot
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets[format('WARDEN_{0}_APP_ID', matrix.app)] }}
-          private-key: ${{ secrets[format('WARDEN_{0}_PRIVATE_KEY', matrix.app)] }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
-      - name: Post the review
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
-        run: >
-          python3 .github/scripts/goose_review.py post
-          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
-          --head-sha "${{ github.event.pull_request.head.sha }}"
-          --lane "${{ matrix.lane }}" --model "${{ matrix.model }}"
-          --verify-model "${{ matrix.verify-model }}"
-          --in "$RUNNER_TEMP/verified.jsonl" --status "$RUNNER_TEMP/status.json"
-
-      - name: Keep the findings and transcripts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: goose-review-${{ matrix.lane }}
-          path: |
-            ${{ runner.temp }}/findings.jsonl
-            ${{ runner.temp }}/verified.jsonl
-            ${{ runner.temp }}/status.json
-            ${{ runner.temp }}/goose-logs/
-          if-no-files-found: ignore
-          retention-days: 14
+    uses: ./.github/workflows/goose-review-lane.yml
+    with:
+      lane: ${{ matrix.lane }}
+      provider: ${{ matrix.provider }}
+      model: ${{ matrix.model }}
+      verify-provider: ${{ matrix.verify-provider }}
+      verify-model: ${{ matrix.verify-model }}
+      app: ${{ matrix.app }}
+      jobs: ${{ matrix.jobs }}
+    secrets: inherit
