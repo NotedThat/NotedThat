@@ -435,9 +435,12 @@ Set `GOOSE_REVIEW_LOG_DIR=<dir>` to keep every run's prompt and full
 transcript, tool calls included. `goose review --checks-only` reads the same
 checks, but gives them no tools: they see only the diff.
 
-Two provider settings are load-bearing. DeepSeek's entry sets
-`request_params.max_tokens`, because Goose otherwise asks for 384,000 output
-tokens and Albert rejects anything over 131,072 in total. And both entries
+Two provider settings are load-bearing. Each Albert model sets
+`request_params.max_tokens`, because Goose otherwise asks for up to 384,000
+output tokens and Albert rejects any request whose prompt plus `max_tokens`
+exceeds the model's length (131,072 for DeepSeek). `context_limit` is that
+length minus `max_tokens`: Goose compacts a long review conversation at 80%
+of it, which must be a size Albert still accepts. And both entries
 must go through the proxy: Albert's gateway turns a missing `tool_choice`
 into `"none"`, and the proxy is what puts `"auto"` back.
 

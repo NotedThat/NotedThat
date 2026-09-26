@@ -9,23 +9,23 @@
   "models": [
     {
       "name": "deepseek-v4-flash-0731",
-      "context_limit": 131072,
+      "context_limit": 114688,
       "request_params": {
-        "max_tokens": 32768
+        "max_tokens": 16384
       }
     },
     {
       "name": "mistral-medium-3-5",
-      "context_limit": 262144,
+      "context_limit": 245760,
       "request_params": {
-        "max_tokens": 32768
+        "max_tokens": 16384
       }
     },
     {
       "name": "gemma-4-31b-it",
-      "context_limit": 262144,
+      "context_limit": 245760,
       "request_params": {
-        "max_tokens": 32768
+        "max_tokens": 16384
       }
     }
   ],
