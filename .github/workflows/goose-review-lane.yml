@@ -1,0 +1,332 @@
+# One lane of the Goose review (see goose-review.yml, which calls this once
+# per model): a `review` job that runs the checks and verification, and a
+# `post` job that publishes the result.
+#
+# The split is the point. The model gets a shell in `review`, so that job
+# holds a read-only token and its network is limited to what the review
+# needs: GitHub and its release downloads, crates.io for `cargo fetch`, and
+# the egress proxy, without sudo to lift that limit. A prompt-injected agent
+# can then neither write to the repository nor send the proxy token anywhere
+# but the proxy. What it writes is posted and uploaded, so that is scrubbed
+# of the token and routes, verbatim and in the common encodings; a token
+# disguised some other way is the risk that remains, bounded by the job
+# running only for branches of this repository. `post` runs no model; it
+# alone has `pull-requests: write`, or the lane's app token.
+#
+# Advisory only: `review` may fail without failing the PR, and `post` still
+# says so on the PR when it does.
+name: Goose review lane
+
+on:
+  workflow_call:
+    inputs:
+      lane: { type: string, required: true }
+      provider: { type: string, required: true }
+      model: { type: string, required: true }
+      verify-provider: { type: string, required: true }
+      verify-model: { type: string, required: true }
+      # GitHub App secret prefix (WARDEN_<app>_APP_ID / _PRIVATE_KEY); empty
+      # posts as github-actions[bot].
+      app: { type: string, required: false, default: "" }
+      # Checks run at once; see the rate limits in goose-review.yml.
+      jobs: { type: number, required: false, default: 2 }
+
+permissions: {}
+
+jobs:
+  review:
+    name: review
+    runs-on: ubuntu-latest
+    # The review is bounded by time, not turns: checks keep investigating
+    # while their share of 35 minutes lasts and verification gets 12. A
+    # small PR finishes well inside it.
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      GOOSE_VERSION: v1.52.0
+      GOOSE_SHA256: 4aee1f770b405c44194c0e9407df1fb06bda4c50eee935f0d8fd10731821cc5e
+      # No keyring on the runner; the key comes from the provider's env var.
+      GOOSE_DISABLE_KEYRING: "1"
+      # Goose reports usage to PostHog unless told not to; it would also be
+      # blocked by the egress policy below.
+      GOOSE_TELEMETRY_OFF: "1"
+      GOOSE_TELEMETRY_ENABLED: "false"
+    steps:
+      # Everything after this step can reach only the endpoints listed. The
+      # policy is applied at job start, before any step runs, so the proxy's
+      # host comes from an org variable rather than being derived from the
+      # route secrets; like the routes, it stays out of this file. The model
+      # has a shell here, so sudo goes too: with it, the model could lift the
+      # policy. Artifact storage is GitHub's own accounts by name, not
+      # *.blob.core.windows.net, where anyone can create an account to send
+      # the token to.
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          disable-sudo-and-containers: true
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            index.crates.io:443
+            static.crates.io:443
+            results-receiver.actions.githubusercontent.com:443
+            productionresultssa0.blob.core.windows.net:443
+            productionresultssa1.blob.core.windows.net:443
+            productionresultssa2.blob.core.windows.net:443
+            productionresultssa3.blob.core.windows.net:443
+            productionresultssa4.blob.core.windows.net:443
+            productionresultssa5.blob.core.windows.net:443
+            productionresultssa6.blob.core.windows.net:443
+            productionresultssa7.blob.core.windows.net:443
+            productionresultssa8.blob.core.windows.net:443
+            productionresultssa9.blob.core.windows.net:443
+            productionresultssa10.blob.core.windows.net:443
+            productionresultssa11.blob.core.windows.net:443
+            productionresultssa12.blob.core.windows.net:443
+            productionresultssa13.blob.core.windows.net:443
+            productionresultssa14.blob.core.windows.net:443
+            productionresultssa15.blob.core.windows.net:443
+            productionresultssa16.blob.core.windows.net:443
+            productionresultssa17.blob.core.windows.net:443
+            productionresultssa18.blob.core.windows.net:443
+            productionresultssa19.blob.core.windows.net:443
+            ${{ vars.GOOSE_PROXY_EGRESS }}
+
+      # The PR head itself, not the merge commit: review comments are
+      # anchored to head_sha's line numbers.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the proxy secrets
+        env:
+          GOOSE_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+          GOOSE_THIRDPARTY_BASE_URL: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+          GOOSE_MINIMAX_BASE_URL: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+        run: |
+          for name in GOOSE_PROXY_TOKEN GOOSE_THIRDPARTY_BASE_URL GOOSE_MINIMAX_BASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::the $name secret is empty or not shared with this repository"
+              exit 1
+            fi
+          done
+
+      # Both routes, because every lane uses a model on each side (one
+      # reviews, the other verifies). Prints only the status, never the URL.
+      - name: Preflight the proxy routes
+        env:
+          TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+          MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+        run: |
+          for route in THIRDPARTY MINIMAX; do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $TOKEN" "${!route%/}/models") || rc=$?
+            echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
+            if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
+              echo "::error::the $route route is not usable from this runner"
+              exit 1
+            fi
+          done
+
+      - name: Install Goose ${{ env.GOOSE_VERSION }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o goose.tar.gz \
+            "https://github.com/block/goose/releases/download/$GOOSE_VERSION/goose-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$GOOSE_SHA256  goose.tar.gz" | sha256sum -c -
+          mkdir -p bin && tar xzf goose.tar.gz -C bin ./goose
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/goose" --version
+          # Config (with our custom providers) and per-run transcripts live
+          # outside the checkout the agent works in.
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/goose-config" >> "$GITHUB_ENV"
+          echo "GOOSE_REVIEW_LOG_DIR=$RUNNER_TEMP/goose-logs" >> "$GITHUB_ENV"
+
+      # What the review prompts tell the model it can use (TOOLS in
+      # goose_review.py): ripgrep and fd, ast-grep for Rust syntax-aware
+      # search, and the locked dependencies' sources so it can read what a
+      # library call really does. All from release archives pinned by
+      # sha256, not apt (whose mirrors the egress policy does not allow).
+      # `cargo fetch` only downloads; nothing of the PR is built or run. git,
+      # jq and the Rust toolchain come with the runner.
+      - name: Install the reviewer's tools
+        env:
+          RG_VERSION: 15.2.0
+          RG_SHA256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
+          FD_VERSION: v10.5.0
+          FD_SHA256: 761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7
+          AST_GREP_VERSION: 0.45.3
+          AST_GREP_SHA256: f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8
+        run: |
+          cd "$RUNNER_TEMP"
+          fetch() { curl -sSfL -o "$1" "$2" && echo "$3  $1" | sha256sum -c -; }
+          rg="ripgrep-$RG_VERSION-x86_64-unknown-linux-musl"
+          fetch rg.tar.gz "https://github.com/BurntSushi/ripgrep/releases/download/$RG_VERSION/$rg.tar.gz" "$RG_SHA256"
+          tar xzf rg.tar.gz -C bin --strip-components=1 "$rg/rg"
+          fd="fd-$FD_VERSION-x86_64-unknown-linux-musl"
+          fetch fd.tar.gz "https://github.com/sharkdp/fd/releases/download/$FD_VERSION/$fd.tar.gz" "$FD_SHA256"
+          tar xzf fd.tar.gz -C bin --strip-components=1 "$fd/fd"
+          fetch ast-grep.zip "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP_VERSION/app-x86_64-unknown-linux-gnu.zip" "$AST_GREP_SHA256"
+          unzip -q -o ast-grep.zip ast-grep -d bin
+          cd "$GITHUB_WORKSPACE"
+          cargo fetch --locked
+          rg --version | head -1; fd --version; ast-grep --version
+
+      # The templates carry placeholders; the routes come from secrets.
+      - name: Configure the Goose providers
+        env:
+          THIRDPARTY: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+          MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+        run: |
+          out="$XDG_CONFIG_HOME/goose/custom_providers"
+          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_thirdparty.json "$THIRDPARTY" "$out"
+          .github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json "$MINIMAX" "$out"
+
+      # Title and body go through the environment into a file: PR text is
+      # never interpolated into a script, and the prompts mark it as data.
+      - name: Collect the PR description
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/review"
+          printf '# %s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr.md"
+
+      - name: Review (${{ inputs.model }})
+        env:
+          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+        run: >
+          python3 .github/scripts/goose_review.py review
+          --base "${{ github.event.pull_request.base.sha }}"
+          --provider "${{ inputs.provider }}" --model "${{ inputs.model }}"
+          --jobs "${{ inputs.jobs }}" --budget-minutes 35 --context "$RUNNER_TEMP/pr.md"
+          --out "$RUNNER_TEMP/review/findings.jsonl" --status "$RUNNER_TEMP/review/status.json"
+
+      - name: Verify (${{ inputs.verify-model }})
+        env:
+          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+        run: >
+          python3 .github/scripts/goose_review.py verify
+          --base "${{ github.event.pull_request.base.sha }}"
+          --provider "${{ inputs.verify-provider }}" --model "${{ inputs.verify-model }}"
+          --budget-minutes 12 --context "$RUNNER_TEMP/pr.md"
+          --in "$RUNNER_TEMP/review/findings.jsonl" --out "$RUNNER_TEMP/review/verified.jsonl"
+          --status "$RUNNER_TEMP/review/status.json"
+
+      # The model can write to these directories through its shell, so
+      # everything uploaded is scrubbed of the proxy token and routes first,
+      # not only what the script wrote itself; a file that is not text is
+      # removed. Only the script's own file names are uploaded.
+      - name: Scrub the findings and transcripts
+        if: always()
+        env:
+          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+        run: python3 .github/scripts/goose_review.py scrub "$RUNNER_TEMP/review" "$RUNNER_TEMP/goose-logs"
+
+      # `post` reads verified.jsonl and status.json from here; the
+      # transcripts are kept for reading, tool calls included.
+      - name: Keep the findings and transcripts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goose-review-${{ inputs.lane }}
+          path: |
+            ${{ runner.temp }}/review/findings.jsonl
+            ${{ runner.temp }}/review/verified.jsonl
+            ${{ runner.temp }}/review/status.json
+            ${{ runner.temp }}/goose-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  post:
+    name: post
+    needs: review
+    # Also after a failed or timed-out review, so the PR says the review did
+    # not run; not when the run is cancelled (a newer push is being
+    # reviewed). `cancelled()` is the run's state, not the review job's: a
+    # job that hits its timeout can report itself cancelled while the run
+    # is not.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            results-receiver.actions.githubusercontent.com:443
+            productionresultssa0.blob.core.windows.net:443
+            productionresultssa1.blob.core.windows.net:443
+            productionresultssa2.blob.core.windows.net:443
+            productionresultssa3.blob.core.windows.net:443
+            productionresultssa4.blob.core.windows.net:443
+            productionresultssa5.blob.core.windows.net:443
+            productionresultssa6.blob.core.windows.net:443
+            productionresultssa7.blob.core.windows.net:443
+            productionresultssa8.blob.core.windows.net:443
+            productionresultssa9.blob.core.windows.net:443
+            productionresultssa10.blob.core.windows.net:443
+            productionresultssa11.blob.core.windows.net:443
+            productionresultssa12.blob.core.windows.net:443
+            productionresultssa13.blob.core.windows.net:443
+            productionresultssa14.blob.core.windows.net:443
+            productionresultssa15.blob.core.windows.net:443
+            productionresultssa16.blob.core.windows.net:443
+            productionresultssa17.blob.core.windows.net:443
+            productionresultssa18.blob.core.windows.net:443
+            productionresultssa19.blob.core.windows.net:443
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch the review
+        id: fetch
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: goose-review-${{ inputs.lane }}
+          path: ${{ runner.temp }}/artifact
+
+      - name: Create the ${{ inputs.lane }} app token
+        if: inputs.app != ''
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets[format('WARDEN_{0}_APP_ID', inputs.app)] }}
+          private-key: ${{ secrets[format('WARDEN_{0}_PRIVATE_KEY', inputs.app)] }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # Only what posting needs, whatever else the app was granted for
+          # Warden (contents: write among it): this job runs the PR's own
+          # copy of the script.
+          permission-pull-requests: write
+
+      # A missing verified.jsonl (the review job failed before writing it)
+      # is posted as "the review did not run".
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+        run: >
+          python3 .github/scripts/goose_review.py post
+          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+          --lane "${{ inputs.lane }}" --model "${{ inputs.model }}"
+          --verify-model "${{ inputs.verify-model }}"
+          --in "$RUNNER_TEMP/artifact/review/verified.jsonl"
+          --status "$RUNNER_TEMP/artifact/review/status.json"

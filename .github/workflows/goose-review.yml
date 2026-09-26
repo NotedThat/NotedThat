@@ -1,0 +1,112 @@
+# LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
+#
+# Four lanes run, one per model: DeepSeek V4 Flash (third-party endpoint) as
+# warden-deepseek-v4[bot] and MiniMax M3 as warden-minimax-m3[bot] -- the
+# apps and their secrets keep their Warden names -- and Mistral Medium 3.5
+# and Gemma 4 31B (same endpoint) as github-actions[bot] until they have
+# apps of their own. Every review and comment is signed with its model.
+#
+# Each lane runs the checks in .agents/checks/ that cover the changed files
+# with its own model, then a model of another family re-checks each finding
+# against the code and only the confirmed ones are posted: a lane never
+# verifies itself, the same rule the Warden profiles followed. MiniMax M3
+# verifies every lane but its own, which DeepSeek verifies: on #207 it was
+# the verifier that let no false finding through.
+# .github/scripts/goose_review.py does all three steps; its docstring says
+# why it drives `goose run` itself instead of using `goose review` (whose
+# checks get no tools and cannot read the repo).
+#
+# Every model call goes through our self-hosted egress proxy, never to a
+# provider directly. The proxy holds the provider keys (GOOSE_PROXY_TOKEN is
+# the proxy's own token), paces requests per model -- the third-party
+# endpoint allows DeepSeek 50 a minute and the MiniMax plan shares one
+# budget, and over-limit requests queue instead of failing -- and inserts
+# `tool_choice: "auto"` on the third-party route, whose gateway otherwise
+# defaults it to "none" and leaves every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
+# secrets, kept out of the repository on purpose.
+#
+# Advisory only: it posts COMMENT reviews, never requests changes, and the
+# job never fails the PR. A check that does not finish (the MiniMax plan's
+# quota, "Token Plan rate limit reached (2062)", is the usual cause) is named
+# in the review as not covered rather than reported as clean.
+name: Goose review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: goose-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Each lane is .github/workflows/goose-review-lane.yml: a `review` job with
+# a read-only token and its network limited to GitHub, crates.io and the
+# proxy, and a `post` job that alone may write to the pull request. These
+# are the most any lane's jobs may use.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lane:
+    name: ${{ matrix.lane }}
+    # Fork PRs get no secrets; release PRs are generated; drafts wait until
+    # they are marked ready (the ready_for_review trigger picks them up).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+      && !startsWith(github.head_ref, 'release-plz-')
+      && !startsWith(github.head_ref, 'release/')
+      && !startsWith(github.event.pull_request.title, 'chore: release ')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: deepseek
+            provider: notedthat_thirdparty
+            model: deepseek-v4-flash-0731
+            verify-provider: notedthat_minimax
+            verify-model: MiniMax-M3
+            app: DEEPSEEK
+            # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
+            # every agent turn resends the whole conversation: three checks at
+            # once hit it on #207. The script also resumes a rate-limited run.
+            jobs: 2
+          - lane: minimax
+            provider: notedthat_minimax
+            model: MiniMax-M3
+            verify-provider: notedthat_thirdparty
+            verify-model: deepseek-v4-flash-0731
+            app: MINIMAX
+            jobs: 3
+          # Two more model families, verified by MiniMax like DeepSeek: Gemma
+          # passed Mistral's false claim that `**/` spans one directory at
+          # most. This puts three lanes' verification on the MiniMax plan's
+          # quota; a verification it cuts short withholds its findings as
+          # unconfirmed, it never posts them.
+          # No GitHub App yet (`app` empty): they post as github-actions[bot],
+          # every comment signed with the model that wrote it.
+          - lane: mistral
+            provider: notedthat_thirdparty
+            model: mistral-medium-3-5
+            verify-provider: notedthat_minimax
+            verify-model: MiniMax-M3
+            app: ""
+            jobs: 2
+          - lane: gemma
+            provider: notedthat_thirdparty
+            model: gemma-4-31b-it
+            verify-provider: notedthat_minimax
+            verify-model: MiniMax-M3
+            app: ""
+            jobs: 2
+    uses: ./.github/workflows/goose-review-lane.yml
+    with:
+      lane: ${{ matrix.lane }}
+      provider: ${{ matrix.provider }}
+      model: ${{ matrix.model }}
+      verify-provider: ${{ matrix.verify-provider }}
+      verify-model: ${{ matrix.verify-model }}
+      app: ${{ matrix.app }}
+      jobs: ${{ matrix.jobs }}
+    secrets: inherit
