@@ -703,8 +703,15 @@ def commentable_lines(patch: str) -> dict[int, int]:
     return lines
 
 
-def comment_body(f: dict) -> str:
-    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}"
+def signature(model: str, verify_model: str | None) -> str:
+    """Who reviewed, on every review and comment: lanes without a GitHub App
+    of their own all post as github-actions[bot]."""
+    verified = f", verified by **{verify_model}**" if verify_model else ""
+    return f"\n\n---\n\n_Review done by **{model}**{verified}_"
+
+
+def comment_body(f: dict, sign: str = "") -> str:
+    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}{sign}"
 
 
 def body_line(f: dict, where: str) -> str:
@@ -718,6 +725,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     token = os.environ.get("GH_TOKEN", "")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
     marker = f"<!-- goose-review:{args.lane} -->"
+    sign = signature(args.model, args.verify_model)
 
     files = paged(f"{base}/files", token) if token else []
     diff_lines = {f["filename"]: commentable_lines(f.get("patch") or "") for f in files}
@@ -732,7 +740,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         if end not in lines:
             loose.append(f)
             continue
-        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f)}
+        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f, sign)}
         if start < end and lines.get(start) == lines[end]:
             comment.update(start_line=start, start_side="RIGHT")
         comments.append(comment)
@@ -756,12 +764,12 @@ def cmd_post(args: argparse.Namespace) -> None:
     if loose:
         body.append("\nOutside the diff's changed lines:\n")
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
-    body.append("\n<sub>Advisory only; it never blocks merging.</sub>")
+    body.append("\n<sub>Advisory only; it never blocks merging.</sub>" + sign)
     review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join(body), "comments": comments}
 
     if args.dry_run:
         planned = [
-            {"reply_to": f"{c['path']}:{c['line']}", "body": comment_body(a)}
+            {"reply_to": f"{c['path']}:{c['line']}", "body": comment_body(a, sign)}
             for c, also in zip(comments, threads)
             for a in also
         ]
@@ -813,7 +821,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         for comment, also in zip(comments, threads):
             parent = by_place.get((comment["path"], comment["line"]))
             for a in also if parent else []:
-                reply_status, reply = github("POST", f"{base}/comments/{parent}/replies", token, {"body": comment_body(a)})
+                reply_status, reply = github("POST", f"{base}/comments/{parent}/replies", token, {"body": comment_body(a, sign)})
                 if reply_status in (200, 201):
                     replies += 1
                 else:
@@ -856,7 +864,8 @@ def main() -> None:
     post.add_argument("--pr", required=True, type=int)
     post.add_argument("--head-sha", required=True)
     post.add_argument("--lane", required=True)
-    post.add_argument("--model", required=True)
+    post.add_argument("--model", required=True, help="the reviewing model")
+    post.add_argument("--verify-model", help="the model that confirmed the findings")
     post.add_argument("--in", dest="input", default="verified.jsonl")
     post.add_argument("--status", default="review-status.json")
     post.add_argument("--dry-run", action="store_true", help="print the review instead of posting it")

@@ -1,14 +1,15 @@
 # LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
 #
-# Two lanes run, each posting as its own GitHub App so the reviews read as
-# two reviewers: DeepSeek V4 Flash (via Albert) as warden-deepseek-v4[bot]
-# and MiniMax M3 as warden-minimax-m3[bot]. The apps and their secrets keep
-# their Warden names; only the tool behind them changed.
+# Four lanes run, one per model: DeepSeek V4 Flash (via Albert) as
+# warden-deepseek-v4[bot] and MiniMax M3 as warden-minimax-m3[bot] -- the
+# apps and their secrets keep their Warden names -- and Mistral Medium 3.5
+# and Gemma 4 31B (both via Albert) as github-actions[bot] until they have
+# apps of their own. Every review and comment is signed with its model.
 #
-# Each lane runs every check in .agents/checks/ with its own model, then the
-# *other* lane's model re-checks each finding against the code and only the
-# confirmed ones are posted: a lane never verifies itself, the same rule the
-# Warden profiles followed. .github/scripts/goose_review.py does all three
+# Each lane runs the checks in .agents/checks/ that cover the changed files
+# with its own model, then a model of another family re-checks each finding
+# against the code and only the confirmed ones are posted: a lane never
+# verifies itself, the same rule the Warden profiles followed. .github/scripts/goose_review.py does all three
 # steps; its docstring says why it drives `goose run` itself instead of
 # using `goose review` (whose checks get no tools and cannot read the repo).
 #
@@ -35,10 +36,12 @@ concurrency:
   group: goose-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# Read-only for the job token; the review is posted with the lane's app token.
+# The job token writes pull request reviews only for lanes without a GitHub
+# App of their own (they post as github-actions[bot]); the others post with
+# their app's token. No step the model runs in is given either token.
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   review:
@@ -78,6 +81,24 @@ jobs:
             verify-model: deepseek-v4-flash-0731
             app: MINIMAX
             jobs: 3
+          # Mistral and Gemma verify each other: two more model families,
+          # and no extra load on DeepSeek's token budget or MiniMax's quota.
+          # No GitHub App yet (`app` empty): they post as github-actions[bot],
+          # every comment signed with the model that wrote it.
+          - lane: mistral
+            provider: notedthat_albert
+            model: mistral-medium-3-5
+            verify-provider: notedthat_albert
+            verify-model: gemma-4-31b-it
+            app: ""
+            jobs: 2
+          - lane: gemma
+            provider: notedthat_albert
+            model: gemma-4-31b-it
+            verify-provider: notedthat_albert
+            verify-model: mistral-medium-3-5
+            app: ""
+            jobs: 2
     env:
       GOOSE_VERSION: v1.52.0
       GOOSE_SHA256: 4aee1f770b405c44194c0e9407df1fb06bda4c50eee935f0d8fd10731821cc5e
@@ -203,6 +224,7 @@ jobs:
           --status "$RUNNER_TEMP/status.json"
 
       - name: Create the ${{ matrix.lane }} app token
+        if: matrix.app != ''
         id: bot
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -213,12 +235,13 @@ jobs:
 
       - name: Post the review
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
         run: >
           python3 .github/scripts/goose_review.py post
           --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
           --head-sha "${{ github.event.pull_request.head.sha }}"
           --lane "${{ matrix.lane }}" --model "${{ matrix.model }}"
+          --verify-model "${{ matrix.verify-model }}"
           --in "$RUNNER_TEMP/verified.jsonl" --status "$RUNNER_TEMP/status.json"
 
       - name: Keep the findings and transcripts
