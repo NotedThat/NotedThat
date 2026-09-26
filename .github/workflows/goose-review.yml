@@ -9,7 +9,9 @@
 # Each lane runs the checks in .agents/checks/ that cover the changed files
 # with its own model, then a model of another family re-checks each finding
 # against the code and only the confirmed ones are posted: a lane never
-# verifies itself, the same rule the Warden profiles followed.
+# verifies itself, the same rule the Warden profiles followed. MiniMax M3
+# verifies every lane but its own, which DeepSeek verifies: on #207 it was
+# the verifier that let no false finding through.
 # .github/scripts/goose_review.py does all three steps; its docstring says
 # why it drives `goose run` itself instead of using `goose review` (whose
 # checks get no tools and cannot read the repo).
@@ -77,22 +79,25 @@ jobs:
             verify-model: deepseek-v4-flash-0731
             app: MINIMAX
             jobs: 3
-          # Mistral and Gemma verify each other: two more model families,
-          # and no extra load on DeepSeek's token budget or MiniMax's quota.
+          # Two more model families, verified by MiniMax like DeepSeek: Gemma
+          # passed Mistral's false claim that `**/` spans one directory at
+          # most. This puts three lanes' verification on the MiniMax plan's
+          # quota; a verification it cuts short withholds its findings as
+          # unconfirmed, it never posts them.
           # No GitHub App yet (`app` empty): they post as github-actions[bot],
           # every comment signed with the model that wrote it.
           - lane: mistral
             provider: notedthat_thirdparty
             model: mistral-medium-3-5
-            verify-provider: notedthat_thirdparty
-            verify-model: gemma-4-31b-it
+            verify-provider: notedthat_minimax
+            verify-model: MiniMax-M3
             app: ""
             jobs: 2
           - lane: gemma
             provider: notedthat_thirdparty
             model: gemma-4-31b-it
-            verify-provider: notedthat_thirdparty
-            verify-model: mistral-medium-3-5
+            verify-provider: notedthat_minimax
+            verify-model: MiniMax-M3
             app: ""
             jobs: 2
     uses: ./.github/workflows/goose-review-lane.yml
