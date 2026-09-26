@@ -265,7 +265,16 @@ def last_json_object(text: str, key: str) -> dict | None:
         try:
             obj, _ = decoder.raw_decode(text, match.start())
         except json.JSONDecodeError:
-            continue
+            # Models sometimes stop one or two brackets short of the end
+            # (DeepSeek: `..."}]` with the final `}` missing).
+            obj = None
+            if text[match.start():].lstrip("{ \n").startswith(f'"{key}"'):
+                for tail in ("}", "]}", "}]}"):
+                    try:
+                        obj = json.loads(text[match.start():].rstrip() + tail)
+                        break
+                    except json.JSONDecodeError:
+                        continue
         if isinstance(obj, dict) and key in obj:
             found = obj
     return found
