@@ -5,9 +5,13 @@
 # The split is the point. The model gets a shell in `review`, so that job
 # holds a read-only token and its network is limited to what the review
 # needs: GitHub and its release downloads, crates.io for `cargo fetch`, and
-# the egress proxy. A prompt-injected agent can then neither write to the
-# repository nor send the proxy token anywhere but the proxy. `post` runs no
-# model; it alone has `pull-requests: write`, or the lane's app token.
+# the egress proxy, without sudo to lift that limit. A prompt-injected agent
+# can then neither write to the repository nor send the proxy token anywhere
+# but the proxy. What it writes is posted and uploaded, so that is scrubbed
+# of the token and routes, verbatim and in the common encodings; a token
+# disguised some other way is the risk that remains, bounded by the job
+# running only for branches of this repository. `post` runs no model; it
+# alone has `pull-requests: write`, or the lane's app token.
 #
 # Advisory only: `review` may fail without failing the PR, and `post` still
 # says so on the PR when it does.
@@ -53,10 +57,15 @@ jobs:
       # Everything after this step can reach only the endpoints listed. The
       # policy is applied at job start, before any step runs, so the proxy's
       # host comes from an org variable rather than being derived from the
-      # route secrets; like the routes, it stays out of this file.
+      # route secrets; like the routes, it stays out of this file. The model
+      # has a shell here, so sudo goes too: with it, the model could lift the
+      # policy. Artifact storage is GitHub's own accounts by name, not
+      # *.blob.core.windows.net, where anyone can create an account to send
+      # the token to.
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: block
+          disable-sudo-and-containers: true
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -65,7 +74,26 @@ jobs:
             index.crates.io:443
             static.crates.io:443
             results-receiver.actions.githubusercontent.com:443
-            *.blob.core.windows.net:443
+            productionresultssa0.blob.core.windows.net:443
+            productionresultssa1.blob.core.windows.net:443
+            productionresultssa2.blob.core.windows.net:443
+            productionresultssa3.blob.core.windows.net:443
+            productionresultssa4.blob.core.windows.net:443
+            productionresultssa5.blob.core.windows.net:443
+            productionresultssa6.blob.core.windows.net:443
+            productionresultssa7.blob.core.windows.net:443
+            productionresultssa8.blob.core.windows.net:443
+            productionresultssa9.blob.core.windows.net:443
+            productionresultssa10.blob.core.windows.net:443
+            productionresultssa11.blob.core.windows.net:443
+            productionresultssa12.blob.core.windows.net:443
+            productionresultssa13.blob.core.windows.net:443
+            productionresultssa14.blob.core.windows.net:443
+            productionresultssa15.blob.core.windows.net:443
+            productionresultssa16.blob.core.windows.net:443
+            productionresultssa17.blob.core.windows.net:443
+            productionresultssa18.blob.core.windows.net:443
+            productionresultssa19.blob.core.windows.net:443
             ${{ vars.GOOSE_PROXY_EGRESS }}
 
       # The PR head itself, not the merge commit: review comments are
@@ -192,6 +220,16 @@ jobs:
           --in "$RUNNER_TEMP/review/findings.jsonl" --out "$RUNNER_TEMP/review/verified.jsonl"
           --status "$RUNNER_TEMP/review/status.json"
 
+      # The model can write to these directories through its shell, so
+      # everything uploaded is scrubbed of the proxy token and routes first,
+      # not only what the script wrote itself; a file that is not text is
+      # removed. Only the script's own file names are uploaded.
+      - name: Scrub the findings and transcripts
+        if: always()
+        env:
+          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+        run: python3 .github/scripts/goose_review.py scrub "$RUNNER_TEMP/review" "$RUNNER_TEMP/goose-logs"
+
       # `post` reads verified.jsonl and status.json from here; the
       # transcripts are kept for reading, tool calls included.
       - name: Keep the findings and transcripts
@@ -200,17 +238,22 @@ jobs:
         with:
           name: goose-review-${{ inputs.lane }}
           path: |
-            ${{ runner.temp }}/review/
-            ${{ runner.temp }}/goose-logs/
+            ${{ runner.temp }}/review/findings.jsonl
+            ${{ runner.temp }}/review/verified.jsonl
+            ${{ runner.temp }}/review/status.json
+            ${{ runner.temp }}/goose-logs/*.log
           if-no-files-found: ignore
           retention-days: 14
 
   post:
     name: post
     needs: review
-    # Also after a failed review, so the PR says the review did not run;
-    # not after a cancelled one (a newer push is being reviewed).
-    if: always() && needs.review.result != 'cancelled'
+    # Also after a failed or timed-out review, so the PR says the review did
+    # not run; not when the run is cancelled (a newer push is being
+    # reviewed). `cancelled()` is the run's state, not the review job's: a
+    # job that hits its timeout can report itself cancelled while the run
+    # is not.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
@@ -225,7 +268,26 @@ jobs:
             github.com:443
             api.github.com:443
             results-receiver.actions.githubusercontent.com:443
-            *.blob.core.windows.net:443
+            productionresultssa0.blob.core.windows.net:443
+            productionresultssa1.blob.core.windows.net:443
+            productionresultssa2.blob.core.windows.net:443
+            productionresultssa3.blob.core.windows.net:443
+            productionresultssa4.blob.core.windows.net:443
+            productionresultssa5.blob.core.windows.net:443
+            productionresultssa6.blob.core.windows.net:443
+            productionresultssa7.blob.core.windows.net:443
+            productionresultssa8.blob.core.windows.net:443
+            productionresultssa9.blob.core.windows.net:443
+            productionresultssa10.blob.core.windows.net:443
+            productionresultssa11.blob.core.windows.net:443
+            productionresultssa12.blob.core.windows.net:443
+            productionresultssa13.blob.core.windows.net:443
+            productionresultssa14.blob.core.windows.net:443
+            productionresultssa15.blob.core.windows.net:443
+            productionresultssa16.blob.core.windows.net:443
+            productionresultssa17.blob.core.windows.net:443
+            productionresultssa18.blob.core.windows.net:443
+            productionresultssa19.blob.core.windows.net:443
 
       - uses: actions/checkout@v7
         with:

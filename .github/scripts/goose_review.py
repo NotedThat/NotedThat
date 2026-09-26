@@ -20,6 +20,7 @@ Standard library only; needs `git` and `goose` on PATH.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import json
 import os
@@ -632,7 +633,10 @@ def redact(text: str) -> str:
     The agent has the token in its environment and could read the routes
     from the rendered provider files; a prompt-injected run could copy
     either into a finding -- posted on a public pull request, where GitHub
-    masks nothing -- or into a transcript kept as an artifact."""
+    masks nothing -- or into a transcript kept as an artifact. The common
+    encodings are removed too; a run determined to disguise the token some
+    other way is not stopped by this, only by the egress policy and by the
+    job running only for branches of this repository."""
     for secret in proxy_secrets():
         text = text.replace(secret, "[redacted]")
     return text
@@ -648,8 +652,41 @@ def proxy_secrets() -> list[str]:
             continue
         origin, route = provider.get("base_url", ""), provider.get("base_path", "")
         secrets += [origin + route.removesuffix("/chat/completions"), origin]
+    secrets = [s for s in secrets if len(s) >= 8]
+    encoded = [e for s in secrets for e in encodings(s)]
     # Longest first, so a route is replaced before the origin inside it.
-    return sorted({s for s in secrets if len(s) >= 8}, key=len, reverse=True)
+    return sorted(set(secrets + encoded), key=len, reverse=True)
+
+
+def encodings(secret: str) -> list[str]:
+    """The disguises a model reaches for first: base64 (standard and
+    URL-safe, padded or not), hex in either case, and the string reversed."""
+    raw = secret.encode()
+    forms = [secret[::-1], raw.hex(), raw.hex().upper()]
+    for b64 in (base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode()):
+        forms += [b64, b64.rstrip("=")]
+    return forms
+
+
+def cmd_scrub(args: argparse.Namespace) -> None:
+    """Redact every file under the given directories in place, whoever
+    wrote it: the model's shell can write there too, and they are uploaded
+    as an artifact. A file that is not UTF-8 text cannot be checked, so it
+    is removed."""
+    for directory in args.dirs:
+        for path in sorted(Path(directory).rglob("*")):
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_file():
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    print(f"::warning::{path}: not text, removed before upload", file=sys.stderr)
+                    path.unlink()
+                    continue
+                if (clean := redact(text)) != text:
+                    print(f"::warning::{path}: proxy secret redacted before upload", file=sys.stderr)
+                    path.write_text(clean, encoding="utf-8")
 
 
 def read_status(path: str) -> dict:
@@ -681,7 +718,16 @@ def cmd_verify(args: argparse.Namespace) -> None:
     base_sha = subprocess.run(
         ["git", "merge-base", args.base, "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
-    shown_diff = split_diff(diff)[0] if len(diff) > MAX_DIFF_CHARS else diff
+    files = diff_files(diff)
+
+    def batch_diff(batch: list[dict]) -> str:
+        """The diff of the files this batch's findings are on, not of the
+        whole change: on a large change the first batch of it may not hold
+        them at all, and the verifier would then reject real findings as
+        being about unchanged code."""
+        paths = {f["path"] for f in batch}
+        own = "".join(chunk for path, chunk in files if path in paths)
+        return split_diff(own)[0] if len(own) > MAX_DIFF_CHARS else own
 
     # A few findings per run: one run over thirteen spent its whole turn
     # budget investigating and never answered.
@@ -704,7 +750,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         )
         prompt = (
             f"{time_budget(share_s / 60)}{VERIFY_PROMPT}\n{TOOLS.format(base=base_sha)}\n"
-            f"{pr_context(args.context)}## Findings\n\n{listing}\n\n## Diff\n\n```diff\n{shown_diff}```\n"
+            f"{pr_context(args.context)}## Findings\n\n{listing}\n\n"
+            f"## Diff of the files these findings are on\n\n```diff\n{batch_diff(batch)}```\n"
         )
         text = run_goose(prompt, args.provider, args.model, VERIFY_TURNS, f"verify#{n}", deadline, share_s, "verdicts")
         answer = last_json_object(text, "verdicts") if text else None
@@ -857,8 +904,14 @@ def cmd_post(args: argparse.Namespace) -> None:
         headline = "no check covers the files this pull request changes"
     elif ran and len(failed) == len(ran):
         headline = "the review did not run: no check finished (see the workflow log)"
+    elif findings:
+        headline = f"{tally}, each confirmed by a second model"
+    elif status.get("withheld"):
+        # Nothing confirmed because nothing was checked, not because the
+        # change is clean.
+        headline = "no confirmed findings: verification did not finish"
     else:
-        headline = f"{tally}, each confirmed by a second model" if findings else tally
+        headline = tally
     body = [marker, f"**Goose review ({args.lane}, `{args.model}`)**: {headline}."]
     if failed and len(failed) < len(ran or []):
         body.append(f"\n⚠️ Did not finish, so not covered: {', '.join(f'`{c}`' for c in failed)}.")
@@ -892,31 +945,9 @@ def cmd_post(args: argparse.Namespace) -> None:
     if not token:
         raise SystemExit("GH_TOKEN is not set")
 
-    # Collapse this lane's earlier reviews so only the latest one is read.
-    stale = [r for r in paged(f"{base}/reviews", token) if marker in (r.get("body") or "")]
-    node_ids = [r["node_id"] for r in stale]
-    stale_comments: set[int] = set()
-    for r in stale:
-        for c in paged(f"{base}/reviews/{r['id']}/comments", token):
-            node_ids.append(c["node_id"])
-            stale_comments.add(c["id"])
-    # Thread replies are reviews of their own without the marker.
-    if stale_comments:
-        node_ids += [
-            c["node_id"] for c in paged(f"{base}/comments", token) if c.get("in_reply_to_id") in stale_comments
-        ]
-    for node_id in node_ids:
-        github(
-            "POST",
-            "/graphql",
-            token,
-            {
-                "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
-                "variables": {"id": node_id},
-            },
-        )
     if not noteworthy:
-        print(f"nothing to post ({headline}); {len(stale)} earlier review(s) collapsed")
+        collapsed = collapse_earlier(base, token, marker)
+        print(f"nothing to post ({headline}); {collapsed} earlier review(s) collapsed")
         return
 
     status, data = github("POST", f"{base}/reviews", token, review)
@@ -943,10 +974,45 @@ def cmd_post(args: argparse.Namespace) -> None:
                     replies += 1
                 else:
                     print(f"::warning::reply to {comment['path']}:{comment['line']} failed: {reply_status} {reply}", file=sys.stderr)
+    # Only now that the new review exists, so a failed post never leaves
+    # the lane with nothing visible on the pull request.
+    collapsed = collapse_earlier(base, token, marker, keep=data["id"])
     print(
         f"posted review with {len(comments)} inline comment(s) and {replies} thread repl(ies), "
-        f"{len(loose)} in the body, {len(stale)} earlier review(s) collapsed"
+        f"{len(loose)} in the body, {collapsed} earlier review(s) collapsed"
     )
+
+
+def collapse_earlier(base: str, token: str, marker: str, keep: int | None = None) -> int:
+    """Collapse this lane's earlier reviews, with their comments and the
+    thread replies to them, so only the latest one is read. Only a bot's
+    reviews count: a person quoting the marker keeps their review."""
+    stale = [
+        r for r in paged(f"{base}/reviews", token)
+        if r["id"] != keep and (r.get("user") or {}).get("type") == "Bot" and marker in (r.get("body") or "")
+    ]
+    node_ids = [r["node_id"] for r in stale]
+    stale_comments: set[int] = set()
+    for r in stale:
+        for c in paged(f"{base}/reviews/{r['id']}/comments", token):
+            node_ids.append(c["node_id"])
+            stale_comments.add(c["id"])
+    # Thread replies are reviews of their own without the marker.
+    if stale_comments:
+        node_ids += [
+            c["node_id"] for c in paged(f"{base}/comments", token) if c.get("in_reply_to_id") in stale_comments
+        ]
+    for node_id in node_ids:
+        github(
+            "POST",
+            "/graphql",
+            token,
+            {
+                "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
+                "variables": {"id": node_id},
+            },
+        )
+    return len(stale)
 
 
 def main() -> None:
@@ -987,6 +1053,10 @@ def main() -> None:
     post.add_argument("--status", default="review-status.json")
     post.add_argument("--dry-run", action="store_true", help="print the review instead of posting it")
     post.set_defaults(func=cmd_post)
+
+    scrub = sub.add_parser("scrub", help="redact the proxy secrets from every file under the directories, in place")
+    scrub.add_argument("dirs", nargs="+")
+    scrub.set_defaults(func=cmd_scrub)
 
     args = parser.parse_args()
     args.func(args)
