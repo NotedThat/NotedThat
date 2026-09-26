@@ -73,9 +73,20 @@ FINAL_PROMPT = (
 
 # The third-party endpoint limits DeepSeek's input tokens per minute, and every agent turn
 # resends the whole conversation; a run that hits the limit is resumed once
-# the minute has rolled over.
+# the minute has rolled over. A model the endpoint reports as busy or
+# unavailable (Mistral: 503 "Model is too busy") is waited out the same way
+# rather than counted as a check that did not finish.
 RATE_LIMIT_ATTEMPTS = 8
 RATE_LIMIT_WAIT_S = 65
+TRANSIENT_ERRORS = (
+    "rate limit exceeded",
+    "503 service unavailable",
+    "502 bad gateway",
+    "504 gateway timeout",
+    "too busy",
+    "overloaded",
+    "temporarily unavailable",
+)
 # A check that answers within the first quarter of its time has usually read
 # the obvious and stopped (Gemma: six tool calls in 21 seconds). It gets one
 # more round to look again before its answer counts.
@@ -93,7 +104,7 @@ JSON_PROMPT = (
     "with no prose and no code fences.\n"
 )
 RESUME_PROMPT = (
-    "The previous turn was cut off by a provider rate limit. Continue where you left "
+    "The previous turn was cut off by a provider error. Continue where you left "
     "off, and end with the JSON answer described in the first message.\n"
 )
 
@@ -429,10 +440,10 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 continue
             # stderr or the final message carries Goose's own error; stdout
             # would also match text in the prompt.
-            if "rate limit exceeded" in error.lower() and rate_limited < RATE_LIMIT_ATTEMPTS \
+            if any(e in error.lower() for e in TRANSIENT_ERRORS) and rate_limited < RATE_LIMIT_ATTEMPTS \
                     and deadline - now > RATE_LIMIT_WAIT_S + 60:
                 rate_limited += 1
-                print(f"::notice::{label}: rate-limited, resuming in {RATE_LIMIT_WAIT_S}s ({rate_limited})", file=sys.stderr)
+                print(f"::notice::{label}: provider busy or rate-limited, resuming in {RATE_LIMIT_WAIT_S}s ({rate_limited})", file=sys.stderr)
                 time.sleep(RATE_LIMIT_WAIT_S)
                 command = [*resume, *common(FINAL_TURNS if finalising else round_turns), "-i", "-"]
                 stdin = FINAL_PROMPT if finalising else RESUME_PROMPT
@@ -466,8 +477,23 @@ def log(label: str, round_no: int, prompt: str, stdout: str, stderr: str) -> Non
 
 
 def last_json_object(text: str, key: str) -> dict | None:
-    """The last JSON object in `text` that has `key`, ignoring any prose and
-    code fences around it (models add both despite being told not to)."""
+    r"""The last JSON object in `text` that has `key`, ignoring any prose and
+    code fences around it (models add both despite being told not to).
+
+    A summary that quotes code often carries a backslash JSON does not
+    allow (Gemma: `file\\.rs` written as `file\.rs`), which loses the whole
+    answer; failing a plain parse, stray backslashes are escaped and it is
+    tried again."""
+    found = _last_json_object(text, key)
+    return found if found is not None else _last_json_object(escape_stray_backslashes(text), key)
+
+
+def escape_stray_backslashes(text: str) -> str:
+    """Double every backslash that does not start a valid JSON escape."""
+    return re.sub(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})?', lambda m: m.group(0) if m.group(1) else "\\\\", text)
+
+
+def _last_json_object(text: str, key: str) -> dict | None:
     decoder = json.JSONDecoder()
     found = None
     for match in re.finditer(r"\{", text):
