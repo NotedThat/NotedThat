@@ -1,0 +1,19 @@
+{
+  "name": "notedthat_albert",
+  "engine": "openai",
+  "display_name": "Albert (egress proxy)",
+  "description": "Albert's OpenAI-compatible API through the NotedThat egress proxy",
+  "api_key_env": "NOTEDTHAT_PROXY_TOKEN",
+  "base_url": "https://example.invalid",
+  "base_path": "example.invalid/chat/completions",
+  "models": [
+    {
+      "name": "deepseek-v4-flash-0731",
+      "context_limit": 131072,
+      "request_params": { "max_tokens": 32768 }
+    }
+  ],
+  "supports_streaming": true,
+  "requires_auth": true,
+  "toolshim": false
+}

@@ -22,9 +22,7 @@
 core
 core.*
 
-# Sentry Warden local runs (see DEVELOPMENT.md): findings JSON and bake-off output
-warden-findings.json
-bakeoff/
-
-# Warden run logs written next to the checkout by local CLI runs
-.warden/
+# Local Goose review runs (see DEVELOPMENT.md)
+findings.jsonl
+verified.jsonl
+review-status.json

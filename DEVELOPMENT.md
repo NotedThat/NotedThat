@@ -389,36 +389,50 @@ and why `unsound` stays at its narrower scope; those are decisions, not defaults
 The `Wait for crates.io to index` step in `ci.yml` needs no edit — it derives the crate
 list from `cargo metadata`.
 
-## Running Warden (LLM review) locally
+## Running the Goose review (LLM review) locally
 
-CI runs [Sentry Warden](https://github.com/getsentry/warden) on every PR, once
-per profile in `.github/warden/`. Each profile is a complete Warden config —
-shared review settings, the scanning model, the verifying model, the skills —
-so the same review runs locally by pointing the CLI at the same file.
+CI reviews every PR with [Goose](https://github.com/block/goose)
+(`.github/workflows/goose-review.yml`) in two lanes, DeepSeek V4 Flash and
+MiniMax M3. Each lane runs the checks in `.agents/checks/` with its own
+model, the other lane's model re-checks every finding against the code, and
+only confirmed findings are posted, as the lane's GitHub App. The same
+script runs locally, so a finding can be reproduced before anyone argues
+with it.
 
-Every lane goes through our self-hosted LLM egress proxy, which holds the
-provider keys, queues MiniMax calls behind a global in-flight limit, and
-fixes tool calling on the third-party endpoint. Locally you need the proxy's
-token and its two routes — ask a maintainer; none of them are in the
-repository on purpose. Every profile uses both providers (one scans, the
-other verifies), so export all four:
+Every model call goes through our self-hosted LLM egress proxy, which holds
+the provider keys, paces requests per model, and fixes tool calling on the
+Albert route. Locally you need the proxy's token and its two routes — ask a
+maintainer; none of them are in the repository on purpose. Goose 1.52 or
+later and Python 3.9+ are required.
 
 ```sh
-export WARDEN_MINIMAX_API_KEY=<proxy token>
-export WARDEN_MINIMAX_BASE_URL=<proxy route for MiniMax, Anthropic API>
-export WARDEN_THIRDPARTY_API_KEY=<proxy token>
-export WARDEN_THIRDPARTY_BASE_URL=<proxy route for the third-party endpoint>
-export PI_CODING_AGENT_DIR=.github/warden/pi   # the repo's provider catalogue
+export NOTEDTHAT_PROXY_TOKEN=<proxy token>
+
+# Install the two providers into your Goose config, pointed at the proxy routes
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/goose/custom_providers"
+.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_albert.json <Albert route> "$dir"
+.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json <MiniMax route> "$dir"
 
 # Review everything changed since origin/main, as the DeepSeek lane would
-npx @sentry/warden@0.48.0 origin/main -c .github/warden/thirdparty-deepseek.toml
+python3 .github/scripts/goose_review.py review --base origin/main \
+  --provider notedthat_albert --model deepseek-v4-flash-0731
+python3 .github/scripts/goose_review.py verify --base origin/main \
+  --provider notedthat_minimax --model MiniMax-M3
 
-# Machine-readable output (findings, usage, cost), e.g. for comparing models
-npx @sentry/warden@0.48.0 origin/main -c .github/warden/minimax.toml --json -o bakeoff/minimax.json
+# Print the review the lane would post on a PR, without posting it
+GH_TOKEN=$(gh auth token) python3 .github/scripts/goose_review.py post --dry-run \
+  --repo NotedThat/NotedThat --pr <number> --head-sha "$(git rev-parse HEAD)" \
+  --lane deepseek --model deepseek-v4-flash-0731
 ```
 
-The `WARDEN_*_BASE_URL` override works in the CLI; the action ignores it, so
-CI writes the routes into `.github/warden/pi/models.json` instead (see that
-directory's README). Never route MiniMax through another plan or gateway.
+Set `GOOSE_REVIEW_LOG_DIR=<dir>` to keep every run's prompt and full
+transcript, tool calls included. `goose review --checks-only` reads the same
+checks, but gives them no tools: they see only the diff.
 
-`warden-findings.json` and `bakeoff/` are git-ignored. Node 20+ is required.
+Two provider settings are load-bearing. DeepSeek's entry sets
+`request_params.max_tokens`, because Goose otherwise asks for 384,000 output
+tokens and Albert rejects anything over 131,072 in total. And both entries
+must go through the proxy: Albert's gateway turns a missing `tool_choice`
+into `"none"`, and the proxy is what puts `"auto"` back.
+
+`findings.jsonl`, `verified.jsonl` and `review-status.json` are git-ignored.
