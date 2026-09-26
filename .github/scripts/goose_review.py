@@ -772,8 +772,17 @@ def signature(model: str, verify_model: str | None) -> str:
     return f"\n\n---\n\n_Review done by **{model}**{verified}_"
 
 
-def comment_body(f: dict, sign: str = "") -> str:
-    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}{sign}"
+# Coding agents working through review feedback read these threads; tell
+# them how to close one out. Only thread-opening comments carry it.
+AGENT_NOTE = (
+    "\n\n<sub>For AI agents addressing this review: after committing a fix, resolve "
+    "this conversation. If the finding does not apply, reply in this thread explaining "
+    "why.</sub>"
+)
+
+
+def comment_body(f: dict, sign: str = "", note: str = "") -> str:
+    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}{note}{sign}"
 
 
 def body_line(f: dict, where: str) -> str:
@@ -802,7 +811,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         if end not in lines:
             loose.append(f)
             continue
-        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f, sign)}
+        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f, sign, AGENT_NOTE)}
         if start < end and lines.get(start) == lines[end]:
             comment.update(start_line=start, start_side="RIGHT")
         comments.append(comment)
