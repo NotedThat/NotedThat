@@ -26,8 +26,11 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +55,16 @@ MAX_DIFF_CHARS = 60_000
 # rather than failing them, so a slow run is usually waiting its turn; this
 # only catches one that will never answer.
 RUN_TIMEOUT_S = 20 * 60
+
+# Albert limits DeepSeek's input tokens per minute, and every agent turn
+# resends the whole conversation; a run that hits the limit is started again
+# once the minute has rolled over.
+RATE_LIMIT_ATTEMPTS = 5
+RATE_LIMIT_WAIT_S = 65
+RESUME_PROMPT = (
+    "The previous turn was cut off by a provider rate limit. Continue where you left "
+    "off, and end with the JSON answer described in the first message.\n"
+)
 
 SEVERITIES = ["low", "medium", "high", "critical"]
 
@@ -129,7 +142,8 @@ def load_checks(directory: Path) -> list[Check]:
 
 def git_diff(base: str) -> str:
     return subprocess.run(
-        ["git", "diff", "--no-color", "--no-ext-diff", f"{base}...HEAD", "--", ".", *IGNORED_PATHSPECS],
+        # Deleted files are left out: nothing on them can be commented on.
+        ["git", "diff", "--no-color", "--no-ext-diff", "--diff-filter=d", f"{base}...HEAD", "--", ".", *IGNORED_PATHSPECS],
         check=True,
         capture_output=True,
         text=True,
@@ -156,38 +170,90 @@ def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
     return batches
 
 
-def run_goose(prompt: str, provider: str, model: str, max_turns: int, label: str) -> str:
-    """One headless Goose run with the developer extension; returns stdout.
+def run_goose(prompt: str, provider: str, model: str, max_turns: int, label: str) -> str | None:
+    """One headless Goose run with the developer extension.
 
-    With GOOSE_REVIEW_LOG_DIR set, the prompt and the full transcript (tool
-    calls included) are kept there, one file per run.
+    Returns the text of the model's final message, or None when the run did
+    not produce a real answer. Only the run's own status and its last
+    assistant message are trusted, both read from `--output-format json`: a
+    transcript can quote JSON the model read from a file, and a provider
+    error ends a run with status "completed" and the error as the final
+    message ("Ran into this error: ...").
+
+    A rate-limited run is resumed, not restarted: the run is a named session
+    in a throwaway data directory, and after the limit's minute it continues
+    with everything it has read so far.
+
+    With GOOSE_REVIEW_LOG_DIR set, each attempt's prompt and full JSON
+    transcript (tool calls included) are kept there.
     """
-    log_dir = os.environ.get("GOOSE_REVIEW_LOG_DIR")
-    command = [
-        "goose", "run", "--no-session", "--no-profile",
-        *([] if log_dir else ["--quiet"]),
+    common = [
+        "--no-profile", "--quiet",
         "--with-builtin", "developer",
         "--provider", provider, "--model", model,
         "--max-turns", str(max_turns),
-        "-i", "-",
+        "--output-format", "json",
     ]
+    session = f"review-{uuid.uuid4().hex[:12]}"
+    with tempfile.TemporaryDirectory(prefix="goose-review-") as data:
+        env = {**os.environ, "XDG_DATA_HOME": data, "XDG_STATE_HOME": data}
+        command = ["goose", "run", "-n", session, *common, "-i", "-"]
+        stdin = prompt
+        for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
+            try:
+                result = subprocess.run(
+                    command, input=stdin, capture_output=True, text=True, env=env, timeout=RUN_TIMEOUT_S
+                )
+                stdout, stderr = result.stdout, result.stderr
+            except subprocess.TimeoutExpired as expired:
+                print(f"::warning::{label}: goose did not finish within {RUN_TIMEOUT_S}s", file=sys.stderr)
+                return None
+            log(label, attempt, stdin, stdout, stderr)
+
+            transcript = parse_transcript(stdout) or {}
+            status = transcript.get("metadata", {}).get("status")
+            texts = [
+                c.get("text", "").strip()
+                for m in transcript.get("messages", [])
+                if m.get("role") == "assistant"
+                for c in m.get("content", [])
+                if c.get("type") == "text" and c.get("text", "").strip()
+            ]
+            final = texts[-1] if texts else ""
+            error = final if final.startswith("Ran into this error") else stderr.strip()[-300:]
+            if status == "completed" and final and not final.startswith("Ran into this error"):
+                return final
+
+            if "rate limit exceeded" in error.lower() and attempt < RATE_LIMIT_ATTEMPTS:
+                print(f"::notice::{label}: rate-limited, resuming in {RATE_LIMIT_WAIT_S}s (attempt {attempt})", file=sys.stderr)
+                time.sleep(RATE_LIMIT_WAIT_S)
+                command = ["goose", "run", "--resume", "-n", session, *common, "-i", "-"]
+                stdin = RESUME_PROMPT
+                continue
+            print(f"::warning::{label}: run ended without an answer ({status or 'no status'}): {error or 'no output'}", file=sys.stderr)
+            return None
+    return None
+
+
+def parse_transcript(stdout: str) -> dict | None:
+    # The JSON document follows Goose's banner lines on stdout.
+    start = stdout.find("\n{")
+    body = stdout if stdout.startswith("{") else stdout[start + 1:] if start >= 0 else ""
     try:
-        result = subprocess.run(command, input=prompt, capture_output=True, text=True, timeout=RUN_TIMEOUT_S)
-    except subprocess.TimeoutExpired as expired:
-        # Reported like any other run without an answer: "did not finish".
-        print(f"::warning::{label}: goose did not finish within {RUN_TIMEOUT_S}s", file=sys.stderr)
-        result = subprocess.CompletedProcess(command, -1, expired.stdout or "", expired.stderr or "")
-        if isinstance(result.stdout, bytes):
-            result.stdout, result.stderr = result.stdout.decode(errors="replace"), (result.stderr or b"").decode(errors="replace")
-    if log_dir:
-        name = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
-        Path(log_dir).mkdir(parents=True, exist_ok=True)
-        Path(log_dir, f"{name}.log").write_text(
-            f"{prompt}\n\n===== stdout =====\n{result.stdout}\n===== stderr =====\n{result.stderr}"
-        )
-    if result.returncode != 0:
-        print(f"::warning::{label}: goose exited {result.returncode}: {result.stderr[-500:]}", file=sys.stderr)
-    return result.stdout
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
+def log(label: str, attempt: int, prompt: str, stdout: str, stderr: str) -> None:
+    log_dir = os.environ.get("GOOSE_REVIEW_LOG_DIR")
+    if not log_dir:
+        return
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    Path(log_dir, f"{name}.attempt{attempt}.log").write_text(
+        f"{prompt}\n\n===== stdout =====\n{stdout}\n===== stderr =====\n{stderr}"
+    )
 
 
 def last_json_object(text: str, key: str) -> dict | None:
@@ -269,7 +335,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         }
         for future in concurrent.futures.as_completed(futures):
             check, label = futures[future]
-            answer = last_json_object(future.result(), "findings")
+            text = future.result()
+            answer = last_json_object(text, "findings") if text else None
             if answer is None:
                 print(f"::warning::{label}: no findings JSON in the answer; check did not finish", file=sys.stderr)
                 failed.add(check.name)
@@ -318,7 +385,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         f"{turn_budget(40)}{VERIFY_PROMPT}\n{pr_context(args.context)}## Findings\n\n{listing}\n\n"
         f"## Diff\n\n```diff\n{split_diff(diff)[0] if len(diff) > MAX_DIFF_CHARS else diff}```\n"
     )
-    answer = last_json_object(run_goose(prompt, args.provider, args.model, 40, "verify"), "verdicts")
+    text = run_goose(prompt, args.provider, args.model, 40, "verify")
+    answer = last_json_object(text, "verdicts") if text else None
     if answer is None:
         # An unverified finding is not posted: silence beats noise here.
         print("::warning::verify: no verdicts JSON in the answer; posting no findings", file=sys.stderr)

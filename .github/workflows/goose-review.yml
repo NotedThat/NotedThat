@@ -65,12 +65,17 @@ jobs:
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
             app: DEEPSEEK
+            # Albert caps DeepSeek at 246,000 input tokens a minute, and every
+            # agent turn resends the whole conversation: three checks at once
+            # hit it on #207. The script also retries a rate-limited run.
+            jobs: 2
           - lane: minimax
             provider: notedthat_minimax
             model: MiniMax-M3
             verify-provider: notedthat_albert
             verify-model: deepseek-v4-flash-0731
             app: MINIMAX
+            jobs: 3
     env:
       GOOSE_VERSION: v1.52.0
       GOOSE_SHA256: 4aee1f770b405c44194c0e9407df1fb06bda4c50eee935f0d8fd10731821cc5e
@@ -157,7 +162,7 @@ jobs:
           python3 .github/scripts/goose_review.py review
           --base "${{ github.event.pull_request.base.sha }}"
           --provider "${{ matrix.provider }}" --model "${{ matrix.model }}"
-          --context "$RUNNER_TEMP/pr.md"
+          --jobs "${{ matrix.jobs }}" --context "$RUNNER_TEMP/pr.md"
           --out "$RUNNER_TEMP/findings.jsonl" --status "$RUNNER_TEMP/status.json"
 
       - name: Verify (${{ matrix.verify-model }})
