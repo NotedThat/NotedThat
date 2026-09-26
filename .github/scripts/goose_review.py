@@ -376,11 +376,12 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 )
                 stdout, stderr = result.stdout, result.stderr
             except subprocess.TimeoutExpired:
-                if finalising or first_answer:
+                if finalising:
                     print(f"::warning::{label}: stopped at the phase deadline", file=sys.stderr)
                     return first_answer
                 # Goose keeps the session as it goes, so what the run read so
-                # far is still there to answer from.
+                # far is still there to answer from -- a second look's too,
+                # which would be lost by falling back to the first answer.
                 print(f"::notice::{label}: investigation cut off near the deadline, asking for the answer", file=sys.stderr)
                 finalising = True
                 command = ["goose", "run", "--resume", "-n", session, *common(FINAL_TURNS), "-i", "-"]
@@ -974,8 +975,8 @@ def cmd_post(args: argparse.Namespace) -> None:
     if loose:
         body.append("\nOutside the diff's changed lines:\n")
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
-    body.append("\n<sub>Advisory only; it never blocks merging.</sub>" + sign)
-    review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join(body), "comments": comments}
+    footer = "\n<sub>Advisory only; it never blocks merging.</sub>" + sign
+    review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join([*body, footer]), "comments": comments}
     # A clean result is not posted -- a PR should not collect a "no
     # findings" review per lane per push -- but a review that did not cover
     # everything is, so a failure never looks like a clean result.
@@ -1009,7 +1010,8 @@ def cmd_post(args: argparse.Namespace) -> None:
         # A line GitHub will not anchor to: post everything in the body instead.
         print(f"::warning::inline review rejected ({data}); posting findings in the review body", file=sys.stderr)
         anchored = [f for f in findings if f not in loose]
-        review["body"] += "\n\n" + "\n".join(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored)
+        # Above the footer, as in any other review: the signature closes it.
+        review["body"] = "\n".join([*body, "", *(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored), footer])
         review["comments"] = []
         comments, threads = [], []
         status, data = github("POST", f"{base}/reviews", token, review)

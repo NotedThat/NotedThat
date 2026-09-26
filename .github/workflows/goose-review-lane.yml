@@ -312,6 +312,10 @@ jobs:
           private-key: ${{ secrets[format('WARDEN_{0}_PRIVATE_KEY', inputs.app)] }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          # Only what posting needs, whatever else the app was granted for
+          # Warden (contents: write among it): this job runs the PR's own
+          # copy of the script.
+          permission-pull-requests: write
 
       # A missing verified.jsonl (the review job failed before writing it)
       # is posted as "the review did not run".
