@@ -262,7 +262,8 @@ def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
     current = ""
     for chunk in files:
         if len(chunk) > limit:
-            chunk = chunk[:limit] + "\n[... diff for this file truncated ...]\n"
+            note = "\n[... diff for this file truncated ...]\n"
+            chunk = chunk[:limit - len(note)] + note
         if current and len(current) + len(chunk) > limit:
             batches.append(current)
             current = ""
@@ -599,12 +600,28 @@ def merge_overlapping(findings: list[dict]) -> list[dict]:
 
 
 def redact(text: str) -> str:
-    """Remove the proxy token from anything the model wrote. The agent has
-    it in its environment, and a prompt-injected run could copy it into a
-    finding -- which would be posted on a public pull request, where GitHub
-    does not mask secrets -- or into a transcript kept as an artifact."""
-    token = os.environ.get("NOTEDTHAT_PROXY_TOKEN", "")
-    return text.replace(token, "[redacted]") if len(token) >= 8 else text
+    """Remove the proxy's token and routes from anything the model wrote.
+    The agent has the token in its environment and could read the routes
+    from the rendered provider files; a prompt-injected run could copy
+    either into a finding -- posted on a public pull request, where GitHub
+    masks nothing -- or into a transcript kept as an artifact."""
+    for secret in proxy_secrets():
+        text = text.replace(secret, "[redacted]")
+    return text
+
+
+def proxy_secrets() -> list[str]:
+    secrets = [os.environ.get("NOTEDTHAT_PROXY_TOKEN", "")]
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config", "goose", "custom_providers")
+    for path in config.glob("notedthat_*.json"):
+        try:
+            provider = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        origin, route = provider.get("base_url", ""), provider.get("base_path", "")
+        secrets += [origin + route.removesuffix("/chat/completions"), origin]
+    # Longest first, so a route is replaced before the origin inside it.
+    return sorted({s for s in secrets if len(s) >= 8}, key=len, reverse=True)
 
 
 def read_status(path: str) -> dict:
