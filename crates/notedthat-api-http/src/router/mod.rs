@@ -103,7 +103,7 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 /// Build the complete axum [`Router`], holding every route that answers once
-/// to `bounds` (D70).
+/// to `bounds` (D71).
 ///
 /// The routes left out are left out by where they are registered, not by a
 /// path list: the events stream, which is meant to stay open for hours, and

@@ -29,7 +29,7 @@ use tracing::info;
 /// deadline is *derived* from `NOTEDTHAT_REQUEST_TIMEOUT_MS` rather than fixed
 /// — is invisible once it has been folded into a `Router`. A fixed deadline
 /// races the API's `504`, and the client's clock starts first, so the caller
-/// gets a transport error where D70 and `docs/API.md` promise a
+/// gets a transport error where D71 and `docs/API.md` promise a
 /// `request_timeout`; a raised server timeout would not reach MCP at all.
 pub(crate) fn tool_call_client(
     config: &Config,
@@ -73,7 +73,7 @@ pub(crate) fn build_router(
     //
     // One service, routed as two legs, because only one of them answers once.
     // `GET` is the notification stream and is meant to stay open for hours,
-    // so it is registered without the request bounds (D70); `POST` and
+    // so it is registered without the request bounds (D71); `POST` and
     // `DELETE` carry them, innermost, so a refused request has already been
     // authenticated and matched to its session.
     let service = mcp_service.into_service();

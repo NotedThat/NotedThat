@@ -14,7 +14,7 @@ readme = "README.md"
 dav-server = { workspace = true, default-features = false }
 notedthat-core = { workspace = true }
 notedthat-indexer = { workspace = true }
-# For the request-bounds layer only (D70). It has to be applied inside this
+# For the request-bounds layer only (D71). It has to be applied inside this
 # crate's own auth layer, so the server cannot wrap it from outside; see
 # `router::build_router`. No new third-party surface — `notedthat-indexer`
 # above already brings everything this adds.

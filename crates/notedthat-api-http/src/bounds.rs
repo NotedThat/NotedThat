@@ -1,4 +1,4 @@
-//! How long one request may take, and how many may be in flight at once (D70).
+//! How long one request may take, and how many may be in flight at once (D71).
 //!
 //! One middleware, [`bound`], enforcing two limits. It is attached *per route*,
 //! never to the merged app, and that is the whole of the streaming exemption:

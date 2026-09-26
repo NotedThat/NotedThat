@@ -68,7 +68,7 @@ pub enum McpToolError {
     #[error("backend_unavailable")]
     BackendUnavailable,
     /// 504 — the API call did not produce a response within the server's
-    /// request timeout (D70). Not retried: the same call would take as long.
+    /// request timeout (D71). Not retried: the same call would take as long.
     #[error("request_timeout: {0}")]
     RequestTimeout(String),
     /// 500 / other — internal server error.

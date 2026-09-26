@@ -122,7 +122,7 @@ impl NotedThatClient {
     /// Every tool call reaches the API over loopback on the same listener, so
     /// the API's request timeout is what should answer a stalled one — as a
     /// `504`, which `map_response` turns into a `request_timeout` tool error
-    /// (D70). That only happens if this client is still waiting when it
+    /// (D71). That only happens if this client is still waiting when it
     /// arrives, and its clock starts first: before connect, before the head is
     /// sent, before auth, while the server's starts when `bound` runs. Equal
     /// deadlines therefore go to `reqwest`, and the tool reports a transport
@@ -387,7 +387,7 @@ mod tests {
     /// `504` arrives. Equal deadlines are not enough — the client's clock
     /// starts before connect, the head and auth, the server's when `bound`
     /// runs — so the margin is what makes a stalled tool call a
-    /// `request_timeout` rather than a transport error (D70).
+    /// `request_timeout` rather than a transport error (D71).
     #[test]
     fn the_tool_call_deadline_always_outlasts_the_server_timeout() {
         for request_timeout in [

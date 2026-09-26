@@ -238,7 +238,7 @@ struct RefusalBody<'a> {
 }
 
 /// A refusal in the D38 envelope, for a request no handler was allowed to
-/// finish (D70).
+/// finish (D71).
 ///
 /// A `503` carries `Retry-After: 5`, as every other capacity refusal on this
 /// server does: the same request will succeed once load drops. Nothing else

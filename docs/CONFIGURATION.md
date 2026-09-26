@@ -84,7 +84,7 @@ These have defaults and can be omitted.
 
 ## Request bounds
 
-The listener bounds three things itself (D70), because it knows which of its routes are meant to
+The listener bounds three things itself (D71), because it knows which of its routes are meant to
 stay open and a proxy in front of it does not:
 
 - **Time to the response head** — `NOTEDTHAT_REQUEST_TIMEOUT_MS` (default 30 s), and

@@ -682,7 +682,7 @@ async fn serve(
     serve_result
 }
 
-/// The request bounds every surface on the listener draws from (D70).
+/// The request bounds every surface on the listener draws from (D71).
 ///
 /// One semaphore behind every value built from this, so the in-flight cap is
 /// the listener's, not a surface's: a flood of `PROPFIND`s and a flood of

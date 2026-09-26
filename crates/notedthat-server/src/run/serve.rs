@@ -1,4 +1,4 @@
-//! The product listener's accept loop (D70).
+//! The product listener's accept loop (D71).
 //!
 //! `axum::serve` builds hyper's connection with no timer, and hyper enforces a
 //! header-read timeout only once it has one — so behind `axum::serve` a client

@@ -312,7 +312,7 @@ S3 env vars (`NOTEDTHAT_STORAGE_BACKEND=s3`):
 Server listen config (not S3-specific — colocated here so all runtime env vars are in one place):
 - `NOTEDTHAT_LISTEN_ADDR` — `host:port` the HTTP API binds to. Default `0.0.0.0:8080`. Standard `SocketAddr` parsing (IPv4, IPv6 in brackets, or hostname).
 
-Request bounds on that listener (D70; each a positive integer, unset or empty meaning the default, zero or anything else refusing startup):
+Request bounds on that listener (D71; each a positive integer, unset or empty meaning the default, zero or anything else refusing startup):
 - `NOTEDTHAT_REQUEST_TIMEOUT_MS` — longest a request may take to produce its response head before it is answered `504 request_timeout`. Default `30000`. The events route, `GET /mcp` and the probes are exempt.
 - `NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS` — the same bound for `/webdav`, whose `PROPFIND` walks a collection before answering. Default `120000`.
 - `NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT` — most requests the listener works on at once, across every surface; past it, `503 backend_unavailable` with `Retry-After: 5`. Default `512`.
@@ -651,8 +651,8 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 | S3 precondition failed (`If-Match`, `If-None-Match`) | `412` | `precondition_failed` | `412` |
 | Unsatisfiable range | `416` | `range_not_satisfiable` | `416` |
 | Unprocessable — non-unique match | `422` | `no_match` / `ambiguous_match` | n/a (WebDAV unchanged) |
-| Backend unavailable / timeout, or the listener at its in-flight cap (D70) | `503` | `backend_unavailable` | `503` |
-| Request did not produce a response within its timeout (D70) | `504` | `request_timeout` | `504` |
+| Backend unavailable / timeout, or the listener at its in-flight cap (D71) | `503` | `backend_unavailable` | `503` |
+| Request did not produce a response within its timeout (D71) | `504` | `request_timeout` | `504` |
 | Event log position retained out (`Last-Event-ID`) | `410` | n/a | n/a |
 | Unexpected internal error | `500` | `internal_error` | `500` |
 
@@ -873,8 +873,8 @@ listener is `404`. Names, label keys and the histogram bucket table live in one 
 | `notedthat_http_requests_total` | counter | `surface`, `route`, `method`, `status` |
 | `notedthat_http_request_duration_seconds` | histogram | `surface`, `route`, `method` |
 | `notedthat_http_requests_in_flight` | gauge | `surface` |
-| `notedthat_http_requests_refused_total` | counter | `surface`, `route`, `reason` (`timeout`, `in_flight`; D70) |
-| `notedthat_http_header_read_timeouts_total` | counter | — (D70) |
+| `notedthat_http_requests_refused_total` | counter | `surface`, `route`, `reason` (`timeout`, `in_flight`; D71) |
+| `notedthat_http_header_read_timeouts_total` | counter | — (D71) |
 | `notedthat_search_requests_total` | counter | `kb`, `outcome` |
 | `notedthat_search_duration_seconds` | histogram | `kb` |
 | `notedthat_search_hits` | histogram | `kb` |

@@ -233,7 +233,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
             )
             .expect("MCP router should build"),
         );
-    // The accept loop the product listener actually runs (D70), not
+    // The accept loop the product listener actually runs (D71), not
     // `axum::serve` — otherwise this test stopped covering the shutdown
     // sequence the moment `run.rs` moved off it, and `serve.rs`'s graceful
     // drain would have no test at all.
@@ -302,7 +302,7 @@ async fn one_listener_closes_active_mcp_tool_call_during_shutdown() {
 }
 
 /// Only the legs that answer once draw a permit: `GET /mcp` is the session's
-/// notification stream and is meant to stay open for hours (D70).
+/// notification stream and is meant to stay open for hours (D71).
 #[tokio::test]
 async fn only_the_mcp_request_legs_are_bounded() {
     use axum::body::{Body, to_bytes};

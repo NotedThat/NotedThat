@@ -194,7 +194,7 @@ pub(crate) async fn after_write(
     //
     // `publish` can await for seconds (the NATS client's own timeout), and a
     // caller that gives up in that window — a client disconnect, or the
-    // request timeout D70 added — drops this future where it stands. The bytes
+    // request timeout D71 added — drops this future where it stands. The bytes
     // are already stored by then, so without this the object would be durable
     // and unsearchable, with nothing to repair it on `s3` until the next
     // reconciliation pass. `try_send` is synchronous, so `Drop` can still do
@@ -647,7 +647,7 @@ mod tests {
 
     /// A write cancelled between storing the bytes and enqueuing the `Upsert`
     /// must still enqueue it. The window is `publish`, which can await for
-    /// seconds against a slow or unreachable broker, and D70's request timeout
+    /// seconds against a slow or unreachable broker, and D71's request timeout
     /// drops the handler where it stands — leaving, without the guard, an
     /// object that is durable and unsearchable with nothing on `s3` to repair
     /// it until the next reconciliation pass.

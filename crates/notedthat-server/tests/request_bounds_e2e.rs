@@ -1,4 +1,4 @@
-//! E2E: the product listener's request bounds (D70) — a real server on
+//! E2E: the product listener's request bounds (D71) — a real server on
 //! in-process backends, with its timeouts turned down far enough to cross.
 //! No Docker, and not `#[ignore]`d.
 //!
@@ -288,7 +288,7 @@ async fn a_stuck_search_holds_the_cap_until_its_timeout_answers_504() {
 
 /// While the listener is full, a credential-less `PROPFIND` must still be
 /// `401` rather than `503`: the bound sits *inside* `WebDAV`'s Basic auth
-/// (D70), so an unauthenticated flood cannot take permits from the semaphore
+/// (D71), so an unauthenticated flood cannot take permits from the semaphore
 /// every surface shares. Only distinguishable when the cap is already reached,
 /// which is why it lives inside the stuck-search scenario.
 async fn assert_anonymous_propfind_is_401(server: &PatchServer) {
@@ -373,7 +373,7 @@ async fn a_connection_that_never_finishes_its_request_head_is_closed() {
 }
 
 /// A body that arrives slowly but steadily must not be cut off: the request
-/// timeout measures the server's work, not the client's uplink. Before D70's
+/// timeout measures the server's work, not the client's uplink. Before D71's
 /// body handling this was a `504` at the deadline, part-way through staging.
 #[tokio::test]
 async fn an_upload_slower_than_the_request_timeout_still_succeeds() {
@@ -482,7 +482,7 @@ async fn an_upload_that_stalls_mid_body_is_refused() {
 }
 
 /// A tool call whose search never answers must come back as the
-/// `request_timeout` tool error D70 and `docs/API.md` promise — which only
+/// `request_timeout` tool error D71 and `docs/API.md` promise — which only
 /// happens if the API's own `504` reaches the MCP client before that client
 /// gives up on its own.
 ///
@@ -520,7 +520,7 @@ async fn a_stalled_tool_call_is_answered_by_the_servers_504() {
         )
         .await;
 
-    // Then: the call failed with the API's own refusal, named as D70 names it
+    // Then: the call failed with the API's own refusal, named as D71 names it
     // and worded by `bound` — not by `reqwest`, which would report a transport
     // error and never the code a client is told to expect.
     let message = answer["error"]["message"].as_str().unwrap_or_default();

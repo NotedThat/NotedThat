@@ -30,14 +30,14 @@ pub fn build_router(state: WebDavState) -> Router {
     build_bounded_router(state, &RequestBounds::unbounded())
 }
 
-/// Build the `WebDAV` router, holding every route to `bounds` (D70).
+/// Build the `WebDAV` router, holding every route to `bounds` (D71).
 ///
 /// The layer is applied here, inside this stack, rather than by the caller with
 /// `Router::route_layer`, because `route_layer` wraps the whole `MethodRouter` —
 /// including the layers below — and would put the bound *outside*
 /// `basic_auth_middleware`. An unauthenticated `PROPFIND` would then draw a permit
 /// from the semaphore every surface shares before its credential was looked at, which
-/// is the starvation the cap exists to prevent and the opposite of what D70 says.
+/// is the starvation the cap exists to prevent and the opposite of what D71 says.
 /// Below the auth layer it is also below `SetRequestIdLayer`, so a refusal carries a
 /// request id like every other.
 pub fn build_bounded_router(state: WebDavState, bounds: &RequestBounds) -> Router {

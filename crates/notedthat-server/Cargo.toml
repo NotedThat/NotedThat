@@ -38,7 +38,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tower.workspace = true
-# The product listener's accept loop (D70). `axum::serve` gives hyper no timer,
+# The product listener's accept loop (D71). `axum::serve` gives hyper no timer,
 # and without one hyper cannot enforce a header-read timeout at all. HTTP/1
 # only, like the axum features above.
 hyper = { version = "1", features = ["http1", "server"] }

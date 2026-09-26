@@ -553,7 +553,7 @@ pub struct Config {
     /// here as a value nobody reads.
     pub metrics_listen_addr: Option<SocketAddr>,
     /// How long one request may take and how many may run at once on the
-    /// product listener (D70).
+    /// product listener (D71).
     pub request_bounds: RequestBoundsConfig,
     /// Shared private staging directory for uploads and index snapshots (`NOTEDTHAT_UPLOAD_TMP_DIR`).
     pub staging: StagingConfig,
@@ -561,7 +561,7 @@ pub struct Config {
     pub oidc: Option<OidcSettings>,
 }
 
-/// Limits on one request to the product listener (D70).
+/// Limits on one request to the product listener (D71).
 ///
 /// Both request limits end when the response head is produced, not when the
 /// body has been sent: a large download or a streamed MCP result is not cut
