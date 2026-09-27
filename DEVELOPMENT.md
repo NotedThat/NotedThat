@@ -392,8 +392,8 @@ list from `cargo metadata`.
 ## Running the Goose review (LLM review) locally
 
 CI reviews every PR with [Goose](https://github.com/block/goose)
-(`.github/workflows/goose-review.yml`) in four lanes, one per model:
-DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and Gemma 4 31B. Each lane
+(`.github/workflows/goose-review.yml`) in three lanes, one per model:
+DeepSeek V4 Flash, MiniMax M3 and Mistral Medium 3.5. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
 findings are posted, as that lane's review on the code. How every lane went (its models,
@@ -408,7 +408,14 @@ resolved); an open finding stays in view until it is fixed or answered, and noth
 reviewer wrote is touched. A finding is not raised twice: the verifier sees the lane findings someone
 already answered anywhere on the pull request, and rejects a repeat unless the code the answer relied
 on has changed (the summary counts these as "already answered"); a confirmed finding on lines
-where a lane thread is still open is posted as a reply in that thread, not as a new one. All lanes post as `github-actions[bot]`, each signed with its model. A check
+where a lane thread is still open is posted as a reply in that thread, not as a new one. The
+verifier must back every finding it keeps with its own severity, the trigger that reaches the
+defect, and a line it quotes from the repository at HEAD; the script checks the quote is on
+that line and drops the finding if not, and the lower of the two severities is posted. When
+the change touches their paths, the facts in `.agents/facts/` (platform behaviour models got
+wrong here, such as GitHub Actions' status check functions) go to the checks and the verifier.
+The summary also counts, per model, how its threads on the pull request were answered
+("Fixed in" or "Does not apply"). All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
 become one thread. Each lane

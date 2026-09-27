@@ -20,13 +20,6 @@
       "request_params": {
         "max_tokens": 16384
       }
-    },
-    {
-      "name": "gemma-4-31b-it",
-      "context_limit": 245760,
-      "request_params": {
-        "max_tokens": 16384
-      }
     }
   ],
   "supports_streaming": true,
