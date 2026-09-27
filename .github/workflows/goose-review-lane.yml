@@ -43,6 +43,8 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
+      # Read-only, for the answered findings; only that step holds the token.
+      pull-requests: read
     env:
       GOOSE_VERSION: v1.52.0
       GOOSE_SHA256: 4aee1f770b405c44194c0e9407df1fb06bda4c50eee935f0d8fd10731821cc5e
@@ -206,6 +208,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/review"
           printf '# %s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr.md"
 
+      # Lane findings on this PR that someone already answered, so the
+      # verifier rejects a repeat unless the code the answer relied on
+      # changed. Before any model runs, and the only step with the token.
+      # Without the file, verification simply goes without it.
+      - name: Collect the answered findings
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          python3 .github/scripts/goose_review.py answered
+          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
+          --out "$RUNNER_TEMP/answered.json"
+
       - name: Review (${{ inputs.model }})
         env:
           NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
@@ -223,7 +238,7 @@ jobs:
           python3 .github/scripts/goose_review.py verify
           --base "${{ github.event.pull_request.base.sha }}"
           --provider "${{ inputs.verify-provider }}" --model "${{ inputs.verify-model }}"
-          --budget-minutes 12 --context "$RUNNER_TEMP/pr.md"
+          --budget-minutes 12 --context "$RUNNER_TEMP/pr.md" --answered "$RUNNER_TEMP/answered.json"
           --in "$RUNNER_TEMP/review/findings.jsonl" --out "$RUNNER_TEMP/review/verified.jsonl"
           --status "$RUNNER_TEMP/review/status.json"
 

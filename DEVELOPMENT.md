@@ -405,7 +405,10 @@ and the newest push is reviewed after it (pushes in between are skipped; each ru
 whole diff). A lane with no findings posts no review of its own. Only the review's own resolved threads
 are collapsed as outdated (its comments in them, and a lane review once all its threads are
 resolved); an open finding stays in view until it is fixed or answered, and nothing another
-reviewer wrote is touched. All lanes post as `github-actions[bot]`, each signed with its model. A check
+reviewer wrote is touched. A finding is not raised twice: the verifier sees the lane findings on the
+same files that someone already answered, and rejects a repeat unless the code the answer relied
+on has changed (the summary counts these as "already answered"); a confirmed finding on lines
+where a lane thread is still open is posted as a reply in that thread, not as a new one. All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
 become one thread. Each lane
