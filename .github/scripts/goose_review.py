@@ -1018,6 +1018,9 @@ def cmd_post(args: argparse.Namespace) -> None:
         "checks_run": ran or [], "checks_failed": failed, "checks_skipped": status.get("checks_skipped") or [],
         "rejected": status.get("rejected") or 0, "withheld": status.get("withheld") or 0,
         "did_not_run": bool(missing or status.get("error")), "review_url": None, "post_error": None,
+        # Before verification (after merging overlaps): what the lane's own
+        # model raised, whatever the verifier then made of it.
+        "found": len(read_findings(str(unverified))) if unverified.exists() else None,
     }
 
     def save(**fields: object) -> None:
@@ -1143,19 +1146,6 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     }
   }
 }"""
-TIDY_COMMENTS = """
-query($owner: String!, $name: String!, $pr: Int!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $pr) {
-      comments(first: 100, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes { id isMinimized body author { __typename } }
-      }
-    }
-  }
-}"""
-
-
 def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[dict]:
     """Every node of the pull request's connection `field`, all pages."""
     nodes: list[dict] = []
@@ -1172,9 +1162,11 @@ def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[d
 
 
 def cmd_tidy(args: argparse.Namespace) -> None:
-    """Collapse, as outdated, every lane review of an earlier commit, the
-    thread replies under it, and every earlier summary comment. Runs first
-    on each push, so a run a later push cancels still clears its
+    """The first step of every run, once for all lanes: collapse, as
+    outdated, every lane review of an earlier commit and the lanes' comments
+    in its threads, then replace the summary comment with this run marked
+    running (an earlier run still marked running becomes cancelled). It
+    comes before any model, so a run a later push cancels still clears its
     predecessors' clutter; the lanes' own collapse covers re-runs of the
     same commit."""
     token = os.environ.get("GH_TOKEN", "")
@@ -1195,27 +1187,34 @@ def cmd_tidy(args: argparse.Namespace) -> None:
         if comments and (comments[0].get("pullRequestReview") or {}).get("id") in stale:
             # The lanes' own comments and replies; a person's reply stays.
             ids += [c["id"] for c in comments if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
-    ids += [
-        c["id"] for c in graphql_nodes(token, TIDY_COMMENTS, "comments", variables)
-        if (c.get("author") or {}).get("__typename") == "Bot" and SUMMARY_MARKER in (c.get("body") or "") and not c["isMinimized"]
-    ]
     if args.dry_run:
         print(f"would collapse {len(ids)} item(s)")
-        return
     failed = 0
+    ids = [] if args.dry_run else ids
     for node_id in ids:
         code, data = github("POST", "/graphql", token, {
             "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
             "variables": {"id": node_id},
         })
         failed += code != 200 or (isinstance(data, dict) and bool(data.get("errors")))
-    print(f"collapsed {len(ids) - failed} of {len(ids)} outdated review(s) and comment(s)")
+    if not args.dry_run:
+        print(f"collapsed {len(ids) - failed} of {len(ids)} outdated review(s) and comment(s)")
+    cmd_summary(argparse.Namespace(
+        repo=args.repo, pr=args.pr, head_sha=args.head_sha, run_id=args.run_id,
+        results="", state="running", dry_run=args.dry_run,
+    ))
+
+
+HISTORY_RUNS = 20
+HISTORY_RE = re.compile(r"<!-- goose-review:history ([A-Za-z0-9+/=]*) -->")
 
 
 def cmd_summary(args: argparse.Namespace) -> None:
-    """One comment for the whole run: every lane's models, what each of its
-    checks did, what it found and posted, and links to its jobs. Earlier
-    summary comments are deleted so the latest is always the last one."""
+    """One comment for the pull request: this run's lanes in a table (models,
+    when it ran and for how long, checks, findings found and posted, the
+    result or why it failed, links to the jobs), and the earlier runs below
+    it. The history travels in the comment itself; the previous summary is
+    deleted once the new one exists, so the latest is always the last one."""
     results: dict[str, dict] = {}
     for path in sorted(Path(args.results).glob("*.json")):
         try:
@@ -1225,71 +1224,162 @@ def cmd_summary(args: argparse.Namespace) -> None:
             continue
     token = os.environ.get("GH_TOKEN", "")
     jobs: dict[str, dict[str, dict]] = {}
+    earlier: list[dict] = []
+    old: list[dict] = []
+    comments = f"/repos/{args.repo}/issues/{args.pr}/comments"
     if token:
-        code, data = github("GET", f"/repos/{args.repo}/actions/runs/{args.run_id}/jobs?per_page=100", token)
+        code, data = (github("GET", f"/repos/{args.repo}/actions/runs/{args.run_id}/jobs?per_page=100", token)
+                      if args.state == "finished" else (0, None))
         if code == 200 and isinstance(data, dict):
             for job in data.get("jobs", []):
                 lane, _, kind = job.get("name", "").partition(" / ")
                 if kind in ("review", "post"):
                     jobs.setdefault(lane, {})[kind] = job
-    body = summary_body(args, results, jobs)
+        old = [
+            c for c in paged(comments, token)
+            if (c.get("user") or {}).get("type") == "Bot" and SUMMARY_MARKER in (c.get("body") or "")
+        ]
+        if old:
+            earlier = read_history(max(old, key=lambda c: c["id"]).get("body") or "")
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    this = next((r for r in earlier if r.get("run") == str(args.run_id)), {})
+    run = {
+        "run": str(args.run_id), "sha": args.head_sha[:7],
+        "url": f"https://github.com/{args.repo}/actions/runs/{args.run_id}",
+        "state": args.state, "started": this.get("started") or now,
+        "finished": now if args.state == "finished" else None,
+        "lanes": [] if args.state == "running"
+        else [lane_row(lane, results.get(lane), jobs.get(lane, {})) for lane in sorted(set(results) | set(jobs))],
+    }
+    # A run still marked running when a newer one starts was cancelled by
+    # that push: its summary step never came. A re-run of the same run
+    # replaces its entry instead of adding one.
+    for r in earlier:
+        if r.get("state") == "running" and r.get("run") != run["run"]:
+            r.update(state="cancelled", superseded_by=run["sha"])
+    history = [run] + [r for r in earlier if r.get("run") != run["run"]]
+    body = summary_body(history)
+    while len(body) > 60_000 and len(history) > 1:
+        history = history[:-1]
+        body = summary_body(history)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-            out.write(body.replace(SUMMARY_MARKER, "") + "\n")
+            out.write((summary_table([run], current=True) if run["lanes"] else "Review running.") + "\n")
     if args.dry_run:
         print(body)
         return
     if not token:
         raise SystemExit("GH_TOKEN is not set")
-    comments = f"/repos/{args.repo}/issues/{args.pr}/comments"
     code, data = github("POST", comments, token, {"body": body})
     if code not in (200, 201):
         raise SystemExit(f"posting the summary failed: {code} {data}")
-    old = [
-        c for c in paged(comments, token)
-        if c["id"] != data["id"] and (c.get("user") or {}).get("type") == "Bot" and SUMMARY_MARKER in (c.get("body") or "")
-    ]
     for c in old:
         github("DELETE", f"/repos/{args.repo}/issues/comments/{c['id']}", token)
     print(f"posted the summary ({data.get('html_url')}); {len(old)} earlier summary comment(s) deleted")
 
 
-def summary_body(args: argparse.Namespace, results: dict[str, dict], jobs: dict[str, dict[str, dict]]) -> str:
-    run_url = f"https://github.com/{args.repo}/actions/runs/{args.run_id}"
+def read_history(body: str) -> list[dict]:
+    match = HISTORY_RE.search(body)
+    if not match:
+        return []
+    try:
+        runs = json.loads(base64.b64decode(match.group(1)).decode())
+    except (ValueError, UnicodeDecodeError):
+        return []
+    return [r for r in runs if isinstance(r, dict) and isinstance(r.get("lanes"), list)] if isinstance(runs, list) else []
+
+
+def utc(stamp: str | None) -> str:
+    """`2026-09-27T13:52:10Z` as `09-27 13:52`; the table's header says UTC."""
+    return f"{stamp[5:10]} {stamp[11:16]}" if stamp and len(stamp) >= 16 else "—"
+
+
+def minutes_between(start: str | None, end: str | None) -> str:
+    from datetime import datetime
+    try:
+        seconds = (datetime.fromisoformat(end.replace("Z", "+00:00")) - datetime.fromisoformat(start.replace("Z", "+00:00"))).total_seconds()
+    except (AttributeError, ValueError):
+        return "—"
+    return f"{max(round(seconds / 60), 1)} min" if seconds >= 0 else "—"
+
+
+def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
+    """One lane of one run, reduced to what the tables show."""
+    review, post = j.get("review", {}), j.get("post", {})
+    row = {
+        "lane": lane,
+        "ran": review.get("started_at"),
+        "took": minutes_between(review.get("started_at"), post.get("completed_at") or review.get("completed_at")),
+        "jobs": {k: v["html_url"] for k, v in (("review", review), ("post", post)) if v.get("html_url")},
+    }
+    if r is None:
+        why = {"failure": "failed", "cancelled": "was cancelled", "skipped": "was skipped"}.get(post.get("conclusion") or "", "did not report")
+        return {**row, "model": None, "verify": None, "checks": "—", "found": None, "posted": "—", "result": f"❌ no result: the post job {why}"}
+    failed = set(r["checks_failed"])
+    checks = ", ".join(f"{'⚠️' if c in failed else '✅'} `{c}`" for c in r["checks_run"]) or "—"
+    if r["checks_skipped"]:
+        checks += f" <sub>+{len(r['checks_skipped'])} n/a</sub>"
+    tally = ", ".join(f"{n} {s}" for s, n in reversed(r["counts"].items()) if n)
+    posted = f"[{tally}]({r['review_url']})" if tally and r.get("review_url") else tally or "0"
+    extra = [f"{r['rejected']} rejected"] if r["rejected"] else []
+    extra += [f"{r['withheld']} withheld"] if r["withheld"] else []
+    if extra:
+        posted += f" <sub>({', '.join(extra)})</sub>"
+    mark = "❌" if r["did_not_run"] or r["post_error"] else "⚠️" if failed or r["withheld"] else "✅"
+    return {
+        **row, "model": r["model"], "verify": r["verify_model"], "checks": checks,
+        "found": r.get("found"), "posted": posted, "result": f"{mark} {r['post_error'] or r['headline']}",
+    }
+
+
+def run_status(run: dict) -> str:
+    state = run.get("state", "finished")
+    if state == "running":
+        return f"⏳ running since {utc(run.get('started'))} UTC"
+    if state == "cancelled":
+        return f"⛔ cancelled: superseded by `{run.get('superseded_by', '?')}`"
+    return f"finished {utc(run.get('finished'))} UTC"
+
+
+def summary_table(runs: list[dict], current: bool) -> str:
+    cell = lambda v: "—" if v is None else f"`{v}`"
+    head = (["| Model | Verified by | Ran (UTC) | Took | Checks | Found | Posted | Result | Jobs |", "|---|---|---|---|---|---|---|---|---|"]
+            if current else ["| Commit | Model | Ran (UTC) | Found | Posted | Result | Run |", "|---|---|---|---|---|---|---|"])
     rows = []
-    for lane in sorted(set(results) | set(jobs)):
-        r, j = results.get(lane), jobs.get(lane, {})
-        links = " · ".join(f"[{kind}]({job['html_url']})" for kind, job in sorted(j.items(), reverse=True) if job.get("html_url"))
-        if r is None:
-            conclusion = j.get("post", {}).get("conclusion")
-            post = {"failure": "failed", "cancelled": "was cancelled", "skipped": "was skipped"}.get(conclusion or "", "did not report")
-            rows.append(f"| {lane} | — | — | ❌ no result: the post job {post} | — | {links} |")
-            continue
-        failed = set(r["checks_failed"])
-        checks = ", ".join(f"{'⚠️' if c in failed else '✅'} `{c}`" for c in r["checks_run"]) or "—"
-        if r["checks_skipped"]:
-            checks += f" <sub>({len(r['checks_skipped'])} not applicable)</sub>"
-        mark = "❌" if r["did_not_run"] or r["post_error"] else "⚠️" if failed or r["withheld"] else "✅"
-        outcome = f"{mark} {r['post_error'] or r['headline']}"
-        tally = ", ".join(f"{n} {s}" for s, n in reversed(r["counts"].items()) if n)
-        found = f"[{tally}]({r['review_url']})" if tally and r["review_url"] else tally or "none"
-        extra = [f"{r['rejected']} rejected"] if r["rejected"] else []
-        extra += [f"{r['withheld']} withheld"] if r["withheld"] else []
-        if extra:
-            found += f" <sub>({', '.join(extra)})</sub>"
-        models = f"`{r['model']}` → `{r['verify_model']}`"
-        rows.append(f"| {lane} | {models} | {checks} | {outcome} | {found} | {links} |")
-    return "\n".join([
+    for run in runs:
+        if not current and not run["lanes"]:
+            # Cancelled (or never finished): no lane got to report.
+            rows.append(f"| `{run.get('sha', '?')}` | — | {utc(run.get('started'))} | — | — | {run_status(run)} | [run]({run.get('url', '')}) |")
+        for x in run["lanes"]:
+            links = " · ".join(f"[{k}]({u})" for k, u in sorted(x.get("jobs", {}).items(), reverse=True))
+            found = "—" if x.get("found") is None else str(x["found"])
+            if current:
+                rows.append(f"| {cell(x.get('model')) if x.get('model') else x['lane']} | {cell(x.get('verify'))} | {utc(x.get('ran'))} | {x.get('took', '—')} | {x.get('checks', '—')} | {found} | {x.get('posted', '—')} | {x.get('result', '—')} | {links} |")
+            else:
+                rows.append(f"| `{run.get('sha', '?')}` | {cell(x.get('model')) if x.get('model') else x['lane']} | {utc(x.get('ran'))} | {found} | {x.get('posted', '—')} | {x.get('result', '—')} | [run]({run.get('url', '')}) |")
+    return "\n".join(head + rows)
+
+
+def summary_body(history: list[dict]) -> str:
+    latest, earlier = history[0], history[1:]
+    now = (summary_table([latest], current=True) if latest["lanes"]
+           else "The models are reviewing this commit; this comment is replaced with their results when they are done.")
+    parts = [
         SUMMARY_MARKER,
-        f"### Goose review of `{args.head_sha[:7]}` · [run]({run_url})",
+        f"### Goose review of `{latest['sha']}` · [run]({latest['url']}) · {run_status(latest)}",
         "",
-        "| Lane | Reviewed → verified by | Checks | Result | Posted findings | Jobs |",
-        "|---|---|---|---|---|---|",
-        *rows,
+        now,
         "",
-        "<sub>✅ finished · ⚠️ did not finish, so not covered · ❌ did not run. Findings are posted as each lane's "
-        "review on the code, only after a second model confirmed them. Advisory only; it never blocks merging.</sub>",
-    ])
+        "<sub>**Found**: what the model raised; **Posted**: what a second model then confirmed, posted as that model's "
+        "review on the code. ✅ finished · ⚠️ did not finish, so not covered · ❌ did not run. Advisory only; it never "
+        "blocks merging.</sub>",
+    ]
+    if earlier:
+        parts += ["", f"<details><summary>Earlier runs ({len(earlier)})</summary>", "", summary_table(earlier, current=False), "", "</details>"]
+    encoded = base64.b64encode(json.dumps(history[:HISTORY_RUNS], separators=(",", ":")).encode()).decode()
+    parts += ["", f"<!-- goose-review:history {encoded} -->"]
+    return "\n".join(parts)
 
 
 def main() -> None:
@@ -1338,14 +1428,17 @@ def main() -> None:
     summ.add_argument("--pr", required=True, type=int)
     summ.add_argument("--head-sha", required=True)
     summ.add_argument("--run-id", required=True)
-    summ.add_argument("--results", required=True, help="directory of the lanes' result files")
+    summ.add_argument("--results", default="", help="directory of the lanes' result files (not needed with --state running)")
+    summ.add_argument("--state", choices=["running", "finished"], default="finished",
+                      help="running: mark this run as started (the tidy job); finished: its results (the summary job)")
     summ.add_argument("--dry-run", action="store_true", help="print the comment instead of posting it")
     summ.set_defaults(func=cmd_summary)
 
-    tidy = sub.add_parser("tidy", help="collapse earlier commits' lane reviews and earlier summaries as outdated")
+    tidy = sub.add_parser("tidy", help="collapse earlier commits' lane reviews as outdated; mark this run running in the summary")
     tidy.add_argument("--repo", required=True, help="owner/name")
     tidy.add_argument("--pr", required=True, type=int)
     tidy.add_argument("--head-sha", required=True, help="the commit being reviewed now; its reviews are kept")
+    tidy.add_argument("--run-id", required=True, help="this workflow run, marked running in the summary")
     tidy.add_argument("--dry-run", action="store_true", help="count what would be collapsed")
     tidy.set_defaults(func=cmd_tidy)
 

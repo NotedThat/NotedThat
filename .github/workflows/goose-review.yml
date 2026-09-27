@@ -48,11 +48,12 @@ permissions:
   pull-requests: write
 
 jobs:
-  # First, and in seconds: collapse as outdated every lane review of an
-  # earlier commit (and the lanes' replies under it) and the previous
-  # summary comment. A push while lanes are still reviewing cancels this
-  # run before its lanes and summary get to tidy up, so tidying cannot wait
-  # for them; the lanes still collapse their own reviews of this commit.
+  # First, in one step and seconds: collapse as outdated every lane review
+  # of an earlier commit (and the lanes' comments in its threads), and
+  # replace the summary comment with this run marked running; an earlier
+  # run still marked running is recorded as cancelled. A push while lanes
+  # are still reviewing cancels this run before its lanes and summary get
+  # to tidy up, so this cannot wait for them.
   tidy:
     name: tidy
     if: >-
@@ -82,13 +83,13 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
-      - name: Collapse outdated reviews and summaries
+      - name: Collapse outdated reviews; mark this run running
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
           python3 .github/scripts/goose_review.py tidy
           --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
-          --head-sha "${{ github.event.pull_request.head.sha }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}" --run-id "${{ github.run_id }}"
 
   lane:
     name: ${{ matrix.lane }}
