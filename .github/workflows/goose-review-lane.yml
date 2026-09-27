@@ -120,6 +120,15 @@ jobs:
               exit 1
             fi
           done
+          # The routes' shape is checked once, here, by the script that
+          # renders them; the preflight uses the route as it normalises it.
+          for name in GOOSE_THIRDPARTY_BASE_URL GOOSE_MINIMAX_BASE_URL; do
+            if ! .github/scripts/goose-render-provider.sh --check "${!name}" >/dev/null; then
+              mkdir -p "$RUNNER_TEMP/review"
+              jq -n --arg e "the $name secret is not a valid route" '{error: $e}' > "$RUNNER_TEMP/review/status.json"
+              exit 1
+            fi
+          done
 
       # Both routes, because every lane uses a model on each side (one
       # reviews, the other verifies). Prints only the status and curl's exit
@@ -132,8 +141,9 @@ jobs:
           MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: |
           for route in THIRDPARTY MINIMAX; do
+            url=$(.github/scripts/goose-render-provider.sh --check "${!route}")
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
-              -H "Authorization: Bearer $TOKEN" "${!route%/}/models") || rc=$?
+              -H "Authorization: Bearer $TOKEN" "$url/models") || rc=$?
             echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
             if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
               echo "::error::the $route route is not usable from this runner"
