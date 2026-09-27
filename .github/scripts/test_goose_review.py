@@ -171,6 +171,29 @@ class MissingPatch(unittest.TestCase):
         self.assertNotIn("patch", files[0])
 
 
+class Small(unittest.TestCase):
+    def test_clip_keeps_to_its_limit(self) -> None:
+        for text in ("x" * 50, "word " * 20, "a" * 9):
+            with self.subTest(text=text):
+                clipped = g.clip(text, 12)
+                self.assertLessEqual(len(clipped), 12)
+        self.assertEqual(g.clip("short", 12), "short")
+
+    def test_normalise_refuses_a_null_path_or_summary(self) -> None:
+        good = {"path": "./a.rs", "summary": " s ", "line_start": 1}
+        self.assertEqual(g.normalise(good, "c")["path"], "a.rs")
+        for bad in ({**good, "path": None}, {**good, "summary": None}, {**good, "path": 3}):
+            with self.subTest(bad=bad):
+                self.assertIsNone(g.normalise(bad, "c"))
+
+    def test_rejected_counts_read_as_subsets(self) -> None:
+        r = {"checks_run": ["c"], "checks_failed": [], "checks_skipped": [], "counts": {s: 0 for s in g.SEVERITIES},
+             "rejected": 3, "repeated": 1, "unevidenced": 1, "downgraded": 2, "withheld": 0,
+             "did_not_run": False, "post_error": None, "headline": "h", "model": "m", "verify_model": "v"}
+        self.assertEqual(g.lane_row("l", r, {})["posted"],
+                         "0 <sub>(3 rejected, of which 1 already answered and 1 without evidence; 2 downgraded)</sub>")
+
+
 class Described(unittest.TestCase):
     def test_answered(self) -> None:
         f = g.answered_finding(g.comment_body(VERIFIED, META))

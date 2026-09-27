@@ -267,7 +267,9 @@ numbers are as of the commit shown.
 
 
 def clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit].rstrip() + " [...]"
+    """`text` in at most `limit` characters, the marker of a cut included."""
+    marker = " [...]"
+    return text if len(text) <= limit else text[:max(limit - len(marker), 0)].rstrip() + marker
 
 
 def described(f: dict) -> str:
@@ -695,10 +697,13 @@ def normalise(finding: dict, check: str) -> dict | None:
         severity = str(finding.get("severity", "low")).lower()
         line_start = int(finding.get("line_start") or 0)
         line_end = int(finding.get("line_end") or line_start)
-        path = str(finding["path"]).removeprefix("./").removeprefix("b/")
-        summary = str(finding["summary"]).strip()
+        path, summary = finding["path"], finding["summary"]
     except (KeyError, TypeError, ValueError):
         return None
+    # A null or a number is not a path or a claim: str() would make "None" of one.
+    if not isinstance(path, str) or not isinstance(summary, str):
+        return None
+    path, summary = path.removeprefix("./").removeprefix("b/"), summary.strip()
     if not summary or not path:
         return None
     return {
@@ -2125,13 +2130,15 @@ def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
     tally = ", ".join(f"{n} {s}" for s, n in reversed(r["counts"].items()) if n)
     posted = f"[{tally}]({r['review_url']})" if tally and r.get("review_url") else tally or "0"
     repeated, unevidenced = r.get("repeated") or 0, r.get("unevidenced") or 0
+    # Repeats and findings kept without evidence are rejected ones too:
+    # "3 rejected, of which 1 already answered", never read as 3 + 1.
     why = [f"{repeated} already answered"] * bool(repeated) + [f"{unevidenced} without evidence"] * bool(unevidenced)
-    extra = [f"{r['rejected']} rejected" + "".join(f", {w}" for w in why)] if r["rejected"] else []
+    extra = [f"{r['rejected']} rejected" + (f", of which {' and '.join(why)}" if why else "")] if r["rejected"] else []
     extra += [f"{r['downgraded']} downgraded"] if r.get("downgraded") else []
     extra += [f"{r['merged']} into open threads"] if r.get("merged") else []
     extra += [f"{r['withheld']} withheld"] if r["withheld"] else []
     if extra:
-        posted += f" <sub>({', '.join(extra)})</sub>"
+        posted += f" <sub>({'; '.join(extra)})</sub>"
     mark = "❌" if r["did_not_run"] or r["post_error"] else "⚠️" if failed or r["withheld"] else "✅"
     return {
         **row, "model": r["model"], "verify": r["verify_model"], "checks": checks,
