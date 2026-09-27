@@ -328,6 +328,18 @@ jobs:
           name: goose-review-${{ inputs.lane }}
           path: ${{ runner.temp }}/artifact
 
+      # Again, here: the review job's own scrub ran after the model had a
+      # shell in that job, which can rewrite the script or, through the
+      # runner's file commands, any later step there. This job runs on a
+      # fresh runner from its own checkout, so what it publishes is scrubbed
+      # by code the model never touched.
+      - name: Scrub the findings again
+        env:
+          NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+          GOOSE_THIRDPARTY_BASE_URL: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+          GOOSE_MINIMAX_BASE_URL: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+        run: python3 .github/scripts/goose_review.py scrub "$RUNNER_TEMP/artifact"
+
       # A missing verified.jsonl (the review job failed before writing it)
       # is posted as "the review did not run".
       - name: Post the review

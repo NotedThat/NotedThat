@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -345,6 +346,9 @@ def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
     return batches
 
 
+FILE_COMMANDS = {"GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STATE", "GITHUB_STEP_SUMMARY"}
+
+
 def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: str,
               deadline: float, share_s: float, answer_key: str) -> str | None:
     """One headless Goose review run with the developer extension.
@@ -383,7 +387,11 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
         # Nothing of the Actions runtime reaches the model's shell: run steps
         # do not get its tokens today (only JavaScript actions do), and this
         # keeps it so should that change.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("ACTIONS_")}
+        # Nor the paths of the step's file commands (GITHUB_ENV, GITHUB_PATH,
+        # ...). The model can still find those files; only `post`, on its own
+        # runner, is out of its reach, and it scrubs again before publishing.
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("ACTIONS_") and k not in FILE_COMMANDS}
         env.update(XDG_DATA_HOME=data, XDG_STATE_HOME=data)
         command = ["goose", "run", "-n", session, *common(round_turns), "-i", "-"]
         stdin = prompt
@@ -488,7 +496,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             if first_answer:
                 print(f"::notice::{label}: second look gave no answer; keeping the first", file=sys.stderr)
                 return first_answer
-            print(f"::warning::{label}: run ended without an answer ({status or 'no status'}): {error or 'no output'}", file=sys.stderr)
+            print(f"::warning::{label}: run ended without an answer ({status or 'no status'}): {redact(error) or 'no output'}", file=sys.stderr)
             return None
 
 
@@ -745,9 +753,13 @@ def proxy_secrets() -> list[str]:
 
 def encodings(secret: str) -> list[str]:
     """The disguises a model reaches for first: base64 (standard and
-    URL-safe, padded or not), hex in either case, and the string reversed."""
+    URL-safe, padded or not), hex in either case, percent-encoding (every
+    reserved character, or all but `/`; either hex case), and the string
+    reversed."""
     raw = secret.encode()
     forms = [secret[::-1], raw.hex(), raw.hex().upper()]
+    for pct in {urllib.parse.quote(secret, safe=""), urllib.parse.quote(secret)}:
+        forms += [pct, re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), pct)]
     for b64 in (base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode()):
         forms += [b64, b64.rstrip("=")]
     return forms
@@ -778,9 +790,17 @@ def read_status(path: str) -> dict:
     """What each step managed to do, so the posted review never presents a
     check that did not finish as a clean result."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        status = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
+    except (OSError, ValueError):
+        status = None
+    # Unreadable, it says so: an empty status would let `post` report a
+    # review that may not have run as clean.
+    return status if isinstance(status, dict) else {"error": f"{Path(path).name} is unreadable"}
+
+
+FINDING_KEYS = {"path", "line_start", "line_end", "severity", "check", "summary"}
 
 
 def write_status(path: str, **fields: object) -> None:
@@ -788,8 +808,21 @@ def write_status(path: str, **fields: object) -> None:
 
 
 def read_findings(path: str) -> list[dict]:
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
+    """The findings in a JSON-lines file; a line that is not a finding (the
+    model's shell can write there too) is skipped, with a warning."""
+    findings = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            finding = json.loads(line)
+        except ValueError:
+            finding = None
+        if isinstance(finding, dict) and FINDING_KEYS <= finding.keys():
+            findings.append(finding)
+        else:
+            print(f"::warning::{Path(path).name}:{n}: not a finding, skipped", file=sys.stderr)
+    return findings
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
@@ -1383,7 +1416,8 @@ def cmd_summary(args: argparse.Namespace) -> None:
     it. The history travels in the comment itself; the previous summary is
     deleted once the new one exists, so the latest is always the last one."""
     results: dict[str, dict] = {}
-    for path in sorted(Path(args.results).glob("*.json")):
+    # `tidy` passes none: Path("") would be the working directory.
+    for path in sorted(Path(args.results).glob("*.json")) if args.results else []:
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
             results[result["lane"]] = result
