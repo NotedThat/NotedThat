@@ -898,8 +898,8 @@ def commentable_lines(patch: str) -> dict[int, int]:
 
 
 def signature(model: str, verify_model: str | None) -> str:
-    """Who reviewed, on every review and comment: lanes without a GitHub App
-    of their own all post as github-actions[bot]."""
+    """Who reviewed, on every review and comment: every lane posts as
+    github-actions[bot], so the signature is what tells them apart."""
     verified = f", verified by **{verify_model}**" if verify_model else ""
     return f"\n\n---\n\n_Review done by **{model}**{verified}_"
 

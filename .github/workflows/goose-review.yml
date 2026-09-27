@@ -1,10 +1,10 @@
 # LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
 #
-# Four lanes run, one per model: DeepSeek V4 Flash (third-party endpoint) as
-# warden-deepseek-v4[bot] and MiniMax M3 as warden-minimax-m3[bot] -- the
-# apps and their secrets keep their Warden names -- and Mistral Medium 3.5
-# and Gemma 4 31B (same endpoint) as github-actions[bot] until they have
-# apps of their own. Every review and comment is signed with its model.
+# Four lanes run, one per model: DeepSeek V4 Flash, Mistral Medium 3.5 and
+# Gemma 4 31B on the third-party endpoint, and MiniMax M3. All post as
+# github-actions[bot] with the job's own token, so no GitHub App or private
+# key is involved; every review and comment is signed with the model that
+# wrote it and carries its lane's marker.
 #
 # Each lane runs the checks in .agents/checks/ that cover the changed files
 # with its own model, then a model of another family re-checks each finding
@@ -67,7 +67,6 @@ jobs:
             model: deepseek-v4-flash-0731
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
-            app: DEEPSEEK
             # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
             # every agent turn resends the whole conversation: three checks at
             # once hit it on #207. The script also resumes a rate-limited run.
@@ -77,28 +76,23 @@ jobs:
             model: MiniMax-M3
             verify-provider: notedthat_thirdparty
             verify-model: deepseek-v4-flash-0731
-            app: MINIMAX
             jobs: 3
           # Two more model families, verified by MiniMax like DeepSeek: Gemma
           # passed Mistral's false claim that `**/` spans one directory at
           # most. This puts three lanes' verification on the MiniMax plan's
           # quota; a verification it cuts short withholds its findings as
           # unconfirmed, it never posts them.
-          # No GitHub App yet (`app` empty): they post as github-actions[bot],
-          # every comment signed with the model that wrote it.
           - lane: mistral
             provider: notedthat_thirdparty
             model: mistral-medium-3-5
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
-            app: ""
             jobs: 2
           - lane: gemma
             provider: notedthat_thirdparty
             model: gemma-4-31b-it
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
-            app: ""
             jobs: 2
     uses: ./.github/workflows/goose-review-lane.yml
     with:
@@ -107,6 +101,5 @@ jobs:
       model: ${{ matrix.model }}
       verify-provider: ${{ matrix.verify-provider }}
       verify-model: ${{ matrix.verify-model }}
-      app: ${{ matrix.app }}
       jobs: ${{ matrix.jobs }}
     secrets: inherit

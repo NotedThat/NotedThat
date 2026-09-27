@@ -11,7 +11,7 @@
 # of the token and routes, verbatim and in the common encodings; a token
 # disguised some other way is the risk that remains, bounded by the job
 # running only for branches of this repository. `post` runs no model; it
-# alone has `pull-requests: write`, or the lane's app token.
+# alone has `pull-requests: write`, and posts as github-actions[bot].
 #
 # Advisory only: `review` may fail without failing the PR, and `post` still
 # says so on the PR when it does. `post` itself is left to fail visibly: if
@@ -27,9 +27,6 @@ on:
       model: { type: string, required: true }
       verify-provider: { type: string, required: true }
       verify-model: { type: string, required: true }
-      # GitHub App secret prefix (WARDEN_<app>_APP_ID / _PRIVATE_KEY); empty
-      # posts as github-actions[bot].
-      app: { type: string, required: false, default: "" }
       # Checks run at once; see the rate limits in goose-review.yml.
       jobs: { type: number, required: false, default: 2 }
 
@@ -304,25 +301,12 @@ jobs:
           name: goose-review-${{ inputs.lane }}
           path: ${{ runner.temp }}/artifact
 
-      - name: Create the ${{ inputs.lane }} app token
-        if: inputs.app != ''
-        id: bot
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets[format('WARDEN_{0}_APP_ID', inputs.app)] }}
-          private-key: ${{ secrets[format('WARDEN_{0}_PRIVATE_KEY', inputs.app)] }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          # Only what posting needs, whatever else the app was granted for
-          # Warden (contents: write among it): this job runs the PR's own
-          # copy of the script.
-          permission-pull-requests: write
-
       # A missing verified.jsonl (the review job failed before writing it)
       # is posted as "the review did not run".
       - name: Post the review
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+          # The job's own token, limited to this job's permissions above.
+          GH_TOKEN: ${{ github.token }}
         run: >
           python3 .github/scripts/goose_review.py post
           --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
