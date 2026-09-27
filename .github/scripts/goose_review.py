@@ -1003,11 +1003,13 @@ def signature(model: str, verify_model: str | None) -> str:
 
 
 # Coding agents working through review feedback read these threads; tell
-# them how to close one out. Only thread-opening comments carry it.
+# them how to close one out. Only thread-opening comments carry it. The
+# reply is what `answered` collects: a thread resolved without one leaves
+# the verifier nothing to go on, and the finding can be raised again.
 AGENT_NOTE = (
-    "\n\n<sub>For AI agents addressing this review: after committing a fix, resolve "
-    "this conversation. If the finding does not apply, reply in this thread explaining "
-    "why.</sub>"
+    "\n\n<sub>For AI agents addressing this review: always reply in this thread "
+    "before resolving it. After committing a fix, name the commit and what changed; "
+    "if the finding does not apply, explain why. Then resolve this conversation.</sub>"
 )
 
 
