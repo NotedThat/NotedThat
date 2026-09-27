@@ -1266,7 +1266,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
     # replaces its entry instead of adding one.
     for r in earlier:
         if r.get("state") == "running" and r.get("run") != run["run"]:
-            r.update(state="cancelled", superseded_by=run["sha"])
+            r.update(state="cancelled", superseded_by=run["sha"], ended=now)
     history = [run] + [r for r in earlier if r.get("run") != run["run"]]
     body = summary_body(history)
     while len(body) > 60_000 and len(history) > 1:
@@ -1274,7 +1274,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
         body = summary_body(history)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-            out.write((summary_table([run], current=True) if run["lanes"] else "Review running.") + "\n")
+            out.write(summary_table([run]) + "\n")
     if args.dry_run:
         print(body)
         return
@@ -1314,22 +1314,13 @@ def utc(stamp: str | None) -> str:
     return f"{stamp[5:10]} {stamp[11:16]}" if stamp and len(stamp) >= 16 else "—"
 
 
-def minutes_between(start: str | None, end: str | None) -> str:
-    from datetime import datetime
-    try:
-        seconds = (datetime.fromisoformat(end.replace("Z", "+00:00")) - datetime.fromisoformat(start.replace("Z", "+00:00"))).total_seconds()
-    except (AttributeError, ValueError):
-        return "—"
-    return f"{max(round(seconds / 60), 1)} min" if seconds >= 0 else "—"
-
-
 def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
     """One lane of one run, reduced to what the tables show."""
     review, post = j.get("review", {}), j.get("post", {})
     row = {
         "lane": lane,
-        "ran": review.get("started_at"),
-        "took": minutes_between(review.get("started_at"), post.get("completed_at") or review.get("completed_at")),
+        "started": review.get("started_at"),
+        "ended": post.get("completed_at") or review.get("completed_at"),
         "jobs": {k: v["html_url"] for k, v in (("review", review), ("post", post)) if v.get("html_url")},
     }
     if r is None:
@@ -1352,60 +1343,57 @@ def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
     }
 
 
-def run_status(run: dict) -> str:
-    state = run.get("state", "finished")
-    if state == "running":
-        return f"⏳ running since {utc(run.get('started'))} UTC"
-    if state == "cancelled":
-        return f"⛔ cancelled: superseded by `{run.get('superseded_by', '?')}`"
-    return f"finished {utc(run.get('finished'))} UTC"
-
-
 def code_cell(value: str | None) -> str:
     return "—" if value is None else f"`{value}`"
 
 
-def summary_table(runs: list[dict], current: bool) -> str:
-    head = (["| Model | Verified by | Ran (UTC) | Took | Checks | Found | Posted | Result | Jobs |", "|---|---|---|---|---|---|---|---|---|"]
-            if current else ["| Commit | Model | Ran (UTC) | Found | Posted | Result | Run |", "|---|---|---|---|---|---|---|"])
+def summary_rows(run: dict) -> list[tuple[str, list[str]]]:
+    """A run's rows as (start time, cells): one per model once it finished,
+    a single row while it runs or when it was cancelled before reporting."""
+    commit, link = f"`{run.get('sha', '?')}`", f"[run]({run.get('url', '')})"
+    if not run["lanes"]:
+        state = run.get("state")
+        result = ("⏳ Currently running" if state == "running"
+                  else f"⛔ Cancelled: superseded by `{run.get('superseded_by', '?')}`" if state == "cancelled"
+                  else "❌ No lane reported")
+        ended = "—" if state == "running" else utc(run.get("ended") or run.get("finished"))
+        return [(run.get("started") or "", [commit, "—", "—", utc(run.get("started")), ended, "—", "—", "—", result, link])]
     rows = []
-    for run in runs:
-        if not current and not run["lanes"]:
-            # Cancelled (or never finished): no lane got to report.
-            rows.append(f"| `{run.get('sha', '?')}` | — | {utc(run.get('started'))} | — | — | {run_status(run)} | [run]({run.get('url', '')}) |")
-        for x in run["lanes"]:
-            links = " · ".join(f"[{k}]({u})" for k, u in sorted(x.get("jobs", {}).items(), reverse=True))
-            found = "—" if x.get("found") is None else str(x["found"])
-            model = code_cell(x["model"]) if x.get("model") else x["lane"]
-            if current:
-                cells = [model, code_cell(x.get("verify")), utc(x.get("ran")), x.get("took", "—"), x.get("checks", "—"),
-                         found, x.get("posted", "—"), x.get("result", "—"), links]
-            else:
-                cells = [f"`{run.get('sha', '?')}`", model, utc(x.get("ran")), found, x.get("posted", "—"),
-                         x.get("result", "—"), f"[run]({run.get('url', '')})"]
-            rows.append("| " + " | ".join(cells) + " |")
-    return "\n".join(head + rows)
+    for x in run["lanes"]:
+        jobs = " · ".join(f"[{k}]({u})" for k, u in sorted(x.get("jobs", {}).items(), reverse=True)) or link
+        started = x.get("started") or x.get("ran") or run.get("started")   # `ran`: summaries before this layout
+        rows.append((started or "", [
+            commit, code_cell(x["model"]) if x.get("model") else x["lane"], code_cell(x.get("verify")),
+            utc(started), utc(x.get("ended")), x.get("checks", "—"),
+            "—" if x.get("found") is None else str(x["found"]), x.get("posted", "—"), x.get("result", "—"), jobs,
+        ]))
+    return rows
+
+
+def summary_table(runs: list[dict]) -> str:
+    """Every row of every run, latest start first."""
+    rows = sorted((row for run in runs for row in summary_rows(run)), key=lambda row: row[0], reverse=True)
+    return "\n".join([
+        "| Commit | Model | Verified by | Run started (UTC) | Run ended (UTC) | Checks | Found | Posted | Result | Jobs |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+        *("| " + " | ".join(cells) + " |" for _, cells in rows),
+    ])
 
 
 def summary_body(history: list[dict]) -> str:
-    latest, earlier = history[0], history[1:]
-    now = (summary_table([latest], current=True) if latest["lanes"]
-           else "The models are reviewing this commit; this comment is replaced with their results when they are done.")
-    parts = [
+    encoded = base64.b64encode(json.dumps(history[:HISTORY_RUNS], separators=(",", ":")).encode()).decode()
+    return "\n".join([
         SUMMARY_MARKER,
-        f"### Goose review of `{latest['sha']}` · [run]({latest['url']}) · {run_status(latest)}",
+        f"### Goose review · Total runs ({len(history[:HISTORY_RUNS])})",
         "",
-        now,
+        summary_table(history[:HISTORY_RUNS]),
         "",
         "<sub>**Found**: what the model raised; **Posted**: what a second model then confirmed, posted as that model's "
-        "review on the code. ✅ finished · ⚠️ did not finish, so not covered · ❌ did not run. Advisory only; it never "
-        "blocks merging.</sub>",
-    ]
-    if earlier:
-        parts += ["", f"<details><summary>Earlier runs ({len(earlier)})</summary>", "", summary_table(earlier, current=False), "", "</details>"]
-    encoded = base64.b64encode(json.dumps(history[:HISTORY_RUNS], separators=(",", ":")).encode()).decode()
-    parts += ["", f"<!-- goose-review:history {encoded} -->"]
-    return "\n".join(parts)
+        "review on the code. Checks: ✅ finished · ⚠️ did not finish, so not covered. Result: ❌ did not run. "
+        "Advisory only; it never blocks merging.</sub>",
+        "",
+        f"<!-- goose-review:history {encoded} -->",
+    ])
 
 
 def main() -> None:
