@@ -1050,8 +1050,8 @@ def cmd_post(args: argparse.Namespace) -> None:
         raise SystemExit("GH_TOKEN is not set")
 
     if not noteworthy:
-        collapsed = collapse_earlier(base, token, marker, args.head_sha)
-        print(f"nothing to post ({headline}); {collapsed} earlier review(s) collapsed")
+        collapsed = collapse_resolved(args.repo, args.pr, token)
+        print(f"nothing to post ({headline}); {collapsed} resolved item(s) collapsed")
         return
 
     status, data = github("POST", f"{base}/reviews", token, review)
@@ -1081,48 +1081,12 @@ def cmd_post(args: argparse.Namespace) -> None:
                     replies += 1
                 else:
                     print(f"::warning::reply to {comment['path']}:{comment['line']} failed: {reply_status} {reply}", file=sys.stderr)
-    # Only now that the new review exists, so a failed post never leaves
-    # the lane with nothing visible on the pull request.
-    collapsed = collapse_earlier(base, token, marker, args.head_sha, keep=data["id"])
+    # Threads resolved while this run reviewed, of any lane or commit.
+    collapsed = collapse_resolved(args.repo, args.pr, token)
     print(
         f"posted review with {len(comments)} inline comment(s) and {replies} thread repl(ies), "
-        f"{len(loose)} in the body, {collapsed} earlier review(s) collapsed"
+        f"{len(loose)} in the body, {collapsed} resolved item(s) collapsed"
     )
-
-
-def collapse_earlier(base: str, token: str, marker: str, head_sha: str, keep: int | None = None) -> int:
-    """Collapse this lane's earlier reviews of the same commit (a re-run),
-    with their comments and the thread replies to them, so only the latest
-    one is read. Reviews of earlier commits are `tidy`'s, which collapses
-    them only once resolved. Only a bot's reviews count: a person quoting
-    the marker keeps their review."""
-    stale = [
-        r for r in paged(f"{base}/reviews", token)
-        if r["id"] != keep and r.get("commit_id") == head_sha
-        and (r.get("user") or {}).get("type") == "Bot" and marker in (r.get("body") or "")
-    ]
-    node_ids = [r["node_id"] for r in stale]
-    stale_comments: set[int] = set()
-    for r in stale:
-        for c in paged(f"{base}/reviews/{r['id']}/comments", token):
-            node_ids.append(c["node_id"])
-            stale_comments.add(c["id"])
-    # Thread replies are reviews of their own without the marker.
-    if stale_comments:
-        node_ids += [
-            c["node_id"] for c in paged(f"{base}/comments", token) if c.get("in_reply_to_id") in stale_comments
-        ]
-    for node_id in node_ids:
-        github(
-            "POST",
-            "/graphql",
-            token,
-            {
-                "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
-                "variables": {"id": node_id},
-            },
-        )
-    return len(stale)
 
 
 SUMMARY_MARKER = "<!-- goose-review:summary -->"
@@ -1148,7 +1112,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
           id isResolved
           comments(first: 100) {
             pageInfo { hasNextPage endCursor }
-            nodes { id isMinimized author { __typename } pullRequestReview { id } }
+            nodes { id isMinimized body author { __typename } pullRequestReview { id } }
           }
         }
       }
@@ -1161,7 +1125,7 @@ query($id: ID!, $after: String) {
     ... on PullRequestReviewThread {
       comments(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isMinimized author { __typename } pullRequestReview { id } }
+        nodes { id isMinimized body author { __typename } pullRequestReview { id } }
       }
     }
   }
@@ -1198,54 +1162,67 @@ def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[d
         after = conn["pageInfo"]["endCursor"]
 
 
-def cmd_tidy(args: argparse.Namespace) -> None:
-    """The first step of every run, once for all lanes: collapse, as
-    outdated, the lanes' comments in resolved threads of their reviews of
-    earlier commits, and such a review itself once none of its threads is
-    open; then replace the summary comment with this run marked running (an
-    earlier run still marked running stopped before its summary). An open
-    finding stays in view until it is fixed or answered, whichever commit
-    it came from; the lanes' own collapse covers re-runs of the same
-    commit."""
-    token = os.environ.get("GH_TOKEN", "")
-    if not token:
-        raise SystemExit("GH_TOKEN is not set")
-    owner, name = args.repo.split("/", 1)
-    variables = {"owner": owner, "name": name, "pr": args.pr}
-    lane = re.compile(r"<!-- goose-review:(?!summary)[a-z0-9-]+ -->")
+# A lane's review carries its lane marker; each of its comments and thread
+# replies carries the signature (`signature`).
+LANE_MARKER_RE = re.compile(r"<!-- goose-review:(?!summary)[a-z0-9-]+ -->")
+SIGNATURE_RE = re.compile(r"\n---\n\n_Review done by \*\*")
+
+
+def collapse_resolved(repo: str, pr: int, token: str, dry_run: bool = False) -> int:
+    """Collapse, as outdated, what the Goose review posted in its resolved
+    threads, and a lane review itself once it has threads and every one is
+    resolved. Nothing else: a thread another reviewer started, a person's
+    or another bot's reply, an open finding, and a review whose findings
+    are only in its body (it has no thread to resolve) all stay."""
+    owner, name = repo.split("/", 1)
+    variables = {"owner": owner, "name": name, "pr": pr}
     reviews = graphql_nodes(token, TIDY_QUERY, "reviews", variables)
-    stale = {
+    goose = {
         r["id"] for r in reviews
-        if (r.get("author") or {}).get("__typename") == "Bot" and lane.search(r.get("body") or "")
-        and (r.get("commit") or {}).get("oid") != args.head_sha
+        if (r.get("author") or {}).get("__typename") == "Bot" and LANE_MARKER_RE.search(r.get("body") or "")
     }
     ids: list[str] = []
+    with_threads: set[str] = set()
     open_reviews: set[str] = set()
     for thread in graphql_nodes(token, TIDY_THREADS, "reviewThreads", variables):
         first = thread["comments"]["nodes"]
         review = (first[0].get("pullRequestReview") or {}).get("id") if first else None
-        if review not in stale:
+        if review not in goose:
             continue
+        with_threads.add(review)
         if not thread["isResolved"]:
             open_reviews.add(review)
             continue
-        # The lanes' own comments and replies; a person's reply stays.
-        ids += [c["id"] for c in thread_comments(token, thread) if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
-    # A review whose findings are all in its body has no thread to resolve;
-    # it goes once a newer commit is reviewed, as before.
-    ids += [r["id"] for r in reviews if r["id"] in stale - open_reviews and not r["isMinimized"]]
-    if args.dry_run:
+        ids += [
+            c["id"] for c in thread_comments(token, thread)
+            if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"
+            and SIGNATURE_RE.search(c.get("body") or "")
+        ]
+    ids += [r["id"] for r in reviews if r["id"] in with_threads - open_reviews and not r["isMinimized"]]
+    if dry_run:
         print(f"would collapse {len(ids)} item(s)")
+        return len(ids)
     failed = 0
-    ids = [] if args.dry_run else ids
     for node_id in ids:
         code, data = github("POST", "/graphql", token, {
             "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
             "variables": {"id": node_id},
         })
         failed += code != 200 or (isinstance(data, dict) and bool(data.get("errors")))
+    return len(ids) - failed
+
+
+def cmd_tidy(args: argparse.Namespace) -> None:
+    """The first step of every run, once for all lanes: collapse what the
+    review posted in resolved threads (`collapse_resolved`), then replace
+    the summary comment with this run marked running (an earlier run still
+    marked running stopped before its summary)."""
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        raise SystemExit("GH_TOKEN is not set")
+    collapsed = collapse_resolved(args.repo, args.pr, token, args.dry_run)
     if not args.dry_run:
-        print(f"collapsed {len(ids) - failed} of {len(ids)} outdated review(s) and comment(s)")
+        print(f"collapsed {collapsed} resolved review item(s)")
     cmd_summary(argparse.Namespace(
         repo=args.repo, pr=args.pr, head_sha=args.head_sha, run_id=args.run_id,
         results="", state="running", dry_run=args.dry_run,
@@ -1503,7 +1480,7 @@ def main() -> None:
     summ.add_argument("--dry-run", action="store_true", help="print the comment instead of posting it")
     summ.set_defaults(func=cmd_summary)
 
-    tidy = sub.add_parser("tidy", help="collapse earlier commits' resolved lane findings as outdated; mark this run running in the summary")
+    tidy = sub.add_parser("tidy", help="collapse the review's resolved threads as outdated; mark this run running in the summary")
     tidy.add_argument("--repo", required=True, help="owner/name")
     tidy.add_argument("--pr", required=True, type=int)
     tidy.add_argument("--head-sha", required=True, help="the commit being reviewed now; its reviews are kept")

@@ -53,11 +53,11 @@ permissions:
   pull-requests: write
 
 jobs:
-  # First, in one step and seconds: collapse as outdated the lanes' findings
-  # on earlier commits whose threads are resolved (a review once none of its
-  # threads is open), and replace the summary comment with this run marked
-  # running; an earlier run still marked running stopped before its summary
-  # (cancelled by hand, or it failed) and is recorded as such.
+  # First, in one step and seconds: collapse as outdated the Goose review's
+  # resolved threads (only its own comments in them; a lane review once all
+  # its threads are resolved), and replace the summary comment with this
+  # run marked running; an earlier run still marked running stopped before
+  # its summary (cancelled by hand, or it failed) and is recorded as such.
   tidy:
     name: tidy
     if: >-
@@ -87,7 +87,7 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
-      - name: Collapse resolved outdated findings; mark this run running
+      - name: Collapse resolved review threads; mark this run running
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
