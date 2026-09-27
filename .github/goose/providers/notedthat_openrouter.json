@@ -1,0 +1,26 @@
+{
+  "name": "notedthat_openrouter",
+  "engine": "openai",
+  "display_name": "OpenRouter (direct)",
+  "description": "OpenRouter's OpenAI-compatible API, reached directly rather than through the egress proxy",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "base_url": "https://openrouter.ai",
+  "base_path": "api/v1/chat/completions",
+  "models": [
+    {
+      "name": "deepseek/deepseek-v4.1-flash",
+      "context_limit": 114688,
+      "request_params": {
+        "max_tokens": 16384,
+        "provider": {
+          "order": ["inference-net", "wafer", "relace"],
+          "allow_fallbacks": true,
+          "require_parameters": true
+        }
+      }
+    }
+  ],
+  "supports_streaming": true,
+  "requires_auth": true,
+  "toolshim": false
+}

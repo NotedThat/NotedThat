@@ -1,0 +1,15 @@
+{
+  "name": "notedthat_minimax",
+  "engine": "openai",
+  "display_name": "MiniMax (egress proxy)",
+  "description": "MiniMax's OpenAI-compatible API through the NotedThat egress proxy",
+  "api_key_env": "NOTEDTHAT_PROXY_TOKEN",
+  "base_url": "https://example.invalid",
+  "base_path": "example.invalid/chat/completions",
+  "models": [
+    { "name": "MiniMax-M3" }
+  ],
+  "supports_streaming": true,
+  "requires_auth": true,
+  "toolshim": false
+}
