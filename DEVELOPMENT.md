@@ -411,7 +411,9 @@ on has changed (the summary counts these as "already answered"); a confirmed fin
 where a lane thread is still open is posted as a reply in that thread, not as a new one. The
 verifier must back every finding it keeps with its own severity, the trigger that reaches the
 defect, and a line it quotes from the repository at HEAD; the script checks the quote is on
-that line and drops the finding if not, and the lower of the two severities is posted. When
+that line and drops the finding if not, and the lower of the two severities is posted. A
+lowered finding shows only the posted severity on top; the severity it was raised at and the
+verifier's reason for lowering it are folded away under it. When
 the change touches their paths, the facts in `.agents/facts/` (platform behaviour models got
 wrong here, such as GitHub Actions' status check functions) go to the checks and the verifier.
 The summary also counts, per model, how its threads on the pull request were answered

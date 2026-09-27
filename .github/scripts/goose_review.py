@@ -202,6 +202,9 @@ For each finding you keep, show your evidence:
   Rate `high` or `critical` only when you traced the trigger to this code
   yourself; otherwise `medium` at most. The lower of your rating and the
   reviewer's is posted.
+- `severity_reason`: when your rating is lower than the reviewer's, one
+  sentence on why: what limits the trigger or the impact. It is shown with
+  the finding.
 - `trigger`: the concrete input, event or state that reaches the defect.
 - `evidence`: one line of the repository at HEAD that shows the defect,
   copied exactly: its `path`, its `line` number, and as `quote` the line or
@@ -214,7 +217,7 @@ When you are done, answer with ONLY this JSON object -- no prose, no code
 fences -- with one verdict per finding, in order:
 
 {"verdicts": [
-  {"index": 0, "keep": true, "severity": "medium", "trigger": "what reaches it", "evidence": {"path": "src/x.rs", "line": 120, "quote": "exact text of line 120"}, "reason": "one sentence"},
+  {"index": 0, "keep": true, "severity": "medium", "severity_reason": "why lower than the reviewer's, if it is", "trigger": "what reaches it", "evidence": {"path": "src/x.rs", "line": 120, "quote": "exact text of line 120"}, "reason": "one sentence"},
   {"index": 1, "keep": false, "reason": "one sentence"}
 ]}
 
@@ -851,11 +854,13 @@ def cmd_scrub(args: argparse.Namespace) -> None:
                 try:
                     text = path.read_text(encoding="utf-8")
                 except UnicodeDecodeError:
-                    print(f"::warning::{path}: not text, removed before upload", file=sys.stderr)
+                    # The model can name a file too: its name is redacted
+                    # like its contents before it reaches the log.
+                    print(f"::warning::{redact(str(path))}: not text, removed before upload", file=sys.stderr)
                     path.unlink()
                     continue
                 if (clean := redact(text)) != text:
-                    print(f"::warning::{path}: proxy secret redacted before upload", file=sys.stderr)
+                    print(f"::warning::{redact(str(path))}: proxy secret redacted before upload", file=sys.stderr)
                     path.write_text(clean, encoding="utf-8")
 
 
@@ -935,14 +940,18 @@ def squash(text: str) -> str:
 
 def confirm(finding: dict, verdict: dict) -> dict | None:
     """The finding as posted once a verifier kept it: at the lower of the two
-    severities, with the verifier's trigger and evidence. None when the
-    verdict does not carry all three, or its quote is not where it says."""
+    severities, with the verifier's trigger and evidence, and when it lowered
+    the severity, its reason. None when the verdict does not carry all three,
+    or its quote is not where it says."""
     severity, trigger, evidence = verdict.get("severity"), verdict.get("trigger"), verdict.get("evidence")
     if severity not in SEVERITIES or not isinstance(trigger, str) or not trigger.strip() or not evidence_holds(evidence):
         return None
-    confirmed = {**finding, "trigger": trigger.strip(), "evidence": f"{evidence['path']}:{evidence['line']}"}
+    line = str(evidence["line"]).strip()
+    confirmed = {**finding, "trigger": trigger.strip(), "evidence": f"{evidence['path']}:{line}"}
     if SEVERITIES.index(severity) < SEVERITIES.index(finding["severity"]):
-        confirmed.update(severity=severity, raised_as=finding["severity"])
+        reason = verdict.get("severity_reason")
+        confirmed.update(severity=severity, raised_as=finding["severity"],
+                         severity_reason=reason.strip() if isinstance(reason, str) else "")
     return confirmed
 
 
@@ -1150,15 +1159,27 @@ AGENT_NOTE = (
 )
 
 
+def lowered_why(f: dict) -> str:
+    """Why the verifier posted a finding below the severity it was raised at."""
+    return f.get("severity_reason") or "The verifier gave no reason."
+
+
 def comment_body(f: dict, sign: str = "", note: str = "") -> str:
-    raised = f" <sub>(raised as {f['raised_as']})</sub>" if f.get("raised_as") else ""
+    # Only the posted severity heads the comment; a lowered one says how and
+    # why folded away, so a reader sees one rating, not two.
     shown = f"\n\n**Verified:** {f['trigger']} — `{f['evidence']}`" if f.get("trigger") else ""
-    return f"**{f['severity']}**{raised} · `{f['check']}`\n\n{f['summary']}{shown}{note}{sign}"
+    lowered = (
+        f"\n\n<details><summary>Raised as {f['raised_as']}, verified as {f['severity']}</summary>\n\n"
+        f"{lowered_why(f)}\n\n</details>"
+    ) if f.get("raised_as") else ""
+    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}{shown}{lowered}{note}{sign}"
 
 
 def body_line(f: dict, where: str) -> str:
     """A finding as a review-body bullet, other checks' notes nested under it."""
     line = f"- `{where}` — **{f['severity']}** · `{f['check']}`: {f['summary']}"
+    if f.get("raised_as"):
+        line += f"\n  - Raised as {f['raised_as']}, verified as {f['severity']}: {lowered_why(f)}"
     return line + "".join(f"\n  - **{a['severity']}** · `{a['check']}`: {a['summary']}" for a in f.get("also", []))
 
 
