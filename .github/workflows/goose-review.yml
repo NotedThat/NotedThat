@@ -10,7 +10,11 @@
 # with its own model, then a model of another family re-checks each finding
 # against the code and only the confirmed ones are posted: a lane never
 # verifies itself, the same rule the Warden profiles followed. MiniMax M3
-# verifies every lane but its own, which DeepSeek verifies. On #207 both
+# verifies every lane but its own, which DeepSeek verifies. Each verifier
+# has the other as its backup, for when its provider is down (the MiniMax
+# plan past its five-hour limit answers every request empty): then the
+# DeepSeek lane verifies itself rather than withholding everything, and
+# each comment names the model that confirmed it. On #207 both
 # confirmed wrong findings at about the same rate (a quarter), mostly ones
 # resting on wrong assumptions about GitHub Actions; MiniMax is kept because
 # the other models verified worse, and the evidence requirement and
@@ -117,6 +121,12 @@ jobs:
             model: deepseek-v4-flash-0731
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
+            # When the MiniMax plan is past its five-hour limit (it then
+            # answers with empty responses), DeepSeek verifies instead: its
+            # own findings, so no second family, but checked against the code
+            # with evidence rather than withheld.
+            verify-backup-provider: notedthat_thirdparty
+            verify-backup-model: deepseek-v4-flash-0731
             # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
             # every agent turn resends the whole conversation: three checks at
             # once hit it on #207. The script also resumes a rate-limited run.
@@ -126,6 +136,8 @@ jobs:
             model: MiniMax-M3
             verify-provider: notedthat_thirdparty
             verify-model: deepseek-v4-flash-0731
+            verify-backup-provider: notedthat_minimax
+            verify-backup-model: MiniMax-M3
             jobs: 3
           # A third model family, verified by MiniMax like DeepSeek: Gemma,
           # its verifier at first, passed Mistral's false claim that `**/`
@@ -139,6 +151,8 @@ jobs:
             model: mistral-medium-3-5
             verify-provider: notedthat_minimax
             verify-model: MiniMax-M3
+            verify-backup-provider: notedthat_thirdparty
+            verify-backup-model: deepseek-v4-flash-0731
             jobs: 2
     uses: ./.github/workflows/goose-review-lane.yml
     with:
@@ -147,6 +161,8 @@ jobs:
       model: ${{ matrix.model }}
       verify-provider: ${{ matrix.verify-provider }}
       verify-model: ${{ matrix.verify-model }}
+      verify-backup-provider: ${{ matrix.verify-backup-provider }}
+      verify-backup-model: ${{ matrix.verify-backup-model }}
       jobs: ${{ matrix.jobs }}
     secrets: inherit
 

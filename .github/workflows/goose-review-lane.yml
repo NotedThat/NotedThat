@@ -27,6 +27,9 @@ on:
       model: { type: string, required: true }
       verify-provider: { type: string, required: true }
       verify-model: { type: string, required: true }
+      # Verifies instead when the verifier's provider is down.
+      verify-backup-provider: { type: string, required: false, default: "" }
+      verify-backup-model: { type: string, required: false, default: "" }
       # Checks run at once; see the rate limits in goose-review.yml.
       jobs: { type: number, required: false, default: 2 }
 
@@ -248,6 +251,7 @@ jobs:
           python3 .github/scripts/goose_review.py verify
           --base "${{ github.event.pull_request.base.sha }}"
           --provider "${{ inputs.verify-provider }}" --model "${{ inputs.verify-model }}"
+          --backup-provider "${{ inputs.verify-backup-provider }}" --backup-model "${{ inputs.verify-backup-model }}"
           --budget-minutes 12 --context "$RUNNER_TEMP/pr.md" --answered "$RUNNER_TEMP/answered.json"
           --in "$RUNNER_TEMP/review/findings.jsonl" --out "$RUNNER_TEMP/review/verified.jsonl"
           --status "$RUNNER_TEMP/review/status.json"

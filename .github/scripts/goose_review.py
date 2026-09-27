@@ -96,6 +96,17 @@ TRANSIENT_ERRORS = (
     "overloaded",
     "temporarily unavailable",
 )
+# A provider past its usage limit (the MiniMax plan's five hours) answers
+# every request at once with an empty response and no tokens. After this
+# many such rounds in a row the run stops: continuing it only spends the
+# time the lane's other runs, or a backup model, could use.
+EMPTY_ROUNDS_LIMIT = 3
+
+
+class ProviderDown(Exception):
+    """The model's provider answers, but with nothing: see EMPTY_ROUNDS_LIMIT."""
+
+
 # A check that answers within the first quarter of its time has usually read
 # the obvious and stopped (Gemma: six tool calls in 21 seconds). It gets one
 # more round to look again before its answer counts.
@@ -456,6 +467,9 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
     investigation instead) is asked once for just that object; one that
     ends with no text at all (Gemma stops on a thinking block) is continued.
 
+    Raises ProviderDown when EMPTY_ROUNDS_LIMIT rounds in a row came back
+    empty without using a token.
+
     With GOOSE_REVIEW_LOG_DIR set, each round's prompt and full JSON
     transcript (tool calls included) are kept there.
     """
@@ -489,6 +503,9 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
         second_look = answer_key != "findings"  # verification answers are not re-asked
         rate_limited = 0
         round_no = 0
+        # The transcript's token count is the session's so far: a round that
+        # did not raise it used none.
+        tokens_before, empty_rounds = 0, 0
         while True:
             round_no += 1
             remaining = deadline - time.monotonic()
@@ -545,6 +562,14 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             # response"): it stopped mid-investigation, so it is continued like
             # a run that ran out of turns, not asked for JSON it never gave.
             stalled = status == "completed" and (not final or final.startswith("The model returned an empty response"))
+            tokens = transcript.get("metadata", {}).get("total_tokens") or 0
+            empty_rounds = empty_rounds + 1 if stalled and tokens <= tokens_before else 0
+            tokens_before = max(tokens, tokens_before)
+            if empty_rounds >= EMPTY_ROUNDS_LIMIT:
+                raise ProviderDown(
+                    f"{model} answered {empty_rounds} rounds in a row with an empty response and no tokens "
+                    "(its provider is down or past its usage limit)"
+                )
             out_of_turns = final.startswith("I've reached the maximum number of actions") or stalled
             error = final if errored else stderr.strip()[-300:]
             if status == "completed" and final and not errored and not out_of_turns:
@@ -762,12 +787,16 @@ def cmd_review(args: argparse.Namespace) -> None:
     findings: list[dict] = []
     failed: set[str] = set()
     unstarted: dict[str, int] = {}
+    answered = 0
+    down: list[ProviderDown] = []   # once the model is down, the runs still queued do not start
     shares = FairShare(deadline, args.jobs, len(jobs))
 
     def run(check: Check, label: str, prompt: str) -> tuple[bool, str | None]:
         """Whether the run started, and its answer."""
         share_s = shares.start()
         try:
+            if down:
+                raise down[0]
             if deadline - time.monotonic() < FINAL_MARGIN_S + MIN_ROUND_S:
                 return False, None
             prompt = prompt.replace("{time_budget}", time_budget(share_s / 60), 1)
@@ -779,7 +808,13 @@ def cmd_review(args: argparse.Namespace) -> None:
         futures = {pool.submit(run, check, label, prompt): (check, label) for check, label, prompt in jobs}
         for future in concurrent.futures.as_completed(futures):
             check, label = futures[future]
-            started, text = future.result()
+            try:
+                started, text = future.result()
+            except ProviderDown as error:
+                down[:1] = [error]
+                print(f"::warning::{label}: not reviewed: {error}", file=sys.stderr)
+                failed.add(check.name)
+                continue
             if not started:
                 print(f"::warning::{label}: not started: the time budget was spent before its turn", file=sys.stderr)
                 failed.add(check.name)
@@ -790,6 +825,7 @@ def cmd_review(args: argparse.Namespace) -> None:
                 print(f"::warning::{label}: no findings JSON in the answer; check did not finish", file=sys.stderr)
                 failed.add(check.name)
                 continue
+            answered += 1
             for raw in answer.get("findings") or []:
                 if isinstance(raw, dict) and (f := normalise(raw, check.name)):
                     findings.append(f)
@@ -799,6 +835,8 @@ def cmd_review(args: argparse.Namespace) -> None:
     print(f"{len(findings)} finding(s), {len(merged)} after merging overlaps", file=sys.stderr)
     out.write_text("".join(json.dumps(f) + "\n" for f in merged))
     write_status(args.status, checks_run=ran, checks_skipped=skipped, checks_failed=sorted(failed), checks_unstarted=unstarted)
+    if down and not answered:
+        write_status(args.status, error=str(down[0]))
 
 
 def merge_overlapping(findings: list[dict]) -> list[dict]:
@@ -1029,6 +1067,11 @@ def cmd_verify(args: argparse.Namespace) -> None:
     batches = [findings[i:i + VERIFY_BATCH] for i in range(0, len(findings), VERIFY_BATCH)]
     deadline = time.monotonic() + args.budget_minutes * 60
     shares = FairShare(deadline, args.jobs, len(batches))
+    # The backup verifies what the verifier cannot, once its provider is
+    # found down (ProviderDown): findings are withheld only when neither answers.
+    verifiers = [(args.provider, args.model)] + ([(args.backup_provider, args.backup_model)] if args.backup_model else [])
+    down: set[str] = set()
+    verified_by: set[str] = set()
 
     def verify_batch(n: int, batch: list[dict]) -> tuple[list[dict], int, int, int] | None:
         share_s = shares.start()
@@ -1041,18 +1084,36 @@ def cmd_verify(args: argparse.Namespace) -> None:
         """The batch's confirmed findings, how many got no verdict at all,
         how many were rejected as repeats of an answered finding, and how
         many were kept without evidence (and so dropped); None when the
-        answer had no verdicts."""
+        answer had no verdicts. Each confirmed finding says which model
+        confirmed it (`verified_by`)."""
         listing = "\n".join(
             f"{i}. [{f['severity']}] {f['path']}:{f['line_start']}-{f['line_end']} ({f['check']}): {f['summary']}"
             + "".join(f"\n   Also raised by `{a['check']}`: {a['summary']}" for a in f.get("also", []))
             for i, f in enumerate(batch)
         )
-        prompt = (
-            f"{time_budget(share_s / 60)}{VERIFY_PROMPT}\n{REALISTIC_TRIGGER}\n{facts}{TOOLS.format(base=base_sha)}\n"
+        rest = (
+            f"{VERIFY_PROMPT}\n{REALISTIC_TRIGGER}\n{facts}{TOOLS.format(base=base_sha)}\n"
             f"{pr_context(args.context)}{answered_section(answered, {f['path'] for f in batch})}## Findings\n\n{listing}\n\n"
             f"## Diff of the files these findings are on\n\n```diff\n{batch_diff(batch)}```\n"
         )
-        text = run_goose(prompt, args.provider, args.model, VERIFY_TURNS, f"verify#{n}", deadline, share_s, "verdicts")
+        started, text, model = time.monotonic(), None, None
+        for provider, candidate in verifiers:
+            if candidate in down:
+                continue
+            # A backup gets what is left of the batch's share.
+            left = max(share_s - (time.monotonic() - started), MIN_ROUND_S)
+            label = f"verify#{n}" if candidate == args.model else f"verify#{n} ({candidate}, backup)"
+            try:
+                text = run_goose(f"{time_budget(left / 60)}{rest}", provider, candidate, VERIFY_TURNS, label, deadline, left, "verdicts")
+            except ProviderDown as error:
+                down.add(candidate)
+                print(f"::warning::{label}: {error}", file=sys.stderr)
+                continue
+            model = candidate
+            break
+        if model is None:
+            print(f"::warning::verify#{n}: no verifier answered; its {len(batch)} finding(s) are withheld", file=sys.stderr)
+            return None
         answer = last_json_object(text, "verdicts") if text else None
         if answer is None:
             print(f"::warning::verify#{n}: no verdicts JSON in the answer; its {len(batch)} finding(s) are withheld", file=sys.stderr)
@@ -1077,7 +1138,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 unevidenced += 1
                 print(f"::warning::verify#{n}: finding {i} kept without evidence that checks out; dropped", file=sys.stderr)
             else:
-                kept.append(confirmed)
+                kept.append({**confirmed, "verified_by": model})
+        verified_by.add(model)
         return kept, unjudged, repeats, unevidenced
 
     kept: list[dict] = []
@@ -1096,12 +1158,15 @@ def cmd_verify(args: argparse.Namespace) -> None:
     print(f"verify: kept {len(kept)} of {len(findings)} finding(s), {withheld} withheld, {repeated} already answered, "
           f"{unevidenced} without evidence, {downgraded} downgraded", file=sys.stderr)
     out.write_text("".join(json.dumps(f) + "\n" for f in kept))
+    # The models that gave verdicts, the verifier first: what the summary
+    # shows as "Verified by".
+    used = [m for _, m in verifiers if m in verified_by]
     if withheld == len(findings):
-        write_status(args.status, verify="failed", withheld=withheld)
+        write_status(args.status, verify="failed", withheld=withheld, verified_by=used)
     else:
         # A repeat is a rejection too; `repeated` says how many of them.
         write_status(args.status, verify="ok", withheld=withheld, rejected=len(findings) - len(kept) - withheld,
-                     repeated=repeated, unevidenced=unevidenced, downgraded=downgraded)
+                     repeated=repeated, unevidenced=unevidenced, downgraded=downgraded, verified_by=used)
 
 
 # --- posting ----------------------------------------------------------------
@@ -1324,8 +1389,10 @@ def comment_body(f: dict, meta: dict, note: str = "") -> str:
     is about and who raised it; its `description`, `verification` and
     `trigger` sections hold the text, so `posted_finding` reads it back as
     it was given. `meta` is the lane, the commit reviewed and the two
-    models. Only the posted severity heads the comment; a lowered one
-    says how and why folded away, so a reader sees one rating, not two."""
+    models; a finding's `verified_by` names the model that confirmed it.
+    Only the posted severity heads the comment; a lowered one says how
+    and why folded away, so a reader sees one rating, not two."""
+    meta = {**meta, "verify_model": f.get("verified_by") or meta["verify_model"]}
     parts = [
         marker(
             "finding", lane=meta["lane"], check=f["check"], severity=f["severity"], raised_as=f.get("raised_as"),
@@ -1405,7 +1472,7 @@ def posted_finding(body: str) -> dict:
 def at_lead(also: dict, lead: dict) -> dict:
     """Another check's note on a finding's lines (`merge_overlapping`),
     marked with the lines of the finding it is posted under."""
-    return {**{k: lead[k] for k in ("path", "line_start", "line_end")}, **also}
+    return {**{k: lead[k] for k in ("path", "line_start", "line_end", "verified_by") if k in lead}, **also}
 
 
 def body_line(f: dict, where: str) -> str:
@@ -1434,7 +1501,10 @@ def cmd_post(args: argparse.Namespace) -> None:
         # preview as outside it.
         raise SystemExit("GH_TOKEN is not set")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
-    meta = {"lane": args.lane, "commit": args.head_sha, "model": args.model, "verify_model": args.verify_model}
+    # The models that actually verified (a backup, when the verifier's
+    # provider was down); each comment names its own (`verified_by`).
+    verified_by = ", ".join(status.get("verified_by") or []) or args.verify_model
+    meta = {"lane": args.lane, "commit": args.head_sha, "model": args.model, "verify_model": verified_by}
 
     # The lines the review saw: the pull request at `head_sha` against its
     # base, as the review job diffed it, not the live pull request, which a
@@ -1498,7 +1568,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     # the lane went (headline, checks not covered, findings withheld) is
     # the summary comment's. The lane marker is an HTML comment, so a review
     # with every finding inline shows no body at all.
-    body = [marker("lane", name=args.lane, commit=args.head_sha, model=args.model, verify_model=args.verify_model)]
+    body = [marker("lane", name=args.lane, commit=args.head_sha, model=args.model, verify_model=verified_by)]
     if loose:
         body.append("Outside the diff's changed lines:\n")
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
@@ -1511,7 +1581,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     # status review per lane per push.
     noteworthy = bool(findings)
     result = {
-        "lane": args.lane, "model": args.model, "verify_model": args.verify_model,
+        "lane": args.lane, "model": args.model, "verify_model": verified_by,
         "headline": headline, "counts": counts, "loose": len(loose), "merged": len(merged),
         "repeated": status.get("repeated") or 0,
         "unevidenced": status.get("unevidenced") or 0, "downgraded": status.get("downgraded") or 0,
@@ -2122,6 +2192,8 @@ def main() -> None:
     verify.add_argument("--base", required=True)
     verify.add_argument("--provider", required=True)
     verify.add_argument("--model", required=True)
+    verify.add_argument("--backup-provider", default="", help="verifies instead when --model's provider is down")
+    verify.add_argument("--backup-model", default="")
     verify.add_argument("--context")
     verify.add_argument("--answered", help="answered findings from `answered`, so they are not raised again")
     verify.add_argument("--jobs", type=int, default=2, help="verification batches run at once")
