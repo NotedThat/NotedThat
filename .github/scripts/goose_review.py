@@ -1081,8 +1081,9 @@ def cmd_verify(args: argparse.Namespace) -> None:
     batches = [findings[i:i + VERIFY_BATCH] for i in range(0, len(findings), VERIFY_BATCH)]
     deadline = time.monotonic() + args.budget_minutes * 60
     shares = FairShare(deadline, args.jobs, len(batches))
-    # The backup verifies what the verifier cannot, once its provider is
-    # found down (ProviderDown): findings are withheld only when neither answers.
+    # The backup verifies what the verifier cannot: every batch once the
+    # verifier's provider is found down (ProviderDown), and a batch the
+    # verifier gave no verdicts for. Findings are withheld only when neither answers.
     verifiers = [(args.provider, args.model)] + ([(args.backup_provider, args.backup_model)] if args.backup_model else [])
     down: set[str] = set()
     verified_by: set[str] = set()
@@ -1110,7 +1111,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
             f"{pr_context(args.context)}{answered_section(answered, {f['path'] for f in batch})}## Findings\n\n{listing}\n\n"
             f"## Diff of the files these findings are on\n\n```diff\n{batch_diff(batch)}```\n"
         )
-        started, text, model = time.monotonic(), None, None
+        started, answer, model = time.monotonic(), None, None
         for provider, candidate in verifiers:
             if candidate in down:
                 continue
@@ -1123,14 +1124,15 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 down.add(candidate)
                 print(f"::warning::{label}: {error}", file=sys.stderr)
                 continue
-            model = candidate
-            break
+            answer = last_json_object(text, "verdicts") if text else None
+            if answer is not None:
+                model = candidate
+                break
+            # Only this batch goes to the backup: a verifier that answered
+            # nothing here is not down, and the next batch asks it first.
+            print(f"::warning::{label}: no verdicts JSON in the answer", file=sys.stderr)
         if model is None:
-            print(f"::warning::verify#{n}: no verifier answered; its {len(batch)} finding(s) are withheld", file=sys.stderr)
-            return None
-        answer = last_json_object(text, "verdicts") if text else None
-        if answer is None:
-            print(f"::warning::verify#{n}: no verdicts JSON in the answer; its {len(batch)} finding(s) are withheld", file=sys.stderr)
+            print(f"::warning::verify#{n}: no verifier gave verdicts; its {len(batch)} finding(s) are withheld", file=sys.stderr)
             return None
         verdicts = [
             v for v in answer.get("verdicts") or []
@@ -1682,6 +1684,9 @@ def cmd_post(args: argparse.Namespace) -> None:
         print(f"every finding went to an open thread ({merged_ok} repl(ies)); no review posted; {collapsed} resolved item(s) collapsed")
         return
 
+    # Every finding the review carries, for a PR comment should the review
+    # itself not post (see below).
+    everything = [*inline, *loose]
     status, data = github("POST", f"{base}/reviews", token, review)
     if status == 422 and comments:
         # A line GitHub will not anchor to: post everything in the body instead.
@@ -1693,7 +1698,17 @@ def cmd_post(args: argparse.Namespace) -> None:
         comments, threads, inline = [], [], []
         status, data = github("POST", f"{base}/reviews", token, review)
     if status not in (200, 201):
-        save(post_error=f"posting the review failed: HTTP {status}")
+        # The findings are in no other request: a PR comment carries them
+        # rather than losing them (a body too large for a review, a 500),
+        # and the failure is still reported as one.
+        text = "\n".join([
+            marker("lane", name=args.lane, commit=args.head_sha, model=args.model, verify_model=verified_by),
+            f"The review could not be posted (HTTP {status}); its findings:\n",
+            *(body_line(f, f"{f['path']}:{f['line_end']}") for f in everything), "", footer(meta),
+        ])
+        code, _ = github("POST", f"/repos/{args.repo}/issues/{args.pr}/comments", token, {"body": clip(text, 65_000)})
+        kept = "; its findings are in a PR comment" if code in (200, 201) else ""
+        save(post_error=f"posting the review failed: HTTP {status}{kept}")
         raise SystemExit(f"posting the review failed: {status} {data}")
     save(review_url=data.get("html_url"))
 
