@@ -143,6 +143,34 @@ class Legacy(unittest.TestCase):
         self.assertEqual(g.read_history("<!-- goose-review:history W3sibGFuZXMiOltdfV0= -->"), [{"lanes": []}])
 
 
+class MissingPatch(unittest.TestCase):
+    """GitHub leaves out a large file's patch; `compare_files` recovers it."""
+
+    DIFF = "diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+
+    def compare(self, files: list[dict], diff: tuple[int, object]) -> list[dict]:
+        def fake(method: str, url: str, token: str, body: object = None, accept: str = "application/vnd.github+json"):
+            return diff if accept == "application/vnd.github.diff" else (200, {"files": files})
+        real, g.github = g.github, fake
+        try:
+            return g.compare_files("o/r", "base", "head", "t")
+        finally:
+            g.github = real
+
+    def test_from_the_diff(self) -> None:
+        files = self.compare([{"filename": "big.py", "status": "modified"}, {"filename": "s.py", "patch": "@@ -1 +1 @@\n+x"}], (200, self.DIFF))
+        self.assertEqual(g.commentable_lines(files[0]["patch"]), {1: 0, 2: 0, 3: 0})
+        self.assertEqual(files[1]["patch"], "@@ -1 +1 @@\n+x")
+
+    def test_added_file_without_a_diff(self) -> None:
+        files = self.compare([{"filename": "new.py", "status": "added", "additions": 4}], (406, "too large"))
+        self.assertEqual(sorted(g.commentable_lines(files[0]["patch"])), [1, 2, 3, 4])
+
+    def test_modified_file_without_a_diff(self) -> None:
+        files = self.compare([{"filename": "big.py", "status": "modified", "additions": 4}], (406, "too large"))
+        self.assertNotIn("patch", files[0])
+
+
 class Described(unittest.TestCase):
     def test_answered(self) -> None:
         f = g.answered_finding(g.comment_body(VERIFIED, META))

@@ -1138,10 +1138,13 @@ def cmd_verify(args: argparse.Namespace) -> None:
             print(f"::warning::verify#{n}: no verdict for {unjudged} of {len(batch)} finding(s); they are withheld", file=sys.stderr)
         repeats = sum(1 for v in verdicts if not v["keep"] and v.get("repeats") in answered_ids)
         kept, unevidenced = [], 0
+        seen: set[int] = set()
         for v in verdicts:
             i = int(v["index"])
-            if not v["keep"] or i >= len(batch):
+            # A second verdict on the same finding would post it twice.
+            if not v["keep"] or i >= len(batch) or i in seen:
                 continue
+            seen.add(i)
             confirmed = confirm(batch[i], v)
             if confirmed is None:
                 unevidenced += 1
@@ -1181,7 +1184,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
 # --- posting ----------------------------------------------------------------
 
 
-def github(method: str, url: str, token: str, body: dict | None = None) -> tuple[int, object]:
+def github(method: str, url: str, token: str, body: dict | None = None,
+           accept: str = "application/vnd.github+json") -> tuple[int, object]:
+    """A GitHub API call: its status and its JSON body, or, for another
+    `accept` (a diff), its text."""
     if not url.startswith("https://"):
         url = "https://api.github.com" + url
     request = urllib.request.Request(
@@ -1190,7 +1196,7 @@ def github(method: str, url: str, token: str, body: dict | None = None) -> tuple
         data=None if body is None else json.dumps(body).encode(),
         headers={
             "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
+            "Accept": accept,
             "X-GitHub-Api-Version": "2022-11-28",
             "Content-Type": "application/json",
         },
@@ -1198,6 +1204,8 @@ def github(method: str, url: str, token: str, body: dict | None = None) -> tuple
     try:
         with urllib.request.urlopen(request) as response:
             raw = response.read()
+            if accept != "application/vnd.github+json":
+                return response.status, raw.decode(errors="replace")
             return response.status, json.loads(raw) if raw else None
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode(errors="replace")
@@ -1225,7 +1233,23 @@ def compare_files(repo: str, base: str, head: str, token: str) -> list[dict]:
     status, data = github("GET", f"/repos/{repo}/compare/{base}...{head}?per_page=1", token)
     if status != 200 or not isinstance(data, dict):
         raise SystemExit(f"GET compare {base}...{head}: {status} {data}")
-    return data.get("files") or []
+    files = data.get("files") or []
+    # GitHub leaves out the patch of a large file (on #207, the 2,254 lines
+    # of this script), and every finding on it would then count as outside
+    # the diff: posted in the body, with no thread to answer. The same
+    # comparison as a diff still has it.
+    if missing := [f for f in files if "patch" not in f and f.get("status") != "removed"]:
+        code, diff = github("GET", f"/repos/{repo}/compare/{base}...{head}", token, accept="application/vnd.github.diff")
+        chunks = dict(diff_files(diff)) if code == 200 and isinstance(diff, str) else {}
+        for f in missing:
+            if f["filename"] in chunks:
+                f["patch"] = chunks[f["filename"]]
+            elif f.get("status") == "added" and f.get("additions"):
+                # No diff either: an added file is one hunk of added lines.
+                f["patch"] = f"@@ -0,0 +1,{f['additions']} @@\n" + "+\n" * f["additions"]
+            else:
+                print(f"::warning::{f['filename']}: GitHub gave no patch; findings on it go in the review body", file=sys.stderr)
+    return files
 
 
 def commentable_lines(patch: str) -> dict[int, int]:
