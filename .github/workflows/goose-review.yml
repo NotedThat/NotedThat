@@ -162,8 +162,12 @@ jobs:
     # `tidy` too: it marks the run running in this same comment, and a
     # summary that overtook it would be replaced by that marker. The lanes
     # do not wait for it, so a failed tidy never holds up a review.
+    # `always()`, not `!cancelled()`: a run cancelled by hand still replaces
+    # its "Currently running" marker, the lanes it stopped reported as
+    # cancelled. Otherwise the marker stayed until the next run, forever on
+    # the PR's last one. The job takes seconds and has its own timeout.
     needs: [tidy, lane]
-    if: ${{ !cancelled() && needs.lane.result != 'skipped' }}
+    if: ${{ always() && needs.lane.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

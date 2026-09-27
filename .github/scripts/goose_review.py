@@ -1079,6 +1079,10 @@ def cmd_post(args: argparse.Namespace) -> None:
         missing = False
         status["withheld"] = len(read_findings(str(unverified)))
     token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        # Even a dry run: without the reviewed diff every finding would
+        # preview as outside it.
+        raise SystemExit("GH_TOKEN is not set")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
     marker = f"<!-- goose-review:{args.lane} -->"
     sign = signature(args.model, args.verify_model)
@@ -1086,7 +1090,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     # The lines the review saw: the pull request at `head_sha` against its
     # base, as the review job diffed it, not the live pull request, which a
     # push since may have moved. The review is anchored to `head_sha` too.
-    files = compare_files(args.repo, args.base_sha, args.head_sha, token) if token else []
+    files = compare_files(args.repo, args.base_sha, args.head_sha, token)
     diff_lines = {f["filename"]: commentable_lines(f.get("patch") or "") for f in files}
 
     # Other checks' notes on the same lines are posted as replies in the
@@ -1095,7 +1099,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     # A finding on lines where a lane thread is still open (this lane's from
     # an earlier commit, or another lane's) is posted as a reply in that
     # thread: one conversation per problem, not one per model and push.
-    open_on = open_threads(args.repo, args.pr, token) if token else []
+    open_on = open_threads(args.repo, args.pr, token)
     merged: list[tuple[dict, dict]] = []
     comments, loose, threads, inline = [], [], [], []
     for f in findings:
@@ -1592,8 +1596,12 @@ def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
         "jobs": {k: v["html_url"] for k, v in (("review", review), ("post", post)) if v.get("html_url")},
     }
     if r is None:
-        why = {"failure": "failed", "cancelled": "was cancelled", "skipped": "was skipped"}.get(post.get("conclusion") or "", "did not report")
-        return {**row, "model": None, "verify": None, "checks": "—", "found": None, "posted": "—", "result": f"❌ no result: the post job {why}"}
+        # A run cancelled by hand can stop a lane before its post job.
+        kind, job = ("post", post) if post else ("review", review)
+        conclusion = job.get("conclusion") or ""
+        why = {"failure": "failed", "cancelled": "was cancelled", "skipped": "was skipped"}.get(conclusion, "did not report")
+        mark = "⛔" if conclusion == "cancelled" else "❌"
+        return {**row, "model": None, "verify": None, "checks": "—", "found": None, "posted": "—", "result": f"{mark} no result: the {kind} job {why}"}
     failed = set(r["checks_failed"])
     checks = ", ".join(f"{'⚠️' if c in failed else '✅'} `{c}`" for c in r["checks_run"]) or "—"
     if r["checks_skipped"]:
