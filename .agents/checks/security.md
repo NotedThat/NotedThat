@@ -55,7 +55,7 @@ API fed only by constants or server-side values is not a finding.
   exposed, privileged CI execution from untrusted input.
 - **medium** — bounded traversal or disclosure, anonymous resource
   exhaustion, weak token validation with a plausible path.
-- **low** — a real defence-in-depth gap with a concrete but limited path.
+- **low** — a real gap with a concrete path an attacker can use today.
 
 Pick the lower level when impact depends on something you could not confirm.
 
@@ -63,10 +63,13 @@ Pick the lower level when impact depends on something you could not confirm.
 
 Style, performance, generic "consider validating", dependency CVEs the change
 does not make reachable, broad workflow permissions or tag-pinned actions
-without a traced path to harm, and placeholder secrets. Never claim a
-dependency, action or tool version "does not exist" — your knowledge has a
-cut-off and this repository is newer than it. When you cannot verify
-something, leave it out. No finding is a good result.
+without a traced path to harm, placeholder secrets, and hardening against
+a future change to the workflow or against trusted configuration (org
+secrets, repository variables) being set wrongly — whoever can change those
+already has admin rights. Never claim a dependency, action or tool version
+"does not exist" — your knowledge has a cut-off and this repository is newer
+than it. When you cannot verify something, leave it out. No finding is a
+good result.
 
 In `summary`, state the exploitable path and its impact in one or two
 sentences, then the fix.

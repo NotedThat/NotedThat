@@ -18,7 +18,8 @@ Open the changed file and enough of its callers, tests and the relevant
 section of SPECIFICATIONS.md to know what the code is supposed to do. Then
 report only when you can state:
 
-1. the **trigger** — a specific input, state, ordering, retry or config;
+1. the **trigger** — a specific input, state, ordering or retry that can
+   occur, or configuration a deployment would really use;
 2. the **contract** it breaks — a caller's expectation, a type or schema,
    a documented decision, an existing test, the API's response shape;
 3. the **symptom** — wrong result, panic, data loss or corruption, a
@@ -47,10 +48,12 @@ Pick the lower level when impact depends on something you could not confirm.
 
 Style, naming, comments, refactoring ideas, performance without a concrete
 hang or blow-up, missing tests (unless a changed test now asserts the wrong
-thing), bugs in untouched code, and cases the types or framework already
-exclude. Never claim a dependency, action or tool version "does not exist" —
-your knowledge has a cut-off and this repository is newer than it. No proof,
-no finding.
+thing), bugs in untouched code, cases the types or framework already
+exclude, and cases whose only trigger is trusted configuration (secrets,
+repository variables, the workflow's own settings) set to a value nobody
+would use, or a value the callers never pass. Never claim a dependency,
+action or tool version "does not exist" — your knowledge has a cut-off and
+this repository is newer than it. No proof, no finding.
 
 In `summary`, state the trigger and the broken behaviour in one or two
 sentences, then the fix.
