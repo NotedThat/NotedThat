@@ -420,7 +420,12 @@ The summary also counts, per model, how its threads on the pull request were ans
 ("Fixed in" or "Does not apply"). All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
-become one thread. Each lane
+become one thread. The checks' diff batches take turns, and each run is held to its share of
+the lane's time, so one slow batch cannot starve those queued after it; a batch left no time
+is reported as not started. Every posted comment carries hidden
+`<!-- goose-review:… -->` markers (the finding's check, severity and lines; its description,
+verification and footer as sections), and later runs read a finding back from these, not
+from its wording (`python3 .github/scripts/test_goose_review.py`). Each lane
 (`.github/workflows/goose-review-lane.yml`) reviews in a job with a
 read-only token and its network limited to GitHub, crates.io and the
 proxy, and posts from a second job that runs no model. The same script runs

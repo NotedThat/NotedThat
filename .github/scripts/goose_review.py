@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import itertools
 import json
 import os
 import re
@@ -63,6 +64,10 @@ MAX_DIFF_CHARS = 60_000
 # phase and the verify phase a budget each (--budget-minutes) so a lane
 # fits its job's timeout.
 FINAL_MARGIN_S = 4 * 60  # kept back at the end for the answer itself
+# A run's rounds end when its share is used, but its first round gets at
+# least this long; a run that cannot have it before FINAL_MARGIN_S is not
+# started at all.
+MIN_ROUND_S = 60
 FINAL_TURNS = 3
 CONTINUE_PROMPT = (
     "You stopped before giving your answer, and you still have time. Continue "
@@ -248,6 +253,14 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + " [...]"
 
 
+def described(f: dict) -> str:
+    """An answered finding (`answered_finding`) on one line for the prompt:
+    severity and check, the claim, and what the verifier traced it to."""
+    head = f"[{f['severity']} · {f['check']}] " if "check" in f else ""
+    verified = f" Verified: {f['trigger']} ({f['evidence']['path']}:{f['evidence']['line']})" if f.get("trigger") else ""
+    return clip(f"{head}{f['summary']}{verified}", ANSWERED_COMMENT_CHARS)
+
+
 def answered_section(answered: list[dict], paths: set[str]) -> str:
     """Every answered thread on the pull request, those on `paths` first
     (then newest first, as `answered` wrote them), up to
@@ -259,12 +272,12 @@ def answered_section(answered: list[dict], paths: set[str]) -> str:
     size = 0
     for a in ordered:
         replies = "\n".join(
-            f"  Further finding at {r['commit']}: {clip(r['finding'], ANSWERED_COMMENT_CHARS)}" if "finding" in r
+            f"  Further finding at {r['commit']}: {described(r['finding'])}" if "finding" in r
             else f"  Reply by {r['by']}: {clip(r['text'], ANSWERED_COMMENT_CHARS)}"
             for r in a["answers"]
         )
         state = "resolved" if a["resolved"] else "open"
-        part = f"{a['id']}. {a['path']}:{a['lines']} at {a['commit']} ({state}): {clip(a['finding'], ANSWERED_COMMENT_CHARS)}\n{replies}"
+        part = f"{a['id']}. {a['path']}:{a['lines']} at {a['commit']} ({state}): {described(a['finding'])}\n{replies}"
         if size + len(part) > ANSWERED_SECTION_CHARS:
             break
         parts.append(part)
@@ -480,13 +493,21 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             round_no += 1
             remaining = deadline - time.monotonic()
             if remaining < 30:
-                print(f"::warning::{label}: no time left for another round", file=sys.stderr)
+                why = "not started: the time budget is spent" if round_no == 1 else "no time left for another round"
+                print(f"::warning::{label}: {why}", file=sys.stderr)
                 return first_answer
-            # An investigating round is cut off early enough to leave time for
-            # the answer; the answering round may use what is left.
-            limit = remaining if finalising else remaining - FINAL_MARGIN_S
+            # An investigating round is cut off when the run's share is used
+            # (so a run that overruns takes no time from the runs queued after
+            # it), and early enough to leave time for the answer before the
+            # deadline; the answering round may use what is left.
+            share_end = started + max(share_s, MIN_ROUND_S)
+            limit = remaining if finalising else min(share_end, deadline - FINAL_MARGIN_S) - time.monotonic()
             try:
                 if limit <= 0:
+                    if round_no == 1:
+                        # No round ran, so there is no session to ask for an answer.
+                        print(f"::warning::{label}: not started: the time budget is spent", file=sys.stderr)
+                        return None
                     raise subprocess.TimeoutExpired(command, 0)
                 result = subprocess.run(
                     command, input=stdin, capture_output=True, text=True, errors="replace", env=env, timeout=limit
@@ -499,7 +520,8 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 # Goose keeps the session as it goes, so what the run read so
                 # far is still there to answer from -- a second look's too,
                 # which would be lost by falling back to the first answer.
-                print(f"::notice::{label}: investigation cut off near the deadline, asking for the answer", file=sys.stderr)
+                why = "its time share is used" if share_end < deadline - FINAL_MARGIN_S else "near the deadline"
+                print(f"::notice::{label}: investigation cut off, {why}; asking for the answer", file=sys.stderr)
                 finalising = True
                 command = ["goose", "run", "--resume", "-n", session, *common(FINAL_TURNS), "-i", "-"]
                 stdin = FINAL_PROMPT
@@ -711,7 +733,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     facts = facts_section([path for path, _ in files])
     deadline = time.monotonic() + args.budget_minutes * 60
     ran, skipped = [], []
-    jobs = []
+    by_check = []
     for check in checks:
         own = "".join(chunk for path, chunk in files if check.covers(path))
         if not own:
@@ -719,6 +741,7 @@ def cmd_review(args: argparse.Namespace) -> None:
             print(f"{check.name}: no changed file in its paths, skipped", file=sys.stderr)
             continue
         ran.append(check.name)
+        by_check.append([])
         for i, batch in enumerate(split_diff(own)):
             prompt = (
                 f"You are running the `{check.name}` check of an automated pull request "
@@ -730,17 +753,25 @@ def cmd_review(args: argparse.Namespace) -> None:
                 f"{context}{check.body}\n\n{REALISTIC_TRIGGER}\n{facts}"
                 f"{TOOLS.format(base=base_sha)}\n{OUTPUT_CONTRACT}\n## Diff\n\n```diff\n{batch}```\n"
             )
-            jobs.append((check, f"{check.name}#{i}", prompt))
+            by_check[-1].append((check, f"{check.name}#{i}", prompt))
+    # The checks take turns (correctness#0, security#0, correctness#1, ...):
+    # should time run short, it runs short for the last batches of every
+    # check rather than for all of the last check's.
+    jobs = [job for turn in itertools.zip_longest(*by_check) for job in turn if job]
 
     findings: list[dict] = []
     failed: set[str] = set()
+    unstarted: dict[str, int] = {}
     shares = FairShare(deadline, args.jobs, len(jobs))
 
-    def run(check: Check, label: str, prompt: str) -> str | None:
+    def run(check: Check, label: str, prompt: str) -> tuple[bool, str | None]:
+        """Whether the run started, and its answer."""
         share_s = shares.start()
         try:
+            if deadline - time.monotonic() < FINAL_MARGIN_S + MIN_ROUND_S:
+                return False, None
             prompt = prompt.replace("{time_budget}", time_budget(share_s / 60), 1)
-            return run_goose(prompt, args.provider, args.model, check.turn_limit, label, deadline, share_s, "findings")
+            return True, run_goose(prompt, args.provider, args.model, check.turn_limit, label, deadline, share_s, "findings")
         finally:
             shares.finish()
 
@@ -748,7 +779,12 @@ def cmd_review(args: argparse.Namespace) -> None:
         futures = {pool.submit(run, check, label, prompt): (check, label) for check, label, prompt in jobs}
         for future in concurrent.futures.as_completed(futures):
             check, label = futures[future]
-            text = future.result()
+            started, text = future.result()
+            if not started:
+                print(f"::warning::{label}: not started: the time budget was spent before its turn", file=sys.stderr)
+                failed.add(check.name)
+                unstarted[check.name] = unstarted.get(check.name, 0) + 1
+                continue
             answer = last_json_object(text, "findings") if text else None
             if answer is None:
                 print(f"::warning::{label}: no findings JSON in the answer; check did not finish", file=sys.stderr)
@@ -762,7 +798,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     merged = merge_overlapping(findings)
     print(f"{len(findings)} finding(s), {len(merged)} after merging overlaps", file=sys.stderr)
     out.write_text("".join(json.dumps(f) + "\n" for f in merged))
-    write_status(args.status, checks_run=ran, checks_skipped=skipped, checks_failed=sorted(failed))
+    write_status(args.status, checks_run=ran, checks_skipped=skipped, checks_failed=sorted(failed), checks_unstarted=unstarted)
 
 
 def merge_overlapping(findings: list[dict]) -> list[dict]:
@@ -946,8 +982,7 @@ def confirm(finding: dict, verdict: dict) -> dict | None:
     severity, trigger, evidence = verdict.get("severity"), verdict.get("trigger"), verdict.get("evidence")
     if severity not in SEVERITIES or not isinstance(trigger, str) or not trigger.strip() or not evidence_holds(evidence):
         return None
-    line = str(evidence["line"]).strip()
-    confirmed = {**finding, "trigger": trigger.strip(), "evidence": f"{evidence['path']}:{line}"}
+    confirmed = {**finding, "trigger": trigger.strip(), "evidence": {"path": evidence["path"], "line": int(evidence["line"])}}
     if SEVERITIES.index(severity) < SEVERITIES.index(finding["severity"]):
         reason = verdict.get("severity_reason")
         confirmed.update(severity=severity, raised_as=finding["severity"],
@@ -1139,11 +1174,131 @@ def commentable_lines(patch: str) -> dict[int, int]:
     return lines
 
 
+# --- markers ----------------------------------------------------------------
+# What the review posts carries HTML comments, which GitHub does not show.
+# A marker is a line of its own:
+#
+#   <!-- goose-review:KIND name="value" ... -->   stands alone, or opens a section
+#   <!-- /goose-review:KIND -->                   closes the section
+#
+# KIND and names are `[a-z][a-z-]*`. A value has `%`, `"`, line breaks and
+# the second of two dashes percent-encoded: `--` would end the HTML comment
+# early. Standalone: `lane` (a lane's review), `finding` (a finding's
+# comment), `history` and `summary` (the summary comment). Sections, which
+# hold text: `description`, `severity-reason`, `verification`, `trigger`
+# (only inside `verification`) and `footer`. A later run reads a comment back from its
+# markers (`parse_markers`), not from its wording.
+MARKER_PATTERN = r'<!-- (?:/goose-review:([a-z][a-z-]*)|goose-review:([a-z][a-z-]*)((?: [a-z][a-z-]*="[^"]*")*)) -->'
+MARKER_RE = re.compile(MARKER_PATTERN)
+MARKER_ATTR_RE = re.compile(r'([a-z][a-z-]*)="([^"]*)"')
+MARKER_ESCAPED_RE = re.compile(r'[%"\r\n]|(?<=-)-')
+# A line of section text that reads as a marker, or as one escaped any
+# number of times: `section` writes it with one more `\` in front (GitHub
+# shows `\<!--` as text), and `parse_markers` takes that one off again.
+MARKER_TEXT_RE = re.compile(rf"(\s*)(\\*{MARKER_PATTERN})(\s*)")
+SECTION_KINDS = {"description", "severity-reason", "verification", "trigger", "footer"}
+# The section each kind may sit in; a kind not listed sits in none.
+SECTION_PARENTS = {"trigger": "verification"}
+
+
+@dataclass
+class Section:
+    kind: str
+    attrs: dict[str, str]
+    text: str   # without its child sections' lines
+    children: list[Section]
+
+
+@dataclass
+class Parsed:
+    markers: dict[str, list[dict[str, str]]]   # standalone ones, by kind
+    sections: dict[str, list[Section]]          # top-level ones, by kind
+
+
+def marker(kind: str, **attrs: object) -> str:
+    """A marker with `attrs` (`_` in a name written `-`); a None value is left out."""
+    pairs = "".join(
+        f' {name.replace("_", "-")}="{MARKER_ESCAPED_RE.sub(lambda m: f"%{ord(m.group()):02X}", str(value))}"'
+        for name, value in attrs.items() if value is not None
+    )
+    return f"<!-- goose-review:{kind}{pairs} -->"
+
+
+def section(kind: str, text: str, *children: str, **attrs: object) -> str:
+    """`text`, then the `children` sections, between opening and closing
+    markers. Each marker is on a line of its own with a blank line to the
+    text: to GitHub a line that starts with `<!--` is HTML up to the end of
+    the line the comment closes on. A line of `text` that reads as a
+    marker is escaped, so model-written text cannot close a section."""
+    escaped = "\n".join(
+        f"{m.group(1)}\\{m.group(2)}{m.group(6)}" if (m := MARKER_TEXT_RE.fullmatch(line)) else line
+        for line in text.splitlines()   # as `parse_markers` splits it
+    )
+    return "\n\n".join([marker(kind, **attrs), escaped, *children, f"<!-- /goose-review:{kind} -->"])
+
+
+def marker_attrs(raw: str) -> dict[str, str]:
+    return {name: urllib.parse.unquote(value) for name, value in MARKER_ATTR_RE.findall(raw)}
+
+
+def parse_markers(body: str) -> Parsed | None:
+    """`body`'s markers and sections, or None when its sections do not
+    nest as written: a closing marker that does not close the section
+    open, a section left open, a section or standalone marker where it
+    cannot be."""
+    parsed = Parsed({}, {})
+    # Open sections, innermost last: kind, attributes, text lines, children.
+    stack: list[tuple[str, dict[str, str], list[str], list[Section]]] = []
+    for line in body.splitlines():
+        m = MARKER_RE.fullmatch(line.strip())
+        if not m:
+            if stack:
+                text = MARKER_TEXT_RE.fullmatch(line)
+                stack[-1][2].append(f"{text.group(1)}{text.group(2)[1:]}{text.group(6)}" if text else line)
+            continue
+        closes, opens, raw = m.group(1), m.group(2), m.group(3)
+        inside = stack[-1][0] if stack else None
+        if closes:
+            if closes != inside:
+                return None
+            kind, attrs, lines, children = stack.pop()
+            done = Section(kind, attrs, "\n".join(lines).strip(), children)
+            if stack:
+                stack[-1][3].append(done)
+            else:
+                parsed.sections.setdefault(kind, []).append(done)
+        elif opens in SECTION_KINDS:
+            if SECTION_PARENTS.get(opens) != inside:
+                return None
+            stack.append((opens, marker_attrs(raw), [], []))
+        elif inside:
+            return None
+        else:
+            parsed.markers.setdefault(opens, []).append(marker_attrs(raw))
+    return None if stack else parsed
+
+
+def markers(body: str, kind: str) -> list[dict[str, str]]:
+    """The attributes of each `kind` marker opening a line of `body`,
+    however its sections nest: enough to tell what posted a comment, even
+    one someone has since edited out of shape."""
+    return [
+        marker_attrs(m.group(3))
+        for m in (MARKER_RE.fullmatch(line.strip()) for line in body.splitlines())
+        if m and m.group(2) == kind
+    ]
+
+
 def signature(model: str, verify_model: str | None) -> str:
     """Who reviewed, on every review and comment: every lane posts as
     github-actions[bot], so the signature is what tells them apart."""
     verified = f", verified by **{verify_model}**" if verify_model else ""
-    return f"\n\n---\n\n_Review done by **{model}**{verified}_"
+    return f"_Review done by **{model}**{verified}_"
+
+
+def footer(meta: dict, note: str = "") -> str:
+    """The agent note, if any, and the signature, under a rule."""
+    return section("footer", f"{note}---\n\n{signature(meta['model'], meta['verify_model'])}")
 
 
 # Coding agents working through review feedback read these threads; tell
@@ -1153,9 +1308,9 @@ def signature(model: str, verify_model: str | None) -> str:
 # The reply's opening is what the summary's answers table counts
 # (`answer_kind`).
 AGENT_NOTE = (
-    "\n\n<sub>For AI agents addressing this review: always reply in this thread "
+    "<sub>For AI agents addressing this review: always reply in this thread "
     "before resolving it. Start the reply with `Fixed in <commit>:` and what changed, "
-    "or with `Does not apply:` and why. Then resolve this conversation.</sub>"
+    "or with `Does not apply:` and why. Then resolve this conversation.</sub>\n\n"
 )
 
 
@@ -1164,15 +1319,93 @@ def lowered_why(f: dict) -> str:
     return f.get("severity_reason") or "The verifier gave no reason."
 
 
-def comment_body(f: dict, sign: str = "", note: str = "") -> str:
-    # Only the posted severity heads the comment; a lowered one says how and
-    # why folded away, so a reader sees one rating, not two.
-    shown = f"\n\n**Verified:** {f['trigger']} — `{f['evidence']}`" if f.get("trigger") else ""
-    lowered = (
-        f"\n\n<details><summary>Raised as {f['raised_as']}, verified as {f['severity']}</summary>\n\n"
-        f"{lowered_why(f)}\n\n</details>"
-    ) if f.get("raised_as") else ""
-    return f"**{f['severity']}** · `{f['check']}`\n\n{f['summary']}{shown}{lowered}{note}{sign}"
+def comment_body(f: dict, meta: dict, note: str = "") -> str:
+    """A finding as a review comment. Its `finding` marker carries what it
+    is about and who raised it; its `description`, `verification` and
+    `trigger` sections hold the text, so `posted_finding` reads it back as
+    it was given. `meta` is the lane, the commit reviewed and the two
+    models. Only the posted severity heads the comment; a lowered one
+    says how and why folded away, so a reader sees one rating, not two."""
+    parts = [
+        marker(
+            "finding", lane=meta["lane"], check=f["check"], severity=f["severity"], raised_as=f.get("raised_as"),
+            path=f["path"], line_start=f["line_start"], line_end=f["line_end"], commit=meta["commit"],
+            model=meta["model"], verify_model=meta["verify_model"],
+        ),
+        f"**{f['severity']}** · `{f['check']}`",
+        section("description", f["summary"].strip()),
+    ]
+    if f.get("trigger"):
+        path, line = f["evidence"]["path"], f["evidence"]["line"]
+        parts.append(section(
+            "verification", f"**Verified** at `{path}:{line}`", section("trigger", squash(f["trigger"])),
+            path=path, line=line,
+        ))
+    if f.get("raised_as"):
+        why = section("severity-reason", f["severity_reason"]) if f.get("severity_reason") else lowered_why(f)
+        parts.append(f"<details><summary>Raised as {f['raised_as']}, verified as {f['severity']}</summary>\n\n{why}\n\n</details>")
+    return "\n\n".join([*parts, footer(meta, note)])
+
+
+def whole_number(value: str | None) -> int | None:
+    return int(value) if value and re.fullmatch(r"[0-9]+", value) else None
+
+
+def finding_fields(attrs: dict[str, str]) -> dict | None:
+    """A `finding` marker's attributes as a finding's fields, or None when
+    one it needs is missing or out of range."""
+    start, end = whole_number(attrs.get("line-start")), whole_number(attrs.get("line-end"))
+    if (not all(attrs.get(k) for k in ("lane", "check", "path")) or attrs.get("severity") not in SEVERITIES
+            or start is None or end is None or start > end
+            or attrs.get("raised-as", SEVERITIES[0]) not in SEVERITIES):
+        return None
+    f: dict = {k: attrs[k] for k in ("lane", "check", "severity", "path")}
+    f.update(line_start=start, line_end=end)
+    f.update({k.replace("-", "_"): attrs[k] for k in ("raised-as", "commit", "model", "verify-model") if attrs.get(k)})
+    return f
+
+
+def verification_fields(v: Section) -> dict | None:
+    """A `verification` section as `trigger` and `evidence`, or None when
+    it does not carry both."""
+    line = whole_number(v.attrs.get("line"))
+    triggers = [c for c in v.children if c.kind == "trigger"]
+    if not v.attrs.get("path") or not line or len(triggers) != 1 or not triggers[0].text:
+        return None
+    return {"trigger": triggers[0].text, "evidence": {"path": v.attrs["path"], "line": line}}
+
+
+def posted_finding(body: str) -> dict:
+    """A lane comment read back, in the shape `comment_body` took it:
+    `lane`, `check`, `severity`, `path`, `line_start`, `line_end`,
+    `summary`, as posted `raised_as` (and `severity_reason`), `commit`,
+    `model`, `verify_model`,
+    and once verified `trigger` and `evidence` (`path`, `line`). A comment
+    without a whole `finding` marker and `description` (one posted before
+    the markers) gives only its text, without agent note and signature, as
+    the summary."""
+    parsed = parse_markers(body)
+    found = parsed.markers.get("finding", []) if parsed else []
+    descriptions = parsed.sections.get("description", []) if parsed else []
+    f = finding_fields(found[0]) if len(found) == 1 and len(descriptions) == 1 and descriptions[0].text else None
+    if parsed is None or f is None:
+        return {"summary": SIGNATURE_RE.split(body.split("\n\n<sub>For AI agents")[0])[0].strip()}
+    f["summary"] = descriptions[0].text
+    if len(reasons := parsed.sections.get("severity-reason", [])) == 1 and reasons[0].text and "raised_as" in f:
+        f["severity_reason"] = reasons[0].text
+    verifications = parsed.sections.get("verification", [])
+    verified = verification_fields(verifications[0]) if len(verifications) == 1 else None
+    if verified:
+        f.update(verified)
+    elif verifications:
+        print(f"::warning::{f['path']}:{f['line_start']}: a posted finding's verification is incomplete; read without it", file=sys.stderr)
+    return f
+
+
+def at_lead(also: dict, lead: dict) -> dict:
+    """Another check's note on a finding's lines (`merge_overlapping`),
+    marked with the lines of the finding it is posted under."""
+    return {**{k: lead[k] for k in ("path", "line_start", "line_end")}, **also}
 
 
 def body_line(f: dict, where: str) -> str:
@@ -1201,8 +1434,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         # preview as outside it.
         raise SystemExit("GH_TOKEN is not set")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
-    marker = f"<!-- goose-review:{args.lane} -->"
-    sign = signature(args.model, args.verify_model)
+    meta = {"lane": args.lane, "commit": args.head_sha, "model": args.model, "verify_model": args.verify_model}
 
     # The lines the review saw: the pull request at `head_sha` against its
     # base, as the review job diffed it, not the live pull request, which a
@@ -1232,7 +1464,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         if target:
             merged.append((f, target))
             continue
-        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f, sign, AGENT_NOTE)}
+        comment = {"path": f["path"], "line": end, "side": "RIGHT", "body": comment_body(f, meta, AGENT_NOTE)}
         if start < end and lines.get(start) == lines[end]:
             comment.update(start_line=start, start_side="RIGHT")
         comments.append(comment)
@@ -1264,14 +1496,14 @@ def cmd_post(args: argparse.Namespace) -> None:
         headline = tally
     # The review's body holds only findings that cannot sit on the code: how
     # the lane went (headline, checks not covered, findings withheld) is
-    # the summary comment's. The marker is an HTML comment, so a review
+    # the summary comment's. The lane marker is an HTML comment, so a review
     # with every finding inline shows no body at all.
-    body = [marker]
+    body = [marker("lane", name=args.lane, commit=args.head_sha, model=args.model, verify_model=args.verify_model)]
     if loose:
         body.append("Outside the diff's changed lines:\n")
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
-    footer = sign if loose else ""
-    review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join([*body, footer]), "comments": comments}
+    closing = ["", footer(meta)] if loose else []
+    review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join([*body, *closing]), "comments": comments}
     # A lane posts a review only to show findings on the code. How every
     # lane went -- clean, not covered, withheld, did not run -- is reported
     # once, in the run's summary comment (`summary`), from the result file
@@ -1284,6 +1516,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         "repeated": status.get("repeated") or 0,
         "unevidenced": status.get("unevidenced") or 0, "downgraded": status.get("downgraded") or 0,
         "checks_run": ran or [], "checks_failed": failed, "checks_skipped": status.get("checks_skipped") or [],
+        "checks_unstarted": status.get("checks_unstarted") or {},
         "rejected": status.get("rejected") or 0, "withheld": status.get("withheld") or 0,
         "did_not_run": bool(missing or status.get("error")), "review_url": None, "post_error": None,
         # Before verification (after merging overlaps): what the lane's own
@@ -1308,12 +1541,12 @@ def cmd_post(args: argparse.Namespace) -> None:
             print(f"nothing to post: {headline}")
             return
         planned = [
-            {"reply_to": f"{c['path']}:{c['line']}", "body": comment_body(a, sign)}
-            for c, also in zip(comments, threads)
+            {"reply_to": f"{c['path']}:{c['line']}", "body": comment_body(at_lead(a, f), meta)}
+            for c, f, also in zip(comments, inline, threads)
             for a in also
         ]
         into_open = [
-            {"reply_to_thread": t["id"], "at": f"{t['path']}:{t['line']}", "body": comment_body(f, sign)}
+            {"reply_to_thread": t["id"], "at": f"{t['path']}:{t['line']}", "body": comment_body(f, meta)}
             for f, t in merged
         ]
         print(json.dumps({**review, "thread_replies": planned, "open_thread_replies": into_open}, indent=2))
@@ -1329,8 +1562,8 @@ def cmd_post(args: argparse.Namespace) -> None:
     # Into the open threads first: they need no new review.
     merged_ok = 0
     for f, t in merged:
-        for note in [f, *f.get("also", [])]:
-            code, reply = github("POST", f"{base}/comments/{t['all'][0]['databaseId']}/replies", token, {"body": comment_body(note, sign)})
+        for note in [f, *(at_lead(a, f) for a in f.get("also", []))]:
+            code, reply = github("POST", f"{base}/comments/{t['all'][0]['databaseId']}/replies", token, {"body": comment_body(note, meta)})
             if code in (200, 201):
                 merged_ok += 1
             else:
@@ -1347,9 +1580,9 @@ def cmd_post(args: argparse.Namespace) -> None:
         print(f"::warning::inline review rejected ({data}); posting findings in the review body", file=sys.stderr)
         anchored = inline
         # Above the footer, as in any other review: the signature closes it.
-        review["body"] = "\n".join([*body, "", *(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored), sign])
+        review["body"] = "\n".join([*body, "", *(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored), "", footer(meta)])
         review["comments"] = []
-        comments, threads = [], []
+        comments, threads, inline = [], [], []
         status, data = github("POST", f"{base}/reviews", token, review)
     if status not in (200, 201):
         save(post_error=f"posting the review failed: HTTP {status}")
@@ -1360,10 +1593,10 @@ def cmd_post(args: argparse.Namespace) -> None:
     if any(threads):
         posted = paged(f"{base}/reviews/{data['id']}/comments", token)
         by_place = {(c["path"], c.get("line") or c.get("original_line")): c["id"] for c in posted}
-        for comment, also in zip(comments, threads):
+        for comment, f, also in zip(comments, inline, threads):
             parent = by_place.get((comment["path"], comment["line"]))
             for a in also if parent else []:
-                reply_status, reply = github("POST", f"{base}/comments/{parent}/replies", token, {"body": comment_body(a, sign)})
+                reply_status, reply = github("POST", f"{base}/comments/{parent}/replies", token, {"body": comment_body(at_lead(a, f), meta)})
                 if reply_status in (200, 201):
                     replies += 1
                 else:
@@ -1400,8 +1633,11 @@ def answers_table(threads: list[dict]) -> str:
     ongoing measure of each lane's precision, without labelling by hand."""
     tally: dict[str, dict[str, int]] = {}
     for t in threads:
-        model = SIGNATURE_MODEL_RE.search(t["all"][0].get("body") or "")
-        counts = tally.setdefault(model.group(1) if model else "(unsigned)", dict.fromkeys(ANSWER_KINDS, 0))
+        model = posted_finding(t["all"][0].get("body") or "").get("model")
+        if not model:
+            signed = SIGNATURE_MODEL_RE.search(t["all"][0].get("body") or "")   # posted before the markers
+            model = signed.group(1) if signed else "(unsigned)"
+        counts = tally.setdefault(model, dict.fromkeys(ANSWER_KINDS, 0))
         counts[answer_kind(t)] += 1
     if not tally:
         return ""
@@ -1489,14 +1725,25 @@ def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[d
         after = conn["pageInfo"]["endCursor"]
 
 
-# A lane's review carries its lane marker; each of its comments and thread
-# replies carries the signature (`signature`).
-LANE_MARKER_RE = re.compile(r"<!-- goose-review:(?!summary)[a-z0-9-]+ -->")
+# A lane's review carries its `lane` marker; each of its comments and
+# thread replies a `finding` marker. Before the markers, a review carried
+# `<!-- goose-review:LANE -->` and a comment only the signature.
+LEGACY_LANE_MARKER_RE = re.compile(r"<!-- goose-review:(?!(?:summary|footer|description|verification) -->)[a-z0-9-]+ -->")
 SIGNATURE_RE = re.compile(r"\n---\n\n_Review done by \*\*")
 
 
+def is_lane_review(r: dict) -> bool:
+    body = r.get("body") or ""
+    return (r.get("author") or {}).get("__typename") == "Bot" and bool(
+        markers(body, "lane") or LEGACY_LANE_MARKER_RE.search(body)
+    )
+
+
 def is_goose_comment(c: dict) -> bool:
-    return (c.get("author") or {}).get("__typename") == "Bot" and bool(SIGNATURE_RE.search(c.get("body") or ""))
+    body = c.get("body") or ""
+    return (c.get("author") or {}).get("__typename") == "Bot" and bool(
+        markers(body, "finding") or SIGNATURE_RE.search(body)
+    )
 
 
 def goose_threads(repo: str, pr: int, token: str) -> tuple[list[dict], list[dict]]:
@@ -1505,8 +1752,7 @@ def goose_threads(repo: str, pr: int, token: str) -> tuple[list[dict], list[dict
     owner, name = repo.split("/", 1)
     variables = {"owner": owner, "name": name, "pr": pr}
     reviews = [
-        r for r in graphql_nodes(token, TIDY_QUERY, "reviews", variables)
-        if (r.get("author") or {}).get("__typename") == "Bot" and LANE_MARKER_RE.search(r.get("body") or "")
+        r for r in graphql_nodes(token, TIDY_QUERY, "reviews", variables) if is_lane_review(r)
     ]
     ids = {r["id"] for r in reviews}
     threads = []
@@ -1545,11 +1791,6 @@ def collapse_resolved(repo: str, pr: int, token: str, dry_run: bool = False) -> 
     return len(ids) - failed
 
 
-def finding_text(body: str) -> str:
-    """A lane comment without its agent note and signature."""
-    return SIGNATURE_RE.split(body.split("\n\n<sub>For AI agents")[0])[0].strip()
-
-
 ANSWERED_MAX = 60
 ANSWER_CHARS = 1500
 # All of the section in every verify batch: about 10k tokens, well inside
@@ -1561,6 +1802,13 @@ ANSWERED_COMMENT_CHARS = 400
 def review_commit(comment: dict) -> str:
     """The short commit a review comment was posted on."""
     return (((comment.get("pullRequestReview") or {}).get("commit") or {}).get("oid") or "?")[:7]
+
+
+def answered_finding(body: str) -> dict:
+    """A lane comment as `verify` is given it: `posted_finding`, its text cut
+    to ANSWER_CHARS."""
+    f = posted_finding(body)
+    return {**f, **{k: f[k][:ANSWER_CHARS] for k in ("summary", "trigger") if k in f}}
 
 
 def cmd_answered(args: argparse.Namespace) -> None:
@@ -1585,12 +1833,12 @@ def cmd_answered(args: argparse.Namespace) -> None:
             "commit": review_commit(first),
             "resolved": t["isResolved"],
             "at": first.get("createdAt") or "",
-            "finding": finding_text(first.get("body") or "")[:ANSWER_CHARS],
+            "finding": answered_finding(first.get("body") or ""),
             # The whole thread after its first comment, in order: a lane
             # reply is a further finding (another check on the same lines,
             # or a later run's), and a person's answer may be to that one.
             "answers": [
-                {"finding": finding_text(c.get("body") or "")[:ANSWER_CHARS], "commit": review_commit(c)}
+                {"finding": answered_finding(c.get("body") or ""), "commit": review_commit(c)}
                 if is_goose_comment(c) else
                 {"by": (c.get("author") or {}).get("login") or "?", "text": (c.get("body") or "").strip()[:ANSWER_CHARS]}
                 for c in rest
@@ -1629,7 +1877,7 @@ def cmd_tidy(args: argparse.Namespace) -> None:
 
 
 HISTORY_RUNS = 20
-HISTORY_RE = re.compile(r"<!-- goose-review:history ([A-Za-z0-9+/=]*) -->")
+LEGACY_HISTORY_RE = re.compile(r"<!-- goose-review:history ([A-Za-z0-9+/=]*) -->")
 
 
 def cmd_summary(args: argparse.Namespace) -> None:
@@ -1731,11 +1979,12 @@ def cmd_summary(args: argparse.Namespace) -> None:
 
 
 def read_history(body: str) -> list[dict]:
-    match = HISTORY_RE.search(body)
-    if not match:
+    found = markers(body, "history")
+    legacy = LEGACY_HISTORY_RE.search(body)
+    if not found and not legacy:
         return []
     try:
-        runs = json.loads(base64.b64decode(match.group(1)).decode())
+        runs = json.loads(base64.b64decode(found[0].get("data", "") if found else legacy.group(1)).decode())
     except (ValueError, UnicodeDecodeError):
         return []
     return [r for r in runs if isinstance(r, dict) and isinstance(r.get("lanes"), list)] if isinstance(runs, list) else []
@@ -1763,7 +2012,11 @@ def lane_row(lane: str, r: dict | None, j: dict[str, dict]) -> dict:
         mark = "⛔" if conclusion == "cancelled" else "❌"
         return {**row, "model": None, "verify": None, "checks": "—", "found": None, "posted": "—", "result": f"{mark} no result: the {kind} job {why}"}
     failed = set(r["checks_failed"])
-    checks = ", ".join(f"{'⚠️' if c in failed else '✅'} `{c}`" for c in r["checks_run"]) or "—"
+    unstarted = r.get("checks_unstarted") or {}
+    checks = ", ".join(
+        f"{'⚠️' if c in failed else '✅'} `{c}`" + (f" <sub>({unstarted[c]} not started)</sub>" if unstarted.get(c) else "")
+        for c in r["checks_run"]
+    ) or "—"
     if r["checks_skipped"]:
         checks += f" <sub>+{len(r['checks_skipped'])} n/a</sub>"
     tally = ", ".join(f"{n} {s}" for s, n in reversed(r["counts"].items()) if n)
@@ -1835,7 +2088,7 @@ def summary_body(history: list[dict], answers: str = "") -> str:
         "Advisory only; it never blocks merging.</sub>",
         "",
         answers,
-        f"<!-- goose-review:history {encoded} -->",
+        marker("history", data=encoded),
     ])
 
 
