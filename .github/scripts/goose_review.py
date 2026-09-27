@@ -1226,6 +1226,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
     jobs: dict[str, dict[str, dict]] = {}
     earlier: list[dict] = []
     old: list[dict] = []
+    last_comment = None
     comments = f"/repos/{args.repo}/issues/{args.pr}/comments"
     if token:
         code, data = (github("GET", f"/repos/{args.repo}/actions/runs/{args.run_id}/jobs?per_page=100", token)
@@ -1235,19 +1236,27 @@ def cmd_summary(args: argparse.Namespace) -> None:
                 lane, _, kind = job.get("name", "").partition(" / ")
                 if kind in ("review", "post"):
                     jobs.setdefault(lane, {})[kind] = job
+        everything = paged(comments, token)
+        last_comment = max((c["id"] for c in everything), default=None)
         old = [
-            c for c in paged(comments, token)
+            c for c in everything
             if (c.get("user") or {}).get("type") == "Bot" and SUMMARY_MARKER in (c.get("body") or "")
         ]
-        if old:
-            earlier = read_history(max(old, key=lambda c: c["id"]).get("body") or "")
+        # The newest summary that carries a history (a stray without one
+        # must not erase the log).
+        for c in sorted(old, key=lambda c: c["id"], reverse=True):
+            if earlier := read_history(c.get("body") or ""):
+                break
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     this = next((r for r in earlier if r.get("run") == str(args.run_id)), {})
     run = {
         "run": str(args.run_id), "sha": args.head_sha[:7],
         "url": f"https://github.com/{args.repo}/actions/runs/{args.run_id}",
-        "state": args.state, "started": this.get("started") or now,
+        # Without a running entry (its step failed or never ran), the run
+        # started when its first lane did.
+        "state": args.state,
+        "started": this.get("started") or min((j["started_at"] for lj in jobs.values() for j in lj.values() if j.get("started_at")), default=now),
         "finished": now if args.state == "finished" else None,
         "lanes": [] if args.state == "running"
         else [lane_row(lane, results.get(lane), jobs.get(lane, {})) for lane in sorted(set(results) | set(jobs))],
@@ -1271,12 +1280,22 @@ def cmd_summary(args: argparse.Namespace) -> None:
         return
     if not token:
         raise SystemExit("GH_TOKEN is not set")
-    code, data = github("POST", comments, token, {"body": body})
+    # Update the summary in place when it is still the last comment;
+    # otherwise (someone commented since, or there is none yet, e.g. the
+    # running step failed) post it anew so it is the last one again.
+    newest = max(old, key=lambda c: c["id"]) if old else None
+    if newest and newest["id"] == last_comment:
+        code, data = github("PATCH", f"/repos/{args.repo}/issues/comments/{newest['id']}", token, {"body": body})
+        verb = "updated"
+    else:
+        code, data = github("POST", comments, token, {"body": body})
+        verb = "posted"
     if code not in (200, 201):
-        raise SystemExit(f"posting the summary failed: {code} {data}")
-    for c in old:
+        raise SystemExit(f"writing the summary failed: {code} {data}")
+    extra = [c for c in old if c["id"] != data["id"]]
+    for c in extra:
         github("DELETE", f"/repos/{args.repo}/issues/comments/{c['id']}", token)
-    print(f"posted the summary ({data.get('html_url')}); {len(old)} earlier summary comment(s) deleted")
+    print(f"{verb} the summary ({data.get('html_url')}); {len(extra)} other summary comment(s) deleted")
 
 
 def read_history(body: str) -> list[dict]:
@@ -1342,8 +1361,11 @@ def run_status(run: dict) -> str:
     return f"finished {utc(run.get('finished'))} UTC"
 
 
+def code_cell(value: str | None) -> str:
+    return "—" if value is None else f"`{value}`"
+
+
 def summary_table(runs: list[dict], current: bool) -> str:
-    cell = lambda v: "—" if v is None else f"`{v}`"
     head = (["| Model | Verified by | Ran (UTC) | Took | Checks | Found | Posted | Result | Jobs |", "|---|---|---|---|---|---|---|---|---|"]
             if current else ["| Commit | Model | Ran (UTC) | Found | Posted | Result | Run |", "|---|---|---|---|---|---|---|"])
     rows = []
@@ -1354,10 +1376,14 @@ def summary_table(runs: list[dict], current: bool) -> str:
         for x in run["lanes"]:
             links = " · ".join(f"[{k}]({u})" for k, u in sorted(x.get("jobs", {}).items(), reverse=True))
             found = "—" if x.get("found") is None else str(x["found"])
+            model = code_cell(x["model"]) if x.get("model") else x["lane"]
             if current:
-                rows.append(f"| {cell(x.get('model')) if x.get('model') else x['lane']} | {cell(x.get('verify'))} | {utc(x.get('ran'))} | {x.get('took', '—')} | {x.get('checks', '—')} | {found} | {x.get('posted', '—')} | {x.get('result', '—')} | {links} |")
+                cells = [model, code_cell(x.get("verify")), utc(x.get("ran")), x.get("took", "—"), x.get("checks", "—"),
+                         found, x.get("posted", "—"), x.get("result", "—"), links]
             else:
-                rows.append(f"| `{run.get('sha', '?')}` | {cell(x.get('model')) if x.get('model') else x['lane']} | {utc(x.get('ran'))} | {found} | {x.get('posted', '—')} | {x.get('result', '—')} | [run]({run.get('url', '')}) |")
+                cells = [f"`{run.get('sha', '?')}`", model, utc(x.get("ran")), found, x.get("posted", "—"),
+                         x.get("result", "—"), f"[run]({run.get('url', '')})"]
+            rows.append("| " + " | ".join(cells) + " |")
     return "\n".join(head + rows)
 
 
