@@ -1,8 +1,7 @@
 # LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
 #
-# Four lanes run, one per model: DeepSeek V4 Flash and Mistral Medium 3.5
-# on the third-party endpoint, MiniMax M3, and DeepSeek V4.1 Flash on
-# OpenRouter. All post as
+# Three lanes run, one per model: DeepSeek V4 Flash and Mistral Medium 3.5
+# on the third-party endpoint, and MiniMax M3. All post as
 # github-actions[bot] with the job's own token, so no GitHub App or private
 # key is involved; every review and comment is signed with the model that
 # wrote it and carries its lane's marker.
@@ -31,10 +30,10 @@
 # budget, and over-limit requests queue instead of failing -- and inserts
 # `tool_choice: "auto"` on the third-party route, whose gateway otherwise
 # defaults it to "none" and leaves every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
-# secrets, kept out of the repository on purpose. The one exception is the
-# OpenRouter lane, which calls openrouter.ai directly with its own key
-# (OPENROUTER_API_KEY, capped by its monthly limit on OpenRouter); only that
-# lane's job gets the key and may reach the endpoint.
+# secrets, kept out of the repository on purpose. An OpenRouter lane, when
+# one is configured (none is now), is the exception: it calls openrouter.ai
+# directly with its own key (OPENROUTER_API_KEY), and only that lane's job
+# gets the key and may reach the endpoint.
 #
 # Advisory only: it posts COMMENT reviews, never requests changes, and the
 # job never fails the PR. A check that does not finish (the MiniMax plan's
@@ -150,19 +149,11 @@ jobs:
           # withholds its findings as unconfirmed, it never posts them.
           # (Gemma 4 31B had a lane too, until it had confirmed nothing in
           # any run on #207: a few tool calls, done in three minutes.)
-          # DeepSeek V4.1 Flash on OpenRouter, reached directly with its own
-          # key (OPENROUTER_API_KEY; $5 a month on OpenRouter, about 4-12
-          # runs). Routed to the cheapest providers first (see its provider
-          # file), falling back to any other that serves the model with tool
-          # calls. Verified like the DeepSeek lane.
-          - lane: openrouter
-            provider: notedthat_openrouter
-            model: deepseek/deepseek-v4.1-flash
-            verify-provider: notedthat_minimax
-            verify-model: MiniMax-M3
-            verify-backup-provider: notedthat_thirdparty
-            verify-backup-model: deepseek-v4-flash-0731
-            jobs: 2
+          # (DeepSeek V4.1 Flash on OpenRouter had a lane, reaching
+          # openrouter.ai directly with the OPENROUTER_API_KEY secret, until
+          # it was turned off for its cost. Its provider file and the lane
+          # workflow's key handling stay: a matrix entry with
+          # `provider: notedthat_openrouter` turns it back on.)
           - lane: mistral
             provider: notedthat_thirdparty
             model: mistral-medium-3-5

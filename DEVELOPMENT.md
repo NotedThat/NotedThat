@@ -392,8 +392,8 @@ list from `cargo metadata`.
 ## Running the Goose review (LLM review) locally
 
 CI reviews every PR with [Goose](https://github.com/block/goose)
-(`.github/workflows/goose-review.yml`) in four lanes, one per model:
-DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and DeepSeek V4.1 Flash on OpenRouter. Each lane
+(`.github/workflows/goose-review.yml`) in three lanes, one per model:
+DeepSeek V4 Flash, MiniMax M3 and Mistral Medium 3.5. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
 findings are posted, as that lane's review on the code. When the verifier's provider is down
@@ -436,9 +436,9 @@ locally, so a finding can be reproduced before anyone argues with it.
 
 Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the
-third-party route. The OpenRouter lane is the exception: it calls openrouter.ai directly
-with its own key (the `OPENROUTER_API_KEY` secret, capped at $5 a month on OpenRouter), routed
-to the cheapest providers first. Locally you need the proxy's token and its two routes — ask a
+third-party route. (A DeepSeek V4.1 lane on OpenRouter, calling openrouter.ai directly with the
+`OPENROUTER_API_KEY` secret, is turned off for its cost; its provider file stays, and a matrix
+entry turns it back on.) Locally you need the proxy's token and its two routes — ask a
 maintainer; none of them are in the repository on purpose — or an OpenRouter key of your own
 for `--provider notedthat_openrouter` (copy `.github/goose/providers/notedthat_openrouter.json`
 into your Goose `custom_providers` as is). Goose 1.52 or
