@@ -962,7 +962,11 @@ def cmd_post(args: argparse.Namespace) -> None:
     ran, failed = status.get("checks_run"), status.get("checks_failed") or []
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     tally = ", ".join(f"{n} {s}" for s, n in reversed(counts.items()) if n) or "no findings"
-    if missing:
+    if status.get("error"):
+        # A step before the review recorded why it stopped (the proxy did
+        # not answer, a secret was missing).
+        headline = f"the review did not run: {status['error']}"
+    elif missing:
         headline = "the review did not run: its job failed (see the workflow log)"
     elif ran == [] and status.get("checks_skipped"):
         headline = "no check covers the files this pull request changes"
@@ -988,14 +992,31 @@ def cmd_post(args: argparse.Namespace) -> None:
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
     footer = "\n<sub>Advisory only; it never blocks merging.</sub>" + sign
     review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join([*body, footer]), "comments": comments}
-    # A clean result is not posted -- a PR should not collect a "no
-    # findings" review per lane per push -- but a review that did not cover
-    # everything is, so a failure never looks like a clean result.
-    noteworthy = missing or bool(findings) or bool(failed) or bool(status.get("withheld"))
+    # A lane posts a review only to show findings on the code. How every
+    # lane went -- clean, not covered, withheld, did not run -- is reported
+    # once, in the run's summary comment (`summary`), from the result file
+    # written here; a failure is never silent, and a PR does not collect a
+    # status review per lane per push.
+    noteworthy = bool(findings)
+    result = {
+        "lane": args.lane, "model": args.model, "verify_model": args.verify_model,
+        "headline": headline, "counts": counts, "loose": len(loose),
+        "checks_run": ran or [], "checks_failed": failed, "checks_skipped": status.get("checks_skipped") or [],
+        "rejected": status.get("rejected") or 0, "withheld": status.get("withheld") or 0,
+        "did_not_run": bool(missing or status.get("error")), "review_url": None, "post_error": None,
+    }
+
+    def save(**fields: object) -> None:
+        result.update(fields)
+        if args.result:
+            Path(args.result).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.result).write_text(json.dumps(result, indent=2), encoding="utf-8")
+
     summary = f"### Goose review ({args.lane}, `{args.model}`)\n\n{headline}.\n"
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-            out.write(summary + ("" if noteworthy else "\nNothing posted on the pull request.\n"))
+            out.write(summary + ("" if noteworthy else "\nNo review posted; see the summary comment.\n"))
+    save()
 
     if args.dry_run:
         if not noteworthy:
@@ -1027,7 +1048,9 @@ def cmd_post(args: argparse.Namespace) -> None:
         comments, threads = [], []
         status, data = github("POST", f"{base}/reviews", token, review)
     if status not in (200, 201):
+        save(post_error=f"posting the review failed: HTTP {status}")
         raise SystemExit(f"posting the review failed: {status} {data}")
+    save(review_url=data.get("html_url"))
 
     replies = 0
     if any(threads):
@@ -1082,6 +1105,89 @@ def collapse_earlier(base: str, token: str, marker: str, keep: int | None = None
     return len(stale)
 
 
+SUMMARY_MARKER = "<!-- goose-review:summary -->"
+
+
+def cmd_summary(args: argparse.Namespace) -> None:
+    """One comment for the whole run: every lane's models, what each of its
+    checks did, what it found and posted, and links to its jobs. Earlier
+    summary comments are deleted so the latest is always the last one."""
+    results: dict[str, dict] = {}
+    for path in sorted(Path(args.results).glob("*.json")):
+        try:
+            result = json.loads(path.read_text(encoding="utf-8"))
+            results[result["lane"]] = result
+        except (OSError, ValueError, KeyError):
+            continue
+    token = os.environ.get("GH_TOKEN", "")
+    jobs: dict[str, dict[str, dict]] = {}
+    if token:
+        code, data = github("GET", f"/repos/{args.repo}/actions/runs/{args.run_id}/jobs?per_page=100", token)
+        if code == 200 and isinstance(data, dict):
+            for job in data.get("jobs", []):
+                lane, _, kind = job.get("name", "").partition(" / ")
+                if kind in ("review", "post"):
+                    jobs.setdefault(lane, {})[kind] = job
+    body = summary_body(args, results, jobs)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+            out.write(body.replace(SUMMARY_MARKER, "") + "\n")
+    if args.dry_run:
+        print(body)
+        return
+    if not token:
+        raise SystemExit("GH_TOKEN is not set")
+    comments = f"/repos/{args.repo}/issues/{args.pr}/comments"
+    code, data = github("POST", comments, token, {"body": body})
+    if code not in (200, 201):
+        raise SystemExit(f"posting the summary failed: {code} {data}")
+    old = [
+        c for c in paged(comments, token)
+        if c["id"] != data["id"] and (c.get("user") or {}).get("type") == "Bot" and SUMMARY_MARKER in (c.get("body") or "")
+    ]
+    for c in old:
+        github("DELETE", f"/repos/{args.repo}/issues/comments/{c['id']}", token)
+    print(f"posted the summary ({data.get('html_url')}); {len(old)} earlier summary comment(s) deleted")
+
+
+def summary_body(args: argparse.Namespace, results: dict[str, dict], jobs: dict[str, dict[str, dict]]) -> str:
+    run_url = f"https://github.com/{args.repo}/actions/runs/{args.run_id}"
+    rows = []
+    for lane in sorted(set(results) | set(jobs)):
+        r, j = results.get(lane), jobs.get(lane, {})
+        links = " · ".join(f"[{kind}]({job['html_url']})" for kind, job in sorted(j.items(), reverse=True) if job.get("html_url"))
+        if r is None:
+            conclusion = j.get("post", {}).get("conclusion")
+            post = {"failure": "failed", "cancelled": "was cancelled", "skipped": "was skipped"}.get(conclusion or "", "did not report")
+            rows.append(f"| {lane} | — | — | ❌ no result: the post job {post} | — | {links} |")
+            continue
+        failed = set(r["checks_failed"])
+        checks = ", ".join(f"{'⚠️' if c in failed else '✅'} `{c}`" for c in r["checks_run"]) or "—"
+        if r["checks_skipped"]:
+            checks += f" <sub>({len(r['checks_skipped'])} not applicable)</sub>"
+        mark = "❌" if r["did_not_run"] or r["post_error"] else "⚠️" if failed or r["withheld"] else "✅"
+        outcome = f"{mark} {r['post_error'] or r['headline']}"
+        tally = ", ".join(f"{n} {s}" for s, n in reversed(r["counts"].items()) if n)
+        found = f"[{tally}]({r['review_url']})" if tally and r["review_url"] else tally or "none"
+        extra = [f"{r['rejected']} rejected"] if r["rejected"] else []
+        extra += [f"{r['withheld']} withheld"] if r["withheld"] else []
+        if extra:
+            found += f" <sub>({', '.join(extra)})</sub>"
+        models = f"`{r['model']}` → `{r['verify_model']}`"
+        rows.append(f"| {lane} | {models} | {checks} | {outcome} | {found} | {links} |")
+    return "\n".join([
+        SUMMARY_MARKER,
+        f"### Goose review of `{args.head_sha[:7]}` · [run]({run_url})",
+        "",
+        "| Lane | Reviewed → verified by | Checks | Result | Posted findings | Jobs |",
+        "|---|---|---|---|---|---|",
+        *rows,
+        "",
+        "<sub>✅ finished · ⚠️ did not finish, so not covered · ❌ did not run. Findings are posted as each lane's "
+        "review on the code, only after a second model confirmed them. Advisory only; it never blocks merging.</sub>",
+    ])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1119,7 +1225,17 @@ def main() -> None:
     post.add_argument("--in", dest="input", default="verified.jsonl")
     post.add_argument("--status", default="review-status.json")
     post.add_argument("--dry-run", action="store_true", help="print the review instead of posting it")
+    post.add_argument("--result", help="write the lane's result here, for `summary`")
     post.set_defaults(func=cmd_post)
+
+    summ = sub.add_parser("summary", help="post one comment summarising every lane of the run")
+    summ.add_argument("--repo", required=True, help="owner/name")
+    summ.add_argument("--pr", required=True, type=int)
+    summ.add_argument("--head-sha", required=True)
+    summ.add_argument("--run-id", required=True)
+    summ.add_argument("--results", required=True, help="directory of the lanes' result files")
+    summ.add_argument("--dry-run", action="store_true", help="print the comment instead of posting it")
+    summ.set_defaults(func=cmd_summary)
 
     scrub = sub.add_parser("scrub", help="redact the proxy secrets from every file under the directories, in place")
     scrub.add_argument("dirs", nargs="+")

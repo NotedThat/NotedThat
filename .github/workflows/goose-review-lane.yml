@@ -112,6 +112,9 @@ jobs:
           for name in GOOSE_PROXY_TOKEN GOOSE_THIRDPARTY_BASE_URL GOOSE_MINIMAX_BASE_URL; do
             if [ -z "${!name}" ]; then
               echo "::error::the $name secret is empty or not shared with this repository"
+              # Why it stopped, for the summary comment (via status.json).
+              mkdir -p "$RUNNER_TEMP/review"
+              jq -n --arg e "the $name secret is empty or not shared with this repository" '{error: $e}' > "$RUNNER_TEMP/review/status.json"
               exit 1
             fi
           done
@@ -130,6 +133,9 @@ jobs:
             echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
             if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
               echo "::error::the $route route is not usable from this runner"
+              if [ "${rc:-0}" -eq 28 ]; then why="did not answer within 30 s"; else why="answered HTTP ${status:-none} (curl exit ${rc:-0})"; fi
+              mkdir -p "$RUNNER_TEMP/review"
+              jq -n --arg e "the model proxy's ${route,,} route $why" '{error: $e}' > "$RUNNER_TEMP/review/status.json"
               exit 1
             fi
           done
@@ -315,3 +321,15 @@ jobs:
           --verify-model "${{ inputs.verify-model }}"
           --in "$RUNNER_TEMP/artifact/review/verified.jsonl"
           --status "$RUNNER_TEMP/artifact/review/status.json"
+          --result "$RUNNER_TEMP/result/${{ inputs.lane }}.json"
+
+      # How this lane went, for the run's one summary comment
+      # (goose-review.yml's `summary` job); written even when posting failed.
+      - name: Keep the lane's result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goose-result-${{ inputs.lane }}
+          path: ${{ runner.temp }}/result/
+          if-no-files-found: ignore
+          retention-days: 14

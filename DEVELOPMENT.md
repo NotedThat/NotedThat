@@ -396,7 +396,10 @@ CI reviews every PR with [Goose](https://github.com/block/goose)
 DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and Gemma 4 31B. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
-findings are posted; a lane with nothing to report posts nothing. A check
+findings are posted, as that lane's review on the code. How every lane went (its models,
+each check finished or not, findings posted, rejected or withheld, links to its jobs) is
+one summary comment per run, replaced on every push; a lane with no findings posts no
+review of its own. All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
 become one thread. Each lane

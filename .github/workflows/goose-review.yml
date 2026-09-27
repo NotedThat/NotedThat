@@ -103,3 +103,77 @@ jobs:
       verify-model: ${{ matrix.verify-model }}
       jobs: ${{ matrix.jobs }}
     secrets: inherit
+
+  # One comment for the whole run, once every lane is done: each lane's
+  # models, what each check did, what it found and posted, and links to its
+  # jobs. Lanes post a review only to show findings on the code, so this is
+  # where a lane that was clean, not covered or did not run is reported.
+  # The previous summary is deleted, so the latest is always the last
+  # comment. It runs no model and reads only the lanes' result files.
+  summary:
+    name: summary
+    needs: lane
+    if: ${{ !cancelled() && needs.lane.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # The job links for each lane.
+      actions: read
+      # The comment itself.
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            results-receiver.actions.githubusercontent.com:443
+            productionresultssa0.blob.core.windows.net:443
+            productionresultssa1.blob.core.windows.net:443
+            productionresultssa2.blob.core.windows.net:443
+            productionresultssa3.blob.core.windows.net:443
+            productionresultssa4.blob.core.windows.net:443
+            productionresultssa5.blob.core.windows.net:443
+            productionresultssa6.blob.core.windows.net:443
+            productionresultssa7.blob.core.windows.net:443
+            productionresultssa8.blob.core.windows.net:443
+            productionresultssa9.blob.core.windows.net:443
+            productionresultssa10.blob.core.windows.net:443
+            productionresultssa11.blob.core.windows.net:443
+            productionresultssa12.blob.core.windows.net:443
+            productionresultssa13.blob.core.windows.net:443
+            productionresultssa14.blob.core.windows.net:443
+            productionresultssa15.blob.core.windows.net:443
+            productionresultssa16.blob.core.windows.net:443
+            productionresultssa17.blob.core.windows.net:443
+            productionresultssa18.blob.core.windows.net:443
+            productionresultssa19.blob.core.windows.net:443
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # A lane whose post job failed before writing its result has none;
+      # the summary then reports that lane from its job's conclusion.
+      - name: Fetch the lanes' results
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: goose-result-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/results
+
+      - name: Post the summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          mkdir -p "$RUNNER_TEMP/results" &&
+          python3 .github/scripts/goose_review.py summary
+          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}" --run-id "${{ github.run_id }}"
+          --results "$RUNNER_TEMP/results"
