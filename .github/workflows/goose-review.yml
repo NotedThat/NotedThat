@@ -35,9 +35,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# A run in progress is never cancelled by a push: it finishes and posts, so
+# the compute is not thrown away and its findings are answered or resolved
+# like any other. The newest push waits for it; GitHub keeps one pending run
+# per group, so pushes in between are dropped before they start. Nothing is
+# missed that way: every run reviews the whole `base...head` diff.
 concurrency:
   group: goose-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Each lane is .github/workflows/goose-review-lane.yml: a `review` job with
 # a read-only token and its network limited to GitHub, crates.io and the
@@ -48,12 +53,11 @@ permissions:
   pull-requests: write
 
 jobs:
-  # First, in one step and seconds: collapse as outdated every lane review
-  # of an earlier commit (and the lanes' comments in its threads), and
-  # replace the summary comment with this run marked running; an earlier
-  # run still marked running is recorded as cancelled. A push while lanes
-  # are still reviewing cancels this run before its lanes and summary get
-  # to tidy up, so this cannot wait for them.
+  # First, in one step and seconds: collapse as outdated the lanes' findings
+  # on earlier commits whose threads are resolved (a review once none of its
+  # threads is open), and replace the summary comment with this run marked
+  # running; an earlier run still marked running stopped before its summary
+  # (cancelled by hand, or it failed) and is recorded as such.
   tidy:
     name: tidy
     if: >-
@@ -83,7 +87,7 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
-      - name: Collapse outdated reviews; mark this run running
+      - name: Collapse resolved outdated findings; mark this run running
         env:
           GH_TOKEN: ${{ github.token }}
         run: >

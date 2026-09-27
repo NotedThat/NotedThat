@@ -254,8 +254,8 @@ jobs:
     name: post
     needs: review
     # Also after a failed or timed-out review, so the PR says the review did
-    # not run; not when the run is cancelled (a newer push is being
-    # reviewed). `cancelled()` is the run's state, not the review job's: a
+    # not run; not when the run is cancelled (by hand: a push no longer
+    # cancels a run, see goose-review.yml). `cancelled()` is the run's state, not the review job's: a
     # job that hits its timeout can report itself cancelled while the run
     # is not.
     if: ${{ !cancelled() }}

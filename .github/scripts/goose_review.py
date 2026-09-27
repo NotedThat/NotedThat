@@ -1050,7 +1050,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         raise SystemExit("GH_TOKEN is not set")
 
     if not noteworthy:
-        collapsed = collapse_earlier(base, token, marker)
+        collapsed = collapse_earlier(base, token, marker, args.head_sha)
         print(f"nothing to post ({headline}); {collapsed} earlier review(s) collapsed")
         return
 
@@ -1083,20 +1083,23 @@ def cmd_post(args: argparse.Namespace) -> None:
                     print(f"::warning::reply to {comment['path']}:{comment['line']} failed: {reply_status} {reply}", file=sys.stderr)
     # Only now that the new review exists, so a failed post never leaves
     # the lane with nothing visible on the pull request.
-    collapsed = collapse_earlier(base, token, marker, keep=data["id"])
+    collapsed = collapse_earlier(base, token, marker, args.head_sha, keep=data["id"])
     print(
         f"posted review with {len(comments)} inline comment(s) and {replies} thread repl(ies), "
         f"{len(loose)} in the body, {collapsed} earlier review(s) collapsed"
     )
 
 
-def collapse_earlier(base: str, token: str, marker: str, keep: int | None = None) -> int:
-    """Collapse this lane's earlier reviews, with their comments and the
-    thread replies to them, so only the latest one is read. Only a bot's
-    reviews count: a person quoting the marker keeps their review."""
+def collapse_earlier(base: str, token: str, marker: str, head_sha: str, keep: int | None = None) -> int:
+    """Collapse this lane's earlier reviews of the same commit (a re-run),
+    with their comments and the thread replies to them, so only the latest
+    one is read. Reviews of earlier commits are `tidy`'s, which collapses
+    them only once resolved. Only a bot's reviews count: a person quoting
+    the marker keeps their review."""
     stale = [
         r for r in paged(f"{base}/reviews", token)
-        if r["id"] != keep and (r.get("user") or {}).get("type") == "Bot" and marker in (r.get("body") or "")
+        if r["id"] != keep and r.get("commit_id") == head_sha
+        and (r.get("user") or {}).get("type") == "Bot" and marker in (r.get("body") or "")
     ]
     node_ids = [r["node_id"] for r in stale]
     stale_comments: set[int] = set()
@@ -1141,7 +1144,7 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     pullRequest(number: $pr) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { comments(first: 100) { nodes { id isMinimized author { __typename } pullRequestReview { id } } } }
+        nodes { isResolved comments(first: 100) { nodes { id isMinimized author { __typename } pullRequestReview { id } } } }
       }
     }
   }
@@ -1163,12 +1166,13 @@ def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[d
 
 def cmd_tidy(args: argparse.Namespace) -> None:
     """The first step of every run, once for all lanes: collapse, as
-    outdated, every lane review of an earlier commit and the lanes' comments
-    in its threads, then replace the summary comment with this run marked
-    running (an earlier run still marked running becomes cancelled). It
-    comes before any model, so a run a later push cancels still clears its
-    predecessors' clutter; the lanes' own collapse covers re-runs of the
-    same commit."""
+    outdated, the lanes' comments in resolved threads of their reviews of
+    earlier commits, and such a review itself once none of its threads is
+    open; then replace the summary comment with this run marked running (an
+    earlier run still marked running stopped before its summary). An open
+    finding stays in view until it is fixed or answered, whichever commit
+    it came from; the lanes' own collapse covers re-runs of the same
+    commit."""
     token = os.environ.get("GH_TOKEN", "")
     if not token:
         raise SystemExit("GH_TOKEN is not set")
@@ -1181,12 +1185,21 @@ def cmd_tidy(args: argparse.Namespace) -> None:
         if (r.get("author") or {}).get("__typename") == "Bot" and lane.search(r.get("body") or "")
         and (r.get("commit") or {}).get("oid") != args.head_sha
     }
-    ids = [r["id"] for r in reviews if r["id"] in stale and not r["isMinimized"]]
+    ids: list[str] = []
+    open_reviews: set[str] = set()
     for thread in graphql_nodes(token, TIDY_THREADS, "reviewThreads", variables):
         comments = thread["comments"]["nodes"]
-        if comments and (comments[0].get("pullRequestReview") or {}).get("id") in stale:
-            # The lanes' own comments and replies; a person's reply stays.
-            ids += [c["id"] for c in comments if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
+        review = (comments[0].get("pullRequestReview") or {}).get("id") if comments else None
+        if review not in stale:
+            continue
+        if not thread["isResolved"]:
+            open_reviews.add(review)
+            continue
+        # The lanes' own comments and replies; a person's reply stays.
+        ids += [c["id"] for c in comments if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
+    # A review whose findings are all in its body has no thread to resolve;
+    # it goes once a newer commit is reviewed, as before.
+    ids += [r["id"] for r in reviews if r["id"] in stale - open_reviews and not r["isMinimized"]]
     if args.dry_run:
         print(f"would collapse {len(ids)} item(s)")
     failed = 0
@@ -1261,12 +1274,13 @@ def cmd_summary(args: argparse.Namespace) -> None:
         "lanes": [] if args.state == "running"
         else [lane_row(lane, results.get(lane), jobs.get(lane, {})) for lane in sorted(set(results) | set(jobs))],
     }
-    # A run still marked running when a newer one starts was cancelled by
-    # that push: its summary step never came. A re-run of the same run
-    # replaces its entry instead of adding one.
+    # Runs of a pull request queue, so a run still marked running when a
+    # newer one starts stopped before its summary step: it was cancelled by
+    # hand or failed. A re-run of the same run replaces its entry instead of
+    # adding one.
     for r in earlier:
         if r.get("state") == "running" and r.get("run") != run["run"]:
-            r.update(state="cancelled", superseded_by=run["sha"], ended=now)
+            r.update(state="cancelled", ended=now)
     history = [run] + [r for r in earlier if r.get("run") != run["run"]]
     body = summary_body(history)
     while len(body) > 60_000 and len(history) > 1:
@@ -1349,12 +1363,14 @@ def code_cell(value: str | None) -> str:
 
 def summary_rows(run: dict) -> list[tuple[str, list[str]]]:
     """A run's rows as (start time, cells): one per model once it finished,
-    a single row while it runs or when it was cancelled before reporting."""
+    a single row while it runs or when it stopped before reporting."""
     commit, link = f"`{run.get('sha', '?')}`", f"[run]({run.get('url', '')})"
     if not run["lanes"]:
         state = run.get("state")
         result = ("⏳ Currently running" if state == "running"
-                  else f"⛔ Cancelled: superseded by `{run.get('superseded_by', '?')}`" if state == "cancelled"
+                  # `superseded_by`: runs a push cancelled, before runs queued.
+                  else f"⛔ Cancelled: superseded by `{run['superseded_by']}`" if state == "cancelled" and run.get("superseded_by")
+                  else "⛔ Stopped before reporting (cancelled or failed)" if state == "cancelled"
                   else "❌ No lane reported")
         ended = "—" if state == "running" else utc(run.get("ended") or run.get("finished"))
         return [(run.get("started") or "", [commit, "—", "—", utc(run.get("started")), ended, "—", "—", "—", result, link])]
@@ -1448,7 +1464,7 @@ def main() -> None:
     summ.add_argument("--dry-run", action="store_true", help="print the comment instead of posting it")
     summ.set_defaults(func=cmd_summary)
 
-    tidy = sub.add_parser("tidy", help="collapse earlier commits' lane reviews as outdated; mark this run running in the summary")
+    tidy = sub.add_parser("tidy", help="collapse earlier commits' resolved lane findings as outdated; mark this run running in the summary")
     tidy.add_argument("--repo", required=True, help="owner/name")
     tidy.add_argument("--pr", required=True, type=int)
     tidy.add_argument("--head-sha", required=True, help="the commit being reviewed now; its reviews are kept")

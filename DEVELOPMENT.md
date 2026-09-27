@@ -400,9 +400,11 @@ findings are posted, as that lane's review on the code. How every lane went (its
 each check finished or not, findings posted, rejected or withheld, links to its jobs) is
 one summary comment for the pull request, always the last one: it shows the run as running
 from its first step, is replaced with the results table when the run ends, and keeps the
-earlier runs (cancelled ones included) in a collapsed log. A lane with no findings posts no
-review of its own, and each push first collapses the earlier commits' lane reviews as
-outdated, so a run cancelled by a newer push leaves no clutter behind. All lanes post as `github-actions[bot]`, each signed with its model. A check
+earlier runs in its log. A push never cancels a run in progress: the run finishes and posts,
+and the newest push is reviewed after it (pushes in between are skipped; each run reviews the
+whole diff). A lane with no findings posts no review of its own, and each run first collapses
+as outdated the earlier commits' findings whose threads are resolved; an open finding stays
+in view until it is fixed or answered. All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
 become one thread. Each lane
