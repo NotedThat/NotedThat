@@ -372,7 +372,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 if limit <= 0:
                     raise subprocess.TimeoutExpired(command, 0)
                 result = subprocess.run(
-                    command, input=stdin, capture_output=True, text=True, env=env, timeout=limit
+                    command, input=stdin, capture_output=True, text=True, errors="replace", env=env, timeout=limit
                 )
                 stdout, stderr = result.stdout, result.stderr
             except subprocess.TimeoutExpired:
@@ -401,9 +401,11 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
             final = redact(texts[-1]) if texts else ""
             errored = final.startswith("Ran into this error")
             # Gemma sometimes ends a turn on a thinking block right after a tool
-            # result, with no text at all: it stopped mid-investigation, so it
-            # is continued like a run that ran out of turns.
-            stalled = status == "completed" and not final
+            # result, with no text at all, and a MiniMax turn can come back
+            # empty (Goose then answers for it: "The model returned an empty
+            # response"): it stopped mid-investigation, so it is continued like
+            # a run that ran out of turns, not asked for JSON it never gave.
+            stalled = status == "completed" and (not final or final.startswith("The model returned an empty response"))
             out_of_turns = final.startswith("I've reached the maximum number of actions") or stalled
             error = final if errored else stderr.strip()[-300:]
             if status == "completed" and final and not errored and not out_of_turns:
@@ -922,9 +924,17 @@ def body_line(f: dict, where: str) -> str:
 
 
 def cmd_post(args: argparse.Namespace) -> None:
-    # No findings file at all: the review job failed before writing one.
+    # No verified findings at all: the review job failed before writing them.
     missing = not Path(args.input).exists()
     findings = [] if missing else read_findings(args.input)
+    status = read_status(args.status)
+    unverified = Path(args.input).with_name("findings.jsonl")
+    if missing and unverified.exists():
+        # The review ran and wrote its findings; verification failed before
+        # writing its own. Its findings are withheld as unconfirmed, not
+        # reported as a review that never ran.
+        missing = False
+        status["withheld"] = len(read_findings(str(unverified)))
     token = os.environ.get("GH_TOKEN", "")
     base = f"/repos/{args.repo}/pulls/{args.pr}"
     marker = f"<!-- goose-review:{args.lane} -->"
@@ -949,7 +959,6 @@ def cmd_post(args: argparse.Namespace) -> None:
         comments.append(comment)
         threads.append(f.get("also", []))
 
-    status = read_status(args.status)
     ran, failed = status.get("checks_run"), status.get("checks_failed") or []
     counts = {s: sum(f["severity"] == s for f in findings) for s in SEVERITIES}
     tally = ", ".join(f"{n} {s}" for s, n in reversed(counts.items()) if n) or "no findings"
@@ -957,7 +966,9 @@ def cmd_post(args: argparse.Namespace) -> None:
         headline = "the review did not run: its job failed (see the workflow log)"
     elif ran == [] and status.get("checks_skipped"):
         headline = "no check covers the files this pull request changes"
-    elif ran and len(failed) == len(ran):
+    elif ran and len(failed) == len(ran) and not findings:
+        # A check counts as failed when any of its diff's batches did; with
+        # findings from its other batches, it did run.
         headline = "the review did not run: no check finished (see the workflow log)"
     elif findings:
         headline = f"{tally}, each confirmed by a second model"
@@ -968,7 +979,7 @@ def cmd_post(args: argparse.Namespace) -> None:
     else:
         headline = tally
     body = [marker, f"**Goose review ({args.lane}, `{args.model}`)**: {headline}."]
-    if failed and len(failed) < len(ran or []):
+    if failed and (len(failed) < len(ran or []) or findings):
         body.append(f"\n⚠️ Did not finish, so not covered: {', '.join(f'`{c}`' for c in failed)}.")
     if status.get("withheld"):
         body.append(f"\n⚠️ Verification did not finish for {status['withheld']} finding(s); they are withheld, unconfirmed.")
