@@ -396,7 +396,10 @@ CI reviews every PR with [Goose](https://github.com/block/goose)
 DeepSeek V4 Flash, MiniMax M3 and Mistral Medium 3.5. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
-findings are posted, as that lane's review on the code. How every lane went (its models,
+findings are posted, as that lane's review on the code. When the verifier's provider is down
+(the MiniMax plan past its five-hour limit answers every request empty), a backup verifies
+instead: DeepSeek V4 for MiniMax, in the DeepSeek lane too, and MiniMax for DeepSeek; each
+comment is signed with the model that confirmed it. How every lane went (its models,
 each check finished or not, findings posted, rejected or withheld, links to its jobs) is
 one summary comment for the pull request, always the last one: it shows the run as running
 from its first step, is replaced with the results table when the run ends, and keeps the
