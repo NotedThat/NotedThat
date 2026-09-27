@@ -11,7 +11,10 @@
 set -euo pipefail
 
 template=$1
-route=${2%/}
+# A secret pasted with a stray space or newline would otherwise fail the
+# origin match or end up inside base_path; a URL has no whitespace.
+route=$(tr -d '[:space:]' <<<"$2")
+route=${route%/}
 out_dir=$3
 
 origin=$(grep -oE '^https?://[^/]+' <<<"$route") || {

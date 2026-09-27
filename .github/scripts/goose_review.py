@@ -352,7 +352,11 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
     started = time.monotonic()
     session = f"review-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="goose-review-") as data:
-        env = {**os.environ, "XDG_DATA_HOME": data, "XDG_STATE_HOME": data}
+        # Nothing of the Actions runtime reaches the model's shell: run steps
+        # do not get its tokens today (only JavaScript actions do), and this
+        # keeps it so should that change.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ACTIONS_")}
+        env.update(XDG_DATA_HOME=data, XDG_STATE_HOME=data)
         command = ["goose", "run", "-n", session, *common(round_turns), "-i", "-"]
         stdin = prompt
         finalising = False
@@ -692,16 +696,19 @@ def redact(text: str) -> str:
     return text
 
 
+# The proxy's routes, as the workflow passes them to `scrub`: from the
+# secrets themselves, not from the rendered provider files, which the
+# model's shell can rewrite before the scrub runs.
+ROUTE_ENVS = ("GOOSE_THIRDPARTY_BASE_URL", "GOOSE_MINIMAX_BASE_URL")
+
+
 def proxy_secrets() -> list[str]:
     secrets = [os.environ.get("NOTEDTHAT_PROXY_TOKEN", "")]
-    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config", "goose", "custom_providers")
-    for path in config.glob("notedthat_*.json"):
-        try:
-            provider = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        origin, route = provider.get("base_url", ""), provider.get("base_path", "")
-        secrets += [origin + route.removesuffix("/chat/completions"), origin]
+    for name in ROUTE_ENVS:
+        route = "".join(os.environ.get(name, "").split()).rstrip("/")
+        origin = re.match(r"https?://([^/]+)", route)
+        # The route, its origin, and the host alone (as a log or curl names it).
+        secrets += [route, *(origin.group(0, 1) if origin else ())]
     secrets = [s for s in secrets if len(s) >= 8]
     encoded = [e for s in secrets for e in encodings(s)]
     # Longest first, so a route is replaced before the origin inside it.
@@ -794,14 +801,16 @@ def cmd_verify(args: argparse.Namespace) -> None:
     deadline = time.monotonic() + args.budget_minutes * 60
     shares = FairShare(deadline, args.jobs, len(batches))
 
-    def verify_batch(n: int, batch: list[dict]) -> list[dict] | None:
+    def verify_batch(n: int, batch: list[dict]) -> tuple[list[dict], int] | None:
         share_s = shares.start()
         try:
             return verify_one(n, batch, share_s)
         finally:
             shares.finish()
 
-    def verify_one(n: int, batch: list[dict], share_s: float) -> list[dict] | None:
+    def verify_one(n: int, batch: list[dict], share_s: float) -> tuple[list[dict], int] | None:
+        """The batch's confirmed findings and how many got no verdict at
+        all; None when the answer had no verdicts."""
         listing = "\n".join(
             f"{i}. [{f['severity']}] {f['path']}:{f['line_start']}-{f['line_end']} ({f['check']}): {f['summary']}"
             + "".join(f"\n   Also raised by `{a['check']}`: {a['summary']}" for a in f.get("also", []))
@@ -817,12 +826,17 @@ def cmd_verify(args: argparse.Namespace) -> None:
         if answer is None:
             print(f"::warning::verify#{n}: no verdicts JSON in the answer; its {len(batch)} finding(s) are withheld", file=sys.stderr)
             return None
-        keep = {
-            int(v["index"])
-            for v in answer.get("verdicts") or []
-            if isinstance(v, dict) and v.get("keep") is True and str(v.get("index", "")).isdigit()
-        }
-        return [f for i, f in enumerate(batch) if i in keep]
+        verdicts = [
+            v for v in answer.get("verdicts") or []
+            if isinstance(v, dict) and isinstance(v.get("keep"), bool) and str(v.get("index", "")).isdigit()
+        ]
+        keep = {int(v["index"]) for v in verdicts if v["keep"]}
+        # A finding the verifier skipped was not refuted, only not checked:
+        # withheld as unconfirmed, like a batch that gave no answer.
+        unjudged = len(set(range(len(batch))) - {int(v["index"]) for v in verdicts})
+        if unjudged:
+            print(f"::warning::verify#{n}: no verdict for {unjudged} of {len(batch)} finding(s); they are withheld", file=sys.stderr)
+        return [f for i, f in enumerate(batch) if i in keep], unjudged
 
     kept: list[dict] = []
     withheld = 0
@@ -831,7 +845,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
             if result is None:
                 withheld += len(batch)
             else:
-                kept += result
+                kept += result[0]
+                withheld += result[1]
     kept.sort(key=lambda f: (-SEVERITIES.index(f["severity"]), f["path"], f["line_start"]))
     print(f"verify: kept {len(kept)} of {len(findings)} finding(s), {withheld} withheld", file=sys.stderr)
     out.write_text("".join(json.dumps(f) + "\n" for f in kept))

@@ -120,7 +120,9 @@ jobs:
           done
 
       # Both routes, because every lane uses a model on each side (one
-      # reviews, the other verifies). Prints only the status, never the URL.
+      # reviews, the other verifies). Prints only the status and curl's exit
+      # code, never the URL: curl's own error message ("Could not resolve
+      # host: ...") would name the proxy's host, so it is silenced.
       - name: Preflight the proxy routes
         env:
           TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
@@ -128,7 +130,7 @@ jobs:
           MINIMAX: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: |
           for route in THIRDPARTY MINIMAX; do
-            status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
               -H "Authorization: Bearer $TOKEN" "${!route%/}/models") || rc=$?
             echo "$route: GET <route>/models -> HTTP ${status:-none}, curl exit ${rc:-0}"
             if [ "${rc:-0}" -ne 0 ] || [ "${status:-000}" -ge 400 ]; then
@@ -233,6 +235,10 @@ jobs:
         if: always()
         env:
           NOTEDTHAT_PROXY_TOKEN: ${{ secrets.GOOSE_PROXY_TOKEN }}
+          # The routes themselves: the rendered provider files could have
+          # been rewritten by the model by now.
+          GOOSE_THIRDPARTY_BASE_URL: ${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+          GOOSE_MINIMAX_BASE_URL: ${{ secrets.GOOSE_MINIMAX_BASE_URL }}
         run: python3 .github/scripts/goose_review.py scrub "$RUNNER_TEMP/review" "$RUNNER_TEMP/goose-logs"
 
       # `post` reads verified.jsonl and status.json from here; the
