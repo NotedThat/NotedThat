@@ -538,7 +538,7 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 if asked_for_json:
                     return first_answer or final
                 if deadline - time.monotonic() < 60:
-                    return final
+                    return first_answer or final
                 print(f"::notice::{label}: answer has no JSON, asking for it", file=sys.stderr)
                 asked_for_json = True
                 command = ["goose", "run", "--resume", "-n", session, *common(FINAL_TURNS), "-i", "-"]
