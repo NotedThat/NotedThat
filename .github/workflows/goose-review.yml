@@ -48,6 +48,48 @@ permissions:
   pull-requests: write
 
 jobs:
+  # First, and in seconds: collapse as outdated every lane review of an
+  # earlier commit (and the lanes' replies under it) and the previous
+  # summary comment. A push while lanes are still reviewing cancels this
+  # run before its lanes and summary get to tidy up, so tidying cannot wait
+  # for them; the lanes still collapse their own reviews of this commit.
+  tidy:
+    name: tidy
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+      && !startsWith(github.head_ref, 'release-plz-')
+      && !startsWith(github.head_ref, 'release/')
+      && !startsWith(github.event.pull_request.title, 'chore: release ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            results-receiver.actions.githubusercontent.com:443
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Collapse outdated reviews and summaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          python3 .github/scripts/goose_review.py tidy
+          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+
   lane:
     name: ${{ matrix.lane }}
     # Fork PRs get no secrets; release PRs are generated; drafts wait until

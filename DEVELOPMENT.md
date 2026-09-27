@@ -399,7 +399,8 @@ family re-checks every finding against the code, and only confirmed
 findings are posted, as that lane's review on the code. How every lane went (its models,
 each check finished or not, findings posted, rejected or withheld, links to its jobs) is
 one summary comment per run, replaced on every push; a lane with no findings posts no
-review of its own. All lanes post as `github-actions[bot]`, each signed with its model. A check
+review of its own. Each push first collapses the earlier commits' lane reviews and summary
+as outdated, so a run cancelled by a newer push leaves no clutter behind. All lanes post as `github-actions[bot]`, each signed with its model. A check
 runs only when the PR changes a file matching its `paths:` globs, and sees
 only those files' diff; findings several checks raise on the same lines
 become one thread. Each lane

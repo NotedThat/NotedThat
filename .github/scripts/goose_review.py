@@ -1121,6 +1121,96 @@ def collapse_earlier(base: str, token: str, marker: str, keep: int | None = None
 
 SUMMARY_MARKER = "<!-- goose-review:summary -->"
 
+TIDY_QUERY = """
+query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviews(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isMinimized body author { __typename } commit { oid } }
+      }
+    }
+  }
+}"""
+TIDY_THREADS = """
+query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { comments(first: 100) { nodes { id isMinimized author { __typename } pullRequestReview { id } } } }
+      }
+    }
+  }
+}"""
+TIDY_COMMENTS = """
+query($owner: String!, $name: String!, $pr: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      comments(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isMinimized body author { __typename } }
+      }
+    }
+  }
+}"""
+
+
+def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[dict]:
+    """Every node of the pull request's connection `field`, all pages."""
+    nodes: list[dict] = []
+    after = None
+    while True:
+        code, data = github("POST", "/graphql", token, {"query": query, "variables": {**variables, "after": after}})
+        if code != 200 or not isinstance(data, dict) or data.get("errors"):
+            raise SystemExit(f"GraphQL {field}: {code} {data}")
+        conn = data["data"]["repository"]["pullRequest"][field]
+        nodes += conn["nodes"]
+        if not conn["pageInfo"]["hasNextPage"]:
+            return nodes
+        after = conn["pageInfo"]["endCursor"]
+
+
+def cmd_tidy(args: argparse.Namespace) -> None:
+    """Collapse, as outdated, every lane review of an earlier commit, the
+    thread replies under it, and every earlier summary comment. Runs first
+    on each push, so a run a later push cancels still clears its
+    predecessors' clutter; the lanes' own collapse covers re-runs of the
+    same commit."""
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        raise SystemExit("GH_TOKEN is not set")
+    owner, name = args.repo.split("/", 1)
+    variables = {"owner": owner, "name": name, "pr": args.pr}
+    lane = re.compile(r"<!-- goose-review:(?!summary)[a-z0-9-]+ -->")
+    reviews = graphql_nodes(token, TIDY_QUERY, "reviews", variables)
+    stale = {
+        r["id"] for r in reviews
+        if (r.get("author") or {}).get("__typename") == "Bot" and lane.search(r.get("body") or "")
+        and (r.get("commit") or {}).get("oid") != args.head_sha
+    }
+    ids = [r["id"] for r in reviews if r["id"] in stale and not r["isMinimized"]]
+    for thread in graphql_nodes(token, TIDY_THREADS, "reviewThreads", variables):
+        comments = thread["comments"]["nodes"]
+        if comments and (comments[0].get("pullRequestReview") or {}).get("id") in stale:
+            # The lanes' own comments and replies; a person's reply stays.
+            ids += [c["id"] for c in comments if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
+    ids += [
+        c["id"] for c in graphql_nodes(token, TIDY_COMMENTS, "comments", variables)
+        if (c.get("author") or {}).get("__typename") == "Bot" and SUMMARY_MARKER in (c.get("body") or "") and not c["isMinimized"]
+    ]
+    if args.dry_run:
+        print(f"would collapse {len(ids)} item(s)")
+        return
+    failed = 0
+    for node_id in ids:
+        code, data = github("POST", "/graphql", token, {
+            "query": "mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
+            "variables": {"id": node_id},
+        })
+        failed += code != 200 or (isinstance(data, dict) and bool(data.get("errors")))
+    print(f"collapsed {len(ids) - failed} of {len(ids)} outdated review(s) and comment(s)")
+
 
 def cmd_summary(args: argparse.Namespace) -> None:
     """One comment for the whole run: every lane's models, what each of its
@@ -1251,6 +1341,13 @@ def main() -> None:
     summ.add_argument("--results", required=True, help="directory of the lanes' result files")
     summ.add_argument("--dry-run", action="store_true", help="print the comment instead of posting it")
     summ.set_defaults(func=cmd_summary)
+
+    tidy = sub.add_parser("tidy", help="collapse earlier commits' lane reviews and earlier summaries as outdated")
+    tidy.add_argument("--repo", required=True, help="owner/name")
+    tidy.add_argument("--pr", required=True, type=int)
+    tidy.add_argument("--head-sha", required=True, help="the commit being reviewed now; its reviews are kept")
+    tidy.add_argument("--dry-run", action="store_true", help="count what would be collapsed")
+    tidy.set_defaults(func=cmd_tidy)
 
     scrub = sub.add_parser("scrub", help="redact the proxy secrets from every file under the directories, in place")
     scrub.add_argument("dirs", nargs="+")
