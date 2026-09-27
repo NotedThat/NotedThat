@@ -103,8 +103,14 @@ TRANSIENT_ERRORS = (
 EMPTY_ROUNDS_LIMIT = 3
 
 
+# What a provider answers once the key's spending limit is reached
+# (OpenRouter: HTTP 402, or 403 "Key limit exceeded"): no retry helps.
+SPENT_ERRORS = ("(402)", "key limit exceeded", "insufficient credits", "requires more credits")
+
+
 class ProviderDown(Exception):
-    """The model's provider answers, but with nothing: see EMPTY_ROUNDS_LIMIT."""
+    """The model's provider answers with nothing (see EMPTY_ROUNDS_LIMIT),
+    or refuses because the key's limit is spent (SPENT_ERRORS)."""
 
 
 # A check that answers within the first quarter of its time has usually read
@@ -572,6 +578,8 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
                 )
             out_of_turns = final.startswith("I've reached the maximum number of actions") or stalled
             error = final if errored else stderr.strip()[-300:]
+            if any(e in error.lower() for e in SPENT_ERRORS):
+                raise ProviderDown(f"{model}'s provider refused the request, its key's limit is spent: {redact(error)[:200]}")
             if status == "completed" and final and not errored and not out_of_turns:
                 answered = last_json_object(final, answer_key) is not None
                 elapsed = time.monotonic() - started
@@ -889,7 +897,8 @@ ROUTE_ENVS = ("GOOSE_THIRDPARTY_BASE_URL", "GOOSE_MINIMAX_BASE_URL")
 
 
 def proxy_secrets() -> list[str]:
-    secrets = [os.environ.get("NOTEDTHAT_PROXY_TOKEN", "")]
+    # The OpenRouter lane's key is in its environment the same way.
+    secrets = [os.environ.get("NOTEDTHAT_PROXY_TOKEN", ""), os.environ.get("OPENROUTER_API_KEY", "")]
     for name in ROUTE_ENVS:
         route = "".join(os.environ.get(name, "").split()).rstrip("/")
         origin = re.match(r"https?://([^/]+)", route)
