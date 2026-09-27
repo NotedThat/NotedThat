@@ -896,7 +896,10 @@ def paged(url: str, token: str) -> list[dict]:
 
 def compare_files(repo: str, base: str, head: str, token: str) -> list[dict]:
     """The files `base...head` changes, with their patches. GitHub lists at
-    most 300; a finding on any other file is posted in the review body."""
+    most 300; a finding on any other file is posted in the review body.
+    `per_page` pages the comparison's commits, not its files: the first
+    page always carries every file (up to those 300), so one commit keeps
+    the response small."""
     status, data = github("GET", f"/repos/{repo}/compare/{base}...{head}?per_page=1", token)
     if status != 200 or not isinstance(data, dict):
         raise SystemExit(f"GET compare {base}...{head}: {status} {data}")

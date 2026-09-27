@@ -159,7 +159,10 @@ jobs:
   # comment. It runs no model and reads only the lanes' result files.
   summary:
     name: summary
-    needs: lane
+    # `tidy` too: it marks the run running in this same comment, and a
+    # summary that overtook it would be replaced by that marker. The lanes
+    # do not wait for it, so a failed tidy never holds up a review.
+    needs: [tidy, lane]
     if: ${{ !cancelled() && needs.lane.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
