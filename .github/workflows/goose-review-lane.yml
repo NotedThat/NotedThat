@@ -317,6 +317,7 @@ jobs:
           python3 .github/scripts/goose_review.py post
           --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
           --head-sha "${{ github.event.pull_request.head.sha }}"
+          --base-sha "${{ github.event.pull_request.base.sha }}"
           --lane "${{ inputs.lane }}" --model "${{ inputs.model }}"
           --verify-model "${{ inputs.verify-model }}"
           --in "$RUNNER_TEMP/artifact/review/verified.jsonl"

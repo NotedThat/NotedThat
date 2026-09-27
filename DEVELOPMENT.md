@@ -434,7 +434,7 @@ python3 .github/scripts/goose_review.py verify --base origin/main \
 # Print the review the lane would post on a PR, without posting it
 GH_TOKEN=$(gh auth token) python3 .github/scripts/goose_review.py post --dry-run \
   --repo NotedThat/NotedThat --pr <number> --head-sha "$(git rev-parse HEAD)" \
-  --lane deepseek --model deepseek-v4-flash-0731
+  --base-sha "$(git rev-parse origin/main)" --lane deepseek --model deepseek-v4-flash-0731
 ```
 
 Set `GOOSE_REVIEW_LOG_DIR=<dir>` to keep every run's prompt and full

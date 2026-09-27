@@ -258,7 +258,9 @@ def load_checks(directory: Path) -> list[Check]:
 def git_diff(base: str) -> str:
     return subprocess.run(
         # Deleted files are left out: nothing on them can be commented on.
-        ["git", "diff", "--no-color", "--no-ext-diff", "--diff-filter=d", f"{base}...HEAD", "--", ".", *IGNORED_PATHSPECS],
+        # Non-ASCII paths stay as they are, not octal-escaped, so they match
+        # the paths GitHub reports; Git double-quotes a path only then.
+        ["git", "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--diff-filter=d", f"{base}...HEAD", "--", ".", *IGNORED_PATHSPECS],
         check=True,
         capture_output=True,
         text=True,
@@ -877,6 +879,15 @@ def paged(url: str, token: str) -> list[dict]:
         page += 1
 
 
+def compare_files(repo: str, base: str, head: str, token: str) -> list[dict]:
+    """The files `base...head` changes, with their patches. GitHub lists at
+    most 300; a finding on any other file is posted in the review body."""
+    status, data = github("GET", f"/repos/{repo}/compare/{base}...{head}?per_page=1", token)
+    if status != 200 or not isinstance(data, dict):
+        raise SystemExit(f"GET compare {base}...{head}: {status} {data}")
+    return data.get("files") or []
+
+
 def commentable_lines(patch: str) -> dict[int, int]:
     """Map each right-side line number in a file's patch to its hunk index.
 
@@ -940,7 +951,10 @@ def cmd_post(args: argparse.Namespace) -> None:
     marker = f"<!-- goose-review:{args.lane} -->"
     sign = signature(args.model, args.verify_model)
 
-    files = paged(f"{base}/files", token) if token else []
+    # The lines the review saw: the pull request at `head_sha` against its
+    # base, as the review job diffed it, not the live pull request, which a
+    # push since may have moved. The review is anchored to `head_sha` too.
+    files = compare_files(args.repo, args.base_sha, args.head_sha, token) if token else []
     diff_lines = {f["filename"]: commentable_lines(f.get("patch") or "") for f in files}
 
     # Other checks' notes on the same lines are posted as replies in the
@@ -1219,6 +1233,7 @@ def main() -> None:
     post.add_argument("--repo", required=True, help="owner/name")
     post.add_argument("--pr", required=True, type=int)
     post.add_argument("--head-sha", required=True)
+    post.add_argument("--base-sha", required=True, help="the base the review diffed against")
     post.add_argument("--lane", required=True)
     post.add_argument("--model", required=True, help="the reviewing model")
     post.add_argument("--verify-model", help="the model that confirmed the findings")
