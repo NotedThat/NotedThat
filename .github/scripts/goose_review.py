@@ -916,6 +916,9 @@ def evidence_holds(evidence: object) -> bool:
     if not isinstance(evidence, dict):
         return False
     path, line, quote = evidence.get("path"), evidence.get("line"), evidence.get("quote")
+    # Models often write the number as a string ("120"), like the verdict's index.
+    if isinstance(line, str) and line.strip().isdigit():
+        line = int(line)
     if not isinstance(path, str) or not isinstance(line, int) or isinstance(line, bool) or not isinstance(quote, str):
         return False
     quote = squash(quote)

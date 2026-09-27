@@ -10,8 +10,11 @@
 # with its own model, then a model of another family re-checks each finding
 # against the code and only the confirmed ones are posted: a lane never
 # verifies itself, the same rule the Warden profiles followed. MiniMax M3
-# verifies every lane but its own, which DeepSeek verifies: on #207 it was
-# the verifier that let no false finding through.
+# verifies every lane but its own, which DeepSeek verifies. On #207 both
+# confirmed wrong findings at about the same rate (a quarter), mostly ones
+# resting on wrong assumptions about GitHub Actions; MiniMax is kept because
+# the other models verified worse, and the evidence requirement and
+# .agents/facts/ are aimed at those findings.
 # .github/scripts/goose_review.py does all three steps; its docstring says
 # why it drives `goose run` itself instead of using `goose review` (whose
 # checks get no tools and cannot read the repo).
