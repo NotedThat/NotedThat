@@ -347,6 +347,7 @@ def split_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> list[str]:
 
 
 FILE_COMMANDS = {"GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STATE", "GITHUB_STEP_SUMMARY"}
+GITHUB_TOKENS = {"GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 
 def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: str,
@@ -386,12 +387,13 @@ def run_goose(prompt: str, provider: str, model: str, round_turns: int, label: s
     with tempfile.TemporaryDirectory(prefix="goose-review-") as data:
         # Nothing of the Actions runtime reaches the model's shell: run steps
         # do not get its tokens today (only JavaScript actions do), and this
-        # keeps it so should that change.
+        # keeps it so should that change. Nor a GitHub token, should one be
+        # set for the whole job.
         # Nor the paths of the step's file commands (GITHUB_ENV, GITHUB_PATH,
         # ...). The model can still find those files; only `post`, on its own
         # runner, is out of its reach, and it scrubs again before publishing.
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith("ACTIONS_") and k not in FILE_COMMANDS}
+               if not k.startswith("ACTIONS_") and k not in FILE_COMMANDS | GITHUB_TOKENS}
         env.update(XDG_DATA_HOME=data, XDG_STATE_HOME=data)
         command = ["goose", "run", "-n", session, *common(round_turns), "-i", "-"]
         stdin = prompt

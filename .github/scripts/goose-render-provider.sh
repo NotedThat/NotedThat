@@ -22,6 +22,12 @@ origin=$(grep -oE '^https?://[^/]+' <<<"$route") || {
   exit 1
 }
 path=${route#"$origin"}
+# base_path is this path with /chat/completions appended; a query or
+# fragment would end up in the middle of it.
+if [[ $path == *[?#]* ]]; then
+  echo "::error::route has a query or fragment; it must be an origin and a path" >&2
+  exit 1
+fi
 
 mkdir -p "$out_dir"
 out="$out_dir/$(basename "$template")"
