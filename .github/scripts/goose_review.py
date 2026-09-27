@@ -996,15 +996,15 @@ def cmd_post(args: argparse.Namespace) -> None:
         headline = "no confirmed findings: verification did not finish"
     else:
         headline = tally
-    body = [marker, f"**Goose review ({args.lane}, `{args.model}`)**: {headline}."]
-    if failed and (len(failed) < len(ran or []) or findings):
-        body.append(f"\n⚠️ Did not finish, so not covered: {', '.join(f'`{c}`' for c in failed)}.")
-    if status.get("withheld"):
-        body.append(f"\n⚠️ Verification did not finish for {status['withheld']} finding(s); they are withheld, unconfirmed.")
+    # The review's body holds only findings that cannot sit on the code: how
+    # the lane went (headline, checks not covered, findings withheld) is
+    # the summary comment's. The marker is an HTML comment, so a review
+    # with every finding inline shows no body at all.
+    body = [marker]
     if loose:
-        body.append("\nOutside the diff's changed lines:\n")
+        body.append("Outside the diff's changed lines:\n")
         body += [body_line(f, f"{f['path']}:{f['line_start']}") for f in loose]
-    footer = "\n<sub>Advisory only; it never blocks merging.</sub>" + sign
+    footer = sign if loose else ""
     review = {"commit_id": args.head_sha, "event": "COMMENT", "body": "\n".join([*body, footer]), "comments": comments}
     # A lane posts a review only to show findings on the code. How every
     # lane went -- clean, not covered, withheld, did not run -- is reported
@@ -1060,7 +1060,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         print(f"::warning::inline review rejected ({data}); posting findings in the review body", file=sys.stderr)
         anchored = [f for f in findings if f not in loose]
         # Above the footer, as in any other review: the signature closes it.
-        review["body"] = "\n".join([*body, "", *(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored), footer])
+        review["body"] = "\n".join([*body, "", *(body_line(f, f"{f['path']}:{f['line_end']}") for f in anchored), sign])
         review["comments"] = []
         comments, threads = [], []
         status, data = github("POST", f"{base}/reviews", token, review)
@@ -1144,11 +1144,45 @@ query($owner: String!, $name: String!, $pr: Int!, $after: String) {
     pullRequest(number: $pr) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { isResolved comments(first: 100) { nodes { id isMinimized author { __typename } pullRequestReview { id } } } }
+        nodes {
+          id isResolved
+          comments(first: 100) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id isMinimized author { __typename } pullRequestReview { id } }
+          }
+        }
       }
     }
   }
 }"""
+TIDY_THREAD_COMMENTS = """
+query($id: ID!, $after: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isMinimized author { __typename } pullRequestReview { id } }
+      }
+    }
+  }
+}"""
+
+
+def thread_comments(token: str, thread: dict) -> list[dict]:
+    """Every comment of a review thread: the first page came with the
+    thread, the rest is fetched by the thread's id."""
+    conn = thread["comments"]
+    comments = list(conn["nodes"])
+    while conn["pageInfo"]["hasNextPage"]:
+        variables = {"id": thread["id"], "after": conn["pageInfo"]["endCursor"]}
+        code, data = github("POST", "/graphql", token, {"query": TIDY_THREAD_COMMENTS, "variables": variables})
+        if code != 200 or not isinstance(data, dict) or data.get("errors"):
+            raise SystemExit(f"GraphQL thread comments: {code} {data}")
+        conn = data["data"]["node"]["comments"]
+        comments += conn["nodes"]
+    return comments
+
+
 def graphql_nodes(token: str, query: str, field: str, variables: dict) -> list[dict]:
     """Every node of the pull request's connection `field`, all pages."""
     nodes: list[dict] = []
@@ -1188,15 +1222,15 @@ def cmd_tidy(args: argparse.Namespace) -> None:
     ids: list[str] = []
     open_reviews: set[str] = set()
     for thread in graphql_nodes(token, TIDY_THREADS, "reviewThreads", variables):
-        comments = thread["comments"]["nodes"]
-        review = (comments[0].get("pullRequestReview") or {}).get("id") if comments else None
+        first = thread["comments"]["nodes"]
+        review = (first[0].get("pullRequestReview") or {}).get("id") if first else None
         if review not in stale:
             continue
         if not thread["isResolved"]:
             open_reviews.add(review)
             continue
         # The lanes' own comments and replies; a person's reply stays.
-        ids += [c["id"] for c in comments if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
+        ids += [c["id"] for c in thread_comments(token, thread) if not c["isMinimized"] and (c.get("author") or {}).get("__typename") == "Bot"]
     # A review whose findings are all in its body has no thread to resolve;
     # it goes once a newer commit is reviewed, as before.
     ids += [r["id"] for r in reviews if r["id"] in stale - open_reviews and not r["isMinimized"]]
@@ -1239,7 +1273,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
     jobs: dict[str, dict[str, dict]] = {}
     earlier: list[dict] = []
     old: list[dict] = []
-    last_comment = None
+    last_comment, last_review = None, ""
     comments = f"/repos/{args.repo}/issues/{args.pr}/comments"
     if token:
         code, data = (github("GET", f"/repos/{args.repo}/actions/runs/{args.run_id}/jobs?per_page=100", token)
@@ -1251,6 +1285,9 @@ def cmd_summary(args: argparse.Namespace) -> None:
                     jobs.setdefault(lane, {})[kind] = job
         everything = paged(comments, token)
         last_comment = max((c["id"] for c in everything), default=None)
+        # Reviews are in the same timeline: a lane's review posted after the
+        # summary was written puts the summary above it.
+        last_review = max((r.get("submitted_at") or "" for r in paged(f"/repos/{args.repo}/pulls/{args.pr}/reviews", token)), default="")
         old = [
             c for c in everything
             if (c.get("user") or {}).get("type") == "Bot" and SUMMARY_MARKER in (c.get("body") or "")
@@ -1294,11 +1331,13 @@ def cmd_summary(args: argparse.Namespace) -> None:
         return
     if not token:
         raise SystemExit("GH_TOKEN is not set")
-    # Update the summary in place when it is still the last comment;
-    # otherwise (someone commented since, or there is none yet, e.g. the
-    # running step failed) post it anew so it is the last one again.
+    # Update the summary in place when it is still the last comment and no
+    # review came after it (an edit does not move it down the timeline);
+    # otherwise (someone commented or reviewed since, a lane posted its
+    # review, or there is none yet, e.g. the running step failed) post it
+    # anew so it is the last one again.
     newest = max(old, key=lambda c: c["id"]) if old else None
-    if newest and newest["id"] == last_comment:
+    if newest and newest["id"] == last_comment and newest["created_at"] >= last_review:
         code, data = github("PATCH", f"/repos/{args.repo}/issues/comments/{newest['id']}", token, {"body": body})
         verb = "updated"
     else:
