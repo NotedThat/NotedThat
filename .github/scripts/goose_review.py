@@ -2076,13 +2076,24 @@ def summary_table(runs: list[dict]) -> str:
 
 
 def summary_body(history: list[dict], answers: str = "") -> str:
-    encoded = base64.b64encode(json.dumps(history[:HISTORY_RUNS], separators=(",", ":")).encode()).decode()
+    """The latest run's table in view, the earlier runs' folded away under it."""
+    kept = history[:HISTORY_RUNS]
+    encoded = base64.b64encode(json.dumps(kept, separators=(",", ":")).encode()).decode()
+    earlier = [
+        f"<details><summary>Earlier runs ({len(kept) - 1})</summary>",
+        "",
+        summary_table(kept[1:]),
+        "",
+        "</details>",
+        "",
+    ] if len(kept) > 1 else []
     return "\n".join([
         SUMMARY_MARKER,
-        f"### Goose review · Total runs ({len(history[:HISTORY_RUNS])})",
+        f"### Goose review · Total runs ({len(kept)})",
         "",
-        summary_table(history[:HISTORY_RUNS]),
+        summary_table(kept[:1]),
         "",
+        *earlier,
         "<sub>**Found**: what the model raised; **Posted**: what a second model then confirmed, posted as that model's "
         "review on the code. Checks: ✅ finished · ⚠️ did not finish, so not covered. Result: ❌ did not run. "
         "Advisory only; it never blocks merging.</sub>",
