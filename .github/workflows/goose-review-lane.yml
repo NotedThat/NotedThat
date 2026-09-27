@@ -14,7 +14,9 @@
 # alone has `pull-requests: write`, or the lane's app token.
 #
 # Advisory only: `review` may fail without failing the PR, and `post` still
-# says so on the PR when it does.
+# says so on the PR when it does. `post` itself is left to fail visibly: if
+# it cannot post, nothing else will say so. No check here is required for
+# merging.
 name: Goose review lane
 
 on:
@@ -256,7 +258,6 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write

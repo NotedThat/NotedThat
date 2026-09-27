@@ -779,8 +779,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         # Only a single hunk this large still needs cutting; each file then
         # keeps an equal share, so every finding's file stays shown.
         if sum(map(len, parts)) > MAX_DIFF_CHARS:
-            share = MAX_DIFF_CHARS // len(parts)
             note = "\n[... truncated; read the file for the rest ...]\n"
+            share = max(MAX_DIFF_CHARS // len(parts), len(note))
             parts = [p if len(p) <= share else p[:share - len(note)] + note for p in parts]
         return "".join(parts)
 
