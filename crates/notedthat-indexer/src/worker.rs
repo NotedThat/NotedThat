@@ -1,4 +1,4 @@
-//! `IndexerWorker` — serial async task draining `IndexEvent`s into Qdrant.
+//! `IndexerWorker` — keyed concurrent async task draining `IndexEvent`s into Qdrant.
 //!
 //! Behavior: one event at a time, batched embedding, drain on shutdown.
 
@@ -14,9 +14,11 @@ use crate::{
     health::{IndexHealth, bound_summary},
     vector_store::{PointSelector, VectorStore},
 };
+use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use last_seen::LastSeen;
 use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
 use pipeline::{PipelineFailure, PipelineOutcome};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -50,11 +52,13 @@ pub struct IndexerWorker {
     /// Vector store used for point writes and deletes.
     pub store: Arc<dyn VectorStore>,
     /// Event receiver drained by the worker loop.
-    pub rx: mpsc::Receiver<IndexEvent>,
+    pub rx: Option<crate::IndexQueueReceiver>,
     /// Cancellation token that triggers graceful draining.
     pub shutdown: CancellationToken,
     /// Maximum number of chunks sent to the embedder per request.
     pub batch_size: usize,
+    /// Maximum complete file handlers executing at once.
+    pub index_concurrency: usize,
     /// Directory configuration for private index snapshots.
     pub staging: StagingConfig,
     /// Where detected changes and indexing outcomes are published, when an
@@ -67,7 +71,7 @@ pub struct IndexerWorker {
     pub events: Option<Arc<dyn EventPublisher>>,
     /// The last stamp this worker saw for each key, so the `fs` watcher's echo
     /// of a write the server made itself is not announced a second time.
-    last_seen: Mutex<LastSeen>,
+    last_seen: Arc<Mutex<LastSeen>>,
     /// Where each event's outcome is recorded for the health view (#97).
     health: Arc<IndexHealth>,
 }
@@ -82,16 +86,59 @@ impl IndexerWorker {
         shutdown: CancellationToken,
         batch_size: usize,
     ) -> Self {
-        Self {
+        Self::with_receiver(
+            storage,
+            embedder,
+            store,
+            crate::IndexQueueReceiver::from_mpsc(rx),
+            shutdown,
+            batch_size,
+            1,
+        )
+    }
+
+    /// Build a worker over bounded ingress.
+    #[must_use]
+    pub fn new_queue(
+        storage: Arc<dyn Storage>,
+        embedder: Arc<dyn Embedder>,
+        store: Arc<dyn VectorStore>,
+        rx: crate::IndexQueueReceiver,
+        shutdown: CancellationToken,
+        batch_size: usize,
+        index_concurrency: usize,
+    ) -> Self {
+        Self::with_receiver(
             storage,
             embedder,
             store,
             rx,
             shutdown,
             batch_size,
+            index_concurrency,
+        )
+    }
+
+    fn with_receiver(
+        storage: Arc<dyn Storage>,
+        embedder: Arc<dyn Embedder>,
+        store: Arc<dyn VectorStore>,
+        rx: crate::IndexQueueReceiver,
+        shutdown: CancellationToken,
+        batch_size: usize,
+        index_concurrency: usize,
+    ) -> Self {
+        Self {
+            storage,
+            embedder,
+            store,
+            rx: Some(rx),
+            shutdown,
+            batch_size,
+            index_concurrency,
             staging: StagingConfig::default(),
             events: None,
-            last_seen: Mutex::new(LastSeen::default()),
+            last_seen: Arc::new(Mutex::new(LastSeen::default())),
             health: Arc::new(IndexHealth::new()),
         }
     }
@@ -128,33 +175,98 @@ impl IndexerWorker {
     }
 
     async fn run_loop(&mut self) {
+        type Key = (KbSlug, ObjectPath);
+        let mut lanes: HashMap<Key, VecDeque<crate::queue::QueuedEvent>> = HashMap::new();
+        let mut active = HashSet::new();
+        let mut running: FuturesUnordered<BoxFuture<'static, Key>> = FuturesUnordered::new();
+        let mut receiver_open = true;
         loop {
+            Self::start_ready(&mut lanes, &mut active, &mut running, self);
+            #[allow(clippy::cast_precision_loss)]
+            let in_flight = running.len() as f64;
+            metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(in_flight);
+            if !receiver_open && lanes.is_empty() && running.is_empty() {
+                break;
+            }
+            let rx = self.rx.as_mut().expect("running workers have receivers");
             tokio::select! {
-                biased;
-
                 () = self.shutdown.cancelled() => {
-                    let drain = async {
-                        while let Some(event) = self.rx.recv().await {
-                            self.handle(event).await;
-                        }
-                    };
-
-                    if tokio::time::timeout(DRAIN_TIMEOUT, drain).await.is_err() {
+                    while let Ok(queued) = rx.try_recv() {
+                        lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued);
+                    }
+                    if tokio::time::timeout(DRAIN_TIMEOUT, Self::drain(&mut lanes, &mut active, &mut running, self)).await.is_err() {
                         tracing::warn!(target: "notedthat::indexing", "indexer worker: drain timeout elapsed");
-                    } else {
-                        tracing::info!(target: "notedthat::indexing", "indexer worker: drained on shutdown");
                     }
                     break;
                 }
-                maybe_event = self.rx.recv() => {
-                    if let Some(event) = maybe_event {
-                        self.handle(event).await;
-                    } else {
-                        tracing::info!(target: "notedthat::indexing", "indexer worker: channel closed, exiting");
-                        break;
-                    }
+                Some(key) = running.next(), if !running.is_empty() => {
+                    active.remove(&key);
+                    #[allow(clippy::cast_precision_loss)]
+                    let in_flight = running.len() as f64;
+                    metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(in_flight);
                 }
+                queued = rx.recv(), if receiver_open => match queued {
+                    Some(queued) => lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued),
+                    None => receiver_open = false,
+                },
             }
+        }
+    }
+
+    fn start_ready(
+        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
+        active: &mut HashSet<(KbSlug, ObjectPath)>,
+        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
+        worker: &Self,
+    ) {
+        while running.len() < worker.index_concurrency {
+            let Some(key) = lanes.keys().find(|key| !active.contains(*key)).cloned() else {
+                break;
+            };
+            let event = lanes
+                .get_mut(&key)
+                .and_then(VecDeque::pop_front)
+                .expect("ready lane has event");
+            if lanes.get(&key).is_some_and(VecDeque::is_empty) {
+                lanes.remove(&key);
+            }
+            active.insert(key.clone());
+            let pipeline = worker.pipeline_context();
+            running.push(Box::pin(async move {
+                let queued = event;
+                pipeline.handle(queued.event).await;
+                key
+            }));
+        }
+    }
+
+    async fn drain(
+        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
+        active: &mut HashSet<(KbSlug, ObjectPath)>,
+        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
+        worker: &Self,
+    ) {
+        while !lanes.is_empty() || !running.is_empty() {
+            Self::start_ready(lanes, active, running, worker);
+            if let Some(key) = running.next().await {
+                active.remove(&key);
+            }
+        }
+    }
+
+    fn pipeline_context(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            embedder: self.embedder.clone(),
+            store: self.store.clone(),
+            rx: None,
+            shutdown: self.shutdown.clone(),
+            batch_size: self.batch_size,
+            index_concurrency: self.index_concurrency,
+            staging: self.staging.clone(),
+            events: self.events.clone(),
+            last_seen: self.last_seen.clone(),
+            health: self.health.clone(),
         }
     }
 

@@ -3,7 +3,7 @@
 use notedthat_core::{
     AccessPolicy, Authenticator, EventPublisher, EventSource, KbDetails, KbSlug, Storage,
 };
-use notedthat_indexer::{IndexHealth, Searcher};
+use notedthat_indexer::{IndexHealth, IndexQueueSender, Searcher};
 
 use crate::readiness::ReadinessReceiver;
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ pub struct AppState {
     /// Maximum object size eligible for patch operations, in bytes.
     pub max_patchable_size: u64,
     /// Sender half of the async indexing queue.
-    pub indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
+    pub indexer_tx: IndexQueueSender,
     /// The search implementation (injected at startup).
     pub searcher: Arc<dyn Searcher>,
     /// The object change event log, when `NOTEDTHAT_EVENTS_BACKEND` selects one.
@@ -91,6 +91,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn minimal_state(tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>) -> AppState {
         AppState {
             storage: Arc::new(InMemoryStorage::default()),
@@ -100,7 +101,7 @@ mod tests {
             authenticator: Arc::new(Authenticator::new("token")),
             max_body_size: 1024,
             max_patchable_size: 1024,
-            indexer_tx: tx,
+            indexer_tx: (&tx).into(),
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),

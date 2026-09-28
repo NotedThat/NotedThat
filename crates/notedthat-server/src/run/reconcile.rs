@@ -22,8 +22,10 @@ use std::sync::Arc;
 use notedthat_api_http::state::{ReconcileBusy, ReconcileTrigger};
 use notedthat_core::reconcile::{IndexedEtag, compare, walk_etags};
 use notedthat_core::{KbSlug, Storage};
-use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
-use tokio::sync::{Mutex, mpsc};
+use notedthat_indexer::{
+    IndexEvent, IndexHealth, IndexQueueSender, ReconcileSummary, RefreshOrigin, VectorStore,
+};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
@@ -32,7 +34,7 @@ use tracing::{error, info, warn};
 /// counted on the health record, like a write's is (#97).
 #[derive(Clone)]
 pub(super) struct IndexSink {
-    pub(super) tx: mpsc::Sender<IndexEvent>,
+    pub(super) tx: IndexQueueSender,
     pub(super) health: Arc<IndexHealth>,
 }
 
@@ -72,7 +74,7 @@ impl Reconciler {
     pub(super) fn new(
         storage: Arc<dyn Storage>,
         store: Arc<dyn VectorStore>,
-        indexer_tx: mpsc::Sender<IndexEvent>,
+        indexer_tx: IndexQueueSender,
         health: Arc<IndexHealth>,
         kbs: &[KbSlug],
     ) -> Arc<Self> {
@@ -289,6 +291,7 @@ mod tests {
     use notedthat_core::{ConditionalHeaders, ObjectPath};
     use notedthat_indexer::testing::InMemoryVectorStore;
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     fn kb() -> KbSlug {
         KbSlug::try_new("notes").unwrap()
@@ -325,7 +328,13 @@ mod tests {
         // collection is skipped, by design.
         let store = Arc::new(InMemoryVectorStore::new());
         store.create_collection(&kb(), 3).await.unwrap();
-        let reconciler = Reconciler::new(storage, store, tx, health.clone(), &[kb()]);
+        let reconciler = Reconciler::new(
+            storage,
+            store,
+            IndexQueueSender::from_mpsc(tx),
+            health.clone(),
+            &[kb()],
+        );
         (reconciler, rx, health)
     }
 

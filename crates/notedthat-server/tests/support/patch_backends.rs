@@ -117,6 +117,7 @@ fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> C
             max_retries: 3,
             max_input_tokens: 8192,
         },
+        index_concurrency: 8,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],

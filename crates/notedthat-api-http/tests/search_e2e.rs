@@ -186,6 +186,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
 
     let storage = Arc::new(InMemoryStorage::with_kbs([&kb_slug]));
     let (indexer_tx, indexer_rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let shutdown = CancellationToken::new();
 
     // Worker uses the same InMemoryStorage that the HTTP router stores objects in.
@@ -246,6 +247,7 @@ fn simple_router_for(kb: &str) -> axum::Router {
     kbs.insert(kb.to_string(), KbSlug::try_new(kb).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage: storage as Arc<dyn Storage>,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),

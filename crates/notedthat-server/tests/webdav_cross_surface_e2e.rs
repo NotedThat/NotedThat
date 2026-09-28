@@ -77,6 +77,7 @@ fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_serve
             max_retries: 3,
             max_input_tokens: 8192,
         },
+        index_concurrency: 8,
         webdav_username: WEBDAV_USER.to_string(),
         webdav_password: WEBDAV_PASS.to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],

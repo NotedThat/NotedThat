@@ -120,6 +120,7 @@ impl Backends {
                 max_retries: 1,
                 max_input_tokens: 8192,
             },
+            index_concurrency: 8,
             webdav_username: DAV_USER.to_string(),
             webdav_password: DAV_PASS.to_string(),
             mcp_http_allowed_origins: vec!["null".to_string()],

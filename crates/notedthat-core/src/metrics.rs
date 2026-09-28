@@ -55,6 +55,8 @@ pub mod name {
     pub const INDEX_QUEUE_DEPTH: &str = "notedthat_index_queue_depth";
     /// How many the indexing queue holds.
     pub const INDEX_QUEUE_CAPACITY: &str = "notedthat_index_queue_capacity";
+    /// Complete index event handlers currently executing.
+    pub const INDEX_EVENTS_IN_FLIGHT: &str = "notedthat_index_events_in_flight";
     /// Indexing events accepted onto the queue.
     pub const INDEX_EVENTS_ENQUEUED: &str = "notedthat_index_events_enqueued_total";
     /// Writes refused because the queue was full (D38).
@@ -387,6 +389,7 @@ mod tests {
         name::EMBEDDING_TEXTS,
         name::INDEX_QUEUE_DEPTH,
         name::INDEX_QUEUE_CAPACITY,
+        name::INDEX_EVENTS_IN_FLIGHT,
         name::INDEX_EVENTS_ENQUEUED,
         name::INDEX_EVENTS_REFUSED,
         name::INDEX_EVENTS_COMPLETED,

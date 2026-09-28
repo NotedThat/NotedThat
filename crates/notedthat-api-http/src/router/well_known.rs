@@ -41,7 +41,7 @@ mod tests {
             authenticator: Arc::new(authenticator),
             max_body_size: 1024,
             max_patchable_size: 1024,
-            indexer_tx,
+            indexer_tx: (&indexer_tx).into(),
             searcher: Arc::new(NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),

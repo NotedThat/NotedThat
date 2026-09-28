@@ -26,6 +26,7 @@ use notedthat_indexer::vector_store::{
 use notedthat_indexer::{
     Embedder, EmbedderError, IndexEvent, IndexHealth, IndexState, IndexerWorker,
     OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner, RefreshOrigin,
+    index_queue,
 };
 use qdrant_client::qdrant::{
     RetrievedPoint, VectorsOutput, value::Kind, vectors_output::VectorsOptions,
@@ -40,7 +41,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, sync::mpsc};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Semaphore, mpsc},
+};
 use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -169,6 +173,45 @@ impl Embedder for ScriptedEmbedder {
 
     fn model_id(&self) -> &'static str {
         "scripted-test"
+    }
+}
+
+struct BlockingEmbedder {
+    started: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+}
+
+impl BlockingEmbedder {
+    fn new() -> Self {
+        Self {
+            started: Arc::new(Semaphore::new(0)),
+            release: Arc::new(Semaphore::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl Embedder for BlockingEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+        self.started.add_permits(1);
+        let _permit = self
+            .release
+            .acquire()
+            .await
+            .expect("test semaphore stays open");
+        Ok(vec![vec![1.0; 4]; texts.len()])
+    }
+
+    fn dim(&self) -> usize {
+        4
+    }
+
+    fn max_input_tokens(&self) -> usize {
+        40
+    }
+
+    fn model_id(&self) -> &'static str {
+        "blocking-test"
     }
 }
 
@@ -1056,6 +1099,100 @@ async fn queue_full_logs_index_queue_full() {
         matches!(result, Err(tokio::sync::mpsc::error::TrySendError::Full(_))),
         "5th send must return TrySendError::Full, got: {result:?}",
     );
+}
+
+#[tokio::test]
+async fn bounded_queue_keeps_active_handlers_within_its_limit() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "one.md", "# One", "text/markdown");
+    storage.insert("test-kb", "two.md", "# Two", "text/markdown");
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let (tx, rx) = index_queue(2);
+    let worker = IndexerWorker::new_queue(
+        storage as Arc<dyn Storage>,
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store),
+        rx,
+        CancellationToken::new(),
+        32,
+        2,
+    );
+    let handle = tokio::spawn(worker.run());
+
+    for key in ["one.md", "two.md"] {
+        tx.send(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath(key),
+            etag: format!("etag-{key}"),
+            mtime: 0,
+        })
+        .await
+        .unwrap();
+    }
+    embedder.started.acquire().await.unwrap().forget();
+    embedder.started.acquire().await.unwrap().forget();
+    assert_eq!(tx.depth(), 2, "active handlers retain their queue permits");
+    assert!(matches!(
+        tx.try_send(IndexEvent::Upsert {
+            kb,
+            object_key: opath("three.md"),
+            etag: "etag-three".to_owned(),
+            mtime: 0,
+        }),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+    ));
+
+    embedder.release.add_permits(2);
+    drop(tx);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn queue_scheduler_serializes_events_for_the_same_path() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "serial.md", "# Serial", "text/markdown");
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let (tx, rx) = index_queue(2);
+    let worker = IndexerWorker::new_queue(
+        storage as Arc<dyn Storage>,
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store),
+        rx,
+        CancellationToken::new(),
+        32,
+        2,
+    );
+    let handle = tokio::spawn(worker.run());
+
+    for etag in ["first", "second"] {
+        tx.send(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("serial.md"),
+            etag: etag.to_owned(),
+            mtime: 0,
+        })
+        .await
+        .unwrap();
+    }
+    embedder.started.acquire().await.unwrap().forget();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), embedder.started.acquire())
+            .await
+            .is_err(),
+        "a second event for the active path must not start"
+    );
+
+    embedder.release.add_permits(1);
+    embedder.started.acquire().await.unwrap().forget();
+    embedder.release.add_permits(1);
+    drop(tx);
+    handle.await.unwrap();
 }
 
 #[tokio::test]

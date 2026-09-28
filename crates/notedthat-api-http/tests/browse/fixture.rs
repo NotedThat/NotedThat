@@ -95,6 +95,7 @@ async fn app_with_keys_and_searcher(
     }
 
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
         storage,
         declared_kbs: Arc::new(BTreeMap::from([

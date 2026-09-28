@@ -84,7 +84,7 @@ pub(super) async fn app_with_reconcile(
         Arc::new(NoopSearcher),
         authenticator(),
         None,
-        indexer_tx,
+        notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx),
         Arc::new(IndexHealth::new()),
         reconcile,
     )
@@ -134,13 +134,14 @@ pub(super) async fn app_with_index_side(
     queue_capacity: usize,
 ) -> (axum::Router, IndexSide) {
     let (indexer_tx, queue_rx) = tokio::sync::mpsc::channel(queue_capacity);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let health = Arc::new(IndexHealth::new());
     let app = build(
         policies,
         Arc::new(NoopSearcher),
         authenticator(),
         None,
-        indexer_tx,
+        indexer_tx.clone(),
         health.clone(),
         Some(Arc::new(RecordingReconcile::default())),
     )
@@ -160,7 +161,7 @@ async fn app_with(
         searcher,
         authenticator,
         events,
-        indexer_tx,
+        (&indexer_tx).into(),
         Arc::new(IndexHealth::new()),
         Some(Arc::new(RecordingReconcile::default())),
     )
@@ -172,7 +173,7 @@ async fn build(
     searcher: Arc<dyn Searcher>,
     authenticator: Authenticator,
     events: Option<Arc<dyn EventPublisher>>,
-    indexer_tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>,
+    indexer_tx: notedthat_indexer::IndexQueueSender,
     index_health: Arc<IndexHealth>,
     reconcile: Option<Arc<dyn ReconcileTrigger>>,
 ) -> axum::Router {
@@ -232,7 +233,7 @@ async fn build(
         authenticator: Arc::new(authenticator),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
+        indexer_tx: indexer_tx.clone(),
         searcher,
         events,
         index_health,

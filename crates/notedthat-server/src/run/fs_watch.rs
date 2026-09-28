@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use notedthat_core::KbSlug;
-use notedthat_indexer::{IndexEvent, IndexHealth, ReconcileSummary, RefreshOrigin, VectorStore};
+use notedthat_indexer::{
+    IndexEvent, IndexHealth, IndexQueueSender, ReconcileSummary, RefreshOrigin, VectorStore,
+};
 use notedthat_storage_fs::{
     FsChange, FsConfig, FsSignal, FsStorage, FsWatchConfig, FsWatcher, IndexedEtag,
     ReconcileReport, reconcile,
@@ -57,7 +59,7 @@ pub(super) fn start(
     tenant: notedthat_core::TenantSlug,
     kbs: Vec<KbSlug>,
     store: Arc<dyn VectorStore>,
-    indexer_tx: mpsc::Sender<IndexEvent>,
+    indexer_tx: IndexQueueSender,
     health: Arc<IndexHealth>,
 ) -> anyhow::Result<Option<FsWatch>> {
     if !config.watch {

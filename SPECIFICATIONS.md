@@ -885,6 +885,7 @@ listener is `404`. Names, label keys and the histogram bucket table live in one 
 | `notedthat_embedding_errors_total` | counter | `phase`, `error_kind` |
 | `notedthat_embedding_texts` | histogram | `phase` |
 | `notedthat_index_queue_depth` / `…_capacity` | gauge | — |
+| `notedthat_index_events_in_flight` | gauge | — |
 | `notedthat_index_events_enqueued_total` | counter | `kb` |
 | `notedthat_index_events_refused_total` | counter | `kb` |
 | `notedthat_index_events_completed_total` | counter | `kb`, `outcome` |

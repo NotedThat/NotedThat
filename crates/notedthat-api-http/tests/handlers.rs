@@ -39,6 +39,7 @@ fn app_with(
     kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
@@ -1234,6 +1235,7 @@ async fn delete_enqueues_tombstone_on_success() {
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
@@ -1294,6 +1296,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage,
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
@@ -1780,6 +1783,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let app = build_router(AppState {
         storage: Arc::new(InMemoryStorage::default()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),

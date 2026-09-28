@@ -367,6 +367,10 @@ pub struct ServerCli {
     #[arg(long, env = "EMBEDDING_BATCH_SIZE", value_name = "N")]
     pub embedding_batch_size: Option<String>,
 
+    /// Complete files indexed concurrently [default: 8].
+    #[arg(long, env = "NOTEDTHAT_INDEX_CONCURRENCY", value_name = "N")]
+    pub index_concurrency: Option<String>,
+
     /// Per-request embedding HTTP timeout in milliseconds [default: 30000].
     #[arg(long, env = "EMBEDDING_TIMEOUT_MS", value_name = "MS")]
     pub embedding_timeout_ms: Option<String>,

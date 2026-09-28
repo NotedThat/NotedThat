@@ -9,6 +9,7 @@ pub mod health;
 pub mod okf;
 pub mod provisioner;
 pub mod qdrant;
+pub mod queue;
 pub mod searcher;
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -24,6 +25,7 @@ pub use health::{
 };
 pub use provisioner::{ProvisionError, QdrantProvisioner};
 pub use qdrant::{QdrantClient, QdrantConfig, QdrantWrapperError};
+pub use queue::{INDEX_QUEUE_CAPACITY, IndexQueueReceiver, IndexQueueSender, index_queue};
 pub use searcher::{KeyPredicate, Searcher};
 pub use vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, PointStruct, ScoredPoint,

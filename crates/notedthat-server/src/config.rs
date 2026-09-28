@@ -521,6 +521,8 @@ pub struct Config {
     pub qdrant: ServerQdrantConfig,
     /// Embedder configuration.
     pub embedder: EmbedderConfig,
+    /// Complete file handlers allowed to execute at once.
+    pub index_concurrency: usize,
     /// `WebDAV` Basic authentication username (`NOTEDTHAT_WEBDAV_USERNAME`; required).
     pub webdav_username: String,
     /// `WebDAV` Basic authentication password (`NOTEDTHAT_WEBDAV_PASSWORD`; required).
@@ -896,6 +898,11 @@ impl Config {
             max_retries: cli.embedding_max_retries,
             max_input_tokens: cli.embedding_max_input_tokens,
         })?;
+        let index_concurrency = parse_positive_usize(
+            "NOTEDTHAT_INDEX_CONCURRENCY",
+            cli.index_concurrency.as_deref(),
+            8,
+        )?;
 
         let webdav_username = cli.webdav_username.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_USERNAME")),
@@ -1031,6 +1038,7 @@ impl Config {
             log_format,
             qdrant,
             embedder,
+            index_concurrency,
             webdav_username,
             webdav_password,
             mcp_http_allowed_origins,
@@ -1369,11 +1377,27 @@ where
         .transpose()
 }
 
+fn parse_positive_usize(var: &str, supplied: Option<&str>, default: usize) -> Result<usize, Error> {
+    let value = supplied.unwrap_or("");
+    if supplied.is_none() {
+        return Ok(default);
+    }
+    let parsed = value.parse::<usize>().map_err(|_| Error::Config {
+        message: format!("{} must be a valid positive integer", setting(var)),
+    })?;
+    if parsed == 0 {
+        return Err(Error::Config {
+            message: format!("{} must be > 0", setting(var)),
+        });
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 62] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 63] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1420,6 +1444,7 @@ pub(crate) mod tests {
         "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
         "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
         "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
+        "NOTEDTHAT_INDEX_CONCURRENCY",
         "NOTEDTHAT_UPLOAD_TMP_DIR",
         "NOTEDTHAT_OIDC_ISSUER",
         "NOTEDTHAT_OIDC_AUDIENCE",
@@ -1709,7 +1734,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 62);
+        assert_eq!(ALL_ENV_KEYS.len(), 63);
     }
 
     #[test]

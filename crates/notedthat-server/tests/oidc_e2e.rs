@@ -109,6 +109,7 @@ fn test_config(
             max_retries: 3,
             max_input_tokens: 8192,
         },
+        index_concurrency: 8,
         webdav_username: "oidc-e2e-user".to_string(),
         webdav_password: "oidc-e2e-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],
