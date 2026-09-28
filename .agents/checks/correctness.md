@@ -2,7 +2,7 @@
 name: correctness
 description: Real, reproducible bugs introduced by the change.
 turn-limit: 40
-paths: ["crates/**/*.rs", ".github/workflows/*.yml", ".github/scripts/**"]
+paths: ["crates/**/*.rs", ".github/workflows/*.yml"]
 ---
 
 You review a NotedThat pull request for bugs: changed behaviour that is

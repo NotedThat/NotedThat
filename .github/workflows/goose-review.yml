@@ -1,27 +1,27 @@
-# LLM review of the PR diff with Goose (block/goose), replacing Sentry Warden.
+# LLM review of the PR diff with Goose (block/goose), through
+# StephanMeijer/goose-review: the engine, its actions and its pre-composed
+# workflow live there, pinned below by commit. What the review looks for
+# stays here: the checks (.agents/checks/), the facts (.agents/facts/), the
+# provider templates (.github/goose/providers/) and the Rust tool hints
+# (.agents/goose-review/tools.md).
 #
 # Three lanes run, one per model: DeepSeek V4 Flash and Mistral Medium 3.5
 # on the third-party endpoint, and MiniMax M3. All post as
-# github-actions[bot] with the job's own token, so no GitHub App or private
-# key is involved; every review and comment is signed with the model that
-# wrote it and carries its lane's marker.
+# github-actions[bot] with the job's own token; every review and comment is
+# signed with the model that wrote it.
 #
-# Each lane runs the checks in .agents/checks/ that cover the changed files
-# with its own model, then a model of another family re-checks each finding
-# against the code and only the confirmed ones are posted: a lane never
-# verifies itself, the same rule the Warden profiles followed. MiniMax M3
-# verifies every lane but its own, which DeepSeek verifies. Each verifier
+# Each lane runs the checks that cover the changed files with its own model,
+# then a model of another family re-checks each finding against the code and
+# only the confirmed ones are posted: a lane never verifies itself. MiniMax
+# M3 verifies every lane but its own, which DeepSeek verifies. Each verifier
 # has the other as its backup, for when its provider is down (the MiniMax
 # plan past its five-hour limit answers every request empty): then the
-# DeepSeek lane verifies itself rather than withholding everything, and
-# each comment names the model that confirmed it. On #207 both
-# confirmed wrong findings at about the same rate (a quarter), mostly ones
-# resting on wrong assumptions about GitHub Actions; MiniMax is kept because
-# the other models verified worse, and the evidence requirement and
-# .agents/facts/ are aimed at those findings.
-# .github/scripts/goose_review.py does all three steps; its docstring says
-# why it drives `goose run` itself instead of using `goose review` (whose
-# checks get no tools and cannot read the repo).
+# DeepSeek lane verifies itself rather than withholding everything, and each
+# comment names the model that confirmed it. On #207 both confirmed wrong
+# findings at about the same rate (a quarter), mostly ones resting on wrong
+# assumptions about GitHub Actions; MiniMax is kept because the other models
+# verified worse, and the evidence requirement and .agents/facts/ are aimed
+# at those findings.
 #
 # Every model call goes through our self-hosted egress proxy, never to a
 # provider directly. The proxy holds the provider keys (GOOSE_PROXY_TOKEN is
@@ -29,11 +29,16 @@
 # endpoint allows DeepSeek 50 a minute and the MiniMax plan shares one
 # budget, and over-limit requests queue instead of failing -- and inserts
 # `tool_choice: "auto"` on the third-party route, whose gateway otherwise
-# defaults it to "none" and leaves every model unable to call a tool. The routes are the GOOSE_*_BASE_URL
-# secrets, kept out of the repository on purpose. An OpenRouter lane, when
-# one is configured (none is now), is the exception: it calls openrouter.ai
-# directly with its own key (OPENROUTER_API_KEY), and only that lane's job
-# gets the key and may reach the endpoint.
+# defaults it to "none" and leaves every model unable to call a tool. The
+# routes are the GOOSE_*_BASE_URL secrets and the proxy's host the
+# GOOSE_PROXY_EGRESS variable, kept out of the repository on purpose.
+#
+# (DeepSeek V4.1 Flash on OpenRouter had a lane, reaching openrouter.ai
+# directly, until it was turned off for its cost. Its provider file stays;
+# to turn it back on, add a lane with `provider: notedthat_openrouter`,
+# `OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}` to PROVIDER_ENV and
+# openrouter.ai:443 to egress-endpoints. The model's shell can read the key;
+# its monthly spending limit on OpenRouter caps what a leak could cost.)
 #
 # Advisory only: it posts COMMENT reviews, never requests changes, and the
 # job never fails the PR. A check that does not finish (the MiniMax plan's
@@ -54,59 +59,10 @@ concurrency:
   group: goose-review-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-# Each lane is .github/workflows/goose-review-lane.yml: a `review` job with
-# a read-only token and its network limited to GitHub, crates.io and the
-# proxy, and a `post` job that alone may write to the pull request. These
-# are the most any lane's jobs may use.
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
 jobs:
-  # First, in one step and seconds: collapse as outdated the Goose review's
-  # resolved threads (only its own comments in them; a lane review once all
-  # its threads are resolved), and replace the summary comment with this
-  # run marked running; an earlier run still marked running stopped before
-  # its summary (cancelled by hand, or it failed) and is recorded as such.
-  tidy:
-    name: tidy
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository
-      && !github.event.pull_request.draft
-      && !startsWith(github.head_ref, 'release-plz-')
-      && !startsWith(github.head_ref, 'release/')
-      && !startsWith(github.event.pull_request.title, 'chore: release ')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            results-receiver.actions.githubusercontent.com:443
-
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-
-      - name: Collapse resolved review threads; mark this run running
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >
-          python3 .github/scripts/goose_review.py tidy
-          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
-          --head-sha "${{ github.event.pull_request.head.sha }}" --run-id "${{ github.run_id }}"
-
-  lane:
-    name: ${{ matrix.lane }}
+  goose-review:
     # Fork PRs get no secrets; release PRs are generated; drafts wait until
     # they are marked ready (the ready_for_review trigger picks them up).
     if: >-
@@ -115,142 +71,53 @@ jobs:
       && !startsWith(github.head_ref, 'release-plz-')
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - lane: deepseek
-            provider: notedthat_thirdparty
-            model: deepseek-v4-flash-0731
-            verify-provider: notedthat_minimax
-            verify-model: MiniMax-M3
-            # When the MiniMax plan is past its five-hour limit (it then
-            # answers with empty responses), DeepSeek verifies instead: its
-            # own findings, so no second family, but checked against the code
-            # with evidence rather than withheld.
-            verify-backup-provider: notedthat_thirdparty
-            verify-backup-model: deepseek-v4-flash-0731
-            # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
-            # every agent turn resends the whole conversation: three checks at
-            # once hit it on #207. The script also resumes a rate-limited run.
-            jobs: 2
-          - lane: minimax
-            provider: notedthat_minimax
-            model: MiniMax-M3
-            verify-provider: notedthat_thirdparty
-            verify-model: deepseek-v4-flash-0731
-            verify-backup-provider: notedthat_minimax
-            verify-backup-model: MiniMax-M3
-            jobs: 3
-          # A third model family, verified by MiniMax like DeepSeek: Gemma,
-          # its verifier at first, passed Mistral's false claim that `**/`
-          # spans one directory at most. This puts two lanes' verification
-          # on the MiniMax plan's quota; a verification it cuts short
-          # withholds its findings as unconfirmed, it never posts them.
-          # (Gemma 4 31B had a lane too, until it had confirmed nothing in
-          # any run on #207: a few tool calls, done in three minutes.)
-          # (DeepSeek V4.1 Flash on OpenRouter had a lane, reaching
-          # openrouter.ai directly with the OPENROUTER_API_KEY secret, until
-          # it was turned off for its cost. Its provider file and the lane
-          # workflow's key handling stay: a matrix entry with
-          # `provider: notedthat_openrouter` turns it back on.)
-          - lane: mistral
-            provider: notedthat_thirdparty
-            model: mistral-medium-3-5
-            verify-provider: notedthat_minimax
-            verify-model: MiniMax-M3
-            verify-backup-provider: notedthat_thirdparty
-            verify-backup-model: deepseek-v4-flash-0731
-            jobs: 2
-    uses: ./.github/workflows/goose-review-lane.yml
-    with:
-      lane: ${{ matrix.lane }}
-      provider: ${{ matrix.provider }}
-      model: ${{ matrix.model }}
-      verify-provider: ${{ matrix.verify-provider }}
-      verify-model: ${{ matrix.verify-model }}
-      verify-backup-provider: ${{ matrix.verify-backup-provider }}
-      verify-backup-model: ${{ matrix.verify-backup-model }}
-      jobs: ${{ matrix.jobs }}
-    secrets: inherit
-
-  # One comment for the whole run, once every lane is done: each lane's
-  # models, what each check did, what it found and posted, and links to its
-  # jobs. Lanes post a review only to show findings on the code, so this is
-  # where a lane that was clean, not covered or did not run is reported.
-  # The previous summary is deleted, so the latest is always the last
-  # comment. It runs no model and reads only the lanes' result files.
-  summary:
-    name: summary
-    # `tidy` too: it marks the run running in this same comment, and a
-    # summary that overtook it would be replaced by that marker. The lanes
-    # do not wait for it, so a failed tidy never holds up a review.
-    # `always()`, not `!cancelled()`: a run cancelled by hand still replaces
-    # its "Currently running" marker, the lanes it stopped reported as
-    # cancelled. Otherwise the marker stayed until the next run, forever on
-    # the PR's last one. The job takes seconds and has its own timeout.
-    needs: [tidy, lane]
-    if: ${{ always() && needs.lane.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    uses: StephanMeijer/goose-review/.github/workflows/review.yml@d4e61dd3ca66e7422e2d6a7b0d8efc5c4465ac45 # v0.1.0
+    # The most the review's jobs use: the lanes' review jobs read, their
+    # post jobs and tidy/summary write reviews and the summary comment, and
+    # summary reads the run's jobs for its links.
     permissions:
       contents: read
-      # The job links for each lane.
       actions: read
-      # The comment itself.
       issues: write
       pull-requests: write
-    steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            results-receiver.actions.githubusercontent.com:443
-            productionresultssa0.blob.core.windows.net:443
-            productionresultssa1.blob.core.windows.net:443
-            productionresultssa2.blob.core.windows.net:443
-            productionresultssa3.blob.core.windows.net:443
-            productionresultssa4.blob.core.windows.net:443
-            productionresultssa5.blob.core.windows.net:443
-            productionresultssa6.blob.core.windows.net:443
-            productionresultssa7.blob.core.windows.net:443
-            productionresultssa8.blob.core.windows.net:443
-            productionresultssa9.blob.core.windows.net:443
-            productionresultssa10.blob.core.windows.net:443
-            productionresultssa11.blob.core.windows.net:443
-            productionresultssa12.blob.core.windows.net:443
-            productionresultssa13.blob.core.windows.net:443
-            productionresultssa14.blob.core.windows.net:443
-            productionresultssa15.blob.core.windows.net:443
-            productionresultssa16.blob.core.windows.net:443
-            productionresultssa17.blob.core.windows.net:443
-            productionresultssa18.blob.core.windows.net:443
-            productionresultssa19.blob.core.windows.net:443
-
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-
-      # A lane whose post job failed before writing its result has none;
-      # the summary then reports that lane from its job's conclusion.
-      - name: Fetch the lanes' results
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          pattern: goose-result-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/results
-
-      - name: Post the summary
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >
-          mkdir -p "$RUNNER_TEMP/results" &&
-          python3 .github/scripts/goose_review.py summary
-          --repo "${{ github.repository }}" --pr "${{ github.event.pull_request.number }}"
-          --head-sha "${{ github.event.pull_request.head.sha }}" --run-id "${{ github.run_id }}"
-          --results "$RUNNER_TEMP/results"
+    with:
+      lanes: >-
+        [{"lane": "deepseek", "provider": "notedthat_thirdparty", "model": "deepseek-v4-flash-0731",
+          "verify-provider": "notedthat_minimax", "verify-model": "MiniMax-M3",
+          "verify-backup-provider": "notedthat_thirdparty", "verify-backup-model": "deepseek-v4-flash-0731",
+          "jobs": 2},
+         {"lane": "minimax", "provider": "notedthat_minimax", "model": "MiniMax-M3",
+          "verify-provider": "notedthat_thirdparty", "verify-model": "deepseek-v4-flash-0731",
+          "verify-backup-provider": "notedthat_minimax", "verify-backup-model": "MiniMax-M3",
+          "jobs": 3},
+         {"lane": "mistral", "provider": "notedthat_thirdparty", "model": "mistral-medium-3-5",
+          "verify-provider": "notedthat_minimax", "verify-model": "MiniMax-M3",
+          "verify-backup-provider": "notedthat_thirdparty", "verify-backup-model": "deepseek-v4-flash-0731",
+          "jobs": 2}]
+      # DeepSeek and Mistral run two checks at once: the endpoint caps
+      # DeepSeek at 246,000 input tokens a minute, and every agent turn
+      # resends the whole conversation (three at once hit it on #207).
+      #
+      # The review job reaches GitHub and the proxy, and crates.io for
+      # `cargo fetch`, which only downloads (nothing of the PR is built or
+      # run) so the model can read what a library call really does.
+      egress-endpoints: |
+        index.crates.io:443
+        static.crates.io:443
+        ${{ vars.GOOSE_PROXY_EGRESS }}
+      setup: cargo fetch --locked
+      tools-file: .agents/goose-review/tools.md
+      # Never reviewed: build output, manual QA notes, tool caches, and files
+      # that change mechanically.
+      ignore: |
+        target/**
+        docs/manual-qa/**
+        .codegraph/**
+        **/Cargo.lock
+        **/CHANGELOG.md
+    secrets:
+      PROVIDER_ROUTES: |
+        notedthat_thirdparty=${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
+        notedthat_minimax=${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+      PROVIDER_ENV: |
+        NOTEDTHAT_PROXY_TOKEN=${{ secrets.GOOSE_PROXY_TOKEN }}

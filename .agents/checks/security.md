@@ -2,7 +2,7 @@
 name: security
 description: Exploitable security vulnerabilities in the changed server code, workflows and container build.
 turn-limit: 40
-paths: ["crates/**/*.rs", ".github/workflows/*.yml", ".github/scripts/**", "Dockerfile", "docker/**"]
+paths: ["crates/**/*.rs", ".github/workflows/*.yml", "Dockerfile", "docker/**"]
 ---
 
 You review a NotedThat pull request for security vulnerabilities an attacker
