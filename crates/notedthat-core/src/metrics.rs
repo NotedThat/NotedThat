@@ -389,6 +389,7 @@ mod tests {
         name::EMBEDDING_TEXTS,
         name::INDEX_QUEUE_DEPTH,
         name::INDEX_QUEUE_CAPACITY,
+        name::INDEX_EVENTS_IN_FLIGHT,
         name::INDEX_EVENTS_ENQUEUED,
         name::INDEX_EVENTS_REFUSED,
         name::INDEX_EVENTS_COMPLETED,
