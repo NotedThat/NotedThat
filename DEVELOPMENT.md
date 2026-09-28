@@ -392,7 +392,11 @@ list from `cargo metadata`.
 ## Running the Goose review (LLM review) locally
 
 CI reviews every PR with [Goose](https://github.com/block/goose)
-(`.github/workflows/goose-review.yml`) in three lanes, one per model:
+(`.github/workflows/goose-review.yml`, which calls the pre-composed workflow of
+[StephanMeijer/goose-review](https://github.com/StephanMeijer/goose-review), pinned by
+commit; the engine, its tests and its documentation live there, and what the review looks
+for lives here: `.agents/checks/`, `.agents/facts/`, `.github/goose/providers/` and the Rust
+tool hints in `.agents/goose-review/tools.md`) in three lanes, one per model:
 DeepSeek V4 Flash, MiniMax M3 and Mistral Medium 3.5. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
@@ -428,17 +432,16 @@ the lane's time, so one slow batch cannot starve those queued after it; a batch 
 is reported as not started. Every posted comment carries hidden
 `<!-- goose-review:… -->` markers (the finding's check, severity and lines; its description,
 verification and footer as sections), and later runs read a finding back from these, not
-from its wording (`python3 .github/scripts/test_goose_review.py`). Each lane
-(`.github/workflows/goose-review-lane.yml`) reviews in a job with a
-read-only token and its network limited to GitHub, crates.io and the
-proxy, and posts from a second job that runs no model. The same script runs
-locally, so a finding can be reproduced before anyone argues with it.
+from its wording. Each lane reviews in a job with a read-only token and its network
+limited to GitHub, crates.io and the proxy, and posts from a second job that runs no
+model. The same engine runs locally, so a finding can be reproduced before anyone argues
+with it.
 
 Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the
 third-party route. (A DeepSeek V4.1 lane on OpenRouter, calling openrouter.ai directly with the
-`OPENROUTER_API_KEY` secret, is turned off for its cost; its provider file stays, and a matrix
-entry turns it back on.) Locally you need the proxy's token and its two routes — ask a
+`OPENROUTER_API_KEY` secret, is turned off for its cost; its provider file stays, and the
+workflow's header says how to turn it back on.) Locally you need the proxy's token and its two routes — ask a
 maintainer; none of them are in the repository on purpose — or an OpenRouter key of your own
 for `--provider notedthat_openrouter` (copy `.github/goose/providers/notedthat_openrouter.json`
 into your Goose `custom_providers` as is). Goose 1.52 or
@@ -448,21 +451,26 @@ later and Python 3.9+ are required. The prompts point the model at
 locally the review works without them, only less thoroughly.
 
 ```sh
-export NOTEDTHAT_PROXY_TOKEN=<proxy token>
+# The engine, at the commit the workflow pins
+git clone https://github.com/StephanMeijer/goose-review ../goose-review
+git -C ../goose-review checkout <commit pinned in .github/workflows/goose-review.yml>
+gr=../goose-review
 
-# Install the two providers into your Goose config, pointed at the proxy routes
-dir="${XDG_CONFIG_HOME:-$HOME/.config}/goose/custom_providers"
-.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_thirdparty.json <third-party route> "$dir"
-.github/scripts/goose-render-provider.sh .github/goose/providers/notedthat_minimax.json <MiniMax route> "$dir"
+# The providers into your Goose config, pointed at the proxy routes
+export GOOSE_REVIEW_PROVIDER_ENV='NOTEDTHAT_PROXY_TOKEN=<proxy token>'
+export GOOSE_REVIEW_PROVIDER_ROUTES='notedthat_thirdparty=<third-party route>
+notedthat_minimax=<MiniMax route>'
+$gr/setup-providers.sh .github/goose/providers "${XDG_CONFIG_HOME:-$HOME/.config}/goose/custom_providers"
 
 # Review everything changed since origin/main, as the DeepSeek lane would
-python3 .github/scripts/goose_review.py review --base origin/main \
+opts=(--tools-file .agents/goose-review/tools.md --ignore 'target/**' --ignore '**/Cargo.lock')
+python3 $gr/goose_review.py review --base origin/main "${opts[@]}" \
   --provider notedthat_thirdparty --model deepseek-v4-flash-0731
-python3 .github/scripts/goose_review.py verify --base origin/main \
+python3 $gr/goose_review.py verify --base origin/main "${opts[@]}" \
   --provider notedthat_minimax --model MiniMax-M3
 
 # Print the review the lane would post on a PR, without posting it
-GH_TOKEN=$(gh auth token) python3 .github/scripts/goose_review.py post --dry-run \
+GH_TOKEN=$(gh auth token) python3 $gr/goose_review.py post --dry-run \
   --repo NotedThat/NotedThat --pr <number> --head-sha "$(git rev-parse HEAD)" \
   --base-sha "$(git rev-parse origin/main)" --lane deepseek --model deepseek-v4-flash-0731
 ```

@@ -27,5 +27,3 @@ findings.jsonl
 verified.jsonl
 review-status.json
 
-# Python bytecode from running the review scripts
-__pycache__/
