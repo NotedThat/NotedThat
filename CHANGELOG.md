@@ -10,6 +10,12 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/NotedThat/NotedThat/compare/v0.12.0...v0.12.1) - 2026-09-28
+
+### Fixed
+
+- *(api)* declare UTF-8 for textual object reads
+
 ## [0.12.0](https://github.com/NotedThat/NotedThat/compare/v0.11.0...v0.12.0) - 2026-09-26
 
 ### Added
