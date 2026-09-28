@@ -52,7 +52,7 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
         staging_config: notedthat_core::StagingConfig::default(),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
         declared_kbs: Arc::new(declared_kbs),
-        indexer_tx: tx,
+        indexer_tx: (&tx).into(),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };

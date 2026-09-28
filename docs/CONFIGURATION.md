@@ -1278,6 +1278,7 @@ NotedThat uses an external OpenAI-compatible embedding endpoint to index markdow
 | `EMBEDDING_API_KEY` | `--embedding-api-key` | Yes | | Bearer token / API key for the endpoint |
 | `EMBEDDING_DIMENSIONS` | `--embedding-dimensions` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
 | `EMBEDDING_BATCH_SIZE` | `--embedding-batch-size` | No | `32` | Number of text chunks per HTTP embedding request |
+| `NOTEDTHAT_INDEX_CONCURRENCY` | `--index-concurrency` | No | `8` | Complete file indexing handlers allowed to run in parallel |
 | `EMBEDDING_TIMEOUT_MS` | `--embedding-timeout-ms` | No | `30000` | Per-request HTTP timeout (milliseconds) |
 | `EMBEDDING_MAX_RETRIES` | `--embedding-max-retries` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
 | `EMBEDDING_MAX_INPUT_TOKENS` | `--embedding-max-input-tokens` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
@@ -1327,7 +1328,7 @@ Changing `EMBEDDING_MODEL` or `EMBEDDING_DIMENSIONS` after initial provisioning 
 Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 
 - Writes commit to S3 first, then enqueue an index event. Search results may be **stale** briefly after a write.
-- Queue capacity is fixed at **1024 events** in v1 (not configurable).
+- Queue capacity is fixed at **1024 accepted but incomplete events** in v1 (not configurable). `NOTEDTHAT_INDEX_CONCURRENCY` controls complete file handlers, not `EMBEDDING_BATCH_SIZE`, which controls chunks per embedding request. Size file concurrency for embedding-provider, storage, staging-disk, and vector-store capacity; `notedthat_index_events_in_flight` reports active handlers.
 - If the queue is full, the object is stored to S3 but the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` and `INDEX_QUEUE_FULL` is logged. The client should retry to re-enqueue the indexing event.
 - **Conditional writes under backpressure: retry semantics interact with 412.** A conditional `PUT`/`DELETE` using `If-Match` or `If-None-Match` can complete the S3 mutation and then return HTTP 503 because the indexer queue is full. A naive retry with the same conditional headers may then return HTTP 412 `precondition_failed` because the object now exists or its ETag changed. Clients that use conditional headers must treat a 503 → 412 sequence as a possible stored-but-not-indexed ghost state and either accept that state or use a stronger consistency mechanism; v1 does not automatically replay or repair it.
 - If Qdrant is unreachable during indexing, `INDEXING_FAILED` is logged and the write still succeeds. The next write of the same object re-enqueues automatically.

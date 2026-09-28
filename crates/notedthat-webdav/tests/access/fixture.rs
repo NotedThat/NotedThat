@@ -41,6 +41,7 @@ pub(super) fn state_with_policies(
     policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
     let (indexer_tx, _indexer_rx) = mpsc::channel(8);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     WebDavState {
         authenticator: Arc::new(
             notedthat_core::Authenticator::new(SERVICE_TOKEN)

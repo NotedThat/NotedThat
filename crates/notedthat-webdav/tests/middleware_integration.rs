@@ -186,7 +186,7 @@ fn make_state() -> WebDavState {
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared.clone()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared)),
-        indexer_tx: tx,
+        indexer_tx: (&tx).into(),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }

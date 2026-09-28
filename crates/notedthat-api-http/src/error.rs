@@ -543,7 +543,7 @@ mod tests {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
-            indexer_tx,
+            indexer_tx: (&indexer_tx).into(),
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
@@ -552,6 +552,7 @@ mod tests {
         })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn router_with_storage_and_indexer(
         storage: Arc<dyn Storage>,
         kb: KbSlug,
@@ -568,7 +569,7 @@ mod tests {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
-            indexer_tx,
+            indexer_tx: (&indexer_tx).into(),
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
@@ -1378,7 +1379,7 @@ mod tests {
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
                 max_body_size: 16 * 1024 * 1024,
                 max_patchable_size: 16 * 1024 * 1024,
-                indexer_tx,
+                indexer_tx: (&indexer_tx).into(),
                 searcher: Arc::new(crate::testing::NoopSearcher),
                 events: None,
                 index_health: Arc::new(notedthat_indexer::IndexHealth::new()),

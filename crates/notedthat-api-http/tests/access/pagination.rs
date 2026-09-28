@@ -35,6 +35,7 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
     }
 
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
@@ -222,6 +223,7 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
     }
 
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
         storage,
         declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),

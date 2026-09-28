@@ -4,8 +4,7 @@ use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
     Storage, StorageError,
 };
-use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc::Sender;
+use notedthat_indexer::{IndexEvent, IndexQueueSender};
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
@@ -134,7 +133,7 @@ pub async fn commit_copy(
 /// this cannot produce — is untouched. What it covers is the future being
 /// dropped between the store and the enqueue.
 struct EnqueueOnDrop {
-    indexer_tx: Sender<IndexEvent>,
+    indexer_tx: IndexQueueSender,
     event: Option<IndexEvent>,
 }
 
@@ -682,7 +681,7 @@ mod tests {
         let (indexer_tx, mut rx) = mpsc::channel(4);
         let events = NeverAnswers;
         let sinks = WriteSinks {
-            indexer_tx: &indexer_tx,
+            indexer_tx: (&indexer_tx).into(),
             events: Some(&events),
             index_health: None,
             source: EventSource::Http,
@@ -911,7 +910,7 @@ mod tests {
         source: notedthat_core::EventSource,
     ) -> WriteSinks<'a> {
         WriteSinks {
-            indexer_tx,
+            indexer_tx: indexer_tx.into(),
             events: Some(events),
             index_health: None,
             source,

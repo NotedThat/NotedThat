@@ -11,7 +11,7 @@ use notedthat_api_http::{
 };
 use notedthat_core::{Authenticator, ProtectedResource};
 use notedthat_indexer::{
-    IndexEvent, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
+    IndexQueueSender, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
 };
 use notedthat_storage_fs::{FsStorage, RootLock};
@@ -20,7 +20,6 @@ use notedthat_webdav::{router::build_bounded_router as build_dav_router, state::
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -176,7 +175,7 @@ struct Infrastructure {
     /// The metrics sampler needs `capacity`/`max_capacity`, and a `Sender` is
     /// the only thing that has them. It keeps the channel open, so it must be
     /// dropped before the drain — `serve` does that with the sampler's token.
-    indexer_tx: mpsc::Sender<IndexEvent>,
+    indexer_tx: IndexQueueSender,
 }
 
 /// The `/readyz` prober, after provisioning: it starts from "ready" because
@@ -216,7 +215,7 @@ fn start_change_detection(
     kb_list: Vec<notedthat_core::KbSlug>,
     reconciler: Option<&reconcile::Reconciler>,
     store: &Arc<dyn VectorStore>,
-    indexer_tx: &mpsc::Sender<IndexEvent>,
+    indexer_tx: &IndexQueueSender,
     index_health: Arc<notedthat_indexer::IndexHealth>,
 ) -> anyhow::Result<Option<fs_watch::FsWatch>> {
     match &config.storage {
@@ -262,7 +261,8 @@ async fn build_infrastructure(
         events,
     } = metered::meter(&config.storage, backends);
 
-    let (indexer_tx, indexer_rx) = mpsc::channel::<IndexEvent>(1024);
+    let (indexer_tx, indexer_rx) =
+        notedthat_indexer::index_queue(notedthat_indexer::INDEX_QUEUE_CAPACITY);
     let indexer_shutdown = CancellationToken::new();
     // One health record for the process: the write paths, the worker and the
     // `fs` bridge stamp it, the API reports it (#97).
@@ -360,13 +360,14 @@ async fn build_infrastructure(
     };
 
     let worker_handle = tokio::spawn(
-        IndexerWorker::new(
+        IndexerWorker::new_queue(
             storage.clone(),
             embed_index,
             store.clone(),
             indexer_rx,
             indexer_shutdown.clone(),
             config.embedder.batch_size,
+            config.index_concurrency,
         )
         .with_staging_config(config.staging.clone())
         .with_event_publisher(events)

@@ -24,6 +24,7 @@ fn declared_kbs() -> BTreeMap<String, KbSlug> {
 
 fn make_app() -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
         declared_kbs: Arc::new(declared_kbs()),
@@ -44,6 +45,7 @@ fn make_app() -> axum::Router {
 
 fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
         storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
         declared_kbs: Arc::new(declared_kbs()),

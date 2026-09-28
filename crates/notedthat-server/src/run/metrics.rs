@@ -111,6 +111,7 @@ fn shared_handle() -> anyhow::Result<PrometheusHandle> {
 /// Registered once, after the recorder, because a description recorded before
 /// there is a recorder to hold it is discarded and the first scrape ships
 /// without its `HELP` lines.
+#[allow(clippy::too_many_lines)]
 fn describe_all() {
     use metrics::{describe_counter, describe_gauge, describe_histogram};
 
@@ -153,6 +154,10 @@ fn describe_all() {
 
     describe_gauge!(name::INDEX_QUEUE_DEPTH, "Events waiting to be indexed.");
     describe_gauge!(name::INDEX_QUEUE_CAPACITY, "How many the queue holds.");
+    describe_gauge!(
+        name::INDEX_EVENTS_IN_FLIGHT,
+        "Complete file handlers currently executing."
+    );
     describe_counter!(name::INDEX_EVENTS_ENQUEUED, "Indexing events queued.");
     describe_counter!(
         name::INDEX_EVENTS_REFUSED,
@@ -256,8 +261,8 @@ pub(crate) fn record_build_info(config: &Config) {
 }
 
 /// Sample the indexing queue's depth until `shutdown`.
-pub(crate) async fn sample_queue_depth<T: Send + 'static>(
-    sender: tokio::sync::mpsc::Sender<T>,
+pub(crate) async fn sample_queue_depth(
+    sender: notedthat_indexer::IndexQueueSender,
     shutdown: CancellationToken,
 ) {
     let capacity = sender.max_capacity();

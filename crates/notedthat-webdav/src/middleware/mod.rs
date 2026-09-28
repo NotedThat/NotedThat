@@ -325,7 +325,7 @@ mod basic_auth {
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(BTreeMap::new()),
                 access_policies: Arc::new(BTreeMap::new()),
-                indexer_tx,
+                indexer_tx: (&indexer_tx).into(),
                 events: None,
                 index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             }
@@ -1038,6 +1038,7 @@ mod intercept_write_methods {
             test_state_with_indexer_tx(storage, indexer_tx)
         }
 
+        #[allow(clippy::needless_pass_by_value)]
         fn test_state_with_indexer_tx(
             storage: Arc<MockStorage>,
             indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
@@ -1052,7 +1053,7 @@ mod intercept_write_methods {
                 staging_config: notedthat_core::StagingConfig::default(),
                 declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
                 access_policies: Arc::new(BTreeMap::new()),
-                indexer_tx,
+                indexer_tx: (&indexer_tx).into(),
                 events: None,
                 index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
             }

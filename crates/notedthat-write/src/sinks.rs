@@ -5,14 +5,13 @@
 //! [`EventSource`] once, where it builds the bundle, rather than at each call.
 
 use notedthat_core::{EventPublisher, EventSource};
-use notedthat_indexer::{IndexEvent, IndexHealth};
-use tokio::sync::mpsc::Sender;
+use notedthat_indexer::{IndexHealth, IndexQueueSender};
 
 /// The two places a durable write is reported to, and on whose behalf.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct WriteSinks<'a> {
     /// The in-process indexing queue (D38).
-    pub indexer_tx: &'a Sender<IndexEvent>,
+    pub indexer_tx: IndexQueueSender,
     /// The event log, when `NOTEDTHAT_EVENTS_BACKEND` selects one.
     pub events: Option<&'a dyn EventPublisher>,
     /// Where what happened at the queue — enqueued, refused, or a queue with
@@ -27,13 +26,13 @@ impl<'a> WriteSinks<'a> {
     /// Both sinks, recording on `index_health`.
     #[must_use]
     pub fn new(
-        indexer_tx: &'a Sender<IndexEvent>,
+        indexer_tx: &'a IndexQueueSender,
         events: Option<&'a dyn EventPublisher>,
         index_health: &'a IndexHealth,
         source: EventSource,
     ) -> Self {
         Self {
-            indexer_tx,
+            indexer_tx: indexer_tx.clone(),
             events,
             index_health: Some(index_health),
             source,
@@ -43,9 +42,9 @@ impl<'a> WriteSinks<'a> {
     /// The indexing queue alone, as every deployment without an events backend
     /// runs, attributed to the HTTP API, with nothing keeping a health record.
     #[must_use]
-    pub fn indexer_only(indexer_tx: &'a Sender<IndexEvent>) -> Self {
+    pub fn indexer_only(indexer_tx: impl Into<IndexQueueSender>) -> Self {
         Self {
-            indexer_tx,
+            indexer_tx: indexer_tx.into(),
             events: None,
             index_health: None,
             source: EventSource::Http,

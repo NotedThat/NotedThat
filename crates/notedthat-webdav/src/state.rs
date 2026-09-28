@@ -3,10 +3,9 @@
 use notedthat_core::{
     AccessPolicy, Authenticator, EventPublisher, EventSource, KbSlug, StagingConfig, Storage,
 };
-use notedthat_indexer::IndexEvent;
+use notedthat_indexer::IndexQueueSender;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 
 /// Application state shared by `WebDAV` router, middleware, and filesystem handlers.
 #[derive(Clone)]
@@ -25,7 +24,7 @@ pub struct WebDavState {
     /// The same map the HTTP API holds — one evaluator, both surfaces.
     pub access_policies: Arc<BTreeMap<String, Arc<AccessPolicy>>>,
     /// Indexer event channel used after write operations.
-    pub indexer_tx: Sender<IndexEvent>,
+    pub indexer_tx: IndexQueueSender,
     /// Shared private directory used to spool upload bodies.
     pub staging_config: StagingConfig,
     /// The object change event log, when `NOTEDTHAT_EVENTS_BACKEND` selects one.
