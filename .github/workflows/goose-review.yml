@@ -71,7 +71,7 @@ jobs:
       && !startsWith(github.head_ref, 'release-plz-')
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
-    uses: StephanMeijer/goose-review/.github/workflows/review.yml@fffed4c7e263c566b08762ebf03456fa1d20b845 # v0.3.1
+    uses: StephanMeijer/goose-review/.github/workflows/review.yml@583a38a2ee99a7f01f76f39a81b9cd84076fadee # v0.3.2
     # The most the review's jobs use: the lanes' review jobs read, their
     # post jobs and tidy/summary write reviews and the summary comment, and
     # summary reads the run's jobs for its links.
