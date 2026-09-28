@@ -58,10 +58,25 @@ pub(super) fn grant_under(
 
 /// A router over the seeded tree. `notes` takes `policy`; `private` gets nothing.
 pub(super) async fn app(policy: AccessPolicy) -> axum::Router {
-    app_with_keys(policy, SEEDED).await
+    app_with_searcher(policy, Arc::new(NoopSearcher)).await
+}
+
+pub(super) async fn app_with_searcher(
+    policy: AccessPolicy,
+    searcher: Arc<dyn notedthat_indexer::Searcher>,
+) -> axum::Router {
+    app_with_keys_and_searcher(policy, SEEDED, searcher).await
 }
 
 pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::Router {
+    app_with_keys_and_searcher(policy, keys, Arc::new(NoopSearcher)).await
+}
+
+async fn app_with_keys_and_searcher(
+    policy: AccessPolicy,
+    keys: &[&str],
+    searcher: Arc<dyn notedthat_indexer::Searcher>,
+) -> axum::Router {
     let notes = KbSlug::try_new("notes").expect("valid slug");
     let private = KbSlug::try_new("private").expect("valid slug");
     let storage = Arc::new(InMemoryStorage::with_kbs([&notes, &private]));
@@ -95,7 +110,7 @@ pub(super) async fn app_with_keys(policy: AccessPolicy, keys: &[&str]) -> axum::
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
-        searcher: Arc::new(NoopSearcher),
+        searcher,
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness: notedthat_api_http::testing::ready_receiver(),

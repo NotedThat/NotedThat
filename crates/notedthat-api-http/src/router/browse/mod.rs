@@ -253,14 +253,15 @@ impl SearchPage<'_> {
                     return None;
                 }
                 let folder = key.rsplit_once('/').map_or("", |(folder, _)| folder);
-                let folder_href = self.access.allows(Verb::List, key).then(|| {
-                    let prefix = if folder.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{folder}/")
-                    };
-                    escape_html(&links::directory_href(self.kb_slug, &prefix))
-                });
+                let prefix = if folder.is_empty() {
+                    String::new()
+                } else {
+                    format!("{folder}/")
+                };
+                let folder_href = self
+                    .access
+                    .allows(Verb::List, &prefix)
+                    .then(|| escape_html(&links::directory_href(self.kb_slug, &prefix)));
                 Some(SearchResultView {
                     key: display_text(key),
                     object_href: self

@@ -4,8 +4,25 @@ use axum::{
 };
 use tower::ServiceExt;
 
-use super::fixture::{app, body, get, grant, policy};
-use notedthat_core::{Verb, Who};
+use super::fixture::{app, app_with_searcher, body, get, grant, grant_under, hrefs, policy};
+use notedthat_api_http::testing::MockSearcher;
+use notedthat_core::search::{ObjectKey, SearchHit, SearchResponse};
+use notedthat_core::{AccessRule, KeyPattern, Verb, Who};
+use std::sync::Arc;
+
+fn searcher_returning(key: &str) -> Arc<MockSearcher> {
+    let searcher = Arc::new(MockSearcher::default());
+    searcher.set_response(Ok(SearchResponse::new(vec![SearchHit {
+        object_key: ObjectKey::try_new(key).expect("valid key"),
+        byte_start: 0,
+        byte_end: 7,
+        heading_path: Vec::new(),
+        score: 1.0,
+        preview: "preview".to_string(),
+        okf: None,
+    }])));
+    searcher
+}
 
 #[tokio::test]
 async fn search_requires_search_but_not_list_and_never_renders_a_listing() {
@@ -65,4 +82,28 @@ async fn browse_search_headers_and_head_match_get() {
     assert_eq!(head_response.status(), StatusCode::OK);
     assert_eq!(head_response.headers()["referrer-policy"], "no-referrer");
     assert!(body(head_response).await.is_empty());
+}
+
+#[tokio::test]
+async fn search_links_to_a_listable_folder_when_its_hit_is_denied() {
+    let searcher = searcher_returning("public/drafts/note.md");
+    let app = app_with_searcher(
+        policy([
+            grant(Who::Anyone, [Verb::Search]),
+            grant_under(Who::Anyone, [Verb::List], &["public/**"]),
+            AccessRule::deny(Who::Anyone, [Verb::List])
+                .under([KeyPattern::parse("public/drafts/note.md").expect("valid pattern")]),
+        ]),
+        searcher as Arc<dyn notedthat_indexer::Searcher>,
+    )
+    .await;
+
+    let html = body(get(&app, "/browse/notes/?q=needle", None).await).await;
+
+    assert!(
+        hrefs(&html)
+            .iter()
+            .any(|href| href == "/browse/notes/public/drafts/"),
+        "{html}"
+    );
 }
