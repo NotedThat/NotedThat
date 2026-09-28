@@ -163,9 +163,8 @@ jobs:
   # Dependency advisories were noticed here but never gated. GitHub's alerts
   # raise a notification and Renovate raises an update PR; neither fails
   # anything, so a known-vulnerable dependency could sit in Cargo.lock for as
-  # long as nobody happened to read the notification. Trivy scans the built
-  # image (docker.yml), but that sees the Debian layer, not the Cargo graph.
-  # This job is the missing half.
+  # long as nobody happened to read the notification. This job covers the
+  # Cargo graph directly.
   #
   # Runs on pull requests AND on pushes to `main`, and that split is worth
   # stating rather than discovering:
