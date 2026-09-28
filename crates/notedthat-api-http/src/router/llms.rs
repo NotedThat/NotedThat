@@ -18,7 +18,9 @@ A listing shows only what the caller may see, so a page can be shorter than the 
 
 `GET /api/v1/knowledgebases/{kb_slug}/events` streams object change events as `text/event-stream` to callers the knowledge base grants `list`; send `Last-Event-ID` to resume after a disconnect, expect `410 gone` when that position is no longer retained, and `404 not_found` when the deployment has no events backend. Prefer it to polling listings when reacting to changes. The stream also carries the indexer's verdict: after a write, `object.indexed` with the same `etag` means the object is now in search results, and `object.index_failed` means it is not; wait for one of those rather than retrying a search or polling the index state.
 
-`/browse/` is a human-facing HTML view of the same content. Use `/api/v1/` instead; do not scrape it.
+`/browse/` is a human-facing HTML view of the same content. It also offers per-knowledge-base GET
+search (`?q=...&limit=...`) for callers granted `search`; it has no dependency on `/web`. Use
+`/api/v1/` for machine work; do not scrape browse pages.
 
 ## MCP
 

@@ -290,6 +290,10 @@ impl ApiErrorResponse {
 }
 
 impl ApiError {
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status_and_code().0
+    }
+
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),

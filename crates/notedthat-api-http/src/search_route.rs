@@ -8,7 +8,10 @@ use axum::{
 };
 use bytes::Bytes;
 use notedthat_core::metrics::{label as metric_label, name as metric, outcome as metric_outcome};
-use notedthat_core::{Error as CoreError, KbSlug, Verb, search::SearchRequest};
+use notedthat_core::{
+    Error as CoreError, KbSlug, Verb,
+    search::{SearchRequest, SearchResponse, ValidatedRequest},
+};
 use notedthat_indexer::KeyPredicate;
 use std::time::Instant;
 
@@ -88,8 +91,6 @@ pub async fn search_kb(
     // Refuse before the request body, the embedding call and the vector query:
     // an unauthorized search must not cost a round-trip to the embedder.
     access.require_any(Verb::Search).map_err(err)?;
-    let kb = access.kb().clone();
-
     let (parts, body) = req.into_parts();
     let body_bytes: Bytes = axum::body::to_bytes(body, SEARCH_BODY_MAX_BYTES)
         .await
@@ -119,6 +120,19 @@ pub async fn search_kb(
         .validate()
         .map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
 
+    let response = execute_search(&state, &access, validated)
+        .await
+        .map_err(err)?;
+
+    Ok((StatusCode::OK, Json(response)).into_response())
+}
+
+pub(crate) async fn execute_search(
+    state: &AppState,
+    access: &crate::authz::KbAccess,
+    validated: ValidatedRequest,
+) -> Result<SearchResponse, ApiError> {
+    let kb = access.kb();
     // Hits are filtered by the `search` grant's own patterns, never by `read`.
     // That is what keeps the two independently grantable — and it means broad
     // `search` with narrow `read` publishes previews of keys the caller cannot
@@ -141,9 +155,9 @@ pub async fn search_kb(
     // as `notedthat_embedding_*{phase="query"}` and
     // `notedthat_vector_store_*{op="hybrid_search"}` (D69).
     let mut search = SearchCall::begin(kb.as_str().to_string());
-    let searched = state.searcher.search(&kb, validated, key_filter).await;
+    let searched = state.searcher.search(kb, validated, key_filter).await;
     search.finish(searched.is_ok());
-    let mut response = searched.map_err(|e| err(ApiError::Core(CoreError::from(e))))?;
+    let mut response = searched.map_err(|e| ApiError::Core(CoreError::from(e)))?;
     // The searcher is trusted to have applied the grant; this pass is the
     // backstop that turns a searcher which ignores it into a short page rather
     // than a leak. It costs at most `limit` pattern matches.
@@ -158,7 +172,7 @@ pub async fn search_kb(
     metrics::histogram!(metric::SEARCH_HITS, metric_label::KB => kb.as_str().to_string())
         .record(response.hits.len() as f64);
 
-    Ok((StatusCode::OK, Json(response)).into_response())
+    Ok(response)
 }
 
 #[cfg(test)]

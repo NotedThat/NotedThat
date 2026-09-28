@@ -129,6 +129,22 @@ pub(super) struct PageView {
     pub(super) notice: Option<String>,
     /// Shown when some rows are listed but not readable.
     pub(super) footnote: Option<String>,
+    pub(super) search: Option<SearchView>,
+}
+
+pub(super) struct SearchView {
+    pub(super) action: String,
+    pub(super) query: String,
+    pub(super) results: Vec<SearchResultView>,
+}
+
+pub(super) struct SearchResultView {
+    pub(super) key: String,
+    pub(super) object_href: Option<String>,
+    pub(super) folder: String,
+    pub(super) folder_href: Option<String>,
+    pub(super) heading_path: Vec<String>,
+    pub(super) preview: String,
 }
 
 /// Render a directory or index page.
@@ -145,14 +161,20 @@ pub(super) fn page(view: &PageView) -> String {
     }
     let _ = write!(&mut html, " /</h1>");
 
-    html.push_str(
-        "<table><thead><tr><th class=\"name\">Name</th>\
-         <th class=\"size\">Size</th><th class=\"modified\">Modified</th></tr></thead><tbody>",
-    );
-    for row in &view.rows {
-        push_row(&mut html, row);
+    if let Some(search) = &view.search {
+        push_search(&mut html, search);
     }
-    html.push_str("</tbody></table>");
+
+    if !view.rows.is_empty() {
+        html.push_str(
+            "<table><thead><tr><th class=\"name\">Name</th>\
+         <th class=\"size\">Size</th><th class=\"modified\">Modified</th></tr></thead><tbody>",
+        );
+        for row in &view.rows {
+            push_row(&mut html, row);
+        }
+        html.push_str("</tbody></table>");
+    }
 
     if let Some(notice) = &view.notice {
         let _ = write!(&mut html, "<p class=\"notice\">{notice}</p>");
@@ -164,6 +186,50 @@ pub(super) fn page(view: &PageView) -> String {
 
     html.push_str("</main></body></html>");
     html
+}
+
+fn push_search(html: &mut String, search: &SearchView) {
+    let _ = write!(
+        html,
+        "<form method=\"get\" action=\"{}\"><label>Search <input name=\"q\" required value=\"{}\"></label><label>Results <input name=\"limit\" type=\"number\" min=\"1\" max=\"50\" value=\"10\"></label><button type=\"submit\">Search</button></form>",
+        search.action, search.query,
+    );
+    if search.query.is_empty() {
+        return;
+    }
+    let _ = write!(
+        html,
+        "<p class=\"count\">{} results</p><ol class=\"search-results\">",
+        search.results.len()
+    );
+    for result in &search.results {
+        html.push_str("<li>");
+        match &result.object_href {
+            Some(href) => {
+                let _ = write!(html, "<a href=\"{href}\">{}</a>", result.key);
+            }
+            None => html.push_str(&result.key),
+        }
+        if !result.folder.is_empty() {
+            html.push_str(" <span class=\"meta\">in ");
+            match &result.folder_href {
+                Some(href) => {
+                    let _ = write!(html, "<a href=\"{href}\">{}</a>", result.folder);
+                }
+                None => html.push_str(&result.folder),
+            }
+            html.push_str("</span>");
+        }
+        if !result.heading_path.is_empty() {
+            let _ = write!(
+                html,
+                "<p class=\"meta\">{}</p>",
+                result.heading_path.join(" / ")
+            );
+        }
+        let _ = write!(html, "<p>{}</p></li>", result.preview);
+    }
+    html.push_str("</ol>");
 }
 
 /// Render an error page: a heading, a sentence, a way back, and a request id.
@@ -251,7 +317,8 @@ tr.up td.name a{color:var(--muted)}\
 tr.restricted td.name{color:var(--muted)}\
 p.count,p.notice,p.meta{margin:1.25rem 0 0;font-size:.85rem;color:var(--muted)}\
 p.count+p.count{margin-top:.25rem}\
-p.notice{padding:.6rem .8rem;border-left:3px solid var(--rule);background:var(--row)}";
+p.notice{padding:.6rem .8rem;border-left:3px solid var(--rule);background:var(--row)}\
+form{display:flex;gap:.75rem;flex-wrap:wrap;margin:0 0 1.5rem}input,button{font:inherit}.search-results{padding-left:1.25rem}.search-results li{margin:1rem 0}.search-results p{margin:.2rem 0}";
 
 #[cfg(test)]
 mod tests {
@@ -300,6 +367,7 @@ mod tests {
             summary: "0 folders, 0 objects".to_string(),
             notice: None,
             footnote: None,
+            search: None,
         };
 
         // When
