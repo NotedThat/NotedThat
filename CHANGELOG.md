@@ -10,6 +10,22 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.12.3](https://github.com/NotedThat/NotedThat/compare/v0.12.2...v0.12.3) - 2026-09-28
+
+### Added
+
+- *(indexer)* configure parallel file indexing
+
+### Fixed
+
+- *(indexer)* retain queue permits while handling events
+
+### Other
+
+- Merge pull request #238 from NotedThat/feat/index-concurrency
+- *(metrics)* catalogue indexer in-flight gauge
+- *(indexer)* remove unused queue allocations
+
 ## [0.12.2](https://github.com/NotedThat/NotedThat/compare/v0.12.1...v0.12.2) - 2026-09-28
 
 ### Other
