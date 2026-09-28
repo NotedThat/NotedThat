@@ -1734,7 +1734,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 62);
+        assert_eq!(ALL_ENV_KEYS.len(), 63);
     }
 
     #[test]

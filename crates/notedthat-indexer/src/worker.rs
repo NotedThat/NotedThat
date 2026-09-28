@@ -214,7 +214,8 @@ impl IndexerWorker {
             active.insert(key.clone());
             let pipeline = worker.pipeline_context();
             running.push(Box::pin(async move {
-                pipeline.handle(event.event).await;
+                let queued = event;
+                pipeline.handle(queued.event).await;
                 key
             }));
         }
