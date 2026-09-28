@@ -2555,6 +2555,7 @@ dependencies = [
  "httpdate",
  "metrics",
  "metrics-util",
+ "mime",
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-events",

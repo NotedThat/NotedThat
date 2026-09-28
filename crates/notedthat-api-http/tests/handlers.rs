@@ -81,6 +81,27 @@ async fn put_text(app: axum::Router, kb: &str, path: &str, body: &str) -> Status
     .status()
 }
 
+async fn put_with_content_type(
+    app: axum::Router,
+    kb: &str,
+    path: &str,
+    content_type: &str,
+    body: &str,
+) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/v1/knowledgebases/{kb}/{path}"))
+            .header(auth().0, auth().1)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(body.to_owned()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
 async fn response_json(resp: axum::response::Response) -> serde_json::Value {
     let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
     serde_json::from_slice(&body).unwrap()
@@ -666,6 +687,130 @@ async fn put_get_round_trip_preserves_content() {
 }
 
 #[tokio::test]
+async fn textual_object_reads_declare_utf8_for_full_head_and_range_responses() {
+    let a = app();
+    let path = "unicode.txt";
+    let body = "©\nplain\n";
+    assert_eq!(
+        put_with_content_type(a.clone(), KB, path, "text/plain", body).await,
+        StatusCode::CREATED
+    );
+
+    let full = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/{path}"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        full.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        to_bytes(full.into_body(), 1024).await.unwrap(),
+        body.as_bytes()
+    );
+
+    let head = a
+        .clone()
+        .oneshot(authed_request(
+            "HEAD",
+            format!("/api/v1/knowledgebases/{KB}/{path}"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        head.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+
+    let byte_range = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
+                .header(auth().0, auth().1)
+                .header(header::RANGE, "bytes=0-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        byte_range.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        to_bytes(byte_range.into_body(), 1024).await.unwrap(),
+        "©".as_bytes()
+    );
+
+    let line_range = a
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
+                .header(auth().0, auth().1)
+                .header(header::RANGE, "lines=1-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        line_range.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        to_bytes(line_range.into_body(), 1024).await.unwrap(),
+        "©\n".as_bytes()
+    );
+}
+
+#[tokio::test]
+async fn json_and_xml_object_reads_declare_utf8() {
+    let a = app();
+
+    for (path, content_type) in [
+        ("document.json", "application/json"),
+        ("document.jsonld", "application/ld+json"),
+        ("document.xml", "application/xml"),
+        ("document.atom", "application/atom+xml"),
+    ] {
+        assert_eq!(
+            put_with_content_type(a.clone(), KB, path, content_type, "©").await,
+            StatusCode::CREATED,
+            "PUT {content_type}"
+        );
+        let response = a
+            .clone()
+            .oneshot(authed_request(
+                "GET",
+                format!("/api/v1/knowledgebases/{KB}/{path}"),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        let expected_content_type = format!("{content_type}; charset=utf-8");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            expected_content_type,
+            "GET {content_type}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn put_returns_201_with_location() {
     let resp = app()
         .oneshot(authed_request(
@@ -918,7 +1063,7 @@ async fn head_echoes_content_type() {
         .unwrap();
     assert_eq!(
         head_resp.headers().get("content-type").unwrap(),
-        "text/plain"
+        "text/plain; charset=utf-8"
     );
 }
 
@@ -1973,7 +2118,7 @@ async fn get_content_type_echoed_from_put() {
                 .method("PUT")
                 .uri(format!("/api/v1/knowledgebases/{KB}/doc.md"))
                 .header(auth().0, auth().1)
-                .header("content-type", "text/markdown; charset=utf-8")
+                .header("content-type", "text/markdown; charset=iso-8859-1")
                 .body(Body::from("# Doc"))
                 .unwrap(),
         )
@@ -1989,16 +2134,9 @@ async fn get_content_type_echoed_from_put() {
         ))
         .await
         .unwrap();
-    let content_type = get_resp
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("text/markdown"),
-        "content-type must echo the PUT value"
+    assert_eq!(
+        get_resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/markdown; charset=iso-8859-1"
     );
 }
 

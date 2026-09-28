@@ -777,7 +777,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | Header | Description |
 |--------|-------------|
 | `content-length` | Object size in bytes |
-| `content-type` | MIME type, if stored |
+| `content-type` | Stored MIME type; `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` without a charset receive `charset=utf-8` |
 | `last-modified` | Last modification time, if available |
 | `etag` | Object ETag, if provided by the backend |
 
@@ -828,7 +828,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 
 | Header | Description |
 |--------|-------------|
-| `content-type` | MIME type (falls back to `application/octet-stream` if not stored) |
+| `content-type` | MIME type (falls back to `application/octet-stream` if not stored). Stored `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` types without a charset receive `charset=utf-8`; an explicit stored charset is preserved. |
 | `content-length` | Object size in bytes (or partial size on 206) |
 | `etag` | Object ETag, if provided by the backend |
 | `content-range` | Range returned, present only on 206 responses. Format: `bytes <start>-<end>/<total>` for byte-range requests; `lines <first>-<last>/<total_lines>` for line-range requests |
