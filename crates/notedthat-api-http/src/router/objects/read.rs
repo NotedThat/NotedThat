@@ -11,7 +11,32 @@ use notedthat_core::{
     ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError, Verb,
     parse_line_range_header, parse_range_header,
 };
+use std::borrow::Cow;
 use std::time::{Duration, UNIX_EPOCH};
+
+fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
+    let Ok(media_type) = content_type.parse::<mime::Mime>() else {
+        return Cow::Borrowed(content_type);
+    };
+
+    let subtype = media_type.subtype().as_str();
+    let textual = media_type.type_() == mime::TEXT
+        || (media_type.type_() == mime::APPLICATION
+            && (subtype == "json"
+                || media_type
+                    .suffix()
+                    .is_some_and(|suffix| suffix.as_str() == "json")
+                || subtype == "xml"
+                || media_type
+                    .suffix()
+                    .is_some_and(|suffix| suffix.as_str() == "xml")));
+
+    if textual && media_type.get_param(mime::CHARSET).is_none() {
+        Cow::Owned(format!("{content_type}; charset=utf-8"))
+    } else {
+        Cow::Borrowed(content_type)
+    }
+}
 
 pub(in crate::router) async fn head_object(
     State(state): State<AppState>,
@@ -50,7 +75,8 @@ pub(in crate::router) async fn head_object(
     let mut builder = Response::builder().status(StatusCode::OK);
 
     if let Some(ct) = &meta.content_type {
-        builder = builder.header("content-type", ct.as_str());
+        let content_type = normalize_content_type(ct);
+        builder = builder.header("content-type", content_type.as_ref());
     }
     if let Some(etag) = &meta.etag {
         builder = builder.header("etag", etag.as_str());
@@ -124,11 +150,12 @@ pub(in crate::router) async fn get_object(
             })),
             other => err(ApiError::from(other)),
         })?;
-    let content_type = read
-        .meta
-        .content_type
-        .as_deref()
-        .unwrap_or("application/octet-stream");
+    let content_type = normalize_content_type(
+        read.meta
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream"),
+    );
 
     let status = if read.content_range.is_some() {
         StatusCode::PARTIAL_CONTENT
@@ -137,7 +164,7 @@ pub(in crate::router) async fn get_object(
     };
     let mut builder = Response::builder()
         .status(status)
-        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
         .header(axum::http::header::CONTENT_LENGTH, read.bytes.len());
 
     if let Some(etag) = &read.meta.etag {
@@ -209,15 +236,16 @@ async fn serve_line_range_read(
         }))
     })?;
     let sliced = read.bytes.slice(range_start..range_end);
-    let content_type = read
-        .meta
-        .content_type
-        .as_deref()
-        .unwrap_or("application/octet-stream");
+    let content_type = normalize_content_type(
+        read.meta
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream"),
+    );
 
     let mut builder = Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
-        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
         .header(axum::http::header::CONTENT_LENGTH, sliced.len());
 
     if let Some(etag) = &read.meta.etag {

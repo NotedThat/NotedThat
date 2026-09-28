@@ -80,6 +80,7 @@ dav-server = { version = "0.11", default-features = false }
 headers = "0.4"
 hex = "0.4"
 httpdate = "1.0"
+mime = "0.3"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", default-features = false }
 http = "1"

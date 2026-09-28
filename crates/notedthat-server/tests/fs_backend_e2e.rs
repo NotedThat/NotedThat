@@ -257,7 +257,7 @@ async fn a_write_through_the_api_lands_as_a_browsable_file() {
         read.headers()
             .get("content-type")
             .and_then(|value| value.to_str().ok()),
-        Some("text/markdown")
+        Some("text/markdown; charset=utf-8")
     );
     assert_eq!(read.text().await.expect("body"), "# Hello\n");
 }
