@@ -71,7 +71,7 @@ jobs:
       && !startsWith(github.head_ref, 'release-plz-')
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
-    uses: StephanMeijer/goose-review/.github/workflows/review.yml@ffcb24d3050783170c5847ed347d55f6ec2d799f # v0.2.0
+    uses: StephanMeijer/goose-review/.github/workflows/review.yml@8bafeeb4a14b752ffaa464998634384870011d1b # v0.3.0
     # The most the review's jobs use: the lanes' review jobs read, their
     # post jobs and tidy/summary write reviews and the summary comment, and
     # summary reads the run's jobs for its links.
@@ -81,22 +81,39 @@ jobs:
       issues: write
       pull-requests: write
     with:
-      lanes: >-
-        [{"lane": "deepseek", "provider": "notedthat_thirdparty", "model": "deepseek-v4-flash-0731",
-          "verify-provider": "notedthat_minimax", "verify-model": "MiniMax-M3",
-          "verify-backup-provider": "notedthat_thirdparty", "verify-backup-model": "deepseek-v4-flash-0731",
-          "jobs": 2},
-         {"lane": "minimax", "provider": "notedthat_minimax", "model": "MiniMax-M3",
-          "verify-provider": "notedthat_thirdparty", "verify-model": "deepseek-v4-flash-0731",
-          "verify-backup-provider": "notedthat_minimax", "verify-backup-model": "MiniMax-M3",
-          "jobs": 3},
-         {"lane": "mistral", "provider": "notedthat_thirdparty", "model": "mistral-medium-3-5",
-          "verify-provider": "notedthat_minimax", "verify-model": "MiniMax-M3",
-          "verify-backup-provider": "notedthat_thirdparty", "verify-backup-model": "deepseek-v4-flash-0731",
-          "jobs": 2}]
-      # DeepSeek and Mistral run two checks at once: the endpoint caps
-      # DeepSeek at 246,000 input tokens a minute, and every agent turn
-      # resends the whole conversation (three at once hit it on #207).
+      # Checked before any lane runs (unknown keys, checks or providers stop
+      # the run with the error shown).
+      lanes: |
+        - lane: deepseek
+          provider: notedthat_thirdparty
+          model: deepseek-v4-flash-0731
+          verify-provider: notedthat_minimax
+          verify-model: MiniMax-M3
+          verify-backup-provider: notedthat_thirdparty
+          verify-backup-model: deepseek-v4-flash-0731
+          # The endpoint caps DeepSeek at 246,000 input tokens a minute, and
+          # every agent turn resends the whole conversation: three checks at
+          # once hit it on #207.
+          jobs: 2
+
+        - lane: minimax
+          provider: notedthat_minimax
+          model: MiniMax-M3
+          verify-provider: notedthat_thirdparty
+          verify-model: deepseek-v4-flash-0731
+          verify-backup-provider: notedthat_minimax
+          verify-backup-model: MiniMax-M3
+          jobs: 3
+
+        - lane: mistral
+          provider: notedthat_thirdparty
+          model: mistral-medium-3-5
+          verify-provider: notedthat_minimax
+          verify-model: MiniMax-M3
+          verify-backup-provider: notedthat_thirdparty
+          verify-backup-model: deepseek-v4-flash-0731
+          jobs: 2   # the third-party endpoint's rate, as for DeepSeek
+
       #
       # The review job reaches GitHub and the proxy, and crates.io for
       # `cargo fetch`, which only downloads (nothing of the PR is built or
