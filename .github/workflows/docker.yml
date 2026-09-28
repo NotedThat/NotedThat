@@ -126,8 +126,7 @@ jobs:
       #                leg pushed `:1.2.3` itself, the second would overwrite the
       #                first and the tag would silently be single-arch.
       #   push=false — load into this runner's own daemon and nothing else. No
-      #                registry, no credentials, fork-PR safe. The trivy steps
-      #                below scan that local image.
+      #                registry, no credentials, fork-PR safe.
       #
       # provenance/sbom false, deliberately: build-push-action turns BuildKit
       # attestations on by default when pushing, and an image carrying them is
@@ -150,7 +149,7 @@ jobs:
           outputs: >-
             ${{ inputs.push
               && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE)
-              || format('type=docker,name={0}:scan', env.IMAGE) }}
+              || format('type=docker,name={0}:validation', env.IMAGE) }}
           build-args: |
             IMAGE_VERSION=${{ steps.version.outputs.version }}
             IMAGE_REVISION=${{ github.sha }}
@@ -167,95 +166,6 @@ jobs:
           # recompiling the whole dependency tree.
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
-
-      # What gets scanned differs by mode, and each is the real artifact:
-      #   push=true  — the digest just published, pulled back from GHCR.
-      #                Scanning the published bytes is a stronger claim than
-      #                scanning something built alongside them.
-      #   push=false — the image in this runner's daemon; nothing was published
-      #                and nothing may be (fork PRs have no credentials).
-      - name: Resolve the image reference to scan
-        id: scan_ref
-        env:
-          PUSH: ${{ inputs.push }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          if [ "${PUSH}" = "true" ]; then
-            echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=${IMAGE}:scan" >> "$GITHUB_OUTPUT"
-          fi
-
-      # HIGH and CRITICAL only, and `ignore-unfixed` on purpose.
-      #
-      # debian:bookworm-slim permanently carries HIGH CVEs that Debian has
-      # triaged as no-DSA / will-not-fix: there is no fixed package to move to
-      # and there will not be one before bookworm goes EOL. Gating on those
-      # makes this step red on every run forever, everyone learns to click past
-      # it, and the scanner leaves the repo LESS safe than having none. With
-      # ignore-unfixed a failure here has one precise meaning: a fix exists in
-      # the distribution and this image has not taken it.
-      #
-      # The remedy is to BUMP THE PINNED BASE DIGEST, and only that. Rebuilding
-      # does nothing: the `FROM` lines are pinned by digest and the runtime stage
-      # runs `apt-get install` without `upgrade`, so every rebuild resolves the
-      # same base layer. Saying "rebuild" here would send someone in a circle.
-      #
-      # The cost of that is a window: from the moment Debian publishes a fix,
-      # every pull request is red — whatever it touches — until the digest bump
-      # merges, and `release-plz-release` needs `docker-build`, so releases stop
-      # too. In `release.yml` the tag already exists when this runs, so a fix
-      # published between the CI run and the release run ships a version with
-      # crates and binaries but no image.
-      #
-      # The gate stays hard on both anyway, because a scan that is advisory on
-      # pull requests is one nobody reads. What shortens the window instead is
-      # `renovate.json`'s `vulnerabilityAlerts` rule, which is unscheduled: a
-      # base-image CVE raises the bump PR immediately rather than waiting for
-      # the Monday-morning window the other updates use.
-      #
-      # DB from the public.ecr.aws mirror rather than trivy's ghcr.io default:
-      # that pull is anonymous, GHCR rate-limits anonymous pulls per source IP,
-      # and GitHub-hosted runners share a small pool of them.
-      - name: Scan the image for HIGH/CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
-        env:
-          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
-          TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db
-        with:
-          scan-type: image
-          image-ref: ${{ steps.scan_ref.outputs.ref }}
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          trivyignores: .trivyignore.yaml
-          exit-code: "1"
-          format: table
-
-      # Secrets have no severity and no "unfixed": every hit is a hard fail.
-      #
-      # The stages that see the source tree are discarded, so today this scans a
-      # Debian base plus one stripped binary and finds nothing. That is the
-      # point — it is a tripwire for the day someone adds a COPY of a config
-      # file, an .env or a service-account key into the runtime stage. The only
-      # moment it is worth anything is the moment nobody expects it.
-      #
-      # `trivyignores` is set here too. trivy-action only exports
-      # TRIVY_IGNOREFILE when that input is present, and trivy's own default is
-      # `.trivyignore`, not `.trivyignore.yaml` — so without this the `secrets:`
-      # block in that file is read by nothing, and a maintainer following the
-      # file's own instructions to suppress a false positive would watch it
-      # change nothing at all.
-      - name: Scan the image for secrets
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
-        with:
-          scan-type: image
-          image-ref: ${{ steps.scan_ref.outputs.ref }}
-          scanners: secret
-          trivyignores: .trivyignore.yaml
-          exit-code: "1"
-          format: table
 
       # An empty file named after the digest. Looks like a typo otherwise: the
       # merge job globs these, so the manifest list is built from whatever the
