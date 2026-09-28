@@ -84,7 +84,7 @@ pub(super) async fn app_with_reconcile(
         Arc::new(NoopSearcher),
         authenticator(),
         None,
-        (&indexer_tx).into(),
+        notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx),
         Arc::new(IndexHealth::new()),
         reconcile,
     )
@@ -141,7 +141,7 @@ pub(super) async fn app_with_index_side(
         Arc::new(NoopSearcher),
         authenticator(),
         None,
-        (&indexer_tx).into(),
+        indexer_tx.clone(),
         health.clone(),
         Some(Arc::new(RecordingReconcile::default())),
     )
@@ -233,7 +233,7 @@ async fn build(
         authenticator: Arc::new(authenticator),
         max_body_size: 16 * 1024 * 1024,
         max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx: (&indexer_tx).into(),
+        indexer_tx: indexer_tx.clone(),
         searcher,
         events,
         index_health,

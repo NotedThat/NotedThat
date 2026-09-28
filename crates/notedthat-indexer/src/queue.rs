@@ -18,9 +18,10 @@ pub fn index_queue(capacity: usize) -> (IndexQueueSender, IndexQueueReceiver) {
     let (tx, rx) = mpsc::unbounded_channel();
     (
         IndexQueueSender {
-            tx,
-            raw_tx: None,
-            permits: permits.clone(),
+            inner: SenderInner::Bounded {
+                tx,
+                permits: permits.clone(),
+            },
             capacity,
         },
         IndexQueueReceiver {
@@ -32,10 +33,17 @@ pub fn index_queue(capacity: usize) -> (IndexQueueSender, IndexQueueReceiver) {
 /// Cloneable producer handle for the indexing ingress.
 #[derive(Clone)]
 pub struct IndexQueueSender {
-    tx: mpsc::UnboundedSender<QueuedEvent>,
-    raw_tx: Option<mpsc::Sender<IndexEvent>>,
-    permits: Arc<Semaphore>,
+    inner: SenderInner,
     capacity: usize,
+}
+
+#[derive(Clone)]
+enum SenderInner {
+    Bounded {
+        tx: mpsc::UnboundedSender<QueuedEvent>,
+        permits: Arc<Semaphore>,
+    },
+    Plain(mpsc::Sender<IndexEvent>),
 }
 
 impl IndexQueueSender {
@@ -43,59 +51,58 @@ impl IndexQueueSender {
     #[must_use]
     pub fn from_mpsc(tx: mpsc::Sender<IndexEvent>) -> Self {
         let capacity = tx.max_capacity();
-        let (unused, _) = mpsc::unbounded_channel();
         Self {
-            tx: unused,
-            raw_tx: Some(tx),
-            permits: Arc::new(Semaphore::new(capacity)),
+            inner: SenderInner::Plain(tx),
             capacity,
         }
     }
     /// Try to accept an event without waiting for room.
     pub fn try_send(&self, event: IndexEvent) -> Result<(), mpsc::error::TrySendError<IndexEvent>> {
-        if let Some(tx) = &self.raw_tx {
-            return tx.try_send(event);
+        match &self.inner {
+            SenderInner::Plain(tx) => tx.try_send(event),
+            SenderInner::Bounded { tx, permits } => {
+                let permit = match permits.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(tokio::sync::TryAcquireError::NoPermits) => {
+                        return Err(mpsc::error::TrySendError::Full(event));
+                    }
+                    Err(tokio::sync::TryAcquireError::Closed) => {
+                        return Err(mpsc::error::TrySendError::Closed(event));
+                    }
+                };
+                tx.send(QueuedEvent {
+                    event,
+                    _permit: Some(permit),
+                })
+                .map_err(|error| mpsc::error::TrySendError::Closed(error.0.event))
+            }
         }
-        let permit = match self.permits.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(tokio::sync::TryAcquireError::NoPermits) => {
-                return Err(mpsc::error::TrySendError::Full(event));
-            }
-            Err(tokio::sync::TryAcquireError::Closed) => {
-                return Err(mpsc::error::TrySendError::Closed(event));
-            }
-        };
-        self.tx
-            .send(QueuedEvent {
-                event,
-                _permit: Some(permit),
-            })
-            .map_err(|error| {
-                let queued = error.0;
-                mpsc::error::TrySendError::Closed(queued.event)
-            })
     }
 
     /// Wait until the pending-event bound has room, then accept an event.
     pub async fn send(&self, event: IndexEvent) -> Result<(), mpsc::error::SendError<IndexEvent>> {
-        if let Some(tx) = &self.raw_tx {
-            return tx.send(event).await;
+        match &self.inner {
+            SenderInner::Plain(tx) => tx.send(event).await,
+            SenderInner::Bounded { tx, permits } => {
+                let Ok(permit) = permits.clone().acquire_owned().await else {
+                    return Err(mpsc::error::SendError(event));
+                };
+                tx.send(QueuedEvent {
+                    event,
+                    _permit: Some(permit),
+                })
+                .map_err(|error| mpsc::error::SendError(error.0.event))
+            }
         }
-        let Ok(permit) = self.permits.clone().acquire_owned().await else {
-            return Err(mpsc::error::SendError(event));
-        };
-        self.tx
-            .send(QueuedEvent {
-                event,
-                _permit: Some(permit),
-            })
-            .map_err(|error| mpsc::error::SendError(error.0.event))
     }
 
     /// Events accepted but not yet fully handled.
     #[must_use]
     pub fn depth(&self) -> usize {
-        self.capacity - self.permits.available_permits()
+        match &self.inner {
+            SenderInner::Bounded { permits, .. } => self.capacity - permits.available_permits(),
+            SenderInner::Plain(tx) => self.capacity - tx.capacity(),
+        }
     }
 
     /// The fixed pending-event limit.
@@ -107,15 +114,10 @@ impl IndexQueueSender {
     /// Remaining room before a producer is refused or waits.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.raw_tx
-            .as_ref()
-            .map_or_else(|| self.permits.available_permits(), mpsc::Sender::capacity)
-    }
-}
-
-impl From<&IndexQueueSender> for IndexQueueSender {
-    fn from(sender: &IndexQueueSender) -> Self {
-        sender.clone()
+        match &self.inner {
+            SenderInner::Bounded { permits, .. } => permits.available_permits(),
+            SenderInner::Plain(tx) => tx.capacity(),
+        }
     }
 }
 

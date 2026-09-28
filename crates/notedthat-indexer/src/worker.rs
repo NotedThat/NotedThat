@@ -52,7 +52,7 @@ pub struct IndexerWorker {
     /// Vector store used for point writes and deletes.
     pub store: Arc<dyn VectorStore>,
     /// Event receiver drained by the worker loop.
-    pub rx: crate::IndexQueueReceiver,
+    pub rx: Option<crate::IndexQueueReceiver>,
     /// Cancellation token that triggers graceful draining.
     pub shutdown: CancellationToken,
     /// Maximum number of chunks sent to the embedder per request.
@@ -86,19 +86,15 @@ impl IndexerWorker {
         shutdown: CancellationToken,
         batch_size: usize,
     ) -> Self {
-        Self {
+        Self::with_receiver(
             storage,
             embedder,
             store,
-            rx: crate::IndexQueueReceiver::from_mpsc(rx),
+            crate::IndexQueueReceiver::from_mpsc(rx),
             shutdown,
             batch_size,
-            index_concurrency: 1,
-            staging: StagingConfig::default(),
-            events: None,
-            last_seen: Arc::new(Mutex::new(LastSeen::default())),
-            health: Arc::new(IndexHealth::new()),
-        }
+            1,
+        )
     }
 
     /// Build a worker over bounded ingress.
@@ -112,17 +108,39 @@ impl IndexerWorker {
         batch_size: usize,
         index_concurrency: usize,
     ) -> Self {
-        let mut worker = Self::new(
+        Self::with_receiver(
             storage,
             embedder,
             store,
-            mpsc::channel(1).1,
+            rx,
             shutdown,
             batch_size,
-        );
-        worker.rx = rx;
-        worker.index_concurrency = index_concurrency;
-        worker
+            index_concurrency,
+        )
+    }
+
+    fn with_receiver(
+        storage: Arc<dyn Storage>,
+        embedder: Arc<dyn Embedder>,
+        store: Arc<dyn VectorStore>,
+        rx: crate::IndexQueueReceiver,
+        shutdown: CancellationToken,
+        batch_size: usize,
+        index_concurrency: usize,
+    ) -> Self {
+        Self {
+            storage,
+            embedder,
+            store,
+            rx: Some(rx),
+            shutdown,
+            batch_size,
+            index_concurrency,
+            staging: StagingConfig::default(),
+            events: None,
+            last_seen: Arc::new(Mutex::new(LastSeen::default())),
+            health: Arc::new(IndexHealth::new()),
+        }
     }
 
     /// Record outcomes on a health record shared with the surfaces that
@@ -170,9 +188,10 @@ impl IndexerWorker {
             if !receiver_open && lanes.is_empty() && running.is_empty() {
                 break;
             }
+            let rx = self.rx.as_mut().expect("running workers have receivers");
             tokio::select! {
                 () = self.shutdown.cancelled() => {
-                    while let Ok(queued) = self.rx.try_recv() {
+                    while let Ok(queued) = rx.try_recv() {
                         lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued);
                     }
                     if tokio::time::timeout(DRAIN_TIMEOUT, Self::drain(&mut lanes, &mut active, &mut running, self)).await.is_err() {
@@ -186,7 +205,7 @@ impl IndexerWorker {
                     let in_flight = running.len() as f64;
                     metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(in_flight);
                 }
-                queued = self.rx.recv(), if receiver_open => match queued {
+                queued = rx.recv(), if receiver_open => match queued {
                     Some(queued) => lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued),
                     None => receiver_open = false,
                 },
@@ -240,7 +259,7 @@ impl IndexerWorker {
             storage: self.storage.clone(),
             embedder: self.embedder.clone(),
             store: self.store.clone(),
-            rx: crate::IndexQueueReceiver::from_mpsc(mpsc::channel(1).1),
+            rx: None,
             shutdown: self.shutdown.clone(),
             batch_size: self.batch_size,
             index_concurrency: self.index_concurrency,
