@@ -442,9 +442,10 @@ Before granting `anyone` anything, note what comes with it: `read` makes objects
 a credential at their `/api/v1` URL; `list` makes them enumerable; `search` runs an embedding call
 per query against your paid endpoint, from an unauthenticated caller — **configure proxy rate
 limits first**, because there is no application limiter. `/browse` exposes exactly what the same
-rules allow and nothing more: no JavaScript, no accounts, no editing, no search, and `.notedthat`
-rendered for nobody. Anonymous denials answer `404` rather than `403` so the status cannot be used
-to enumerate private prefixes.
+rules allow and nothing more: no JavaScript, accounts, or editing; its GET search is browser-reachable
+where `search` is granted, so proxy rate and burst limits apply and query-bearing access logs need
+appropriate retention. `.notedthat` is rendered for nobody. Anonymous denials answer `404` rather
+than `403` so the status cannot be used to enumerate private prefixes.
 
 `NOTEDTHAT_MCP_ANONYMOUS=never` closes `/mcp` to anonymous callers while the other surfaces keep
 honouring the same `anyone` rules — useful when you want an OAuth-capable client challenged on

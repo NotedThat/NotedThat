@@ -130,9 +130,10 @@ path from the removed `public_read` field.
 
 ## Browse surface
 
-`/browse` serves plain server-rendered HTML directory listings of whatever the caller may read —
-no JavaScript, no accounts, no editing. File links point at the object's existing `/api/v1` URL
-rather than a second download path. See the [API reference](docs/API.md#browse-surface).
+`/browse` serves plain server-rendered HTML directory listings and same-knowledge-base search of
+what the caller is granted — no JavaScript, accounts, or editing. Search uses `search`; directory
+and result links independently use `list` and `read`. File links point at the object's existing
+`/api/v1` URL rather than a second download path. See the [API reference](docs/API.md#browse-surface).
 
 ## Running locally
 

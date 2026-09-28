@@ -12,3 +12,5 @@ mod limits;
 mod navigation;
 #[path = "browse/rendering.rs"]
 mod rendering;
+#[path = "browse/search.rs"]
+mod search;

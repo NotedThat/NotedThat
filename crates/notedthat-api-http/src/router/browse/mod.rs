@@ -24,19 +24,40 @@ use crate::authz::KbAccess;
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use format::{ABSENT, civil_date, http_date, human_size};
 use listing::{BROWSE_MAX_KEYS, DirectoryListing, is_present, read_directory};
+use notedthat_core::search::{MAX_LIMIT, SearchRequest};
 use notedthat_core::{ObjectMeta, ObjectPath, Principal, Verb};
-use render::{Crumb, PageView, RowKind, RowView, display_text, escape_html, page};
+use render::{
+    Crumb, PageView, RowKind, RowView, SearchResultView, SearchView, display_text, escape_html,
+    page,
+};
+use serde::Deserialize;
 
 /// The name shown at the root of every breadcrumb.
 ///
 /// Hardcoded, like the `/llms.txt` body: a public page should carry no
 /// deployment-specific detail it was not asked to publish.
 const SITE_NAME: &str = "notedthat";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowseQuery {
+    q: Option<String>,
+    limit: Option<u32>,
+}
+
+struct SearchPage<'a> {
+    state: &'a AppState,
+    access: &'a KbAccess,
+    kb_slug: &'a str,
+    prefix: &'a str,
+    principal: &'a Principal,
+    request_id: &'a str,
+}
 
 /// `GET|HEAD /browse` and `/browse/` — the index of knowledge bases.
 pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request) -> Response {
@@ -109,6 +130,7 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
         summary,
         notice: None,
         footnote: None,
+        search: None,
     }))
 }
 
@@ -179,11 +201,98 @@ pub(super) async fn browse_path(
             return not_found(&request_id);
         }
     }
+    let Ok(Query(query)) = Query::<BrowseQuery>::try_from_uri(req.uri()) else {
+        return bad_request(&request_id);
+    };
+    if let Some(query_text) = query.q {
+        return SearchPage {
+            state: &state,
+            access: &access,
+            kb_slug,
+            prefix,
+            principal: &principal,
+            request_id: &request_id,
+        }
+        .render(query_text, query.limit)
+        .await;
+    }
     if !access.policy_grants_any(Verb::List) {
         return denied(&principal, &request_id);
     }
 
     render_directory(&state, &access, kb_slug, prefix, &principal, &request_id).await
+}
+
+impl SearchPage<'_> {
+    async fn render(&self, query: String, limit: Option<u32>) -> Response {
+        if limit.is_some_and(|limit| !(1..=MAX_LIMIT).contains(&limit)) {
+            return bad_request(self.request_id);
+        }
+        let Ok(validated) = (SearchRequest {
+            query: query.clone(),
+            filter: None,
+            limit,
+        })
+        .validate() else {
+            return bad_request(self.request_id);
+        };
+        if self.access.require_any(Verb::Search).is_err() {
+            return denied(self.principal, self.request_id);
+        }
+        let response =
+            match crate::search_route::execute_search(self.state, self.access, validated).await {
+                Ok(response) => response,
+                Err(error) => return search_error(error.status(), self.request_id),
+            };
+        let results = response
+            .hits
+            .into_iter()
+            .filter_map(|hit| {
+                let key = hit.object_key.as_str();
+                if notedthat_core::is_internal_path(key) {
+                    return None;
+                }
+                let folder = key.rsplit_once('/').map_or("", |(folder, _)| folder);
+                let prefix = if folder.is_empty() {
+                    String::new()
+                } else {
+                    format!("{folder}/")
+                };
+                let folder_href = self
+                    .access
+                    .allows(Verb::List, &prefix)
+                    .then(|| escape_html(&links::directory_href(self.kb_slug, &prefix)));
+                Some(SearchResultView {
+                    key: display_text(key),
+                    object_href: self
+                        .access
+                        .allows(Verb::Read, key)
+                        .then(|| escape_html(&links::object_href(self.kb_slug, key))),
+                    folder: display_text(folder),
+                    folder_href,
+                    heading_path: hit
+                        .heading_path
+                        .iter()
+                        .map(|heading| display_text(heading))
+                        .collect(),
+                    preview: display_text(&hit.preview),
+                })
+            })
+            .collect();
+        html_ok(&page(&PageView {
+            title: format!("{}/{}", self.kb_slug, self.prefix),
+            crumbs: crumbs(self.kb_slug, self.prefix),
+            rows: Vec::new(),
+            summary: String::new(),
+            notice: None,
+            footnote: None,
+            search: Some(SearchView {
+                action: escape_html(&links::directory_href(self.kb_slug, self.prefix)),
+                query: display_text(&query),
+                results,
+            }),
+        }))
+    }
 }
 
 /// `/browse/{kb}/{path}` with no trailing slash: an object, a folder, or neither.
@@ -282,6 +391,11 @@ async fn render_directory(
                 "{restricted} {} listed but not readable.",
                 plural(restricted, "object is", "objects are")
             )
+        }),
+        search: Some(SearchView {
+            action: escape_html(&links::directory_href(kb_slug, prefix)),
+            query: String::new(),
+            results: Vec::new(),
         }),
     }))
 }
@@ -445,6 +559,26 @@ fn server_error(request_id: &str) -> Response {
     )
 }
 
+fn bad_request(request_id: &str) -> Response {
+    html_error(
+        StatusCode::BAD_REQUEST,
+        "Invalid search",
+        "The search query is invalid.",
+        request_id,
+    )
+}
+
+fn search_error(status: StatusCode, request_id: &str) -> Response {
+    let (heading, detail) = match status {
+        StatusCode::NOT_FOUND => ("Not found", "There is nothing to show at this address."),
+        StatusCode::SERVICE_UNAVAILABLE => {
+            ("Unavailable", "The search backend could not be reached.")
+        }
+        _ => ("Unavailable", "The search could not be completed."),
+    };
+    html_error(status, heading, detail, request_id)
+}
+
 /// The answer for a caller who may not see something.
 fn denied(principal: &Principal, request_id: &str) -> Response {
     match principal {
@@ -479,7 +613,11 @@ fn browse_headers(response: &mut Response) {
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
-             form-action 'none'; frame-ancestors 'none'",
+             form-action 'self'; frame-ancestors 'none'",
         ),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
     );
 }

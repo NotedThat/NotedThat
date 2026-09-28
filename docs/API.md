@@ -34,8 +34,7 @@ Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a Note
 
 `/browse` serves server-rendered HTML directory listings for people with a browser. It is a
 read-only view over the same storage and the same [access rules](#manifest-access-rules) as every
-other surface — not a document manager. There is no JavaScript, no accounts, no editing and no
-search UI.
+other surface — not a document manager. There is no JavaScript, accounts, or editing.
 
 | Request | Response |
 | --- | --- |
@@ -44,6 +43,7 @@ search UI.
 | `GET /browse/{kb_slug}` | `307` redirect to `/browse/{kb_slug}/` |
 | `GET /browse/{kb_slug}/` | The knowledge base's top level |
 | `GET /browse/{kb_slug}/{prefix}/` | One directory level |
+| `GET /browse/{kb_slug}/{prefix}/?q=…&limit=…` | Search this KB; `q` is 1–8192 bytes and `limit` defaults to 10 (1–50) |
 | `GET /browse/{kb_slug}/{key}` | `303` redirect to the object's `/api/v1` URL, or `307` to the slashed form if it is a folder |
 | Any other method | `405` with an `Allow` header |
 
@@ -52,6 +52,12 @@ segment. `HEAD` behaves as `GET`.
 
 **Object links point at `/api/v1/knowledgebases/{kb_slug}/{path}`** — the existing representation.
 There is no second download path, and Markdown is not rendered to HTML.
+
+**Search.** The GET form searches with `search`, independently of `list`; a search-only caller sees
+the form and results but no directory listing. Result previews can name content the caller cannot
+read, just as API search can. Object links require `read`; containing-folder links require `list`.
+The page never shows ranking scores. Empty, oversized, duplicate, or unknown `q`/`limit` parameters
+return request-id-bearing HTML `400`; a folder-scoped search does not check folder existence.
 
 **What a row means.** Directories are synthesised from object keys; storage has no directories
 (D40). A folder appears exactly when at least one key you can see sits beneath it. A file's name is
@@ -69,7 +75,8 @@ says where the listing stops, rather than failing — keys arrive in lexicograph
 page is a correct prefix of the truth. (WebDAV `PROPFIND` answers `507` in the same situation,
 because a sync client would mistake a partial listing for a complete one and delete the difference.)
 
-**For proxy operators.** Responses carry `Cache-Control: no-store` and `Vary: Authorization`:
+**For proxy operators.** Responses carry `Cache-Control: no-store`, `Vary: Authorization`, and
+`Referrer-Policy: no-referrer`:
 anonymous and credentialed callers share a URL and see different pages, so a cached anonymous copy
 served to a credentialed caller — or the reverse — would be a disclosure. Pages also carry
 `X-Content-Type-Options: nosniff`, a restrictive `Content-Security-Policy`, and
@@ -1904,8 +1911,10 @@ container now exposes only `8080`. Terminate TLS once, in front of that port. Pe
 rules that pointed at the old WebDAV or MCP ports must be removed.
 
 **`/browse` is a live surface.** Forward it like any other route. Its responses carry
-`Cache-Control: no-store` and `Vary: Authorization`, because anonymous and credentialed callers
-share a URL and see different pages — do not configure a proxy cache that ignores either header.
+`Cache-Control: no-store`, `Vary: Authorization`, and `Referrer-Policy: no-referrer`, because
+anonymous and credentialed callers share a URL and see different pages — do not configure a proxy
+cache that ignores either header. Browser-reachable anonymous search needs proxy rate and burst
+limits; query strings may appear in access logs.
 
 **`/api/v1/knowledgebases/{kb_slug}/events` is a long-lived stream.** It never finishes on its
 own, so a proxy must neither buffer it nor time it out on read. The response carries

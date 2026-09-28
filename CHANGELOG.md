@@ -268,6 +268,7 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ### Added
 
+- *(api-http)* add no-JavaScript, grant-filtered `/browse` search
 - *(core)* [**breaking**] replace manifest public_read with path-scoped access rules
 - *(core)* add the manifest access policy model
 - *(core)* add glob key patterns for access rules
