@@ -37,7 +37,7 @@
 # directly, until it was turned off for its cost. Its provider file stays;
 # to turn it back on, add a lane with `provider: notedthat_openrouter`,
 # `OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}` to PROVIDER_ENV and
-# openrouter.ai:443 to egress-endpoints. The model's shell can read the key;
+# "openrouter.ai:443" to egress-endpoints. The model's shell can read the key;
 # its monthly spending limit on OpenRouter caps what a leak could cost.)
 #
 # Advisory only: it posts COMMENT reviews, never requests changes, and the
@@ -71,7 +71,7 @@ jobs:
       && !startsWith(github.head_ref, 'release-plz-')
       && !startsWith(github.head_ref, 'release/')
       && !startsWith(github.event.pull_request.title, 'chore: release ')
-    uses: StephanMeijer/goose-review/.github/workflows/review.yml@d4e61dd3ca66e7422e2d6a7b0d8efc5c4465ac45 # v0.1.0
+    uses: StephanMeijer/goose-review/.github/workflows/review.yml@ffcb24d3050783170c5847ed347d55f6ec2d799f # v0.2.0
     # The most the review's jobs use: the lanes' review jobs read, their
     # post jobs and tidy/summary write reviews and the summary comment, and
     # summary reads the run's jobs for its links.
@@ -100,11 +100,10 @@ jobs:
       #
       # The review job reaches GitHub and the proxy, and crates.io for
       # `cargo fetch`, which only downloads (nothing of the PR is built or
-      # run) so the model can read what a library call really does.
-      egress-endpoints: |
-        index.crates.io:443
-        static.crates.io:443
-        ${{ vars.GOOSE_PROXY_EGRESS }}
+      # run) so the model can read what a library call really does. A JSON
+      # list: harden-runner splits its allow-list on single spaces.
+      egress-endpoints: >-
+        ["index.crates.io:443", "static.crates.io:443", "${{ vars.GOOSE_PROXY_EGRESS }}"]
       setup: cargo fetch --locked
       tools-file: .agents/goose-review/tools.md
       # Never reviewed: build output, manual QA notes, tool caches, and files
