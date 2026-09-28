@@ -10,6 +10,12 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/NotedThat/NotedThat/compare/v0.12.1...v0.12.2) - 2026-09-28
+
+### Other
+
+- Merge pull request #232 from NotedThat/feat/browse-search-228
+
 ## [0.12.1](https://github.com/NotedThat/NotedThat/compare/v0.12.0...v0.12.1) - 2026-09-28
 
 ### Fixed
