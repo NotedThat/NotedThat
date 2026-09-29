@@ -94,6 +94,33 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Fails on a dependency a crate declares but never names. Every crate here is
+  # published, so an unused entry is not a local cost: each downstream consumer
+  # compiles it and everything it pulls in (#302 — `aws-config` alone dragged
+  # `aws-sdk-sts` into every build of notedthat-storage-s3). Neither the
+  # compiler nor clippy notices, so without this it only surfaces in a sweep.
+  #
+  # cargo-machete reads sources and manifests and compiles nothing, so, like
+  # `fmt`, there is no rust-cache; it runs in seconds. A false positive — a
+  # dependency used only through a macro that does not name it — is suppressed
+  # in that crate's Cargo.toml under `[package.metadata.cargo-machete]
+  # ignored`, with a reason, never with a flag here.
+  machete:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Renovate bumps the action SHA but CANNOT see `tool:`, so the
+      # cargo-machete version moves by hand, in two places: here and
+      # DEVELOPMENT.md.
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-machete@0.9.2
+      - run: cargo machete
+
   # Dry-run `cargo package` on every push and PR, for the same reason the
   # Dockerfile build is dry-run here: release-plz packages each crate on its
   # own, and a crate that only compiles because a sibling in the workspace
