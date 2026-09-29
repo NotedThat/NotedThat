@@ -41,9 +41,12 @@ Dead code is a build error (`dead_code = "deny"` in the workspace lints), and
 CI refuses any `#[allow]` or `#[expect]` of `dead_code` or `unused`. Delete the
 code instead. A fixture shared by several test binaries is the usual trap: each
 binary compiles its own copy of a `#[path]` module and leaves whatever it does
-not call dead. Split it so each binary includes only what it uses, or move it
-into the crate's `testing` module behind the `test-support` feature, as
-`notedthat_server::testing` does.
+not call dead. Prefer splitting it so each binary includes only what it uses.
+When many binaries share a harness, it can instead move into the crate's
+`testing` module behind the `test-support` feature, as `notedthat_server::testing`
+does. Its items are `pub`, though, and `dead_code` never fires on a library's
+`pub` items, so the lint no longer checks them there: keep what only the module
+itself uses private, and delete a helper when its last caller goes.
 
 ## Local service setup
 
