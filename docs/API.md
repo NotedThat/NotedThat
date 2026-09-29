@@ -2062,9 +2062,13 @@ describes by default, which is what lets it push `notifications/resources/update
   any id it does not know. The two are deliberately indistinguishable, so a session id is not
   an oracle for which sessions exist.
   - The binding is on the **subject**, not the bearer. Refreshing an access token mid-session
-    keeps the session, its notification leg and its subscriptions, and a refresh that changes
-    your groups keeps them too — a client is expected to hold one session for the life of its
-    connection and rotate its token underneath it.
+    keeps the session and its notification leg, and a refresh that changes your groups keeps
+    them too — a client is expected to hold one session for the life of its connection and
+    rotate its token underneath it. Subscriptions made with the old token move to the newest
+    token the session has presented once the old one is refused, each checked again as the new
+    token, and each is sent one `notifications/resources/updated` at that moment: re-read it,
+    since changes in between may have gone unreported. A key the new token cannot `list` is
+    dropped instead. See [Subscriptions](#subscriptions).
   - The service token is one owner: whatever holds it holds all of its sessions.
   - Every caller presenting **no** credential is one owner, since nothing distinguishes two of
     them. On a deployment that admits anonymous callers, one anonymous client can still attach
@@ -2411,12 +2415,20 @@ as a diff.
 
 What a subscription is not: it is per session (it ends with `DELETE /mcp`, the idle timeout, or
 a restart, and a new session starts with none), it has no replay (a client that needs history
-uses the events route with `Last-Event-ID`, or lists), and it does not outlive the credential that made it
-(a bearer the events route later refuses drops that credential's subscriptions in that
-knowledge base silently). Subscriptions made with different credentials on one session are kept
-apart, each fed by its own stream, so a client that rotates its token — an OIDC client
-refreshing mid-session — does not lose the subscriptions it made with the new one when the old
-one expires. Without an events backend neither capability is advertised and both methods
+uses the events route with `Last-Event-ID`, or lists), and it is not tied to one token for
+life. Each subscription is fed by a stream opened with the credential that made it, and an OIDC
+client refreshing mid-session ends up with subscriptions under both tokens. When the events route
+refuses the old token as expired (`401`), its subscriptions in that knowledge base move to the
+newest credential the session has presented — at once if it already sent a request with one,
+otherwise on its next request. Each key is probed again as that credential, exactly as
+`resources/subscribe` would probe it, and a key it cannot `list` is dropped. Until they move,
+the subscriptions still count, so the session is kept open for them. A credential the route
+refuses because it lost access (`403`, `404`) has its subscriptions in that knowledge base
+dropped. Either way, every affected key is sent one `notifications/resources/updated`, and a
+watched knowledge base one `list_changed`. Re-read it: changes may have gone unreported while the
+stream was down, and a re-read presents your current token, which is what moves the rest. A
+dropped key sends nothing more, and subscribing to it again is refused with the reason.
+Without an events backend neither capability is advertised and both methods
 answer `method_not_found` (`-32601`).
 
 ### Path Encoding
