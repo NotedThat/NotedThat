@@ -1,9 +1,10 @@
 use reqwest::{Method, StatusCode};
 
 use super::{
-    access_env::{DAV_PASS, DAV_USER, PRIVATE_BODY, PRIVATE_KB, PROPFIND, PUBLIC_BODY, PUBLIC_KB},
+    access_env::{DAV_PASS, DAV_USER, PRIVATE_KB, PUBLIC_KB},
+    access_probes::{PRIVATE_BODY, PROPFIND, PUBLIC_BODY, method},
     access_server::ServerInstance,
-    access_wire::{method, wire},
+    access_wire::wire,
 };
 
 pub async fn verify(client: &reqwest::Client, server: &ServerInstance) {

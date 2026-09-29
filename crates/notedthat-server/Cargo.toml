@@ -15,7 +15,18 @@ authors.workspace = true
 # `Storage`, `VectorStore` and `Embedder` in their signatures, and pinning
 # those traits into the published API would make evolving them a breaking
 # change to this crate.
-test-support = []
+#
+# Also carries `testing`: the in-process servers and SSE reader the E2E suites
+# share. They live in the library, not in `tests/support`, because each test
+# binary compiling its own copy leaves whatever that binary does not call as
+# dead code, which the workspace forbids (#304).
+test-support = [
+  "dep:futures",
+  "notedthat-api-http/test-support",
+  "notedthat-indexer/test-support",
+  "notedthat-mcp/test-support",
+  "reqwest/stream",
+]
 
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
@@ -55,6 +66,8 @@ reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 url.workspace = true
+# `testing::sse` reads an event stream chunk by chunk. Only with `test-support`.
+futures = { workspace = true, optional = true }
 
 [lib]
 path = "src/lib.rs"

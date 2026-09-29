@@ -6,10 +6,9 @@
 //! ```
 #![allow(missing_docs)]
 
-#[path = "support/patch_env.rs"]
-mod patch_env;
+use notedthat_server::testing::patch_server;
 
-use patch_env::{API_TOKEN, PatchServer, assert_error_code, etag, mcp_call_tool, mcp_request};
+use patch_server::{API_TOKEN, PatchServer, assert_error_code, etag, mcp_call_tool, mcp_request};
 use reqwest::StatusCode;
 
 const NORMAL_MAX_PATCHABLE_SIZE: u64 = 10 * 1024 * 1024;

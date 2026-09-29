@@ -4,19 +4,17 @@
 //! embedder per test. The subject of those tests is the server — its routes,
 //! its MCP and `WebDAV` surfaces, its startup and shutdown — not any backend's
 //! wire protocol, so the whole runtime is now assembled from
-//! [`notedthat_server::run::Backends`] over in-memory implementations and handed
-//! to `run_with`. Everything else about startup is the real path: the same
+//! [`crate::run::Backends`] over in-memory implementations and handed
+//! to [`run_with`](crate::run::run_with). Everything else about startup is the real path: the same
 //! provisioning, the same indexer worker, the same listeners.
 
+use crate::config::{Config, EmbedderConfig};
+use crate::run::Backends;
 use notedthat_api_http::testing::InMemoryStorage;
-use notedthat_core::{EventPublisher, KbSlug};
+use notedthat_core::KbSlug;
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
-use notedthat_server::config::{Config, EmbedderConfig};
-use notedthat_server::run::Backends;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-use super::API_TOKEN;
 
 /// Vector width the stub embedder and the provisioned collection agree on.
 const EMBEDDING_DIM: u32 = 4;
@@ -32,26 +30,9 @@ struct ListenerAddrs {
     http: std::net::SocketAddr,
 }
 
-pub(super) fn start_runtime(max_patchable_size: u64) -> RuntimeParts {
-    start_runtime_with_events(max_patchable_size, None)
-}
-
-/// A runtime over an event log, so the events route has something to serve.
-pub(super) fn start_runtime_with_events(
-    max_patchable_size: u64,
-    events: Option<Arc<dyn EventPublisher>>,
-) -> RuntimeParts {
-    start_runtime_with_backends(
-        max_patchable_size,
-        Backends {
-            events,
-            ..in_memory_backends()
-        },
-    )
-}
-
-/// A runtime over exactly `backends`.
-pub(super) fn start_runtime_with_backends(
+/// A runtime over exactly `backends`, accepting `api_token` as its service token.
+pub(super) fn runtime(
+    api_token: &str,
     max_patchable_size: u64,
     backends: Backends,
 ) -> RuntimeParts {
@@ -59,7 +40,7 @@ pub(super) fn start_runtime_with_backends(
         http: notedthat_api_http::testing::reserve_addr(),
     };
     let kb = unique_kb();
-    let config = test_config(&kb, listeners, max_patchable_size);
+    let config = test_config(api_token, &kb, listeners, max_patchable_size);
 
     RuntimeParts {
         config,
@@ -69,7 +50,7 @@ pub(super) fn start_runtime_with_backends(
 }
 
 /// Storage, vector store and embedder, all in-process.
-pub(super) fn in_memory_backends() -> Backends {
+pub fn in_memory_backends() -> Backends {
     Backends {
         storage: Arc::new(InMemoryStorage::default()),
         store: Arc::new(InMemoryVectorStore::new()),
@@ -80,10 +61,15 @@ pub(super) fn in_memory_backends() -> Backends {
 
 /// Config for a server whose backends are injected; the rest is
 /// [`Config::for_tests`], whose backend addresses are unroutable.
-fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> Config {
+fn test_config(
+    api_token: &str,
+    kb: &str,
+    listeners: ListenerAddrs,
+    max_patchable_size: u64,
+) -> Config {
     let base = Config::for_tests();
     Config {
-        api_token: API_TOKEN.to_string(),
+        api_token: api_token.to_string(),
         kbs: BTreeMap::from([(
             kb.to_string(),
             KbSlug::try_new(kb).expect("test KB slug is valid"),

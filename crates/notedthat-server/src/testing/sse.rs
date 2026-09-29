@@ -9,8 +9,6 @@
 //! with [`Subscription::events_where`] and [`change_events`] and lets the
 //! outcomes ride along unasserted.
 
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -19,10 +17,15 @@ use futures::StreamExt;
 /// test can assert on the stream's first frame too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
+    /// The `id:` field.
     pub id: Option<String>,
+    /// The `event:` field.
     pub event: Option<String>,
+    /// The `data:` field, parsed as JSON.
     pub data: Option<serde_json::Value>,
+    /// The `retry:` field.
     pub retry: Option<String>,
+    /// Every `:` comment line, without the colon.
     pub comments: Vec<String>,
 }
 
@@ -103,6 +106,7 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Start reading `response`, asserting it is a `200` event stream.
     pub fn open(response: reqwest::Response) -> Self {
         assert_eq!(response.status(), reqwest::StatusCode::OK, "subscribe");
         assert!(

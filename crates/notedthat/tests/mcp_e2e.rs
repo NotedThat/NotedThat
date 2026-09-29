@@ -1,7 +1,7 @@
 //! The MCP tool surface, end to end over the streamable HTTP transport: a
 //! real `notedthat-server` on in-process backends, driven at `POST /mcp`.
 
-#![allow(dead_code, missing_docs)]
+#![allow(missing_docs)]
 // allow: SIZE_OK — task requires duplicating the container-backed server fixture here.
 
 use std::sync::OnceLock;

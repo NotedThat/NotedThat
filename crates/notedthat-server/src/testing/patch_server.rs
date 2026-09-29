@@ -1,42 +1,35 @@
-#![expect(
-    dead_code,
-    reason = "replace helpers are shared by forthcoming E2E cases"
-)]
-
-#[path = "patch_backends.rs"]
-mod patch_backends;
-
 use reqwest::{Response, StatusCode};
-use std::time::Duration;
 use tokio::task::JoinHandle;
 
-/// How long to wait for the server to bind after startup begins.
-///
-/// Provisioning is in-process now, so this is generous by a wide margin; it
-/// exists to fail with a clear message rather than hang if startup breaks.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+use super::{SERVER_READY_TIMEOUT, wait_for_http};
 
+/// The service token the server accepts and every request here sends.
 pub const API_TOKEN: &str = "e2e-test-token";
 
-/// Storage, vector store and embedder, all in-process — the starting point
-/// for a test that swaps one of them out via [`PatchServer::start_with_backends`].
-pub fn in_memory_backends() -> notedthat_server::run::Backends {
-    patch_backends::in_memory_backends()
-}
+pub use super::backends::in_memory_backends;
 
+/// A real server over in-process backends, for the write-path suites.
+///
+/// Aborted on drop.
 pub struct PatchServer {
+    /// A plain client; each request adds its own credentials.
     pub client: reqwest::Client,
+    /// `http://host:port` of the product listener.
     pub base_url: String,
+    /// The streamable HTTP MCP endpoint.
     pub mcp_url: String,
     /// One MCP session as the service token, shared by every tool call a test
     /// makes: the stateful transport binds a session per `initialize`, and a
     /// suite should not open one per call.
     pub mcp: notedthat_mcp::testing::McpSession,
+    /// The one knowledge base the server declares, unique per server.
     pub kb: String,
     server_handle: JoinHandle<()>,
 }
 
 impl PatchServer {
+    /// A server over the in-process backends, patching objects up to
+    /// `max_patchable_size` bytes.
     pub async fn start(max_patchable_size: u64) -> Self {
         Self::start_with_events(max_patchable_size, None).await
     }
@@ -46,18 +39,18 @@ impl PatchServer {
         max_patchable_size: u64,
         events: Option<std::sync::Arc<dyn notedthat_core::EventPublisher>>,
     ) -> Self {
-        let backends = notedthat_server::run::Backends {
+        let backends = crate::run::Backends {
             events,
-            ..patch_backends::in_memory_backends()
+            ..in_memory_backends()
         };
         Self::start_with_backends(max_patchable_size, backends).await
     }
 
     /// A server over exactly these backends — for a test that needs one of
-    /// them to misbehave. Start from [`patch_backends::in_memory_backends`].
+    /// them to misbehave. Start from [`in_memory_backends`].
     pub async fn start_with_backends(
         max_patchable_size: u64,
-        backends: notedthat_server::run::Backends,
+        backends: crate::run::Backends,
     ) -> Self {
         Self::start_with_config(max_patchable_size, backends, |_| {}).await
     }
@@ -66,17 +59,17 @@ impl PatchServer {
     /// for a test about a setting the defaults do not exercise.
     pub async fn start_with_config(
         max_patchable_size: u64,
-        backends: notedthat_server::run::Backends,
-        adjust: impl FnOnce(&mut notedthat_server::config::Config),
+        backends: crate::run::Backends,
+        adjust: impl FnOnce(&mut crate::config::Config),
     ) -> Self {
-        let runtime = patch_backends::start_runtime_with_backends(max_patchable_size, backends);
+        let runtime = super::backends::runtime(API_TOKEN, max_patchable_size, backends);
         let mut config = runtime.config;
         adjust(&mut config);
         let backends = runtime.backends;
         let base_url = format!("http://{}", config.listen_addr);
         let mcp_url = format!("{base_url}/mcp");
         let server_handle = tokio::spawn(async move {
-            notedthat_server::run::run_with(config, backends)
+            crate::run::run_with(config, backends)
                 .await
                 .expect("server run failed");
         });
@@ -94,6 +87,7 @@ impl PatchServer {
         }
     }
 
+    /// The REST URL of `path` in [`Self::kb`].
     pub fn object_url(&self, path: &str) -> String {
         format!(
             "{}/api/v1/knowledgebases/{}/{}",
@@ -101,6 +95,7 @@ impl PatchServer {
         )
     }
 
+    /// Write `body` as Markdown, asserting `201` or `204`, and return its `ETag`.
     pub async fn put_text(&self, path: &str, body: &str) -> String {
         let response = self
             .client
@@ -123,6 +118,7 @@ impl PatchServer {
         etag(&response)
     }
 
+    /// Read `path`, asserting `200`, as text.
     pub async fn get_text(&self, path: &str) -> String {
         self.get(path)
             .await
@@ -131,6 +127,7 @@ impl PatchServer {
             .expect("GET body should read")
     }
 
+    /// Read `path`, asserting `200`.
     pub async fn get(&self, path: &str) -> Response {
         let response = self
             .client
@@ -143,6 +140,7 @@ impl PatchServer {
         response
     }
 
+    /// `PATCH` `path` with a `Content-Range`, conditional on `if_match` when given.
     pub async fn patch_content_range(
         &self,
         path: &str,
@@ -162,6 +160,7 @@ impl PatchServer {
         request.send().await.expect("PATCH object failed")
     }
 
+    /// `PATCH` `path` in append mode, conditional on `if_match` when given.
     pub async fn patch_append(&self, path: &str, if_match: Option<&str>, body: &str) -> Response {
         let mut request = self
             .client
@@ -175,6 +174,8 @@ impl PatchServer {
         request.send().await.expect("PATCH append failed")
     }
 
+    /// Replace `old_string` with `new_string` in `path` through the replace route,
+    /// conditional on `if_match`.
     pub async fn replace_json(
         &self,
         path: &str,
@@ -203,6 +204,7 @@ impl PatchServer {
             .expect("replace request should return")
     }
 
+    /// `HEAD` `path` and return only the status.
     pub async fn head_text_status(&self, path: &str) -> StatusCode {
         self.client
             .head(self.object_url(path))
@@ -220,6 +222,7 @@ impl Drop for PatchServer {
     }
 }
 
+/// The `ETag` header of `response`. Panics if it is missing.
 pub fn etag(response: &Response) -> String {
     response
         .headers()
@@ -229,6 +232,7 @@ pub fn etag(response: &Response) -> String {
         .to_owned()
 }
 
+/// Assert `response` is `status` with the JSON error `code`.
 pub async fn assert_error_code(response: Response, status: StatusCode, code: &str) {
     assert_eq!(response.status(), status);
     let json = response
@@ -238,6 +242,8 @@ pub async fn assert_error_code(response: Response, status: StatusCode, code: &st
     assert_eq!(json["error"], code);
 }
 
+/// Assert a replace answered `200` with `expected_match_count` matches and
+/// the same `ETag` in header and body, and return that `ETag`.
 pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -> String {
     assert_eq!(resp.status(), StatusCode::OK, "replace should return 200");
     let etag_header = resp
@@ -265,6 +271,7 @@ pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -
     etag_header
 }
 
+/// Send one JSON-RPC `method` over `mcp` and return its response.
 pub async fn mcp_request(
     mcp: &notedthat_mcp::testing::McpSession,
     id: u64,
@@ -274,6 +281,7 @@ pub async fn mcp_request(
     mcp.request(id, method, &params).await
 }
 
+/// Call the MCP tool `tool_name` over `mcp` and return its response.
 pub async fn mcp_call_tool(
     mcp: &notedthat_mcp::testing::McpSession,
     id: u64,
@@ -281,24 +289,4 @@ pub async fn mcp_call_tool(
     arguments: serde_json::Value,
 ) -> serde_json::Value {
     mcp.call_tool(id, tool_name, &arguments).await
-}
-
-async fn wait_for_http(url: &str, timeout: Duration) {
-    let client = reqwest::Client::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        assert!(
-            tokio::time::Instant::now() <= deadline,
-            "HTTP server did not become ready at {url}"
-        );
-        if client
-            .get(url)
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success())
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
 }

@@ -9,8 +9,7 @@
 //! Run with: `cargo test -p notedthat-server --test fs_backend_e2e`
 #![allow(missing_docs)]
 
-#[path = "support/sse.rs"]
-mod sse;
+use notedthat_server::testing::sse;
 
 use notedthat_core::{KbSlug, TenantSlug};
 use notedthat_events::MemoryPublisher;

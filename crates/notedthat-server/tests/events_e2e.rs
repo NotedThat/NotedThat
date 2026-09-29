@@ -8,10 +8,8 @@
 //! ```
 #![allow(missing_docs)]
 
-#[path = "support/patch_env.rs"]
-mod patch_env;
-#[path = "support/sse.rs"]
-mod sse;
+use notedthat_server::testing::patch_server;
+use notedthat_server::testing::sse;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +19,7 @@ use base64::Engine;
 use notedthat_events::MemoryPublisher;
 use notedthat_indexer::testing::StubEmbedder;
 use notedthat_indexer::{Embedder, EmbedderError};
-use patch_env::{API_TOKEN, PatchServer, mcp_call_tool};
+use patch_server::{API_TOKEN, PatchServer, mcp_call_tool};
 use reqwest::StatusCode;
 use sse::{Subscription, change_events};
 
@@ -217,7 +215,7 @@ async fn a_failed_index_is_reported_and_a_retry_is_indexed() {
             inner: StubEmbedder::new(4),
             failed: std::sync::atomic::AtomicBool::new(false),
         }),
-        ..patch_env::in_memory_backends()
+        ..patch_server::in_memory_backends()
     };
     let server = PatchServer::start_with_backends(MAX_PATCHABLE, backends).await;
     let mut sub = subscribe(&server, "").await;
@@ -294,7 +292,7 @@ async fn http_put_patch_replace_and_delete_each_publish_one_event() {
         .patch_append("notes/a.md", Some(&etag), " gamma")
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let etag = patch_env::etag(&response);
+    let etag = patch_server::etag(&response);
     let frames = sub.events_where(1, WAIT, change_events).await;
     assert_eq!(frames[0].key(), "notes/a.md");
     assert_eq!(frames[0].data.as_ref().unwrap()["etag"], etag);
@@ -311,7 +309,7 @@ async fn http_put_patch_replace_and_delete_each_publish_one_event() {
     let head = server.get("notes/a.md").await;
     assert_eq!(
         frames[0].data.as_ref().unwrap()["etag"],
-        patch_env::etag(&head),
+        patch_server::etag(&head),
         "the event describes the bytes a subsequent read returns"
     );
 

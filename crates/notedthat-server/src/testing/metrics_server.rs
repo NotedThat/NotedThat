@@ -1,47 +1,41 @@
 //! A server with its metrics listener open, for the D69 suites.
 //!
-//! Built on `patch_backends`, which already assembles the real routers, the
+//! Built on [`super::backends`], which already assembles the real routers, the
 //! real indexer worker and the real shutdown path over in-process backends.
 //! What this adds is a second reserved port, the metrics switch, and
 //! credentials chosen to be unmistakable in a text exposition: each is a
 //! sentinel the label-leak suite greps for.
 
-#![expect(dead_code, reason = "each suite uses a different part of this fixture")]
-
-#[path = "patch_backends.rs"]
-mod patch_backends;
-
 use reqwest::StatusCode;
-use std::time::Duration;
 use tokio::task::JoinHandle;
 
-/// How long to wait for the server to bind after startup begins.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+use super::{SERVER_READY_TIMEOUT, wait_for_http};
 
 /// The service token this fixture's server accepts.
 ///
 /// Distinctive on purpose: if this string turns up in an exposition, nothing
 /// but a label could have put it there.
 pub const LEAK_TOKEN: &str = "metrics-leak-canary-token";
-/// `patch_backends` builds its `Config` with this; it is the same string, so
-/// the token the server accepts is a sentinel from the moment it starts.
-pub const API_TOKEN: &str = LEAK_TOKEN;
 /// The `WebDAV` Basic username — the one caller-supplied principal name a
 /// deployment without an identity provider has.
 pub const LEAK_PRINCIPAL: &str = "metrics-leak-canary-principal";
 /// Its password, which must never appear either.
 pub const LEAK_PASSWORD: &str = "metrics-leak-canary-password";
 
-/// Storage, vector store and embedder, all in-process.
-pub fn in_memory_backends() -> notedthat_server::run::Backends {
-    patch_backends::in_memory_backends()
-}
+pub use super::backends::in_memory_backends;
 
+/// A real server with its metrics listener open, or shut, over in-process
+/// backends.
+///
+/// Aborted on drop.
 pub struct MetricsServer {
+    /// A plain client; each request adds its own credentials.
     pub client: reqwest::Client,
+    /// `http://host:port` of the product listener.
     pub base_url: String,
     /// The metrics listener's base, whether or not anything is bound to it.
     pub metrics_base: String,
+    /// The one knowledge base the server declares, unique per server.
     pub kb: String,
     server_handle: JoinHandle<()>,
 }
@@ -49,12 +43,12 @@ pub struct MetricsServer {
 impl MetricsServer {
     /// A server whose metrics listener is open, over the in-process backends.
     pub async fn start() -> Self {
-        Self::start_with(patch_backends::in_memory_backends(), true).await
+        Self::start_with(in_memory_backends(), true).await
     }
 
     /// A server over exactly `backends`, with or without a metrics listener.
-    pub async fn start_with(backends: notedthat_server::run::Backends, metrics: bool) -> Self {
-        let runtime = patch_backends::start_runtime_with_backends(16 * 1024 * 1024, backends);
+    pub async fn start_with(backends: crate::run::Backends, metrics: bool) -> Self {
+        let runtime = super::backends::runtime(LEAK_TOKEN, 16 * 1024 * 1024, backends);
         let mut config = runtime.config;
         config.webdav_username = LEAK_PRINCIPAL.to_string();
         config.webdav_password = LEAK_PASSWORD.to_string();
@@ -68,7 +62,7 @@ impl MetricsServer {
         let metrics_base = format!("http://{metrics_addr}");
         let backends = runtime.backends;
         let server_handle = tokio::spawn(async move {
-            notedthat_server::run::run_with(config, backends)
+            crate::run::run_with(config, backends)
                 .await
                 .expect("server run failed");
         });
@@ -84,10 +78,12 @@ impl MetricsServer {
         }
     }
 
+    /// The exposition's URL on the metrics listener.
     pub fn metrics_url(&self) -> String {
         format!("{}/metrics", self.metrics_base)
     }
 
+    /// The REST URL of `path` in [`Self::kb`].
     pub fn object_url(&self, path: &str) -> String {
         format!(
             "{}/api/v1/knowledgebases/{}/{}",
@@ -107,6 +103,7 @@ impl MetricsServer {
         response.text().await.expect("the exposition should read")
     }
 
+    /// Write `body` as Markdown with [`LEAK_TOKEN`], asserting nothing.
     pub async fn put_text(&self, path: &str, body: &str) -> reqwest::Response {
         self.client
             .put(self.object_url(path))
@@ -118,6 +115,7 @@ impl MetricsServer {
             .expect("PUT object failed")
     }
 
+    /// Delete `path` with [`LEAK_TOKEN`], asserting nothing.
     pub async fn delete(&self, path: &str) -> reqwest::Response {
         self.client
             .delete(self.object_url(path))
@@ -127,6 +125,7 @@ impl MetricsServer {
             .expect("DELETE object failed")
     }
 
+    /// Search [`Self::kb`] for `query` with [`LEAK_TOKEN`], asserting nothing.
     pub async fn search(&self, query: &str) -> reqwest::Response {
         self.client
             .post(format!(
@@ -160,23 +159,6 @@ impl MetricsServer {
 impl Drop for MetricsServer {
     fn drop(&mut self) {
         self.server_handle.abort();
-    }
-}
-
-async fn wait_for_http(url: &str, timeout: Duration) {
-    let client = reqwest::Client::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if let Ok(response) = client.get(url).send().await
-            && response.status().is_success()
-        {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "server did not become ready at {url} within {timeout:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
