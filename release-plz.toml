@@ -74,7 +74,9 @@ publish_timeout = "30m"
 #
 # Setting `pr_body` REPLACES the default template, so everything above the note
 # is a verbatim copy of `DEFAULT_PR_BODY_TEMPLATE` from release-plz v0.3.169
-# (crates/release_plz_core/src/pr.rs). Re-sync it when upstream changes theirs.
+# (crates/release_plz_core/src/pr.rs). `ci.yml` pins release-plz to that
+# version (`version:` on both release-plz/action steps); when you bump the pin,
+# re-sync this copy with the new version's template in the same change.
 # The note sits outside `changes`, so it survives release-plz dropping the
 # changelog from a body over GitHub's 65536-character limit.
 pr_body = '''

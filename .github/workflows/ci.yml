@@ -481,6 +481,9 @@ jobs:
         with:
           command: release
           config: release-plz.toml
+          # Pinned because release-plz.toml's `pr_body` is a copy of this
+          # version's default template. Re-sync that copy when bumping.
+          version: 0.3.169
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # release-plz just pushed the workspace tag (e.g. v0.1.4) using
@@ -574,5 +577,8 @@ jobs:
         with:
           command: release-pr
           config: release-plz.toml
+          # Pinned because release-plz.toml's `pr_body` is a copy of this
+          # version's default template. Re-sync that copy when bumping.
+          version: 0.3.169
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
