@@ -301,8 +301,8 @@ async fn a_token_authelia_mints_is_bound_by_the_manifest_on_every_surface() {
     };
     assert_eq!(
         put(&alice).await.expect("put").status(),
-        201,
-        "editors write"
+        204,
+        "editors write; handbook.md is seeded, so this replaces it"
     );
     assert_eq!(
         put(&ivan).await.expect("put").status(),
