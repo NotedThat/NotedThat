@@ -209,7 +209,8 @@ pub trait Storage: Send + Sync {
     ///
     /// `conditionals` carries raw HTTP conditional headers for the backend to evaluate.
     /// This operation is **idempotent** — deleting a non-existent object returns
-    /// `Ok(())` (matching S3 semantics per Metis directive).
+    /// `Ok(())` — S3's own semantics, and what `DELETE` on the HTTP API promises:
+    /// `204` for a missing object (docs/API.md).
     async fn delete_object(
         &self,
         kb: &KbSlug,

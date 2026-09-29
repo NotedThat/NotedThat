@@ -1016,7 +1016,8 @@ impl Storage for S3Storage {
                 info!(bucket = %bucket, key = %key, "object deleted");
                 Ok(())
             }
-            // S3 delete is idempotent — not-found is OK per Metis directive.
+            // S3 delete is idempotent — not-found is `Ok`, as the
+            // `Storage::delete_object` contract requires.
             Err(e) if is_not_found_sdk(&e) => {
                 info!(bucket = %bucket, key = %key, "delete_object: object not found (idempotent Ok)");
                 Ok(())

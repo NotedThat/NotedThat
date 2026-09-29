@@ -162,7 +162,10 @@ fn response_too_large_message(limit: u64, total: Option<u64>) -> String {
 }
 
 /// Serde shape for the HTTP API error body.
-/// `request_id` is present but we ALWAYS drop it (Metis directive).
+/// `request_id` is present but always dropped: MCP tool errors carry only the
+/// `error` code and message (SPECIFICATIONS.md §6.12, D43), and the id belongs to
+/// the internal loopback API call, not to the client's MCP request. Pinned by
+/// `request_id_dropped_from_error`.
 #[derive(Debug, serde::Deserialize)]
 struct ApiErrorBody {
     error: Option<String>,
