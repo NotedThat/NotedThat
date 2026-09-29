@@ -80,10 +80,12 @@ jobs:
           components: clippy
       # dead_code is `deny` in Cargo.toml, so unused code fails the build; this
       # refuses the way around that, an allow or expect of dead_code or of the
-      # `unused` group containing it. Dead code is deleted (#304).
+      # `unused` group containing it. Dead code is deleted (#304). The pattern
+      # is anchored on `#[`/`#![` (cfg_attr included) and runs to the closing
+      # `]`, so a `.expect("…unused…")` call is not mistaken for an attribute.
       - name: No dead_code suppressions
         run: |
-          offenders=$(git ls-files -z -- '*.rs' | xargs -0 perl -0777 -ne 'print "$ARGV\n" if /\b(?:allow|expect)\s*\([^)]*\b(?:dead_code|unused)\b/')
+          offenders=$(git ls-files -z -- '*.rs' | xargs -0 perl -0777 -ne 'print "$ARGV\n" if /#\s*!?\s*\[\s*(?:cfg_attr\s*\([^\]]*?)?\b(?:allow|expect)\s*\([^\]]*\b(?:dead_code|unused)\b/')
           if [ -n "$offenders" ]; then
             echo "::error::dead code is deleted, not suppressed (#304). Offending files:"
             echo "$offenders"
