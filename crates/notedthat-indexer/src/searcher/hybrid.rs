@@ -77,7 +77,6 @@ fn sort_hits(hits: &mut [SearchHit]) {
 /// The same `QdrantClient` and `Embedder` instances used by `IndexerWorker`
 /// are shared here — using separate instances would risk vector space mismatch
 /// (§6.4, D18).
-#[allow(dead_code)]
 pub struct HybridSearcher {
     store: Arc<dyn VectorStore>,
     embedder: Arc<dyn Embedder>,
@@ -90,12 +89,6 @@ impl HybridSearcher {
     /// `IndexerWorker` — different instances risk model or endpoint drift.
     pub fn new(store: Arc<dyn VectorStore>, embedder: Arc<dyn Embedder>) -> Self {
         Self { store, embedder }
-    }
-
-    /// Returns the Qdrant collection name for the given knowledge base.
-    #[allow(dead_code)]
-    pub(crate) fn collection_for(kb: &KbSlug) -> String {
-        collection_name(kb)
     }
 }
 
@@ -263,7 +256,6 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
     })
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn search_error_from_store(collection: &str, err: VectorStoreError) -> SearchError {
     match err {
         VectorStoreError::CollectionNotFound { kb } => SearchError::UnknownKb { slug: kb },
@@ -289,7 +281,10 @@ pub(crate) fn search_error_from_store(collection: &str, err: VectorStoreError) -
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "written as a `map_err` callback, which hands the error over by value"
+)]
 pub(crate) fn search_error_from_embedder(err: crate::embedder::EmbedderError) -> SearchError {
     SearchError::BackendUnavailable {
         message: err.to_string(),
