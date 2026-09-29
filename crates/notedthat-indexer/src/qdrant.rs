@@ -84,6 +84,11 @@ impl QdrantClient {
     /// Build a `QdrantClient` from the provided config.
     ///
     /// Construction is cheap — no network connection is made until the first RPC call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QdrantWrapperError::ClientBuild`] when the Qdrant client cannot be built
+    /// from `config`.
     pub fn new(config: &QdrantConfig) -> Result<Self, QdrantWrapperError> {
         let builder = Qdrant::from_url(&config.url);
         let builder = if let Some(key) = &config.api_key {

@@ -32,6 +32,11 @@ pub struct OpenAiCompatibleEmbedder {
 
 impl OpenAiCompatibleEmbedder {
     /// Build a new embedder from explicit configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbedderError::Transport`] when the HTTP client cannot be built, for
+    /// example when TLS is unavailable.
     pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, EmbedderError> {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
