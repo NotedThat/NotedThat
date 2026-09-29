@@ -356,7 +356,7 @@ nt-{tenant_slug}-{kb_slug}
   "description": "Design notes, ADRs and meeting minutes of the platform team.",
   "created_at": 1782993600,
   "embedding": {
-    "endpoint_url_hint": "https://api.openai.com",
+    "endpoint_url_hint": "https://api.openai.com/v1",
     "model": "text-embedding-3-small",
     "dimensions": 1536
   },

@@ -971,6 +971,13 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
 - `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` — a manifest names a `group:` or `user:` rule and no
   issuer is configured; the rule can never match, and the base is named. Not a refusal, because
   manifests live in buckets that outlive one deployment's configuration.
+- `EMBEDDING_ENDPOINT_URL_NO_PATH` — `EMBEDDING_ENDPOINT_URL` is a bare origin (no path, or
+  just `/`), at `warn`, with the URL minus any credentials. Releases up to 0.12 appended
+  `/v1/embeddings` themselves; the URL is now the full API base and only `/embeddings` is
+  appended, so a value written for them reaches `/embeddings` at the root and every write fails
+  with `INDEXING_FAILED` (HTTP 404, naming the URL). Add `/v1`, or the provider's own prefix.
+  Not a refusal, because a gateway may serve `/embeddings` at its root. See
+  [Embedding](#embedding).
 - `MCP_ANONYMOUS enabled` / `MCP_ANONYMOUS disabled_no_anonymous_grants` /
   `MCP_ANONYMOUS disabled_by_setting` — whether `/mcp` admits a request with no credential, with
   the mode and whether any manifest grants `anyone` something. See
@@ -1367,7 +1374,7 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
-NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible embeddings API works, hosted or local. `EMBEDDING_ENDPOINT_URL` is that API's base URL as the provider documents it, version segment included (usually ending in `/v1`); the server appends `/embeddings`. Releases up to 0.12 appended `/v1/embeddings` themselves, so when upgrading add `/v1` to an existing value (`https://api.openai.com` becomes `https://api.openai.com/v1`). The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
+NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible embeddings API works, hosted or local. `EMBEDDING_ENDPOINT_URL` is that API's base URL as the provider documents it, version segment included (usually ending in `/v1`); the server appends `/embeddings`. Releases up to 0.12 appended `/v1/embeddings` themselves, so when upgrading add `/v1` to an existing value (`https://api.openai.com` becomes `https://api.openai.com/v1`); startup logs `EMBEDDING_ENDPOINT_URL_NO_PATH` for a URL with no path. A query on the base URL stays a query: `/embeddings` goes onto the path before it (`…/deployments/<name>?api-version=…` requests `…/deployments/<name>/embeddings?api-version=…`). The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
 
 | Variable | Flag | Required | Default | Description |
 |---|---|---|---|---|

@@ -1504,6 +1504,27 @@ impl EmbedderConfig {
     }
 }
 
+impl EmbedderConfig {
+    /// The endpoint URL without credentials, when its path is empty or `/`.
+    ///
+    /// Releases up to 0.12 appended `/v1/embeddings` themselves, so a value written for
+    /// them (`https://api.openai.com`, `http://127.0.0.1:11434`) is a bare origin, and now
+    /// reaches `/embeddings` at the root and gets a 404 on every write. Startup warns
+    /// (`EMBEDDING_ENDPOINT_URL_NO_PATH`) instead of refusing, because a gateway may serve
+    /// `/embeddings` at its root.
+    #[must_use]
+    pub fn endpoint_url_without_path(&self) -> Option<String> {
+        let mut url = url::Url::parse(&self.endpoint_url).ok()?;
+        if !matches!(url.path(), "" | "/") {
+            return None;
+        }
+        // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        Some(url.as_str().trim_end_matches('/').to_string())
+    }
+}
+
 /// Parse an optional integer setting, naming it on failure.
 fn parse_number<T>(var: &str, supplied: Option<&str>) -> Result<Option<T>, Error>
 where
@@ -2356,6 +2377,43 @@ pub(crate) mod tests {
     fn embedding_max_input_tokens_default() {
         let cfg = run_with_env(&[("EMBEDDING_MAX_INPUT_TOKENS", None)], Config::from_env).unwrap();
         assert_eq!(cfg.embedder.max_input_tokens, 8192);
+    }
+
+    fn embedder_with_url(endpoint_url: &str) -> EmbedderConfig {
+        EmbedderConfig {
+            endpoint_url: endpoint_url.to_string(),
+            model: "m".to_string(),
+            api_key: "k".to_string(),
+            dimensions: 3,
+            batch_size: 32,
+            timeout_ms: 30_000,
+            max_retries: 3,
+            max_input_tokens: 8192,
+        }
+    }
+
+    #[test]
+    fn endpoint_url_without_path_flags_bare_origins_only() {
+        for (raw, expected) in [
+            ("https://api.openai.com", Some("https://api.openai.com")),
+            ("http://127.0.0.1:11434/", Some("http://127.0.0.1:11434")),
+            ("https://user:secret@gw.example", Some("https://gw.example")),
+            ("https://api.openai.com/v1", None),
+            ("https://api.openai.com/v1/", None),
+            (
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                None,
+            ),
+            ("not a url", None),
+        ] {
+            assert_eq!(
+                embedder_with_url(raw)
+                    .endpoint_url_without_path()
+                    .as_deref(),
+                expected,
+                "url {raw}"
+            );
+        }
     }
 
     #[test]
