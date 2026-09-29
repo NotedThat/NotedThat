@@ -1,169 +1,26 @@
 //! Integration tests for the `WebDAV` middleware stack.
 //!
 //! Tests exercise the full middleware chain using axum's `oneshot` pattern.
-//! No testcontainers — all storage calls use in-memory mocks.
+//! No testcontainers — storage is an `InMemoryStorage`.
 
-use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode},
 };
 use base64::Engine as _;
-use bytes::Bytes;
-use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
-};
+use notedthat_core::KbSlug;
+use notedthat_core::testing::InMemoryStorage;
 use notedthat_webdav::{router::build_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
-// MockStorage
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct MockStorage;
-
-#[async_trait]
-impl Storage for MockStorage {
-    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
-    async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-        unimplemented!()
-    }
-
-    async fn write_manifest(
-        &self,
-        _kb: &KbSlug,
-        _manifest: &KbManifest,
-    ) -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
-    async fn head_object(
-        &self,
-        _kb: &KbSlug,
-        path: &ObjectPath,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<ObjectMeta, StorageError> {
-        Err(StorageError::NotFound {
-            key: path.as_str().to_string(),
-        })
-    }
-
-    async fn get_object(
-        &self,
-        _kb: &KbSlug,
-        path: &ObjectPath,
-        _range: Option<ByteRange>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<ObjectRead, StorageError> {
-        Ok(ObjectRead {
-            bytes: Bytes::from_static(b"test content"),
-            meta: ObjectMeta {
-                key: path.as_str().to_string(),
-                size: 12,
-                last_modified: Some(0),
-                content_type: Some("text/markdown".to_string()),
-                etag: Some("\"src-etag\"".to_string()),
-            },
-            content_range: None,
-        })
-    }
-
-    async fn get_object_stream(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        range: Option<ByteRange>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectStream, StorageError> {
-        let read = self.get_object(kb, path, range, conditionals).await?;
-        Ok(ObjectStream {
-            chunks: Box::pin(futures::stream::once(async move { Ok(read.bytes) })),
-            meta: read.meta,
-            content_range: read.content_range,
-        })
-    }
-
-    async fn put_object(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _bytes: Bytes,
-        _content_type: Option<&str>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome::created(Some("\"test-etag\"".to_string())))
-    }
-
-    async fn put_staged_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        body: StagedBody,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let bytes =
-            body.memory_bytes()
-                .cloned()
-                .ok_or_else(|| StorageError::BackendUnavailable {
-                    message: "file-backed bodies are outside this middleware test".into(),
-                })?;
-        self.put_object(kb, path, bytes, content_type, conditionals)
-            .await
-    }
-
-    async fn copy_object(
-        &self,
-        _kb: &KbSlug,
-        _source: &ObjectPath,
-        _destination: &ObjectPath,
-        _options: CopyObjectOptions,
-    ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome::created(Some("\"test-etag\"".into())))
-    }
-
-    async fn delete_object(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn list_objects(
-        &self,
-        _kb: &KbSlug,
-        _prefix: Option<&str>,
-        _limit: u32,
-        _cursor: Option<&str>,
-    ) -> Result<ListResponse, StorageError> {
-        Ok(ListResponse {
-            objects: vec![],
-            truncated: false,
-            next_cursor: None,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_state() -> WebDavState {
-    let (tx, _rx) = mpsc::channel(100);
-    let declared = BTreeMap::from([
+fn declared_kbs() -> BTreeMap<String, KbSlug> {
+    BTreeMap::from([
         (
             "notes".to_string(),
             KbSlug::try_new("notes").expect("valid slug"),
@@ -172,13 +29,33 @@ fn make_state() -> WebDavState {
             "scratch".to_string(),
             KbSlug::try_new("scratch").expect("valid slug"),
         ),
-    ]);
+    ])
+}
+
+/// A state over an empty store with both declared knowledge bases provisioned.
+fn make_state() -> WebDavState {
+    make_state_with(InMemoryStorage::with_kbs(declared_kbs().values()))
+}
+
+/// A state whose store already holds `notes/<key>`, for a test that needs the object
+/// to exist.
+async fn state_with_note(key: &str) -> WebDavState {
+    let storage = InMemoryStorage::with_kbs(declared_kbs().values());
+    storage
+        .seed("notes", key, "test content", Some("text/markdown"), None)
+        .await;
+    make_state_with(storage)
+}
+
+fn make_state_with(storage: InMemoryStorage) -> WebDavState {
+    let (tx, _rx) = mpsc::channel(100);
+    let declared = declared_kbs();
     WebDavState {
         authenticator: Arc::new(
             notedthat_core::Authenticator::new("test-service-token")
                 .with_basic("testuser".to_string(), "testpass".to_string()),
         ),
-        storage: Arc::new(MockStorage),
+        storage: Arc::new(storage),
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared.clone()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared)),
@@ -470,7 +347,7 @@ async fn put_calls_commit_and_returns_201() {
 
 #[tokio::test]
 async fn delete_returns_204() {
-    let app = build_router(make_state());
+    let app = build_router(state_with_note("test.md").await);
     let req = Request::builder()
         .method(Method::DELETE)
         .uri("/webdav/notes/test.md")
@@ -955,7 +832,7 @@ async fn read_matrix_propfind_empty_segment_non_declared() {
 
 #[tokio::test]
 async fn get_legitimate_object_not_rejected() {
-    let app = build_router(make_state());
+    let app = build_router(state_with_note("hello.md").await);
     let req = Request::builder()
         .method("GET")
         .uri("/webdav/notes/hello.md")
