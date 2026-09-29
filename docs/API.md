@@ -328,6 +328,7 @@ Request a slice of an object by line number rather than byte offset. Line number
 **Response on 206:**
 - `Content-Range: lines <first>-<last>/<total_lines>` — line positions within the object
 - `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` — corresponding byte positions (byte_end is inclusive); lets clients convert to byte offsets without an extra HEAD request
+- For an insert point (`lines=<N>-<N-1>`, an empty body) an inclusive end cannot name the slice, so the response instead carries `X-Content-Range-Bytes: */<total_bytes>` and `X-Insert-Offset: <byte_offset>`, the byte offset the insert point sits at (`0` before line 1, `<total_bytes>` after the last line). The `206` status tells this apart from the `416` below, which uses the same `*/<total_bytes>` form
 
 **Error responses:**
 - **400** `malformed_range` — unparseable `lines=` spec
@@ -865,7 +866,8 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | `last-modified` | Last modification time, if available |
 | `accept-ranges` | `bytes` |
 | `content-range` | Range returned, present only on 206 responses. Format: `bytes <start>-<end>/<total>` for byte-range requests; `lines <first>-<last>/<total_lines>` for line-range requests |
-| `x-content-range-bytes` | Present only on 206 line-mode responses. Byte positions corresponding to the returned line range, in the form `<byte_start>-<byte_end>/<total_bytes>` (byte_end inclusive) |
+| `x-content-range-bytes` | Present only on 206 line-mode responses. Byte positions corresponding to the returned line range, in the form `<byte_start>-<byte_end>/<total_bytes>` (byte_end inclusive); `*/<total_bytes>` for an insert point |
+| `x-insert-offset` | Present only on 206 line-mode insert-point responses. The byte offset of the empty slice |
 
 **Response:**
 
@@ -2225,7 +2227,7 @@ Read an object, whole or by byte range or line range.
 | `content_type` | The object's content type. |
 | `bytes_returned` | Bytes in `content` — the slice, not the object. |
 | `total_bytes` | The whole object's size. |
-| `byte_start`, `byte_end` | The returned slice, `byte_end` exclusive. `byte_start` and `total_bytes` come from the header; `byte_end` is `byte_start + bytes_returned`, from the body, because a header's inclusive end cannot spell the empty slice at offset 0 (an insert point before line 1 arrives as `0-0/N`). A full read is `0` and `total_bytes`, set even when the response carried no `Content-Length`. |
+| `byte_start`, `byte_end` | The returned slice, `byte_end` exclusive. `byte_start` and `total_bytes` come from the header (for an insert point, `byte_start` from `X-Insert-Offset`); `byte_end` is `byte_start + bytes_returned`, from the body, which is believed over the header. A full read is `0` and `total_bytes`, set even when the response carried no `Content-Length`. |
 | `total_lines`, `line_start`, `line_end` | Line reads only: the object's line count and the returned lines (1-based, inclusive; `line_end = line_start - 1` for an insert point). `null` on byte and full reads. |
 
 Every field but `bytes_returned` is `null` when the backend did not say — nothing is invented. The tool declares this shape as its `outputSchema`.
