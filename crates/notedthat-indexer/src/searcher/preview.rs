@@ -11,9 +11,9 @@ const WORD_BACKOFF_CHARS: usize = 50;
 ///
 /// If `max_chars` is 0, returns an empty string.
 /// If `text` has at most `max_chars` characters, returns the full text.
-/// Otherwise the preview ends at the last whitespace within the final
-/// `WORD_BACKOFF_CHARS` characters (or at the hard cut when there is none),
-/// followed by `…`.
+/// Otherwise the preview ends at the cut when whitespace follows it, else at
+/// the last whitespace within the final `WORD_BACKOFF_CHARS` characters (or at
+/// the hard cut when there is none), followed by `…`.
 pub fn truncate_preview(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -25,12 +25,19 @@ pub fn truncate_preview(text: &str, max_chars: usize) -> String {
         return text.to_owned();
     }
     let prefix = &text[..cut];
-    let prefix = prefix
-        .char_indices()
-        .rev()
-        .take(WORD_BACKOFF_CHARS)
-        .find(|(_, character)| character.is_whitespace())
-        .map(|(byte, _)| prefix[..byte].trim_end())
+    // Whitespace at the cut means `prefix` already ends at a word boundary.
+    let boundary = if text[cut..].starts_with(char::is_whitespace) {
+        Some(prefix.len())
+    } else {
+        prefix
+            .char_indices()
+            .rev()
+            .take(WORD_BACKOFF_CHARS)
+            .find(|(_, character)| character.is_whitespace())
+            .map(|(byte, _)| byte)
+    };
+    let prefix = boundary
+        .map(|byte| prefix[..byte].trim_end())
         .filter(|trimmed| !trimmed.is_empty())
         .unwrap_or(prefix);
     format!("{prefix}…")
@@ -82,6 +89,18 @@ mod tests {
         let result = truncate_preview(s, 45);
         assert_eq!(result, "all flesh died that moved on the earth,…");
         assert!(result.chars().count() <= 45);
+    }
+
+    #[test]
+    fn keeps_last_word_when_cut_lands_on_whitespace() {
+        assert_eq!(
+            truncate_preview("the quick brown fox jumps", 20),
+            "the quick brown fox…"
+        );
+        assert_eq!(
+            truncate_preview("the quick brown fox\r\njumps", 20),
+            "the quick brown fox…"
+        );
     }
 
     #[test]
