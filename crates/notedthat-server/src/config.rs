@@ -507,6 +507,11 @@ impl Config {
     /// test that reaches for a real backend fails loudly. A fixture overrides
     /// `listen_addr`, `kbs` and whatever else it actually varies, and takes the
     /// rest with `..Config::for_tests()`, so a new field is added here once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `"notes"` is no longer a valid [`KbSlug`], which would mean
+    /// the slug rules changed and this default must change with them.
     #[must_use]
     pub fn for_tests() -> Self {
         Self {
