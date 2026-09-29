@@ -1271,6 +1271,8 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
+NotedThat ships no embedding model: you set one up and point the server at it before anything can start. Any model behind an OpenAI-compatible `/v1/embeddings` endpoint works, hosted or local. The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
+
 | Variable | Flag | Required | Default | Description |
 |---|---|---|---|---|
 | `EMBEDDING_ENDPOINT_URL` | `--embedding-endpoint-url` | Yes | | Base URL of the OpenAI-compatible endpoint (e.g. `https://api.openai.com`) |
@@ -1284,6 +1286,21 @@ NotedThat uses an external OpenAI-compatible embedding endpoint to index markdow
 | `EMBEDDING_MAX_INPUT_TOKENS` | `--embedding-max-input-tokens` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
 
 ### Examples
+
+**Ollama** (local and free). [Ollama](https://ollama.com) serves `/v1/embeddings`, so no key is needed and any value works. Good options are [EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) (`embeddinggemma`, 768 dimensions) and [BGE-M3](https://huggingface.co/BAAI/bge-m3) (`bge-m3`, 1024 dimensions):
+
+```sh
+ollama pull embeddinggemma
+```
+
+```env
+EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
+EMBEDDING_MODEL=embeddinggemma
+EMBEDDING_API_KEY=ollama
+EMBEDDING_DIMENSIONS=768
+```
+
+That URL is for a server run natively. Under Compose the server runs in a container, so use `http://host.docker.internal:11434` to reach Ollama on the host.
 
 **OpenAI** (`text-embedding-3-small`, 1536 dimensions):
 

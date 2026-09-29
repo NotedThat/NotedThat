@@ -18,6 +18,9 @@
 
 .env
 
+# Object root of the README's native `fs` flow
+/.notedthat-data/
+
 # Core dumps (a 5 GiB stress run that aborts leaves one here)
 core
 core.*

@@ -11,6 +11,9 @@
   CI's `test` job runs the suite on `[stable, 1.91.1]` instead, so the declared MSRV is a checked fact
   rather than a claim. To reproduce the MSRV leg locally:
   `rustup toolchain install 1.91.1 && cargo +1.91.1 test --workspace --locked`.
+- Docker with Compose v2, to run Qdrant (and SeaweedFS) for the local server.
+- An embedding model to run the server; see [Embedding](docs/CONFIGURATION.md#embedding). The test
+  suite does not need one.
 
 ## Daily Commands
 
@@ -101,7 +104,8 @@ covers only what the kernel itself does, and is the smaller half on purpose.
 **CI is Linux-only**, so inotify is the only backend exercised here. FSEvents and kqueue are
 compile-checked by the release build matrix and nothing more. Writing tests against the
 crate's own signal type rather than against `notify::Event` is what keeps them meaningful on
-a developer's Mac, which is the only place that path runs at all.
+a developer's Mac, which is the only place that path runs at all, as far as a default APFS
+volume lets them run (see below).
 
 Asserting that something produces *no* report needs care: waiting a fixed period to "prove"
 silence is both slow and a lie. Touch a second file afterwards and wait for that instead —
@@ -111,6 +115,16 @@ helper for this; read its comment before changing it.
 ```sh
 cargo test -p notedthat-storage-fs --test watch
 cargo test -p notedthat-server --test fs_backend_e2e
+```
+
+**On macOS these tests fail**, along with the rest of `notedthat-storage-fs`: the temp directory
+is on APFS, which folds case and normalizes Unicode, so the backend refuses to start there (a
+case-sensitive APFS volume still normalizes). Expect about 90 failures from
+`cargo test --workspace` on a Mac. Run them in a Linux container instead:
+
+```sh
+docker run --rm -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/target rust:1 \
+  sh -c 'cargo test --locked -p notedthat-storage-fs && cargo test --locked -p notedthat-server --test fs_backend_e2e'
 ```
 
 ### Backends in tests

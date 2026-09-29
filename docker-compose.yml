@@ -33,6 +33,10 @@ services:
     container_name: notedthat-server
     ports:
       - "127.0.0.1:${NOTEDTHAT_HTTP_PORT:-8080}:8080"
+    # Lets the server reach an embedding provider on the host (e.g. Ollama) on Linux too;
+    # Docker Desktop provides host.docker.internal already.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       NOTEDTHAT_API_TOKEN: ${NOTEDTHAT_API_TOKEN:-dev-token-please-change}
       NOTEDTHAT_KBS: ${NOTEDTHAT_KBS:-notes,scratch}
