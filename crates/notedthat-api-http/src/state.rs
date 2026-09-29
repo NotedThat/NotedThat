@@ -92,13 +92,15 @@ impl AppState {
     /// A fixture names only what its test depends on, and a new field is added
     /// here rather than in every fixture. Every declared knowledge base is open
     /// to any signed-in caller and shows its slug as its name; the bearer token
-    /// is `test-token`; both size limits are 16 MiB. Nothing reads the index
-    /// queue, so a test that inspects what was enqueued brings its own
-    /// `indexer_tx`. Search finds nothing, every backend reports ready, and there
-    /// is no event log and no reconciler.
+    /// is `test-token`; both size limits are 16 MiB. The index queue is closed:
+    /// its receiver is dropped, so a write still succeeds but logs
+    /// `INDEX_QUEUE_CLOSED` and marks the worker stopped in `index_health`. A
+    /// test that inspects what was enqueued, or reads the index status after a
+    /// write, brings its own `indexer_tx`. Search finds nothing, every backend
+    /// reports ready, and there is no event log and no reconciler.
     #[must_use]
     pub fn for_tests(storage: Arc<dyn Storage>, declared_kbs: BTreeMap<String, KbSlug>) -> Self {
-        let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
+        let (indexer_tx, _) = tokio::sync::mpsc::channel(1);
         Self {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
