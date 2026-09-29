@@ -139,12 +139,11 @@ async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
     let chunk_len = u64::try_from(chunk.len()).unwrap();
     let chunks = usize::try_from(notedthat_write::MAX_UPLOAD_BYTES / chunk_len).unwrap();
-    let generated = futures::stream::iter(
-        (0..chunks).map(move |_| Ok::<_, std::io::Error>(chunk.clone())),
-    )
-    .chain(futures::stream::once(async {
-        Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
-    }));
+    let generated =
+        futures::stream::iter((0..chunks).map(move |_| Ok::<_, std::io::Error>(chunk.clone())))
+            .chain(futures::stream::once(async {
+                Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
+            }));
     let resp = app_with_staging_config(
         storage.clone(),
         notedthat_core::StagingConfig::new(directory.clone()),
@@ -532,7 +531,10 @@ async fn copy_honours_the_if_header() {
 async fn move_with_a_lock_token_in_the_if_header_returns_412() {
     let (status, storage) = copy_or_move_with(
         "MOVE",
-        &[("if", "(<opaquelocktoken:a515cfa4-5da4-22e1-f5bf-00a0451e6bf7>)")],
+        &[(
+            "if",
+            "(<opaquelocktoken:a515cfa4-5da4-22e1-f5bf-00a0451e6bf7>)",
+        )],
     )
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
