@@ -1104,8 +1104,33 @@ mod line_range_get {
             );
             assert_eq!(
                 response.headers().get("X-Content-Range-Bytes").unwrap(),
-                "32-31/80"
+                "*/80"
             );
+            assert_eq!(response.headers().get("X-Insert-Offset").unwrap(), "32");
+        }
+
+        #[tokio::test]
+        async fn does_not_claim_a_byte_when_insert_range_is_before_line_one() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=1-0").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.headers().get("content-length").unwrap(), "0");
+            assert_eq!(
+                response.headers().get("X-Content-Range-Bytes").unwrap(),
+                "*/80"
+            );
+            assert_eq!(response.headers().get("X-Insert-Offset").unwrap(), "0");
+        }
+
+        #[tokio::test]
+        async fn omits_insert_offset_when_closed_range_requested() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=2-4").await;
+
+            assert!(response.headers().get("X-Insert-Offset").is_none());
         }
 
         #[tokio::test]

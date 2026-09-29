@@ -290,10 +290,21 @@ async fn serve_line_range_read(
     let content_range_value = idx.content_range_string(&line_range);
     builder = builder.header("Content-Range", content_range_value);
 
-    let inclusive_end = byte_range.end.saturating_sub(1);
-    let x_content_range_bytes =
-        format!("{}-{}/{}", byte_range.start, inclusive_end, idx.total_bytes);
-    builder = builder.header("X-Content-Range-Bytes", x_content_range_bytes);
+    // An inclusive end cannot spell an empty slice: an insert point says
+    // `*/<total>` and names its offset in `X-Insert-Offset` instead (D74).
+    if byte_range.is_empty() {
+        builder = builder
+            .header("X-Content-Range-Bytes", format!("*/{}", idx.total_bytes))
+            .header("X-Insert-Offset", byte_range.start);
+    } else {
+        let x_content_range_bytes = format!(
+            "{}-{}/{}",
+            byte_range.start,
+            byte_range.end - 1,
+            idx.total_bytes
+        );
+        builder = builder.header("X-Content-Range-Bytes", x_content_range_bytes);
+    }
 
     Ok(builder
         .body(Body::from(sliced))
