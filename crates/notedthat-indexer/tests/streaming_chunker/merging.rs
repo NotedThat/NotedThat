@@ -12,12 +12,18 @@ fn merged(raw: &str, max_chars: usize) -> Vec<Chunk> {
 }
 
 /// Every chunk is an exact, bounded, non-blank slice, in order; together they
-/// cover the input except for whitespace that had nothing to merge into.
+/// cover the input except for whitespace that had nothing to merge into. Only
+/// the last chunk may be shorter than the minimum (D72).
 fn assert_invariants(raw: &str, chunks: &[Chunk], max_chars: usize) {
     let mut covered = 0;
-    for chunk in chunks {
+    for (index, chunk) in chunks.iter().enumerate() {
         assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
-        assert!(chunk.text.chars().count() <= max_chars, "{chunk:?}");
+        let chars = chunk.text.chars().count();
+        assert!(chars <= max_chars, "{chunk:?}");
+        assert!(
+            index + 1 == chunks.len() || chars >= max_chars / 4,
+            "short chunk before the end {chunk:?} in {raw:?}"
+        );
         assert!(!chunk.text.trim().is_empty(), "blank chunk {chunk:?}");
         assert!(raw[covered..chunk.byte_start].trim().is_empty(), "{raw:?}");
         covered = chunk.byte_end;
@@ -135,6 +141,47 @@ fn short_final_section_merges_into_the_chunk_before_it() {
 }
 
 #[test]
+fn four_byte_remainder_past_the_read_ahead_merges_forward() {
+    // Given: 47 characters in 176 bytes, more than the split's 160-byte
+    // read-ahead at a 40-character cap, so the first split cannot see the end.
+    let section = format!("# A\n{}", "🙂".repeat(43));
+    let followed = format!("{section}## B\nshort");
+
+    // When
+    let alone = merged(&section, 40);
+    let merged_forward = merged(&followed, 40);
+
+    // Then: the short remainder is a chunk of its own only at the end.
+    assert_eq!(
+        alone
+            .iter()
+            .map(|chunk| chunk.text.chars().count())
+            .collect::<Vec<_>>(),
+        [40, 7]
+    );
+    assert_eq!(merged_forward.len(), 2);
+    assert_eq!(
+        merged_forward[1].text,
+        format!("{}## B\nshort", "🙂".repeat(7))
+    );
+    assert_eq!(merged_forward[1].heading_path, ["A"]);
+}
+
+#[test]
+fn trailing_heading_that_does_not_fit_the_chunk_before_it_stays_on_its_own() {
+    // Given
+    let raw = format!("# A\n{}\n## Tail\n", "y".repeat(34));
+
+    // When
+    let chunks = merged(&raw, 40);
+
+    // Then
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[1].text, "## Tail\n");
+    assert_eq!(chunks[1].heading_path, ["A", "Tail"]);
+}
+
+#[test]
 fn blank_preamble_takes_the_path_of_the_first_heading() {
     // Given
     let raw = format!("\r\n\r\n# Title\r\n\r\n{}", paragraph("body", 1_000));
@@ -167,7 +214,7 @@ fn blank_documents_yield_nothing_and_a_lone_heading_is_kept() {
 #[test]
 fn invariants_hold_for_generated_markdown_at_small_and_default_bounds() {
     // Given
-    const PIECES: [&str; 10] = [
+    const PIECES: [&str; 11] = [
         "# H1\n",
         "## H2\n",
         "### H3\n",
@@ -176,6 +223,7 @@ fn invariants_hold_for_generated_markdown_at_small_and_default_bounds() {
         "   ",
         "word ",
         "🙂 日本語 ",
+        "🙂🙂🙂🙂🙂🙂",
         "Setext\n====\n",
         "```\n# fenced\n```\n",
     ];

@@ -51,9 +51,9 @@ impl Section {
 /// A bounded-memory iterator over chunks from a seekable Markdown reader.
 ///
 /// A section shorter than the minimum chunk size is merged with the section
-/// after it, and a short final chunk is merged into the chunk before it, so no
-/// chunk is only a heading line or only whitespace. No chunk exceeds the
-/// character bound.
+/// after it, and a short final chunk is merged into the chunk before it when
+/// both fit. No chunk is only whitespace, no chunk exceeds the character
+/// bound, and only the last chunk can be shorter than the minimum (D72).
 pub struct ChunkIter<R> {
     reader: R,
     scanner: HeadingScanner,
