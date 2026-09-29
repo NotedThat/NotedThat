@@ -414,7 +414,7 @@ comment saying why.
 
 - S3/Qdrant/WebDAV deps live **only** in their respective crates (`notedthat-storage-s3`, `notedthat-indexer`, `notedthat-webdav`).
 - Shared deps go in `[workspace.dependencies]` in the root `Cargo.toml`, consumed via `foo = { workspace = true }` in member `Cargo.toml` files.
-- No inter-crate `path` dependencies in M1 — each crate is standalone until M2 wires them together.
+- A crate that depends on another workspace crate declares it once in `[workspace.dependencies]` with both `path` and `version` (so it still resolves when published), and consumes it via `{ workspace = true }`.
 
 ## Adding a New Crate
 

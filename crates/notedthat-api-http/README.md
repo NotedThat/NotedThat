@@ -1,3 +1,3 @@
 # notedthat-api-http
 
-HTTP API surface (axum handlers over core in later milestones). Placeholder in M1.
+The NotedThat HTTP API: an axum router over the object store, with Bearer authentication and semantic search.

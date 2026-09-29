@@ -1,3 +1,3 @@
 # notedthat-webdav
 
-WebDAV surface (dav-server DavFileSystem impl in later milestones). Placeholder in M1.
+The NotedThat WebDAV surface: serves a knowledge base over WebDAV with dav-server, routing every write through the shared write path.

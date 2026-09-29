@@ -1,3 +1,3 @@
 # notedthat-indexer
 
-Chunker + embedder client + Qdrant integration. Placeholder in M1.
+The NotedThat indexing pipeline: chunks objects, embeds them through an OpenAI-compatible endpoint and keeps them searchable in Qdrant.
