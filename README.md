@@ -142,6 +142,17 @@ object store — plus Qdrant and an OpenAI-compatible embedding provider. It doe
 bundle an embedding model or provider credentials. Use one of the supported flows below
 and keep provider credentials in ignored local environment files; never commit them.
 
+Before you start you need:
+
+- Docker with Compose v2, for Qdrant (and the server itself in the Compose flows).
+- An embedding model. The server needs its four values to start but only contacts the
+  endpoint when it indexes, so a wrong setup still starts and leaves search empty
+  ([Indexing behavior](docs/CONFIGURATION.md#indexing-behavior)). For a free local setup, run [Ollama](https://ollama.com) with a model such as
+  [EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) or
+  [BGE-M3](https://huggingface.co/BAAI/bge-m3). See
+  [Embedding](docs/CONFIGURATION.md#embedding) for the values to put in `.env`.
+- Rust stable, for the native flows ([DEVELOPMENT.md](DEVELOPMENT.md)).
+
 The default Compose stack stores objects on disk, so it runs no object store at all.
 Add the S3 overlay when you want the production-shaped setup — that is what CI's
 integration suite exercises, and what the reference deployment runs.
@@ -170,7 +181,7 @@ curl --fail -X POST -H "Authorization: Bearer $TOKEN" \
 ```
 
 The search result is asynchronous: retry the final request until the uploaded document
-appears. Stop the local stack with `docker compose down`; add `-v` only when you
+appears. If port 8080 is taken, set `NOTEDTHAT_HTTP_PORT` in `.env` and use that port instead. Stop the local stack with `docker compose down`; add `-v` only when you
 intentionally want to delete its object and Qdrant data.
 
 `docker-compose.yml` fixes its internal listener and Qdrant address, stores objects
@@ -245,20 +256,29 @@ provider, and nothing else:
 ```sh
 docker compose up -d qdrant
 set -a; . ./.env; set +a
+# If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_STORAGE_BACKEND=fs
 export NOTEDTHAT_FS_ROOT="$PWD/.notedthat-data"
 mkdir -p "$NOTEDTHAT_FS_ROOT"
 export NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
-cargo run -p notedthat-server
+# macOS only: APFS folds case, see the note below.
+# export NOTEDTHAT_FS_ALLOW_LOSSY_NAMES=true
+cargo run --bin notedthat-server
 ```
+
+On macOS the server refuses to start on a default APFS volume, because it folds case and
+normalizes Unicode, so `Foo.md` and `foo.md` would become one file. For local development,
+set `NOTEDTHAT_FS_ALLOW_LOSSY_NAMES=true` to accept that
+([why](docs/CONFIGURATION.md#filesystem-storage-backend)).
 
 Objects are files under `$NOTEDTHAT_FS_ROOT`, at their key paths — `ls -R` it, open it in
 an editor, back it up with any file-level tool. Edits made that way are picked up: the tree
 is watched, so a note changed outside NotedThat is re-indexed and searchable shortly
-afterwards ([configuration](docs/CONFIGURATION.md#filesystem-storage-backend)). `.env` sets
-`NOTEDTHAT_S3_*`, which the `fs` backend refuses to start alongside, so unset those three
-or comment them out first. On the `s3` backend the bucket is not watched, but objects put
+afterwards ([configuration](docs/CONFIGURATION.md#filesystem-storage-backend)). The `fs`
+backend refuses to start alongside `NOTEDTHAT_S3_*`, so leave those commented out in `.env`.
+On the `s3` backend the bucket is not watched, but objects put
 there by other tools are found by a comparison pass at startup and whenever the service
 token `POST`s `/api/v1/knowledgebases/{kb}/index/reconcile`
 ([configuration](docs/CONFIGURATION.md#s3-reconciliation)).
@@ -271,6 +291,8 @@ server natively. Reuse your local embedding values from `.env` without committin
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d seaweedfs qdrant
 set -a; . ./.env; set +a
+# If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
 export NOTEDTHAT_S3_FORCE_PATH_STYLE=true
@@ -383,7 +405,7 @@ All 11 crates share a single version via ecosystem-level Semantic Versioning. Se
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process — PR workflow, commit conventions (Conventional Commits + signed + DCO), testing requirements, and AI-assistance disclosure. Build, test, and run commands live in [DEVELOPMENT.md](DEVELOPMENT.md). The project is pre-v1, so interfaces change frequently — check open issues before starting significant work.
+Commits follow Conventional Commits, signed and with a DCO sign-off, and PRs disclose AI assistance. Build, test, and run commands live in [DEVELOPMENT.md](DEVELOPMENT.md). The project is pre-v1, so interfaces change frequently — check open issues before starting significant work.
 
 ## License
 
