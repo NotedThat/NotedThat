@@ -15,7 +15,9 @@ pub struct SearchFilter {
     pub object_key_prefix: Option<String>,
 
     /// Only return hits with this media type (e.g. `"text/markdown"`). Parameters
-    /// such as `charset`, and case, are ignored on both sides of the match.
+    /// such as `charset`, and case, are ignored on both sides of the match. A chunk
+    /// indexed before that normalisation (#286) is matched only by its exact raw
+    /// type, until its object is indexed again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
 

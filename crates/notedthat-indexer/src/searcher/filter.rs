@@ -49,8 +49,15 @@ pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
     let mut conditions: Vec<Condition> = Vec::new();
 
     // mime: keyword match on the media-type essence, the form build_points stores.
+    // Chunks indexed before #286 hold the raw Content-Type instead, so a raw value
+    // that differs from its essence also matches exactly, as it always did.
     if let Some(mime) = &filter.mime {
-        conditions.push(Condition::matches("mime", essence(mime)));
+        let normalised = essence(mime);
+        if normalised == *mime {
+            conditions.push(Condition::matches("mime", normalised));
+        } else {
+            conditions.push(Condition::matches("mime", vec![normalised, mime.clone()]));
+        }
     }
 
     if let Some(concept_type) = &filter.concept_type {
@@ -157,9 +164,27 @@ mod tests {
     }
 
     #[test]
-    fn mime_filter_matches_on_the_media_type_essence() {
+    fn mime_filter_matches_the_essence_or_the_raw_value() {
         let f = SearchFilter {
             mime: Some("Text/Markdown; charset=UTF-8".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            translate_filter(&f).qdrant.unwrap().must,
+            vec![Condition::matches(
+                "mime",
+                vec![
+                    "text/markdown".to_string(),
+                    "Text/Markdown; charset=UTF-8".to_string()
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_bare_mime_filter_is_a_single_keyword_match() {
+        let f = SearchFilter {
+            mime: Some("text/markdown".into()),
             ..Default::default()
         };
         assert_eq!(

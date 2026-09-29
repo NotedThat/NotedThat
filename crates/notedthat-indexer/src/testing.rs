@@ -317,8 +317,11 @@ fn matches_filter(payload: &HashMap<String, Value>, filter: &SearchFilter) -> bo
     {
         return false;
     }
+    // The essence, or the raw value exactly for chunks indexed before #286;
+    // mirrors `translate_filter`.
     if let Some(mime) = &filter.mime
-        && string_field("mime") != Some(crate::mime::essence(mime))
+        && !string_field("mime")
+            .is_some_and(|stored| stored == crate::mime::essence(mime) || stored == *mime)
     {
         return false;
     }
@@ -778,5 +781,46 @@ impl crate::embedder::Embedder for StubEmbedder {
 
     fn model_id(&self) -> &'static str {
         "stub-embedder"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload_with_mime(mime: &str) -> HashMap<String, Value> {
+        HashMap::from([("mime".to_string(), mime.to_string().into())])
+    }
+
+    fn mime_filter(mime: &str) -> SearchFilter {
+        SearchFilter {
+            mime: Some(mime.to_string()),
+            ..SearchFilter::default()
+        }
+    }
+
+    #[test]
+    fn mime_filter_matches_the_stored_essence_whatever_its_parameters() {
+        let stored = payload_with_mime("text/markdown");
+        assert!(matches_filter(&stored, &mime_filter("text/markdown")));
+        assert!(matches_filter(
+            &stored,
+            &mime_filter("Text/Markdown; charset=UTF-8")
+        ));
+        assert!(!matches_filter(&stored, &mime_filter("text/plain")));
+    }
+
+    #[test]
+    fn a_chunk_indexed_before_286_matches_its_exact_raw_type_only() {
+        let legacy = payload_with_mime("text/markdown; charset=utf-8");
+        assert!(matches_filter(
+            &legacy,
+            &mime_filter("text/markdown; charset=utf-8")
+        ));
+        assert!(!matches_filter(&legacy, &mime_filter("text/markdown")));
+        assert!(!matches_filter(
+            &legacy,
+            &mime_filter("Text/Markdown; charset=UTF-8")
+        ));
     }
 }
