@@ -3,14 +3,14 @@
 ## Prerequisites
 
 - Rust stable — develop on it: `rustup default stable`, installed via [rustup](https://rustup.rs/).
-- The workspace declares `rust-version = "1.91.1"` (`Cargo.toml`, `[workspace.package]`). That is the
-  floor the published crates promise, derived from the dependency graph rather than chosen: 1.90.0 is
+- The workspace declares `rust-version = "1.94.1"` (`Cargo.toml`, `[workspace.package]`). That is the
+  floor the published crates promise, derived from the dependency graph rather than chosen: 1.93.0 is
   refused by Cargo naming the `aws-sdk-s3` / `aws-smithy-*` family. Edition 2024's own 1.85 floor stopped
   being the binding constraint some time ago.
 - No `rust-toolchain.toml` is present, deliberately — pinning developers to the floor is not the point.
-  CI's `test` job runs the suite on `[stable, 1.91.1]` instead, so the declared MSRV is a checked fact
+  CI's `test` job runs the suite on `[stable, 1.94.1]` instead, so the declared MSRV is a checked fact
   rather than a claim. To reproduce the MSRV leg locally:
-  `rustup toolchain install 1.91.1 && cargo +1.91.1 test --workspace --locked`.
+  `rustup toolchain install 1.94.1 && cargo +1.94.1 test --workspace --locked`.
 - Docker with Compose v2, to run Qdrant (and SeaweedFS) for the local server.
 - An embedding model to run the server; see [Embedding](docs/CONFIGURATION.md#embedding). The test
   suite does not need one.
