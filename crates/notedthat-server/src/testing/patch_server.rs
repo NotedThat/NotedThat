@@ -57,6 +57,10 @@ impl PatchServer {
 
     /// A server over `backends` whose configuration `adjust` changes first —
     /// for a test about a setting the defaults do not exercise.
+    ///
+    /// # Panics
+    ///
+    /// If the server does not answer `/healthz` within 30 seconds.
     pub async fn start_with_config(
         max_patchable_size: u64,
         backends: crate::run::Backends,
@@ -96,6 +100,11 @@ impl PatchServer {
     }
 
     /// Write `body` as Markdown, asserting `201` or `204`, and return its `ETag`.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent, the answer is neither `201` nor `204`, or
+    /// it has no `ETag`.
     pub async fn put_text(&self, path: &str, body: &str) -> String {
         let response = self
             .client
@@ -119,6 +128,11 @@ impl PatchServer {
     }
 
     /// Read `path`, asserting `200`, as text.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent, the answer is not `200`, or the body
+    /// cannot be read.
     pub async fn get_text(&self, path: &str) -> String {
         self.get(path)
             .await
@@ -128,6 +142,10 @@ impl PatchServer {
     }
 
     /// Read `path`, asserting `200`.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent, or the answer is not `200`.
     pub async fn get(&self, path: &str) -> Response {
         let response = self
             .client
@@ -141,6 +159,10 @@ impl PatchServer {
     }
 
     /// `PATCH` `path` with a `Content-Range`, conditional on `if_match` when given.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn patch_content_range(
         &self,
         path: &str,
@@ -161,6 +183,10 @@ impl PatchServer {
     }
 
     /// `PATCH` `path` in append mode, conditional on `if_match` when given.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn patch_append(&self, path: &str, if_match: Option<&str>, body: &str) -> Response {
         let mut request = self
             .client
@@ -176,6 +202,10 @@ impl PatchServer {
 
     /// Replace `old_string` with `new_string` in `path` through the replace route,
     /// conditional on `if_match`.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn replace_json(
         &self,
         path: &str,
@@ -205,6 +235,10 @@ impl PatchServer {
     }
 
     /// `HEAD` `path` and return only the status.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn head_text_status(&self, path: &str) -> StatusCode {
         self.client
             .head(self.object_url(path))
@@ -222,7 +256,11 @@ impl Drop for PatchServer {
     }
 }
 
-/// The `ETag` header of `response`. Panics if it is missing.
+/// The `ETag` header of `response`.
+///
+/// # Panics
+///
+/// If `response` has no `ETag` header, or it is not visible ASCII.
 pub fn etag(response: &Response) -> String {
     response
         .headers()
@@ -233,6 +271,11 @@ pub fn etag(response: &Response) -> String {
 }
 
 /// Assert `response` is `status` with the JSON error `code`.
+///
+/// # Panics
+///
+/// If `response` is not `status`, its body is not JSON, or its `error` is
+/// not `code`.
 pub async fn assert_error_code(response: Response, status: StatusCode, code: &str) {
     assert_eq!(response.status(), status);
     let json = response
@@ -244,6 +287,11 @@ pub async fn assert_error_code(response: Response, status: StatusCode, code: &st
 
 /// Assert a replace answered `200` with `expected_match_count` matches and
 /// the same `ETag` in header and body, and return that `ETag`.
+///
+/// # Panics
+///
+/// If `resp` is not `200`, has no valid `ETag` header, or its JSON body
+/// disagrees with the expected count or the header's `ETag`.
 pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -> String {
     assert_eq!(resp.status(), StatusCode::OK, "replace should return 200");
     let etag_header = resp

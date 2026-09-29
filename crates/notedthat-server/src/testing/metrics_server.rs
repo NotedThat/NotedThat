@@ -47,6 +47,10 @@ impl MetricsServer {
     }
 
     /// A server over exactly `backends`, with or without a metrics listener.
+    ///
+    /// # Panics
+    ///
+    /// If the server does not answer `/healthz` within 30 seconds.
     pub async fn start_with(backends: crate::run::Backends, metrics: bool) -> Self {
         let runtime = super::backends::runtime(LEAK_TOKEN, 16 * 1024 * 1024, backends);
         let mut config = runtime.config;
@@ -92,6 +96,10 @@ impl MetricsServer {
     }
 
     /// Scrape the exposition, asserting it answered.
+    ///
+    /// # Panics
+    ///
+    /// If the metrics listener does not answer `200`, or the body cannot be read.
     pub async fn scrape(&self) -> String {
         let response = self
             .client
@@ -104,6 +112,10 @@ impl MetricsServer {
     }
 
     /// Write `body` as Markdown with [`LEAK_TOKEN`], asserting nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn put_text(&self, path: &str, body: &str) -> reqwest::Response {
         self.client
             .put(self.object_url(path))
@@ -116,6 +128,10 @@ impl MetricsServer {
     }
 
     /// Delete `path` with [`LEAK_TOKEN`], asserting nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn delete(&self, path: &str) -> reqwest::Response {
         self.client
             .delete(self.object_url(path))
@@ -126,6 +142,10 @@ impl MetricsServer {
     }
 
     /// Search [`Self::kb`] for `query` with [`LEAK_TOKEN`], asserting nothing.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent.
     pub async fn search(&self, query: &str) -> reqwest::Response {
         self.client
             .post(format!(
@@ -140,6 +160,10 @@ impl MetricsServer {
     }
 
     /// The per-knowledge-base index view, for waiting on the worker.
+    ///
+    /// # Panics
+    ///
+    /// If the request cannot be sent, or the answer is not JSON.
     pub async fn index_health(&self) -> serde_json::Value {
         self.client
             .get(format!(

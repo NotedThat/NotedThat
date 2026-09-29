@@ -31,6 +31,10 @@ pub struct Frame {
 
 impl Frame {
     /// The `data` field's `object_key`, for the common assertion.
+    ///
+    /// # Panics
+    ///
+    /// If the frame has no `data`, or its `object_key` is not a string.
     pub fn key(&self) -> &str {
         self.data.as_ref().expect("event frame")["object_key"]
             .as_str()
@@ -38,6 +42,10 @@ impl Frame {
     }
 
     /// The `data` field's `source`.
+    ///
+    /// # Panics
+    ///
+    /// If the frame has no `data`, or its `source` is not a string.
     pub fn source(&self) -> &str {
         self.data.as_ref().expect("event frame")["source"]
             .as_str()
@@ -45,6 +53,10 @@ impl Frame {
     }
 
     /// The frame's `id:` as a number.
+    ///
+    /// # Panics
+    ///
+    /// If the frame has no `id:`, or it is not a `u64`.
     pub fn id_number(&self) -> u64 {
         self.id.as_deref().expect("id").parse().expect("numeric id")
     }
@@ -61,6 +73,10 @@ pub fn change_events(frame: &Frame) -> bool {
 }
 
 /// Parse every complete frame in `text`; a trailing partial frame is ignored.
+///
+/// # Panics
+///
+/// If a complete frame's `data:` line is not JSON.
 pub fn parse_frames(text: &str) -> Vec<Frame> {
     let complete = match text.rfind("\n\n") {
         Some(end) => &text[..end],
@@ -107,6 +123,10 @@ pub struct Subscription {
 
 impl Subscription {
     /// Start reading `response`, asserting it is a `200` event stream.
+    ///
+    /// # Panics
+    ///
+    /// If `response` is not a `200` with a `text/event-stream` content type.
     pub fn open(response: reqwest::Response) -> Self {
         assert_eq!(response.status(), reqwest::StatusCode::OK, "subscribe");
         assert!(
@@ -134,6 +154,11 @@ impl Subscription {
     /// Wait until at least `wanted` event frames passing `keep` have arrived
     /// since the last call, and return those; frames failing `keep` that
     /// arrived in the meantime are consumed and dropped.
+    ///
+    /// # Panics
+    ///
+    /// If `wanted` matching frames have not arrived within `timeout`, if the
+    /// stream ends or errors first, or if a chunk is not UTF-8.
     pub async fn events_where(
         &mut self,
         wanted: usize,
@@ -177,6 +202,11 @@ impl Subscription {
 
     /// Assert that no event frame passing `keep` arrives within `quiet`;
     /// whatever else arrived is consumed.
+    ///
+    /// # Panics
+    ///
+    /// If an event frame passing `keep` arrives within `quiet`, or if the
+    /// stream errors or sends a chunk that is not UTF-8.
     pub async fn expect_silence_where(&mut self, quiet: Duration, keep: impl Fn(&Frame) -> bool) {
         let deadline = tokio::time::Instant::now() + quiet;
         while let Ok(Some(chunk)) = tokio::time::timeout_at(deadline, self.body.next()).await {
