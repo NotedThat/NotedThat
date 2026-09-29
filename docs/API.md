@@ -1371,6 +1371,18 @@ curl -sSf -X POST \
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
+#### Upgrade notes (untyped objects, #278)
+
+> An object stored with no content type — a PUT with an empty `Content-Type:` header, or a file
+> the `fs` backend could not guess a type for — used to be indexed as Markdown whatever its key,
+> with an empty `mime` on its chunks. It is now judged by its key: `.md`/`.markdown` are indexed as
+> `text/markdown` and `.txt` as `text/plain`, and both the chunks and `object.indexed` carry that
+> type. Anything else is removed from the index. Chunks indexed before this release keep `mime: ""`
+> until their object is indexed again, so `mime: "text/markdown"` does not find them yet. Likewise,
+> an untyped key with no text suffix that was indexed before (a `README`, say) stays searchable
+> until it is written or deleted. `POST …/index/reconcile` only refreshes objects whose bytes
+> changed, so PUT affected documents again, as for M4 → M5 above.
+
 #### Upgrade notes (strict search body)
 
 > The search body used to ignore keys it did not know, at the top level and inside `filter`. It
