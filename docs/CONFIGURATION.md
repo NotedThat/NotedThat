@@ -175,10 +175,7 @@ leaving the selector unset — refuses startup rather than ignoring the setting,
 every conflicting one at once:
 
 ```
-Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is fs, but these
-settings belong to the s3 backend and would be ignored: NOTEDTHAT_S3_REGION (--s3-region),
-NOTEDTHAT_S3_ACCESS_KEY_ID (--s3-access-key-id). Unset them or set
-NOTEDTHAT_STORAGE_BACKEND=s3 to start the server.
+Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is fs, but these settings belong to the s3 backend and would be ignored: NOTEDTHAT_S3_REGION (--s3-region), NOTEDTHAT_S3_ACCESS_KEY_ID (--s3-access-key-id). Unset them or set NOTEDTHAT_STORAGE_BACKEND=s3 to start the server.
 ```
 
 The alternative is an operator who believes their notes are on a disk that nothing is reading.
@@ -237,10 +234,7 @@ The rejection of unselected settings works as for storage, and groups the offend
 backend that owns them:
 
 ```
-Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is unset, so the default
-none backend is selected, but these settings belong to the nats backend and would be ignored:
-NOTEDTHAT_NATS_URL (--nats-url). Unset them or set NOTEDTHAT_EVENTS_BACKEND=nats to start the
-server.
+Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is unset, so the default none backend is selected, but these settings belong to the nats backend and would be ignored: NOTEDTHAT_NATS_URL (--nats-url). Unset them or set NOTEDTHAT_EVENTS_BACKEND=nats to start the server.
 ```
 
 ## NATS connection
@@ -323,9 +317,7 @@ binding nothing and leaving an operator to discover from an empty dashboard that
 target never existed:
 
 ```
-Error: configuration error: NOTEDTHAT_METRICS_ENABLED (--metrics-enabled) is unset, so metrics are
-off, but NOTEDTHAT_METRICS_LISTEN_ADDR (--metrics-listen-addr) would be ignored: no metrics
-listener is opened. Unset it or set NOTEDTHAT_METRICS_ENABLED=true to start the server.
+Error: configuration error: NOTEDTHAT_METRICS_ENABLED (--metrics-enabled) is unset, so metrics are off, but NOTEDTHAT_METRICS_LISTEN_ADDR (--metrics-listen-addr) would be ignored: no metrics listener is opened. Unset it or set NOTEDTHAT_METRICS_ENABLED=true to start the server.
 ```
 
 As everywhere else, **an empty value is still a value**: `NOTEDTHAT_METRICS_LISTEN_ADDR=` counts as
@@ -1185,12 +1177,12 @@ required variable is missing, empty, or invalid, the process exits immediately w
 status code and prints a descriptive error to stderr. For example:
 
 ```
-Error: NOTEDTHAT_API_TOKEN (--api-token) is required
-Error: NOTEDTHAT_KBS (--kbs) must declare at least one knowledge base
+Error: configuration error: NOTEDTHAT_API_TOKEN (--api-token) is required
+Error: configuration error: NOTEDTHAT_KBS (--kbs) must declare at least one knowledge base
 Error: configuration error: NOTEDTHAT_S3_REGION (--s3-region) is required
-Error: NOTEDTHAT_LISTEN_ADDR (--listen-addr) is invalid: invalid socket address syntax
-Error: invalid KB slug "My Notes": slugs must match [a-z0-9-]{1,40}
-Error: duplicate KB slug in NOTEDTHAT_KBS (--kbs): "notes"
+Error: configuration error: NOTEDTHAT_LISTEN_ADDR (--listen-addr) is invalid: invalid socket address syntax
+Error: configuration error: invalid KB slug "My Notes": invalid input: slug contains invalid character 'M'; only [a-z0-9-] allowed
+Error: configuration error: duplicate KB slug in NOTEDTHAT_KBS (--kbs): "notes"
 Error: configuration error: NOTEDTHAT_STORAGE_BACKEND (--storage-backend) is invalid: expected "s3" or "fs", got "filesystem"
 Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) is required when NOTEDTHAT_STORAGE_BACKEND=fs
 Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) must be an absolute path, got 'data'
@@ -1210,8 +1202,17 @@ With the filesystem backend, the storage root is checked and claimed straight af
 directory, before any backend client is built:
 
 ```
-Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: NOTEDTHAT_FS_ROOT does not exist: /srv/notedthat
-Error: failed to claim NOTEDTHAT_FS_ROOT: configuration error: the storage root /srv/notedthat is already in use by another notedthat-server process (PID 4213)
+Error: failed to claim NOTEDTHAT_FS_ROOT
+
+Caused by:
+    configuration error: NOTEDTHAT_FS_ROOT does not exist: /srv/notedthat
+```
+
+```
+Error: failed to claim NOTEDTHAT_FS_ROOT
+
+Caused by:
+    configuration error: the storage root /srv/notedthat is already in use by another notedthat-server process (PID 4213). A filesystem storage root supports exactly one process: conditional writes are made atomic in-process, so a second one would silently lose writes. Stop the other process or give this one its own root.
 ```
 
 Provisioning is part of the same pass: every declared knowledge base's bucket, manifest and
@@ -1219,7 +1220,7 @@ Qdrant collection is ensured before any listener binds, and any of them failing 
 with the knowledge base and the setting to look at:
 
 ```
-Error: failed to provision the qdrant collection for knowledge base 'notes' via NOTEDTHAT_QDRANT_URL (--qdrant-url): …
+Error: configuration error: failed to provision the qdrant collection for knowledge base 'notes' via NOTEDTHAT_QDRANT_URL (--qdrant-url): …
 ```
 
 Under Docker Compose the server is `restart: unless-stopped`, so a Qdrant that is still coming up
@@ -1236,10 +1237,28 @@ The OIDC settings are checked in the same pass, and the issuer is contacted befo
 binds:
 
 ```
-Error: NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is unset, so identity tokens are not accepted, but NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is set; set the issuer or unset it
-Error: NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is required when NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is set: name the audience the provider puts in its tokens, usually the client id
-Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer): GET https://auth.example.com/.well-known/openid-configuration: error sending request
-Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer): https://auth.example.com/.well-known/openid-configuration reports issuer `https://auth.example.com/` but NOTEDTHAT_OIDC_ISSUER is `https://auth.example.com`; they must match exactly, trailing slash included
+Error: configuration error: NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is unset, so identity tokens are not accepted, but NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is set; set the issuer or unset it
+Error: configuration error: NOTEDTHAT_OIDC_AUDIENCE (--oidc-audience) is required when NOTEDTHAT_OIDC_ISSUER (--oidc-issuer) is set: name the audience the provider puts in its tokens, usually the client id
+```
+
+A failure to reach the issuer prints the whole cause chain, innermost last:
+
+```
+Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer)
+
+Caused by:
+    0: GET https://auth.example.com/.well-known/openid-configuration
+    1: error sending request for url (https://auth.example.com/.well-known/openid-configuration)
+    2: client error (Connect)
+    3: tcp connect error
+    4: Connection refused (os error 111)
+```
+
+```
+Error: failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer)
+
+Caused by:
+    https://auth.example.com/.well-known/openid-configuration reports issuer `https://auth.example.com/` but NOTEDTHAT_OIDC_ISSUER is `https://auth.example.com`; they must match exactly, trailing slash included
 ```
 
 A manifest access rule scoped to `.notedthat`, naming both `may` and `may_not`, or naming neither
@@ -1249,9 +1268,26 @@ With `NOTEDTHAT_EVENTS_BACKEND=nats`, the broker is contacted before any listene
 stream is created or checked:
 
 ```
-Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url): could not connect to NATS: failed to connect to NATS server
-Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM): JetStream stream notedthat-events exists with subjects ["orders.>"], not ["notedthat.events.>"]; point NOTEDTHAT_NATS_STREAM (--nats-stream) at a stream NotedThat owns
-Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM): JetStream stream notedthat-events has storage file, but the configuration asks for memory; JetStream cannot change it in place — delete the stream or restore the setting
+Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url)
+
+Caused by:
+    0: could not connect to NATS: IO error: Connection refused (os error 111)
+    1: IO error: Connection refused (os error 111)
+    2: Connection refused (os error 111)
+```
+
+```
+Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM)
+
+Caused by:
+    JetStream stream notedthat-events exists with subjects ["orders.>"], not ["notedthat.events.>"]; point NOTEDTHAT_NATS_STREAM (--nats-stream) at a stream NotedThat owns
+```
+
+```
+Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM)
+
+Caused by:
+    JetStream stream notedthat-events has storage file, but the configuration asks for memory; JetStream cannot change it in place — delete the stream or restore the setting
 ```
 
 ### Removed variables
@@ -1268,7 +1304,7 @@ explanation rather than "unexpected argument":
 | `NOTEDTHAT_MCP_HTTP_ENABLED` | MCP HTTP is always served at `/mcp` on `NOTEDTHAT_LISTEN_ADDR` |
 
 ```
-Error: NOTEDTHAT_MCP_HTTP_ENABLED was removed: MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR. Unset NOTEDTHAT_MCP_HTTP_ENABLED to start the server.
+Error: configuration error: NOTEDTHAT_MCP_HTTP_ENABLED was removed: MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR. Unset NOTEDTHAT_MCP_HTTP_ENABLED to start the server.
 ```
 
 Each of these encoded a decision about which network surface was reachable. Silently ignoring one
