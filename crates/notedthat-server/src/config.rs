@@ -575,7 +575,9 @@ impl Config {
                 connect_timeout_ms: 10_000,
             },
             embedder: EmbedderConfig {
-                endpoint_url: "http://127.0.0.1:1".to_string(),
+                // The embedder appends only /embeddings, so this is the
+                // versioned API base URL.
+                endpoint_url: "http://127.0.0.1:1/v1".to_string(),
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
                 dimensions: 4,
@@ -1443,7 +1445,8 @@ struct EmbedderParts {
 /// Embedder configuration.
 #[derive(Debug, Clone)]
 pub struct EmbedderConfig {
-    /// OpenAI-compatible embedding endpoint URL (`EMBEDDING_ENDPOINT_URL`; required).
+    /// OpenAI-compatible API base URL including its version segment, e.g.
+    /// `https://api.openai.com/v1` (`EMBEDDING_ENDPOINT_URL`; required).
     pub endpoint_url: String,
     /// Embedding model name (`EMBEDDING_MODEL`; required).
     pub model: String,
@@ -1632,7 +1635,7 @@ pub(crate) mod tests {
         ("NOTEDTHAT_QDRANT_URL", "http://localhost:6334"),
         ("NOTEDTHAT_WEBDAV_USERNAME", "webdav-user"),
         ("NOTEDTHAT_WEBDAV_PASSWORD", "webdav-pass"),
-        ("EMBEDDING_ENDPOINT_URL", "https://api.openai.com"),
+        ("EMBEDDING_ENDPOINT_URL", "https://api.openai.com/v1"),
         ("EMBEDDING_MODEL", "text-embedding-3-small"),
         ("EMBEDDING_API_KEY", "sk-test"),
         ("EMBEDDING_DIMENSIONS", "1536"),
@@ -2358,7 +2361,7 @@ pub(crate) mod tests {
     #[test]
     fn embedder_fields_propagated_to_config() {
         let cfg = run_with_env(&[], Config::from_env).unwrap();
-        assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com");
+        assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com/v1");
         assert_eq!(cfg.embedder.model, "text-embedding-3-small");
         assert_eq!(cfg.embedder.api_key, "sk-test");
         assert_eq!(cfg.embedder.dimensions, 1536);

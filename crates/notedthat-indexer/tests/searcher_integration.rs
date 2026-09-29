@@ -44,7 +44,7 @@ fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
 fn make_embedder(server_uri: &str, dim: usize) -> Arc<dyn Embedder> {
     Arc::new(
         OpenAiCompatibleEmbedder::new(OpenAiCompatibleConfig {
-            endpoint_url: server_uri.to_string(),
+            endpoint_url: format!("{server_uri}/v1"),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dim,

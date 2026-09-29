@@ -8,7 +8,8 @@ use std::time::Duration;
 /// Configuration for `OpenAiCompatibleEmbedder`.
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
-    /// Base URL of the OpenAI-compatible service, without `/v1/embeddings`.
+    /// Base URL of the OpenAI-compatible API, including any version segment
+    /// (e.g. `https://api.openai.com/v1`); `/embeddings` is appended.
     pub endpoint_url: String,
     /// Embedding model identifier to pass in the request body.
     pub model: String,
@@ -106,7 +107,7 @@ impl Embedder for OpenAiCompatibleEmbedder {
             return Ok(Vec::new());
         }
         let url = format!(
-            "{}/v1/embeddings",
+            "{}/embeddings",
             self.config.endpoint_url.trim_end_matches('/')
         );
         let body = EmbeddingsRequest {
@@ -192,9 +193,10 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn make_config(url: &str) -> OpenAiCompatibleConfig {
+    /// Config for a mock server at `server_uri`, with the conventional `/v1` base path.
+    fn make_config(server_uri: &str) -> OpenAiCompatibleConfig {
         OpenAiCompatibleConfig {
-            endpoint_url: url.to_string(),
+            endpoint_url: format!("{server_uri}/v1"),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dim: 3,
@@ -501,11 +503,30 @@ mod tests {
             )
             .mount(&server)
             .await;
-        // Add trailing slash to URL
-        let url = format!("{}/", server.uri());
-        let embedder = OpenAiCompatibleEmbedder::new(make_config(&url)).unwrap();
+        let mut config = make_config(&server.uri());
+        config.endpoint_url = format!("{}/v1/", server.uri());
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
         let result = embedder.embed(&["x".to_string()]).await.unwrap();
         assert!(!result.is_empty());
+    }
+
+    /// A base URL that is not under `/v1` (Gemini's is `/v1beta/openai`) is used as given:
+    /// only `/embeddings` is appended (#271).
+    #[tokio::test]
+    async fn base_path_is_used_as_given() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1beta/openai/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(make_response(vec![vec![1.0, 0.0, 0.0]])),
+            )
+            .mount(&server)
+            .await;
+        let mut config = make_config(&server.uri());
+        config.endpoint_url = format!("{}/v1beta/openai", server.uri());
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
+        let result = embedder.embed(&["x".to_string()]).await.unwrap();
+        assert_eq!(result, vec![vec![1.0_f32, 0.0, 0.0]]);
     }
 
     #[test]

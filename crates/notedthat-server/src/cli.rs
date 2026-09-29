@@ -399,7 +399,8 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", value_name = "MS")]
     pub qdrant_connect_timeout_ms: Option<String>,
 
-    /// Base URL of the OpenAI-compatible embedding endpoint.
+    /// Base URL of the OpenAI-compatible API, including its version segment
+    /// (e.g. `https://api.openai.com/v1`); `/embeddings` is appended.
     #[arg(long, env = "EMBEDDING_ENDPOINT_URL", value_name = "URL")]
     pub embedding_endpoint_url: Option<String>,
 

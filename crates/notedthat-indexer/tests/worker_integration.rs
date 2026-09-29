@@ -523,7 +523,7 @@ fn make_embedder_with_limits(
 ) -> Arc<dyn Embedder> {
     Arc::new(
         OpenAiCompatibleEmbedder::new(OpenAiCompatibleConfig {
-            endpoint_url: server_uri.to_string(),
+            endpoint_url: format!("{server_uri}/v1"),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dim,
