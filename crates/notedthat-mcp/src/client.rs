@@ -80,6 +80,13 @@ impl NotedThatClient {
     /// - Trims `url`, strips trailing `/`, parses via [`url::Url::parse`].
     /// - Rejects non-http/https schemes.
     /// - Trims `token`, rejects empty-after-trim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidUrl`] when `url` does not parse,
+    /// [`ConfigError::UrlNotHttp`] when its scheme is not `http` or `https`,
+    /// [`ConfigError::EmptyToken`] when `token` is blank, and [`ConfigError::ClientBuild`]
+    /// when an HTTP client cannot be built.
     pub fn new(url: &str, token: &str) -> Result<Self, ConfigError> {
         // Trim and strip trailing slash from URL
         let url_trimmed = url.trim().trim_end_matches('/');

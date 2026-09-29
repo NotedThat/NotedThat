@@ -198,6 +198,14 @@ impl McpSession {
     /// The JSON-RPC message in `response`: the body when it is JSON, the first
     /// frame carrying data when it is an event stream. `Err` carries the raw
     /// text when neither yields a message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the raw body text when it holds no JSON-RPC message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the response body cannot be read.
     pub async fn message_of(response: reqwest::Response) -> Result<serde_json::Value, String> {
         let is_sse = response
             .headers()
