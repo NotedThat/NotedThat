@@ -780,6 +780,45 @@ async fn test_single_object_copy_succeeds() {
     handle.abort();
 }
 
+#[tokio::test]
+async fn test_move_honours_if_match_and_the_if_header() {
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+    let put = client
+        .put(format!("{url}/webdav/notes/guarded.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# Guarded")
+        .send()
+        .await
+        .expect("PUT guarded.md");
+    let etag = put.headers()["etag"].to_str().unwrap().to_string();
+    let move_with = |name: &'static str, value: String| {
+        client
+            .request(
+                webdav_method(b"MOVE"),
+                format!("{url}/webdav/notes/guarded.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header("Destination", format!("{url}/webdav/notes/moved.md"))
+            .header(name, value)
+            .send()
+    };
+
+    // A stale validator in either header refuses the MOVE (RFC 9110 §13.2.1,
+    // RFC 4918 §10.4) and leaves the source in place.
+    let stale = move_with("If-Match", "\"stale\"".into())
+        .await
+        .expect("MOVE");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    let stale = move_with("If", "([\"stale\"])".into()).await.expect("MOVE");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    let current = move_with("If", format!("([{etag}])")).await.expect("MOVE");
+    assert_eq!(current.status(), StatusCode::CREATED);
+
+    handle.abort();
+}
+
 // ---------------------------------------------------------------------------
 // 17. MOVE of KB root (collection) returns 403 + <nt:no-collection-move/>
 // ---------------------------------------------------------------------------
