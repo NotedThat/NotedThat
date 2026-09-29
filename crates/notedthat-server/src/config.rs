@@ -138,6 +138,10 @@ impl std::fmt::Display for McpAnonymous {
 
 /// The selected events backend together with the configuration it needs.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "built once at startup, and boxing the NATS variant would change a public type"
+)]
 pub enum EventsConfig {
     /// No event log (the default).
     None,

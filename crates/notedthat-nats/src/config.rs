@@ -26,10 +26,11 @@ pub const NATS_CONNECT_ENV_VARS: [&str; 11] = [
     "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
 ];
 
-/// Stream replicas unless configured.
+/// Replicas of a stream created while `NOTEDTHAT_NATS_REPLICAS` is unset.
 pub const DEFAULT_NATS_REPLICAS: usize = 1;
-/// The `JetStream` publish deduplication window unless configured: two minutes,
-/// the server's own default.
+/// The `JetStream` publish deduplication window of a stream created while
+/// `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` is unset: two minutes, the server's own
+/// default, shortened to the stream's retention when that is shorter.
 pub const DEFAULT_NATS_DUPLICATE_WINDOW_SECS: u64 = 120;
 /// The most replicas `JetStream` accepts for a stream.
 const MAX_NATS_REPLICAS: u64 = 5;
@@ -85,11 +86,12 @@ impl NatsConnectSettings {
 
 /// How the connection authenticates beyond what the URL carries.
 ///
-/// At most one: NATS takes one identity per connection, and two configured ways
-/// of proving one would leave the operator guessing which the server used.
+/// At most one, and none when the URL carries credentials: NATS takes one
+/// identity per connection, and two configured ways of proving one would leave
+/// the operator guessing which the server used.
 #[derive(Clone, PartialEq, Eq)]
 pub enum NatsAuth {
-    /// Nothing beyond the URL, which may itself carry `user:pass@`.
+    /// Nothing beyond the URL, which may itself carry `user:pass@` or `token@`.
     None,
     /// A decentralised-auth `.creds` file: a user JWT and its `NKey` seed.
     CredsFile(PathBuf),
@@ -151,24 +153,19 @@ impl std::fmt::Display for NatsStorage {
 }
 
 /// Settings applied to every stream `NotedThat` owns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Each is `None` unless configured. A stream `NotedThat` creates then gets the
+/// default; an existing stream keeps what it has, so a stream an operator scaled
+/// or tuned by hand is not reset by an upgrade that introduced the setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NatsStreamSettings {
-    /// How many broker nodes hold a copy.
-    pub replicas: usize,
-    /// Where the messages live.
-    pub storage: NatsStorage,
-    /// How long the broker remembers a `Nats-Msg-Id` to drop a repeated publish.
-    pub duplicate_window: Duration,
-}
-
-impl Default for NatsStreamSettings {
-    fn default() -> Self {
-        Self {
-            replicas: DEFAULT_NATS_REPLICAS,
-            storage: NatsStorage::File,
-            duplicate_window: Duration::from_secs(DEFAULT_NATS_DUPLICATE_WINDOW_SECS),
-        }
-    }
+    /// How many broker nodes hold a copy; [`DEFAULT_NATS_REPLICAS`] on create.
+    pub replicas: Option<usize>,
+    /// Where the messages live; [`NatsStorage::File`] on create.
+    pub storage: Option<NatsStorage>,
+    /// How long the broker remembers a `Nats-Msg-Id` to drop a repeated publish;
+    /// [`DEFAULT_NATS_DUPLICATE_WINDOW_SECS`], at most the retention, on create.
+    pub duplicate_window: Option<Duration>,
 }
 
 /// The validated connection configuration.
@@ -221,41 +218,12 @@ impl NatsConnectConfig {
         let url = settings.url.filter(|url| !url.is_empty()).ok_or_else(|| {
             config_error(format!("{} is required", setting("NOTEDTHAT_NATS_URL")))
         })?;
-
-        let creds = parse_path("NOTEDTHAT_NATS_CREDS_FILE", settings.creds_file)?;
-        let nkey = parse_path("NOTEDTHAT_NATS_NKEY_SEED_FILE", settings.nkey_seed_file)?;
-        let token = match settings.token {
-            Some(token) if token.is_empty() => {
-                return Err(config_error(format!(
-                    "{} must not be empty",
-                    setting("NOTEDTHAT_NATS_TOKEN")
-                )));
-            }
-            other => other,
-        };
-        let supplied: Vec<String> = [
-            creds
-                .is_some()
-                .then(|| setting("NOTEDTHAT_NATS_CREDS_FILE")),
-            nkey.is_some()
-                .then(|| setting("NOTEDTHAT_NATS_NKEY_SEED_FILE")),
-            token.is_some().then(|| setting("NOTEDTHAT_NATS_TOKEN")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        if supplied.len() > 1 {
-            return Err(config_error(format!(
-                "only one NATS authentication method may be set, got {}",
-                supplied.join(" and ")
-            )));
-        }
-        let auth = match (creds, nkey, token) {
-            (Some(path), _, _) => NatsAuth::CredsFile(path),
-            (_, Some(path), _) => NatsAuth::NkeySeedFile(path),
-            (_, _, Some(token)) => NatsAuth::Token(token),
-            _ => NatsAuth::None,
-        };
+        let auth = parse_auth(
+            &url,
+            settings.creds_file,
+            settings.nkey_seed_file,
+            settings.token,
+        )?;
 
         let ca_file = parse_path("NOTEDTHAT_NATS_TLS_CA_FILE", settings.tls_ca_file)?;
         let cert = parse_path("NOTEDTHAT_NATS_TLS_CERT_FILE", settings.tls_cert_file)?;
@@ -277,21 +245,23 @@ impl NatsConnectConfig {
             false,
         )?;
 
-        let replicas = parse_positive(
+        let replicas = parse_optional_positive(
             "NOTEDTHAT_NATS_REPLICAS",
             settings.replicas.as_deref(),
-            DEFAULT_NATS_REPLICAS as u64,
             "a number of replicas from 1 to 5",
         )?;
-        if replicas > MAX_NATS_REPLICAS {
+        if let Some(replicas) = replicas
+            && replicas > MAX_NATS_REPLICAS
+        {
             return Err(config_error(format!(
                 "{} is invalid: expected a number of replicas from 1 to 5, got \"{replicas}\"",
                 setting("NOTEDTHAT_NATS_REPLICAS")
             )));
         }
         let storage = match utf8("NOTEDTHAT_NATS_STORAGE", settings.storage.as_deref())? {
-            None | Some("file") => NatsStorage::File,
-            Some("memory") => NatsStorage::Memory,
+            None => None,
+            Some("file") => Some(NatsStorage::File),
+            Some("memory") => Some(NatsStorage::Memory),
             Some(other) => {
                 return Err(config_error(format!(
                     "{} is invalid: expected \"file\" or \"memory\", got \"{other}\"",
@@ -299,10 +269,9 @@ impl NatsConnectConfig {
                 )));
             }
         };
-        let duplicate_window = parse_positive(
+        let duplicate_window = parse_optional_positive(
             "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
             settings.duplicate_window_secs.as_deref(),
-            DEFAULT_NATS_DUPLICATE_WINDOW_SECS,
             "a positive number of seconds",
         )?;
 
@@ -316,12 +285,59 @@ impl NatsConnectConfig {
             },
             streams: NatsStreamSettings {
                 // At most 5, checked above.
-                replicas: usize::try_from(replicas).unwrap_or(DEFAULT_NATS_REPLICAS),
+                replicas: replicas
+                    .map(|replicas| usize::try_from(replicas).unwrap_or(DEFAULT_NATS_REPLICAS)),
                 storage,
-                duplicate_window: Duration::from_secs(duplicate_window),
+                duplicate_window: duplicate_window.map(Duration::from_secs),
             },
         })
     }
+}
+
+/// The one authentication method, counting credentials in the URL as one.
+fn parse_auth(
+    url: &str,
+    creds_file: Option<OsString>,
+    nkey_seed_file: Option<OsString>,
+    token: Option<String>,
+) -> Result<NatsAuth, Error> {
+    let creds = parse_path("NOTEDTHAT_NATS_CREDS_FILE", creds_file)?;
+    let nkey = parse_path("NOTEDTHAT_NATS_NKEY_SEED_FILE", nkey_seed_file)?;
+    let token = match token {
+        Some(token) if token.is_empty() => {
+            return Err(config_error(format!(
+                "{} must not be empty",
+                setting("NOTEDTHAT_NATS_TOKEN")
+            )));
+        }
+        other => other,
+    };
+    let supplied: Vec<String> = [
+        split_url_credentials(url)
+            .is_some()
+            .then(|| format!("credentials in {}", setting("NOTEDTHAT_NATS_URL"))),
+        creds
+            .is_some()
+            .then(|| setting("NOTEDTHAT_NATS_CREDS_FILE")),
+        nkey.is_some()
+            .then(|| setting("NOTEDTHAT_NATS_NKEY_SEED_FILE")),
+        token.is_some().then(|| setting("NOTEDTHAT_NATS_TOKEN")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if supplied.len() > 1 {
+        return Err(config_error(format!(
+            "only one NATS authentication method may be set, got {}",
+            supplied.join(" and ")
+        )));
+    }
+    Ok(match (creds, nkey, token) {
+        (Some(path), _, _) => NatsAuth::CredsFile(path),
+        (_, Some(path), _) => NatsAuth::NkeySeedFile(path),
+        (_, _, Some(token)) => NatsAuth::Token(token),
+        _ => NatsAuth::None,
+    })
 }
 
 /// Read a setting as UTF-8, `None` when absent. Empty is an error.
@@ -381,6 +397,59 @@ pub fn parse_positive(
             setting(var)
         ))
     })
+}
+
+/// Credentials carried in a NATS URL's userinfo.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum UrlCredentials {
+    /// `nats://user:pass@host`.
+    UserPassword(String, String),
+    /// `nats://token@host`, which is how the other NATS clients read a user
+    /// without a password.
+    Token(String),
+}
+
+/// Split the credentials out of a NATS URL, percent-decoded, and return the URL
+/// without them.
+///
+/// async-nats parses the userinfo of a URL but never sends it, so a URL that
+/// carries credentials has to be turned into connect options. `None` when the
+/// URL carries none, or does not parse (connecting reports that).
+pub(crate) fn split_url_credentials(url: &str) -> Option<(UrlCredentials, String)> {
+    // A URL without a scheme is a `nats://` one, as async-nats reads it.
+    let mut parsed = if url.contains("://") {
+        url::Url::parse(url)
+    } else {
+        url::Url::parse(&format!("nats://{url}"))
+    }
+    .ok()?;
+    if parsed.username().is_empty() {
+        return None;
+    }
+    let decode = |part: &str| {
+        percent_encoding::percent_decode_str(part)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    let user = decode(parsed.username());
+    let credentials = match parsed.password() {
+        Some(password) => UrlCredentials::UserPassword(user, decode(password)),
+        None => UrlCredentials::Token(user),
+    };
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    Some((credentials, parsed.into()))
+}
+
+/// Parse a positive integer setting, `None` when absent.
+fn parse_optional_positive(
+    var: &str,
+    supplied: Option<&OsStr>,
+    accepted: &str,
+) -> Result<Option<u64>, Error> {
+    supplied
+        .map(|value| parse_positive(var, Some(value), 0, accepted))
+        .transpose()
 }
 
 /// Validate a `JetStream` stream (or consumer) name setting, `default` when absent.
@@ -445,9 +514,60 @@ mod tests {
 
         let config = NatsConnectConfig::from_settings(with_url()).unwrap();
         assert_eq!(config, NatsConnectConfig::plain("nats://localhost:4222"));
-        assert_eq!(config.streams.replicas, 1);
-        assert_eq!(config.streams.storage, NatsStorage::File);
-        assert_eq!(config.streams.duplicate_window, Duration::from_secs(120));
+        // Unset stream settings stay unset: an existing stream keeps its own.
+        assert_eq!(config.streams, NatsStreamSettings::default());
+        assert_eq!(config.streams.replicas, None);
+    }
+
+    #[test]
+    fn credentials_in_the_url_are_split_out_and_decoded() {
+        let (credentials, url) =
+            split_url_credentials("nats://alice:s%40cr%3At@broker:4222").unwrap();
+        assert!(
+            credentials == UrlCredentials::UserPassword("alice".into(), "s@cr:t".into()),
+            "user and password, percent-decoded"
+        );
+        assert_eq!(url, "nats://broker:4222");
+
+        let (credentials, url) = split_url_credentials("tls://tok3n@broker:4222").unwrap();
+        assert!(credentials == UrlCredentials::Token("tok3n".into()));
+        assert_eq!(url, "tls://broker:4222");
+
+        // No scheme is a `nats://` URL, as async-nats reads it.
+        let (_, url) = split_url_credentials("alice:pw@broker:4222").unwrap();
+        assert_eq!(url, "nats://broker:4222");
+
+        assert!(split_url_credentials("nats://broker:4222").is_none());
+        assert!(split_url_credentials("broker:4222").is_none());
+    }
+
+    #[test]
+    fn credentials_in_the_url_count_as_an_authentication_method() {
+        let alone = NatsConnectConfig::from_settings(NatsConnectSettings {
+            url: Some("nats://alice:pw@broker:4222".into()),
+            ..NatsConnectSettings::default()
+        })
+        .unwrap();
+        assert_eq!(alone.auth, NatsAuth::None);
+
+        let err = message(
+            NatsConnectConfig::from_settings(NatsConnectSettings {
+                url: Some("nats://alice:pw@broker:4222".into()),
+                token: Some("t".into()),
+                ..NatsConnectSettings::default()
+            })
+            .unwrap_err(),
+        );
+        assert!(err.contains("only one NATS authentication method"), "{err}");
+        assert!(
+            err.contains("credentials in NOTEDTHAT_NATS_URL (--nats-url)"),
+            "{err}"
+        );
+        assert!(err.contains("NOTEDTHAT_NATS_TOKEN (--nats-token)"), "{err}");
+        assert!(
+            !err.contains("pw"),
+            "the error must not quote the password: {err}"
+        );
     }
 
     #[test]
@@ -584,9 +704,9 @@ mod tests {
         assert_eq!(
             ok.streams,
             NatsStreamSettings {
-                replicas: 3,
-                storage: NatsStorage::Memory,
-                duplicate_window: Duration::from_secs(30),
+                replicas: Some(3),
+                storage: Some(NatsStorage::Memory),
+                duplicate_window: Some(Duration::from_secs(30)),
             }
         );
 
@@ -627,14 +747,21 @@ mod tests {
 
     #[test]
     fn debug_never_prints_a_credential() {
-        let config = NatsConnectConfig::from_settings(NatsConnectSettings {
-            url: Some("nats://u:url-leak-canary@broker:4222".into()),
-            token: Some("token-leak-canary".into()),
-            ..NatsConnectSettings::default()
-        })
-        .unwrap();
-        let printed = format!("{config:?}");
-        assert!(!printed.contains("leak-canary"), "{printed}");
+        // Two configs: credentials in the URL and a token are mutually exclusive.
+        for settings in [
+            NatsConnectSettings {
+                url: Some("nats://u:url-leak-canary@broker:4222".into()),
+                ..NatsConnectSettings::default()
+            },
+            NatsConnectSettings {
+                token: Some("token-leak-canary".into()),
+                ..with_url()
+            },
+        ] {
+            let config = NatsConnectConfig::from_settings(settings).unwrap();
+            let printed = format!("{config:?}");
+            assert!(!printed.contains("leak-canary"), "{printed}");
+        }
     }
 
     #[test]
@@ -661,8 +788,11 @@ mod tests {
             assert_eq!(config.url, "tls://broker:4222");
             assert_eq!(config.auth, NatsAuth::NkeySeedFile("/seed".into()));
             assert!(config.tls.required);
-            assert_eq!(config.streams.replicas, 3);
-            assert_eq!(config.streams.duplicate_window, Duration::from_secs(60));
+            assert_eq!(config.streams.replicas, Some(3));
+            assert_eq!(
+                config.streams.duplicate_window,
+                Some(Duration::from_secs(60))
+            );
         });
     }
 }

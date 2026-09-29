@@ -160,6 +160,19 @@ impl NatsConfig {
             DEFAULT_NATS_MAX_AGE_SECS,
             "a positive number of seconds",
         )?;
+        // nats-server refuses a duplicate window longer than the retention; an
+        // unset window is shortened to fit instead (`notedthat_nats::StreamSpec`).
+        if let Some(window) = connect.streams.duplicate_window
+            && window.as_secs() > max_age_secs
+        {
+            return Err(config_error(format!(
+                "{} is {} seconds, longer than {} ({max_age_secs} seconds); JetStream refuses a \
+                 duplicate window longer than the retention",
+                setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"),
+                window.as_secs(),
+                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+            )));
+        }
         Ok(Self {
             connect,
             stream,
@@ -302,6 +315,42 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn a_duplicate_window_longer_than_the_retention_is_refused() {
+        let settings = |window: &str| NatsSettings {
+            connect: NatsConnectSettings {
+                duplicate_window_secs: Some(window.into()),
+                ..url("nats://localhost:4222")
+            },
+            max_age_secs: Some("60".into()),
+            ..NatsSettings::default()
+        };
+        let ok = NatsConfig::from_settings(settings("60")).unwrap();
+        assert_eq!(
+            ok.connect.streams.duplicate_window,
+            Some(Duration::from_secs(60))
+        );
+
+        let err = message(NatsConfig::from_settings(settings("120")).unwrap_err());
+        assert!(
+            err.contains("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS (--nats-duplicate-window-secs)"),
+            "{err}"
+        );
+        assert!(
+            err.contains("NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs)"),
+            "{err}"
+        );
+
+        // Unset, the window is left to fit the retention rather than refused.
+        let unset = NatsConfig::from_settings(NatsSettings {
+            connect: url("nats://localhost:4222"),
+            max_age_secs: Some("60".into()),
+            ..NatsSettings::default()
+        })
+        .unwrap();
+        assert_eq!(unset.connect.streams.duplicate_window, None);
     }
 
     #[test]

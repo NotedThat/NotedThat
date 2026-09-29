@@ -347,15 +347,19 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_NATS_TLS_REQUIRED", value_name = "BOOL")]
     pub nats_tls_required: Option<OsString>,
 
-    /// Replicas of every NotedThat-owned `JetStream` stream, 1 to 5 [default: 1].
+    /// Replicas of every NotedThat-owned `JetStream` stream, 1 to 5. Unset, a new
+    /// stream gets 1 and an existing one keeps its own.
     #[arg(long, env = "NOTEDTHAT_NATS_REPLICAS", value_name = "COUNT")]
     pub nats_replicas: Option<OsString>,
 
-    /// Where `JetStream` keeps NotedThat's streams: `file` or `memory` [default: file].
+    /// Where `JetStream` keeps NotedThat's streams: `file` or `memory`. Unset, a new
+    /// stream gets `file` and an existing one is accepted as found.
     #[arg(long, env = "NOTEDTHAT_NATS_STORAGE", value_name = "STORAGE")]
     pub nats_storage: Option<OsString>,
 
-    /// How long the broker drops a repeated publish, in seconds [default: 120].
+    /// How long the broker drops a repeated publish, in seconds; at most the
+    /// retention. Unset, a new stream gets 120 (or the retention, if shorter) and
+    /// an existing one keeps its own.
     #[arg(
         long,
         env = "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",

@@ -2721,12 +2721,15 @@ version = "0.12.3"
 dependencies = [
  "async-nats",
  "metrics",
+ "metrics-util",
  "notedthat-core",
+ "percent-encoding",
  "temp-env",
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

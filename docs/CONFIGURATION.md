@@ -250,6 +250,7 @@ events backend's own settings, when nothing selects NATS.
 
 | Variable | Flag | Default | Description |
 |----------|------|---------|-------------|
+| `NOTEDTHAT_NATS_URL` | `--nats-url` | — | Required whenever NATS is selected. The broker, `nats://host:4222` or `tls://host:4222`; `nats://user:pass@host:4222` (percent-encode `@`, `:` and `/` in either part) or `nats://token@host:4222` authenticates with what it carries. `--help` hides the value. |
 | `NOTEDTHAT_NATS_CREDS_FILE` | `--nats-creds-file` | — | A decentralised-auth `.creds` file (user JWT and `NKey` seed). |
 | `NOTEDTHAT_NATS_NKEY_SEED_FILE` | `--nats-nkey-seed-file` | — | A file holding an `NKey` seed (`SU…`); surrounding whitespace is ignored. |
 | `NOTEDTHAT_NATS_TOKEN` | `--nats-token` | — | A server token. `--help` hides the value; prefer the variable to the flag, which `ps` shows. |
@@ -257,21 +258,24 @@ events backend's own settings, when nothing selects NATS.
 | `NOTEDTHAT_NATS_TLS_CERT_FILE` | `--nats-tls-cert-file` | — | Client certificate (PEM) for mutual TLS. Requires `NOTEDTHAT_NATS_TLS_KEY_FILE`. |
 | `NOTEDTHAT_NATS_TLS_KEY_FILE` | `--nats-tls-key-file` | — | The client certificate's key (PEM). Requires `NOTEDTHAT_NATS_TLS_CERT_FILE`. |
 | `NOTEDTHAT_NATS_TLS_REQUIRED` | `--nats-tls-required` | `false` | `true` refuses a plaintext connection even when the URL does not say `tls://`. `true` or `false` exactly. |
-| `NOTEDTHAT_NATS_REPLICAS` | `--nats-replicas` | `1` | Replicas of every NotedThat-owned stream, 1 to 5. Needs a clustered broker above 1. |
-| `NOTEDTHAT_NATS_STORAGE` | `--nats-storage` | `file` | `file` or `memory`: where JetStream keeps NotedThat's streams. `memory` loses them when the broker restarts. |
-| `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` | `--nats-duplicate-window-secs` | `120` | How long the broker remembers a `Nats-Msg-Id` and drops a repeated publish. |
+| `NOTEDTHAT_NATS_REPLICAS` | `--nats-replicas` | `1` on a new stream | Replicas of every NotedThat-owned stream, 1 to 5. Needs a clustered broker above 1. Unset, an existing stream keeps its own. |
+| `NOTEDTHAT_NATS_STORAGE` | `--nats-storage` | `file` on a new stream | `file` or `memory`: where JetStream keeps NotedThat's streams. `memory` loses them when the broker restarts. Unset, an existing stream is accepted with either. |
+| `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` | `--nats-duplicate-window-secs` | `120` on a new stream, or the retention when that is shorter | How long the broker remembers a `Nats-Msg-Id` and drops a repeated publish. At most the stream's retention (`NOTEDTHAT_NATS_MAX_AGE_SECS` for the events stream): JetStream refuses a longer window, so a longer one refuses startup. Unset, an existing stream keeps its own, shortened to the retention if that is shorter. |
 
-**At most one authentication method.** A creds file, a seed file and a token are mutually
-exclusive; supplying two refuses startup naming both. Credentials in the URL
-(`nats://user:pass@host`) still work and combine with none of them.
+**At most one authentication method.** A creds file, a seed file, a token and credentials in the
+URL are mutually exclusive; supplying two refuses startup naming both (and never quoting a
+credential).
 
-**Stream settings follow the configuration.** On every start the server compares each stream it
-owns with the configuration and updates, in place, what JetStream can change: retention age,
-message limit, replicas and duplicate window. What JetStream cannot change — the storage type and
-the retention policy — refuses startup when it differs, naming the stream and both values, rather
-than running on a stream that does not match. Delete the stream or restore the setting. Anything
-else on an existing stream (placement, limits NotedThat does not set) is the operator's and is
-kept as found.
+**Configured stream settings are followed; unset ones are left alone.** A stream NotedThat
+creates gets the configured settings, or the defaults above. On every start the server compares
+each stream it owns with the configuration and updates, in place, what JetStream can change and
+the configuration sets: the retention age always, replicas and duplicate window when configured.
+What JetStream cannot change — the storage type, when configured, and the retention policy —
+refuses startup when it differs, naming the stream and both values, rather than running on a
+stream that does not match. Delete the stream or restore the setting. Anything else on an
+existing stream — a replica count, message limit or duplicate window set by hand while the
+setting is unset, placement — is the operator's and is kept as found, so an upgrade does not
+reset a stream someone scaled.
 
 **Deduplication is per publish, never per content.** Each event is published under a fresh
 `Nats-Msg-Id`; the same id is reused only for the server's own retry after an acknowledgement
@@ -1190,6 +1194,7 @@ Error: configuration error: NOTEDTHAT_NATS_URL (--nats-url) is required
 Error: configuration error: NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs) is invalid: expected a positive number of seconds, got "7d"
 Error: configuration error: only one NATS authentication method may be set, got NOTEDTHAT_NATS_CREDS_FILE (--nats-creds-file) and NOTEDTHAT_NATS_TOKEN (--nats-token)
 Error: configuration error: NOTEDTHAT_NATS_TLS_CERT_FILE (--nats-tls-cert-file) and NOTEDTHAT_NATS_TLS_KEY_FILE (--nats-tls-key-file) must be set together
+Error: configuration error: NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS (--nats-duplicate-window-secs) is 120 seconds, longer than NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs) (60 seconds); JetStream refuses a duplicate window longer than the retention
 Error: configuration error: NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT (--max-requests-in-flight) must be > 0
 ```
 

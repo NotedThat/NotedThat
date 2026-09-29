@@ -51,7 +51,7 @@ pub(super) async fn connect(
                 stream = %nats.stream,
                 max_age_secs = nats.max_age.as_secs(),
                 replicas = nats.connect.streams.replicas,
-                storage = %nats.connect.streams.storage,
+                storage = nats.connect.streams.storage.map(notedthat_nats::NatsStorage::as_str),
                 "events backend selected"
             );
             Arc::new(publisher)

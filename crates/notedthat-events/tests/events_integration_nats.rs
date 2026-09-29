@@ -266,7 +266,7 @@ async fn an_existing_stream_follows_changeable_settings_and_refuses_the_rest() {
         stream: STREAM.to_string(),
         max_age: Duration::from_secs(600),
     };
-    config.connect.streams.duplicate_window = Duration::from_secs(30);
+    config.connect.streams.duplicate_window = Some(Duration::from_secs(30));
     NatsPublisher::connect(&config)
         .await
         .expect("a changed window and retention are applied");
@@ -283,11 +283,65 @@ async fn an_existing_stream_follows_changeable_settings_and_refuses_the_rest() {
     assert_eq!(info.duplicate_window, Duration::from_secs(30));
     assert_eq!(info.max_age, Duration::from_secs(600));
 
-    config.connect.streams.storage = notedthat_nats::NatsStorage::Memory;
+    config.connect.streams.storage = Some(notedthat_nats::NatsStorage::Memory);
     let Err(error) = NatsPublisher::connect(&config).await else {
         panic!("a different storage type must refuse startup");
     };
     let message = error.to_string();
     assert!(message.contains("storage"), "{message}");
     assert!(message.contains("cannot change it in place"), "{message}");
+}
+
+/// An upgrade that introduced the shared stream settings does not reset a stream an
+/// operator tuned by hand: what is not configured is kept as found.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn unconfigured_stream_settings_are_kept_as_found() {
+    let fixture = fixture("kept").await;
+    let mut stream = fixture.js.get_stream(STREAM).await.unwrap();
+    let tuned = async_nats::jetstream::stream::Config {
+        max_messages: 5_000,
+        duplicate_window: Duration::from_secs(45),
+        storage: async_nats::jetstream::stream::StorageType::File,
+        ..stream.info().await.unwrap().config.clone()
+    };
+    fixture.js.update_stream(&tuned).await.unwrap();
+
+    NatsPublisher::connect(&NatsConfig {
+        connect: notedthat_nats::NatsConnectConfig::plain(fixture.broker.url.clone()),
+        stream: STREAM.to_string(),
+        max_age: Duration::from_secs(3600),
+    })
+    .await
+    .expect("an existing stream with unconfigured settings is accepted");
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.max_messages, 5_000);
+    assert_eq!(found.duplicate_window, Duration::from_secs(45));
+}
+
+/// A retention shorter than the default duplicate window starts, fresh and on an
+/// existing stream alike: nats-server refuses a window longer than `max_age`.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn a_short_retention_takes_the_default_duplicate_window_with_it() {
+    let fixture = fixture("short").await;
+    let short = NatsConfig {
+        connect: notedthat_nats::NatsConnectConfig::plain(fixture.broker.url.clone()),
+        stream: STREAM.to_string(),
+        max_age: Duration::from_secs(60),
+    };
+    NatsPublisher::connect(&short)
+        .await
+        .expect("an existing stream is shortened with its window");
+    let mut stream = fixture.js.get_stream(STREAM).await.unwrap();
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.max_age, Duration::from_secs(60));
+    assert_eq!(found.duplicate_window, Duration::from_secs(60));
+
+    fixture.js.delete_stream(STREAM).await.unwrap();
+    NatsPublisher::connect(&short)
+        .await
+        .expect("a fresh stream is created with a window that fits");
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.duplicate_window, Duration::from_secs(60));
 }

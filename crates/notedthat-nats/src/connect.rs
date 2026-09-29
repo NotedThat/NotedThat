@@ -1,11 +1,13 @@
 //! Opening the one NATS connection a process shares.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_nats::{Client, ConnectOptions, Event};
 use notedthat_core::metrics::name;
 
-use crate::config::{NatsAuth, NatsConnectConfig};
+use crate::config::{NatsAuth, NatsConnectConfig, UrlCredentials, split_url_credentials};
 
 /// How long a connect, a `JetStream` API call or a publish acknowledgement may
 /// take before it is a failure.
@@ -38,11 +40,28 @@ pub enum NatsConnectError {
 /// A configured file cannot be read, or the server cannot be reached (or
 /// refuses the credentials) within [`TIMEOUT`].
 pub async fn connect(config: &NatsConnectConfig, name: &str) -> Result<Client, NatsConnectError> {
+    let events = Arc::new(ConnectionEvents::default());
     let mut options = ConnectOptions::new()
         .connection_timeout(TIMEOUT)
         .request_timeout(Some(TIMEOUT))
         .name(name)
-        .event_callback(|event| async move { record(&event) });
+        .event_callback(move |event| {
+            let events = Arc::clone(&events);
+            async move { events.record(&event) }
+        });
+
+    // async-nats parses `user:pass@` in the URL but never sends it.
+    let url = match split_url_credentials(&config.url) {
+        Some((UrlCredentials::UserPassword(user, password), url)) => {
+            options = options.user_and_password(user, password);
+            url
+        }
+        Some((UrlCredentials::Token(token), url)) => {
+            options = options.token(token);
+            url
+        }
+        None => config.url.clone(),
+    };
 
     options = match &config.auth {
         NatsAuth::None => options,
@@ -78,28 +97,64 @@ pub async fn connect(config: &NatsConnectConfig, name: &str) -> Result<Client, N
         options = options.require_tls(true);
     }
 
-    let client = options.connect(&config.url).await?;
+    let client = options.connect(url).await?;
     metrics::gauge!(name::NATS_CONNECTED).set(1.0);
     Ok(client)
 }
 
-/// Mirror a connection state change into the metrics.
-///
-/// The initial connect is not an event the callback sees before `connect`
-/// returns, so every `Connected` here is a reconnect.
-fn record(event: &Event) {
-    match event {
-        Event::Connected => {
-            metrics::gauge!(name::NATS_CONNECTED).set(1.0);
-            metrics::counter!(name::NATS_RECONNECTS).increment(1);
-            tracing::info!(target: "notedthat::nats", "NATS_RECONNECTED");
+/// Mirrors one connection's state changes into the metrics.
+#[derive(Debug, Default)]
+struct ConnectionEvents {
+    /// Whether a `Connected` has been seen: async-nats reports the initial
+    /// connect as `Connected` too, and only the ones after it are reconnects.
+    connected_before: AtomicBool,
+}
+
+impl ConnectionEvents {
+    fn record(&self, event: &Event) {
+        match event {
+            Event::Connected => {
+                metrics::gauge!(name::NATS_CONNECTED).set(1.0);
+                if self.connected_before.swap(true, Ordering::Relaxed) {
+                    metrics::counter!(name::NATS_RECONNECTS).increment(1);
+                    tracing::info!(target: "notedthat::nats", "NATS_RECONNECTED");
+                }
+            }
+            Event::Disconnected | Event::Closed => {
+                metrics::gauge!(name::NATS_CONNECTED).set(0.0);
+                tracing::warn!(target: "notedthat::nats", event = %event, "NATS_DISCONNECTED");
+            }
+            other => {
+                tracing::debug!(target: "notedthat::nats", event = %other, "NATS connection event");
+            }
         }
-        Event::Disconnected | Event::Closed => {
-            metrics::gauge!(name::NATS_CONNECTED).set(0.0);
-            tracing::warn!(target: "notedthat::nats", event = %event, "NATS_DISCONNECTED");
-        }
-        other => {
-            tracing::debug!(target: "notedthat::nats", event = %other, "NATS connection event");
-        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::*;
+
+    #[test]
+    fn the_initial_connect_is_not_a_reconnect() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let events = ConnectionEvents::default();
+            events.record(&Event::Connected);
+            events.record(&Event::Disconnected);
+            events.record(&Event::Connected);
+        });
+
+        let reconnects: Vec<DebugValue> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == name::NATS_RECONNECTS)
+            .map(|(.., value)| value)
+            .collect();
+        assert_eq!(reconnects, vec![DebugValue::Counter(1)]);
     }
 }
