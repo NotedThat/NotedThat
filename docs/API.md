@@ -1780,7 +1780,7 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `OPTIONS` | 204 | `DAV: 1` (Class 1 only). `Allow` header lists all supported methods. |
 | `HEAD` | 200 | Returns metadata without body. |
 | `GET` | 200, 206 | Supports `Range` header for partial content. |
-| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` (see below). |
+| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` on a collection (see below); a file answers them as `Depth: 0`. |
 | `PUT` | 201 (create), 204 (overwrite) | Returns `ETag`. Supports `If-Match` / `If-None-Match`. MIME sniff applies. |
 | `PROPPATCH` | 207 | Stores nothing: every property is refused with `403` and `<D:cannot-modify-protected-property/>`, except the Windows `Win32*` timestamps (`urn:schemas-microsoft-com:`), which answer `200` so Explorer's copies succeed — or `424` alongside a refused property, since PROPPATCH is atomic (RFC 4918 §9.2). `404` for a missing target, `400` for a body that is not a `propertyupdate`. |
 | `DELETE` | 204 | Idempotent — deleting a non-existent object returns 204. |
@@ -1901,6 +1901,10 @@ Characters after `?` in the URL are query parameters and are never part of the o
 `Depth: 1` instead. A `PROPFIND` without a `Depth` header is an infinite one (RFC 4918 §9.1) and is
 refused the same way. An infinite walk of a knowledge base would enumerate every object in one
 response, past the 10 000-object cap that a `Depth: 1` listing enforces.
+
+The refusal applies to collections only: the root, a knowledge base and a folder. A file has no
+members, so its `Depth` is ignored (RFC 4918 §10.2) and a `PROPFIND` on it without `Depth`, or with
+`Depth: infinity`, answers `207` as `Depth: 0` does. A path that does not exist answers `404`.
 
 ### Known-broken clients
 

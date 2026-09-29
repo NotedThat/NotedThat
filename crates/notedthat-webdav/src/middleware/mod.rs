@@ -8,7 +8,7 @@ mod path_validation;
 
 use crate::state::WebDavState;
 use crate::{
-    filesystem::PROPFIND_TOO_LARGE_DAV_XML,
+    filesystem::{DavTarget, PROPFIND_TOO_LARGE_DAV_XML},
     propfind::{
         PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
     },
@@ -22,6 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use handlers::{handle_copy, handle_delete, handle_move, handle_proppatch, handle_put};
+use notedthat_core::ConditionalHeaders;
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
@@ -90,21 +91,34 @@ pub async fn intercept_propfind_too_large(
         return next.run(req).await;
     }
 
-    // A missing Depth means infinity (RFC 4918 §9.1), and an infinite walk of a
-    // knowledge base is refused rather than listed without the size cap.
-    match parse_propfind_depth(&req) {
-        PropfindDepth::Default | PropfindDepth::Infinity => return depth_infinity_response(),
-        PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
-        PropfindDepth::Zero => return next.run(req).await,
-        PropfindDepth::One => {}
-    }
-
     let uri_path = req.uri().path();
     let target_path = uri_path
         .strip_suffix('/')
         .filter(|path| !path.is_empty())
         .unwrap_or(uri_path);
-    let Ok(target) = parse_webdav_uri_path(target_path, &state.declared_kbs) else {
+    let target = parse_webdav_uri_path(target_path, &state.declared_kbs);
+
+    // A missing Depth means infinity (RFC 4918 §9.1), and an infinite walk of a
+    // knowledge base is refused rather than listed without the size cap. Only a
+    // collection has members to walk: anything else ignores its Depth (§10.2) and
+    // answers as `Depth: 0` — a file with its properties, a missing path with `404`.
+    match parse_propfind_depth(&req) {
+        PropfindDepth::Default | PropfindDepth::Infinity => {
+            if let Ok(DavTarget::Object(kb, path)) = &target
+                && !is_virtual_folder(&state, kb, path).await
+            {
+                req.headers_mut()
+                    .insert("depth", HeaderValue::from_static("0"));
+                return next.run(req).await;
+            }
+            return depth_infinity_response();
+        }
+        PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
+        PropfindDepth::Zero => return next.run(req).await,
+        PropfindDepth::One => {}
+    }
+
+    let Ok(target) = target else {
         return next.run(req).await;
     };
 
@@ -124,6 +138,31 @@ pub async fn intercept_propfind_too_large(
             next.run(req).await
         }
         Ok(None) | Err(_) => next.run(req).await,
+    }
+}
+
+/// Whether `path` is a folder: no object of its own, and at least one beneath it.
+/// A backend error reads as "not a folder", so the request goes on at `Depth: 0`
+/// and reports the error there rather than as a depth refusal.
+async fn is_virtual_folder(
+    state: &WebDavState,
+    kb: &notedthat_core::KbSlug,
+    path: &notedthat_core::ObjectPath,
+) -> bool {
+    match state
+        .storage
+        .head_object(kb, path, ConditionalHeaders::default())
+        .await
+    {
+        Err(error) if error.is_not_found() => {
+            let prefix = format!("{}/", path.as_str());
+            state
+                .storage
+                .list_objects(kb, Some(&prefix), 1, None)
+                .await
+                .is_ok_and(|listing| !listing.objects.is_empty())
+        }
+        Ok(_) | Err(_) => false,
     }
 }
 

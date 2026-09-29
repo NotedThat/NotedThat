@@ -237,6 +237,54 @@ async fn test_propfind_depth_infinity_returns_403() {
     handle.abort();
 }
 
+#[tokio::test]
+async fn test_propfind_of_a_file_ignores_a_missing_or_infinite_depth() {
+    // RFC 4918 §10.2: a resource without members ignores Depth, so a file answers
+    // as it would at `Depth: 0`. Its folder is still refused.
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+    client
+        .put(format!("{url}/webdav/notes/sub/a.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# A")
+        .send()
+        .await
+        .expect("PUT sub/a.md");
+    let propfind = |path: &'static str, depth: Option<&'static str>| {
+        let request = client
+            .request(
+                webdav_method(b"PROPFIND"),
+                format!("{url}/webdav/notes/{path}"),
+            )
+            .header("Authorization", basic_auth(&username, &password));
+        match depth {
+            Some(depth) => request.header("Depth", depth),
+            None => request,
+        }
+        .send()
+    };
+
+    for depth in [None, Some("infinity")] {
+        let resp = propfind("sub/a.md", depth).await.expect("PROPFIND file");
+        assert_eq!(resp.status(), StatusCode::MULTI_STATUS, "{depth:?}");
+        let body = resp.text().await.expect("body");
+        assert!(body.contains("a.md"), "{body}");
+
+        let resp = propfind("sub/", depth).await.expect("PROPFIND folder");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{depth:?}");
+
+        let resp = propfind("sub", depth)
+            .await
+            .expect("PROPFIND folder, no slash");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{depth:?}");
+
+        let resp = propfind("absent.md", depth).await.expect("PROPFIND absent");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{depth:?}");
+    }
+
+    handle.abort();
+}
+
 // ---------------------------------------------------------------------------
 // 6. PUT creates object and returns ETag
 // ---------------------------------------------------------------------------
