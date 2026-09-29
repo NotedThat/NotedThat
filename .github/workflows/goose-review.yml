@@ -5,8 +5,8 @@
 # provider templates (.github/goose/providers/) and the Rust tool hints
 # (.agents/goose-review/tools.md).
 #
-# Three lanes run, one per model: DeepSeek V4 Flash and Mistral Medium 3.5
-# on the third-party endpoint, and MiniMax M3. All post as
+# Four lanes run: DeepSeek V4 Flash and Mistral Medium 3.5 on the
+# third-party endpoint, MiniMax M3, and mystery on the free pool. All post as
 # github-actions[bot] with the job's own token; every review and comment is
 # signed with the model that wrote it.
 #
@@ -33,12 +33,12 @@
 # routes are the GOOSE_*_BASE_URL secrets and the proxy's host the
 # GOOSE_PROXY_EGRESS variable, kept out of the repository on purpose.
 #
-# The proxy's free pool (notedthat_free, model `free`) is installed too but
-# runs no lane: it answers with whichever free upstream model is available,
-# so a finding could not be tied to one model, and an exhausted pool returns
-# an availability error instead of falling back to a paid model. Its route is
-# the GOOSE_FREE_BASE_URL secret; setup-providers.sh stops the run on a
-# template that has no route.
+# A fourth lane, mystery, runs on the proxy's free pool (notedthat_free,
+# model `free`): the pool answers with whichever free upstream model is
+# available, so its findings are signed `free` rather than with a model's
+# name. An exhausted pool returns an availability error instead of falling
+# back to a paid model, and the lane's checks are then reported as not
+# covered. Its route is the GOOSE_FREE_BASE_URL secret.
 #
 # (DeepSeek V4.1 Flash on OpenRouter had a lane, reaching openrouter.ai
 # directly, until it was turned off for its cost. Its provider file stays;
@@ -120,6 +120,15 @@ jobs:
           verify-backup-provider: notedthat_thirdparty
           verify-backup-model: deepseek-v4-flash-0731
           jobs: 2   # the third-party endpoint's rate, as for DeepSeek
+
+        - lane: mystery
+          provider: notedthat_free
+          model: free
+          verify-provider: notedthat_minimax
+          verify-model: MiniMax-M3
+          verify-backup-provider: notedthat_thirdparty
+          verify-backup-model: deepseek-v4-flash-0731
+          jobs: 2
 
       #
       # The review job reaches GitHub and the proxy, and crates.io for

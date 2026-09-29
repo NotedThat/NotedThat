@@ -403,8 +403,8 @@ CI reviews every PR with [Goose](https://github.com/block/goose)
 [StephanMeijer/goose-review](https://github.com/StephanMeijer/goose-review), pinned by
 commit; the engine, its tests and its documentation live there, and what the review looks
 for lives here: `.agents/checks/`, `.agents/facts/`, `.github/goose/providers/` and the Rust
-tool hints in `.agents/goose-review/tools.md`) in three lanes, one per model:
-DeepSeek V4 Flash, MiniMax M3 and Mistral Medium 3.5. Each lane
+tool hints in `.agents/goose-review/tools.md`) in four lanes, one per model:
+DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and the free pool (`mystery`). Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
 findings are posted, as that lane's review on the code. When the verifier's provider is down
@@ -449,10 +449,10 @@ the provider keys, paces requests per model, and fixes tool calling on the
 third-party route. (A DeepSeek V4.1 lane on OpenRouter, calling openrouter.ai directly with the
 `OPENROUTER_API_KEY` secret, is turned off for its cost; its provider file stays, and the
 workflow's header says how to turn it back on.) A third route, the proxy's free pool
-(`notedthat_free`, model `free`), is installed alongside the other two but runs no lane: it
-answers with whichever free upstream model is available, not DeepSeek or MiniMax, and when
-the pool is exhausted it returns an availability error rather than falling back to a paid
-model. Locally you need the proxy's token and its three routes — ask a
+(`notedthat_free`, model `free`), runs a fourth lane, `mystery`, verified by MiniMax like
+the Mistral lane: the pool answers with whichever free upstream model is available, not
+DeepSeek or MiniMax, and when it is exhausted it returns an availability error rather than
+falling back to a paid model. Locally you need the proxy's token and its three routes — ask a
 maintainer; none of them are in the repository on purpose — or an OpenRouter key of your own
 for `--provider notedthat_openrouter` (copy `.github/goose/providers/notedthat_openrouter.json`
 into your Goose `custom_providers` as is). Goose 1.52 or
