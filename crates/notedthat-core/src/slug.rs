@@ -22,6 +22,12 @@ impl KbSlug {
     pub const MAX_LEN: usize = 40;
 
     /// Validate and construct a `KbSlug`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the slug is empty, longer than
+    /// [`Self::MAX_LEN`], starts or ends with a hyphen, or contains a character outside
+    /// `[a-z0-9-]`.
     pub fn try_new(input: impl Into<String>) -> Result<Self, Error> {
         let s = input.into();
         validate_slug(&s, Self::MAX_LEN)?;
@@ -82,6 +88,12 @@ impl TenantSlug {
     pub const MAX_LEN: usize = 20;
 
     /// Validate and construct a `TenantSlug`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] on the [`KbSlug::try_new`] rules with
+    /// [`Self::MAX_LEN`], and when the slug contains a hyphen, which would make bucket
+    /// names ambiguous.
     pub fn try_new(input: impl Into<String>) -> Result<Self, Error> {
         let s = input.into();
         validate_slug(&s, Self::MAX_LEN)?;

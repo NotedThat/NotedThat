@@ -85,6 +85,13 @@ impl KbManifest {
     /// Validate that this manifest's `manifest_version` is supported, its
     /// `display_name` fits §6.8, its `description` fits the limits, and its
     /// access rules are sound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when `manifest_version` is not
+    /// [`Self::CURRENT_VERSION`], or when `display_name` or `description` is blank, spans
+    /// more than one line, or is too long; and [`Error::Config`] from
+    /// [`AccessPolicy::validate`] when the access rules are unsound.
     pub fn validate(&self) -> Result<(), Error> {
         if self.manifest_version != Self::CURRENT_VERSION {
             return Err(Error::InvalidInput {

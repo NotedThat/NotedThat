@@ -26,6 +26,10 @@ impl StagingConfig {
     }
 
     /// Read the optional staging directory override from the environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::Config`] when the variable is set but empty.
     pub fn from_env() -> Result<Self, StageError> {
         Self::from_setting(std::env::var_os(UPLOAD_TMP_DIR_ENV))
     }
@@ -35,6 +39,10 @@ impl StagingConfig {
     /// The value arrives here from whichever source supplied it — a command-line
     /// argument or [`UPLOAD_TMP_DIR_ENV`] — so the "set but empty" rule is
     /// enforced in one place for both.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::Config`] when `directory` is `Some` but empty.
     pub fn from_setting(directory: Option<OsString>) -> Result<Self, StageError> {
         match directory {
             Some(value) if value.is_empty() => Err(StageError::Config {
@@ -52,6 +60,11 @@ impl StagingConfig {
     }
 
     /// Verify that the directory exists and accepts private temporary files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::Config`] when a private temporary file cannot be created,
+    /// written and synced in the directory, or when the blocking probe task fails.
     pub async fn validate(&self) -> Result<(), StageError> {
         let directory = self.directory.clone();
         tokio::task::spawn_blocking(move || {

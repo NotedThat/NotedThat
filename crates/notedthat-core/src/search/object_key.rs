@@ -19,6 +19,11 @@ pub struct ObjectKey(String);
 
 impl ObjectKey {
     /// Validate and construct an `ObjectKey`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the key is empty, starts with `/`, contains a
+    /// NUL byte, or has a `.` or `..` segment.
     pub fn try_new(input: impl Into<String>) -> Result<Self, Error> {
         let s = input.into();
         if s.is_empty() {

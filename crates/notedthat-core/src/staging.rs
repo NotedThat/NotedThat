@@ -46,6 +46,11 @@ impl StagedBody {
     }
 
     /// Stage an asynchronous reader, verifying its declared and maximum lengths.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stage_stream`], with a failed read of `reader` reported as
+    /// [`StageError::Read`].
     pub async fn stage<R>(
         reader: R,
         expected_len: Option<u64>,
@@ -60,6 +65,13 @@ impl StagedBody {
     }
 
     /// Stage ordered byte chunks, spilling incrementally after 16 MiB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageError::TooLarge`] when `expected_len` or the bytes received exceed
+    /// `limit`; [`StageError::LengthMismatch`] when the bytes received differ from
+    /// `expected_len`; [`StageError::Read`] when the stream yields an error; and
+    /// [`StageError::Write`] when the staging file cannot be created or written.
     pub async fn stage_stream<S, E>(
         stream: S,
         expected_len: Option<u64>,
@@ -74,6 +86,10 @@ impl StagedBody {
     }
 
     /// Stage ordered byte chunks in a private file regardless of body size.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stage_stream`].
     pub async fn stage_stream_to_file<S, E>(
         stream: S,
         expected_len: Option<u64>,
@@ -191,6 +207,12 @@ impl StagedBody {
     }
 
     /// Return at most `maximum` leading bytes without loading a file in full.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from opening or reading the staging file, including
+    /// [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) if it is shorter than the
+    /// staged length.
     pub async fn prefix(&self, maximum: usize) -> Result<Bytes, std::io::Error> {
         match &self.storage {
             StagedBodyStorage::Memory(bytes) => Ok(bytes.slice(..bytes.len().min(maximum))),
@@ -204,6 +226,10 @@ impl StagedBody {
     }
 
     /// Open an asynchronous replay reader positioned at byte zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from opening the staging file.
     pub async fn open(&self) -> Result<Pin<Box<dyn AsyncReadSeek + Send>>, std::io::Error> {
         match &self.storage {
             StagedBodyStorage::Memory(bytes) => Ok(Box::pin(std::io::Cursor::new(bytes.clone()))),
@@ -212,6 +238,10 @@ impl StagedBody {
     }
 
     /// Open a blocking replay reader positioned at byte zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error from opening the staging file.
     pub fn open_blocking(&self) -> Result<Box<dyn ReadSeek + Send>, std::io::Error> {
         match &self.storage {
             StagedBodyStorage::Memory(bytes) => Ok(Box::new(std::io::Cursor::new(bytes.clone()))),

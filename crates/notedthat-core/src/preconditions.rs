@@ -62,6 +62,12 @@ pub fn unix_seconds_i64(time: SystemTime) -> i64 {
 ///
 /// Callers evaluate this *before* touching storage, so a malformed date on a missing
 /// object reports the malformed date rather than the missing object.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Other`] wrapping an
+/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) I/O error when `value` is not an
+/// HTTP-date.
 pub fn parse_http_date_or_err(value: &str) -> Result<SystemTime, StorageError> {
     httpdate::parse_http_date(value).map_err(|error| StorageError::Other {
         source: Box::new(std::io::Error::new(
@@ -118,6 +124,12 @@ pub fn matches_if_none_match(current_etag: Option<&str>, if_none_match_value: &s
 /// them; a backend that honoured them would make the same request succeed on one
 /// deployment and fail on another, which is precisely the divergence the shared
 /// `Storage` contract exists to prevent. Callers log the drop, as the S3 adapter does.
+///
+/// # Errors
+///
+/// Returns [`StorageError::PreconditionFailed`] when `If-Match` names no current object's
+/// `ETag`, or when `If-None-Match` matches the current object (`*` matches any existing
+/// one).
 pub fn evaluate_write_preconditions(
     state: Option<ObjectState<'_>>,
     conditionals: &ConditionalHeaders,
@@ -142,6 +154,14 @@ pub fn evaluate_write_preconditions(
 /// `If-Match` is checked before `If-None-Match`, so a request carrying both a failing
 /// `If-Match` and a matching `If-None-Match` is a 412 rather than a 304. A date header
 /// whose `ETag` counterpart is present is ignored, unparsed ([`ConditionalHeaders::for_read`]).
+///
+/// # Errors
+///
+/// Returns [`StorageError::PreconditionFailed`] when `If-Match` does not match or the
+/// object changed after `If-Unmodified-Since`; [`StorageError::NotModified`], carrying the
+/// object's validators, when `If-None-Match` matches or the object is unchanged since
+/// `If-Modified-Since`; and the [`parse_http_date_or_err`] error when a date header that is
+/// evaluated is malformed.
 pub fn evaluate_read_preconditions(
     state: ObjectState<'_>,
     conditionals: &ConditionalHeaders,
@@ -199,6 +219,11 @@ pub fn if_range_matches(if_range: &str, etag: Option<&str>, last_modified: Optio
 ///
 /// Returns the exclusive byte range together with the `Content-Range` value to report,
 /// or `Ok(None)` when no range was requested and the whole body should be served.
+///
+/// # Errors
+///
+/// Returns [`StorageError::RangeNotSatisfiable`] when the requested range lies outside an
+/// object of `total_size` bytes.
 pub fn resolve_range(
     total_size: u64,
     range: Option<&ByteRange>,

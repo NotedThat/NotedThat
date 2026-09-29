@@ -95,6 +95,10 @@ impl KeyPattern {
     ///
     /// This is what an omitted `under` means, expressed as a real pattern rather
     /// than as a special case the evaluator has to remember.
+    ///
+    /// # Panics
+    ///
+    /// Never: `**` is a valid pattern.
     pub fn whole_kb() -> Self {
         Self::parse("**").expect("`**` is a valid pattern")
     }
