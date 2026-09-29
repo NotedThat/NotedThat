@@ -206,7 +206,6 @@ async fn build(
         ("private".to_string(), private),
     ]);
     build_router(AppState {
-        storage,
         kb_details: Arc::new(BTreeMap::from([
             (
                 "notes".to_string(),
@@ -223,7 +222,6 @@ async fn build(
                 },
             ),
         ])),
-        declared_kbs: Arc::new(declared_kbs),
         access_policies: Arc::new(
             policies
                 .into_iter()
@@ -231,14 +229,12 @@ async fn build(
                 .collect(),
         ),
         authenticator: Arc::new(authenticator),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx: indexer_tx.clone(),
         searcher,
         events,
         index_health,
-        readiness: notedthat_api_http::testing::ready_receiver(),
         reconcile,
+        ..AppState::for_tests(storage, declared_kbs)
     })
 }
 

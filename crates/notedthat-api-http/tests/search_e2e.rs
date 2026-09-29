@@ -17,11 +17,7 @@ use axum::{
     http::{Request, StatusCode},
     response::Response,
 };
-use notedthat_api_http::{
-    router::build_router,
-    state::AppState,
-    testing::{InMemoryStorage, NoopSearcher},
-};
+use notedthat_api_http::{router::build_router, state::AppState, testing::InMemoryStorage};
 use notedthat_core::{KbSlug, Storage};
 use notedthat_indexer::testing::InMemoryVectorStore;
 use notedthat_indexer::{
@@ -211,19 +207,10 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
     kbs.insert(kb.to_string(), kb_slug.clone());
 
     let state = AppState {
-        storage: Arc::clone(&storage) as Arc<dyn Storage>,
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
         searcher,
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(Arc::clone(&storage) as Arc<dyn Storage>, kbs)
     };
 
     let router = build_router(state);
@@ -246,22 +233,9 @@ fn simple_router_for(kb: &str) -> axum::Router {
     let mut kbs = BTreeMap::new();
     kbs.insert(kb.to_string(), KbSlug::try_new(kb).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage: storage as Arc<dyn Storage>,
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
-        searcher: Arc::new(NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(storage as Arc<dyn Storage>, kbs)
     };
     build_router(state)
 }

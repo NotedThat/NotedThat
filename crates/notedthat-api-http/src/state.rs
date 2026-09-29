@@ -84,6 +84,39 @@ impl AppState {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl AppState {
+    /// A complete state for tests, to spread into a fixture with
+    /// `AppState { searcher, ..AppState::for_tests(storage, kbs) }`.
+    ///
+    /// A fixture names only what its test depends on, and a new field is added
+    /// here rather than in every fixture. Every declared knowledge base is open
+    /// to any signed-in caller and shows its slug as its name; the bearer token
+    /// is `test-token`; both size limits are 16 MiB. Nothing reads the index
+    /// queue, so a test that inspects what was enqueued brings its own
+    /// `indexer_tx`. Search finds nothing, every backend reports ready, and there
+    /// is no event log and no reconciler.
+    #[must_use]
+    pub fn for_tests(storage: Arc<dyn Storage>, declared_kbs: BTreeMap<String, KbSlug>) -> Self {
+        let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
+        Self {
+            storage,
+            access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
+            kb_details: Arc::new(notedthat_core::slug_kb_details(&declared_kbs)),
+            declared_kbs: Arc::new(declared_kbs),
+            authenticator: Arc::new(Authenticator::new("test-token")),
+            max_body_size: 16 * 1024 * 1024,
+            max_patchable_size: 16 * 1024 * 1024,
+            indexer_tx: IndexQueueSender::from_mpsc(indexer_tx),
+            searcher: Arc::new(crate::testing::NoopSearcher),
+            events: None,
+            index_health: Arc::new(IndexHealth::new()),
+            readiness: crate::testing::ready_receiver(),
+            reconcile: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,19 +127,8 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn minimal_state(tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>) -> AppState {
         AppState {
-            storage: Arc::new(InMemoryStorage::default()),
-            declared_kbs: Arc::new(BTreeMap::new()),
-            access_policies: Arc::new(BTreeMap::new()),
-            kb_details: Arc::new(BTreeMap::new()),
-            authenticator: Arc::new(Authenticator::new("token")),
-            max_body_size: 1024,
-            max_patchable_size: 1024,
             indexer_tx: (&tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(Arc::new(InMemoryStorage::default()), BTreeMap::new())
         }
     }
 

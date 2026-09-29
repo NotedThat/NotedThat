@@ -208,22 +208,17 @@ mod bounded_routes {
     use tower::ServiceExt;
 
     fn state() -> AppState {
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         let notes = KbSlug::try_new("notes").expect("valid slug");
         AppState {
-            storage: Arc::new(InMemoryStorage::default()),
-            declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
             access_policies: Arc::new(BTreeMap::new()),
             kb_details: Arc::new(BTreeMap::new()),
             authenticator: Arc::new(Authenticator::new("token")),
             max_body_size: 1024,
             max_patchable_size: 1024,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(
+                Arc::new(InMemoryStorage::default()),
+                BTreeMap::from([("notes".to_string(), notes)]),
+            )
         }
     }
 
@@ -389,23 +384,13 @@ mod patch_route {
             .await
             .unwrap();
 
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
         let router = build_router(AppState {
-            storage,
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(storage, kbs)
         });
 
         (router, outcome.etag.unwrap())
@@ -440,19 +425,11 @@ mod patch_route {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
-            storage,
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(storage, kbs)
         })
     }
 
@@ -976,23 +953,13 @@ mod line_range_get {
             .await
             .unwrap();
 
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
         build_router(AppState {
-            storage,
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(storage, kbs)
         })
     }
 
@@ -1169,19 +1136,14 @@ mod tests {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         build_router(AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(
+                Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
+                kbs,
+            )
         })
     }
 
@@ -1387,19 +1349,11 @@ mod tests {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
-            storage: storage.clone(),
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(storage.clone(), kbs)
         };
         let router = build_router(state);
 
@@ -1482,19 +1436,11 @@ mod tests {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb.clone());
         let state = AppState {
-            storage: storage.clone(),
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(storage.clone(), kbs)
         };
         let router = build_router(state);
 

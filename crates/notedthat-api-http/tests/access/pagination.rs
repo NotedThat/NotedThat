@@ -6,7 +6,7 @@ use axum::http::{Request, StatusCode};
 use bytes::Bytes;
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::state::AppState;
-use notedthat_api_http::testing::{InMemoryStorage, NoopSearcher};
+use notedthat_api_http::testing::InMemoryStorage;
 use notedthat_core::{
     AccessPolicy, ConditionalHeaders, KbDetails, KbSlug, ObjectPath, Storage, Verb, Who,
 };
@@ -34,25 +34,14 @@ async fn interleaved_app(count: usize, policy: AccessPolicy) -> axum::Router {
             .expect("seed");
     }
 
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
-        storage,
-        declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
         kb_details: Arc::new(BTreeMap::from([(
             "notes".to_string(),
             KbDetails::from_slug("notes"),
         )])),
         authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
-        searcher: Arc::new(NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(storage, BTreeMap::from([("notes".to_string(), notes)]))
     })
 }
 
@@ -222,25 +211,14 @@ async fn one_prefix_app(count: usize, prefix: &str, policy: AccessPolicy) -> axu
             .expect("seed");
     }
 
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
-        storage,
-        declared_kbs: Arc::new(BTreeMap::from([("notes".to_string(), notes)])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
         kb_details: Arc::new(BTreeMap::from([(
             "notes".to_string(),
             KbDetails::from_slug("notes"),
         )])),
         authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
-        searcher: Arc::new(NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(storage, BTreeMap::from([("notes".to_string(), notes)]))
     })
 }
 

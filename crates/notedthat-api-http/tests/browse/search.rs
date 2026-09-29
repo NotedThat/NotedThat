@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 fn searcher_returning(key: &str) -> Arc<MockSearcher> {
     let searcher = Arc::new(MockSearcher::default());
-    searcher.set_response(Ok(SearchResponse::new(vec![SearchHit {
+    searcher.push_response(Ok(SearchResponse::new(vec![SearchHit {
         object_key: ObjectKey::try_new(key).expect("valid key"),
         byte_start: 0,
         byte_end: 7,

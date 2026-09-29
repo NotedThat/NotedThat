@@ -564,19 +564,13 @@ mod tests {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         crate::router::build_router(crate::state::AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-            max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..crate::state::AppState::for_tests(
+                Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
+                kbs,
+            )
         })
     }
 
@@ -590,19 +584,10 @@ mod tests {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
         crate::router::build_router(crate::state::AppState {
-            storage,
-            access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-            max_body_size: 16 * 1024 * 1024,
             max_patchable_size,
             indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..crate::state::AppState::for_tests(storage, kbs)
         })
     }
 
@@ -1434,19 +1419,12 @@ mod tests {
             tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
             crate::router::build_router(crate::state::AppState {
-                storage: Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
-                access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-                kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-                declared_kbs: Arc::new(kbs),
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-                max_body_size: 16 * 1024 * 1024,
-                max_patchable_size: 16 * 1024 * 1024,
                 indexer_tx: (&indexer_tx).into(),
-                searcher: Arc::new(crate::testing::NoopSearcher),
-                events: None,
-                index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-                readiness: crate::testing::ready_receiver(),
-                reconcile: None,
+                ..crate::state::AppState::for_tests(
+                    Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
+                    kbs,
+                )
             })
         }
 

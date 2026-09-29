@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use notedthat_api_http::router::build_router;
 use notedthat_api_http::search_route::SEARCH_BODY_MAX_BYTES;
 use notedthat_api_http::state::AppState;
-use notedthat_api_http::testing::{InMemoryStorage, MockSearcher, NoopSearcher};
+use notedthat_api_http::testing::{InMemoryStorage, MockSearcher};
 use notedthat_core::KbSlug;
 use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse};
 use tower::util::ServiceExt;
@@ -23,43 +23,24 @@ fn declared_kbs() -> BTreeMap<String, KbSlug> {
 }
 
 fn make_app() -> axum::Router {
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
-        declared_kbs: Arc::new(declared_kbs()),
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&declared_kbs())),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
-        searcher: Arc::new(NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(
+            Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
+            declared_kbs(),
+        )
     };
     build_router(state)
 }
 
 fn make_mock_app(mock: Arc<MockSearcher>) -> axum::Router {
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage: Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
-        declared_kbs: Arc::new(declared_kbs()),
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs())),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&declared_kbs())),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
         searcher: mock,
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(
+            Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
+            declared_kbs(),
+        )
     };
     build_router(state)
 }

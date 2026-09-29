@@ -187,9 +187,7 @@ mod tests {
     fn app() -> Router {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
-        let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
         let state = AppState {
-            storage: Arc::new(crate::testing::InMemoryStorage::default()),
             // This router mounts the handler without `auth_middleware`, so the
             // request carries no principal and resolves as anonymous. These
             // tests are about request validation, not authorization, so grant
@@ -206,17 +204,7 @@ mod tests {
                     .collect::<notedthat_core::AccessPolicy>(),
                 ),
             )])),
-            kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-            declared_kbs: Arc::new(kbs),
-            authenticator: Arc::new(notedthat_core::Authenticator::new("token")),
-            max_body_size: 16 * 1024 * 1024,
-            max_patchable_size: 16 * 1024 * 1024,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(Arc::new(crate::testing::InMemoryStorage::default()), kbs)
         };
 
         Router::new()
