@@ -68,18 +68,22 @@ impl S3Storage {
     /// object and `If-None-Match: *` only for a missing one — and otherwise a `HEAD`
     /// taken just before the write answers it. That `HEAD` can race a concurrent
     /// writer; the worst outcome is a `201` where a `204` was due, or the reverse.
+    ///
+    /// The `HEAD` only picks the status, so it never fails the write: any answer but
+    /// `404` counts as an existing object, and a backend fault is left for the write
+    /// itself to report.
     async fn key_exists_before_write(
         &self,
         bucket: &str,
         key: &str,
         if_match: Option<&str>,
         if_none_match: Option<&str>,
-    ) -> Result<bool, StorageError> {
+    ) -> bool {
         if if_none_match.is_some_and(|value| value.trim() == "*") {
-            return Ok(false);
+            return false;
         }
         if if_match.is_some() {
-            return Ok(true);
+            return true;
         }
         match self
             .client
@@ -89,10 +93,13 @@ impl S3Storage {
             .send()
             .await
         {
-            Ok(_) => Ok(true),
+            Ok(_) => true,
             Err(error) => match map_head_error(&error, bucket, key) {
-                StorageError::NotFound { .. } => Ok(false),
-                other => Err(other),
+                StorageError::NotFound { .. } => false,
+                other => {
+                    warn!(bucket = %bucket, key = %key, error = %other, "HEAD before write failed; answering as a replace");
+                    true
+                }
             },
         }
     }
@@ -838,7 +845,7 @@ impl Storage for S3Storage {
                 conditionals.if_match.as_deref(),
                 conditionals.if_none_match.as_deref(),
             )
-            .await?;
+            .await;
 
         let mut req = self
             .client
@@ -901,7 +908,7 @@ impl Storage for S3Storage {
                 conditionals.if_match.as_deref(),
                 conditionals.if_none_match.as_deref(),
             )
-            .await?;
+            .await;
         let mut req = self
             .client
             .put_object()
@@ -949,7 +956,7 @@ impl Storage for S3Storage {
                 None,
                 options.destination_if_none_match.as_deref(),
             )
-            .await?;
+            .await;
         let mut req = self
             .client
             .copy_object()
