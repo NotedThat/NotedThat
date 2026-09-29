@@ -598,6 +598,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - Successful partial reads return `206` + `Content-Range`.
 - Full reads return `200`.
 - Malformed ranges return `400 malformed_range`; unsatisfiable ranges return `416`.
+- Range units are matched case-insensitively (RFC 9110 §14.1), for `bytes=` and `lines=` alike.
 - MCP `read(kb, path, byte_start?, byte_end?)` uses zero-based byte offsets with `byte_end` exclusive, matching internal chunk offsets. The MCP wrapper converts to HTTP's inclusive `Range` header when calling the API.
 
 #### Line ranges

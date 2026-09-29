@@ -324,6 +324,8 @@ Clients can request a partial object body by including a `Range` header:
 - **400 Bad Request** `malformed_range` — unparseable `Range` header, or more than one `bytes=` range. A `206` for several ranges would have to be `multipart/byteranges` (RFC 7233 §4.1), which NotedThat does not produce; serving only the first range would be a silent short read, so the request is refused instead.
 - **200 OK** — unknown range unit (e.g., `items=0-10`) is silently ignored per RFC 7233 §2.1; full object returned
 
+Range units are case-insensitive (RFC 9110 §14.1): `Bytes=0-499` and `LINES=1-10` read the same as their lowercase forms.
+
 **curl example:**
 
 ```sh
@@ -361,7 +363,7 @@ Request a slice of an object by line number rather than byte offset. Line number
 - For an insert point (`lines=<N>-<N-1>`, an empty body) an inclusive end cannot name the slice, so the response instead carries `X-Content-Range-Bytes: */<total_bytes>` and `X-Insert-Offset: <byte_offset>`, the byte offset the insert point sits at (`0` before line 1, `<total_bytes>` after the last line). The `206` status tells this apart from the `416` below, which uses the same `*/<total_bytes>` form
 
 **Error responses:**
-- **400** `malformed_range` — unparseable `lines=` spec
+- **400** `malformed_range` — unparseable `lines=` spec, including a reversed range such as `lines=5-1` (`last` may be at most one below `first`, which is the insert-point form)
 - **416** — out-of-range request; response includes:
   - `Content-Range: lines */<total_lines>`
   - `X-Content-Range-Bytes: */<total_bytes>`

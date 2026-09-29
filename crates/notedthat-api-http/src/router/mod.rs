@@ -1122,6 +1122,33 @@ mod line_range_get {
             assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
             assert!(response.headers().get("X-Content-Range-Bytes").is_none());
         }
+
+        #[tokio::test]
+        async fn serves_a_slice_when_the_range_unit_is_not_lowercase() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "Bytes=0-4").await;
+
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(
+                response.headers().get("Content-Range").unwrap(),
+                "bytes 0-4/80"
+            );
+        }
+
+        #[tokio::test]
+        async fn rejects_a_reversed_line_range_with_the_parser_reason() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=5-1").await;
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], "malformed_range");
+            let message = json["message"].as_str().unwrap();
+            assert!(message.contains("invalid range spec: 5-1"), "{message}");
+        }
     }
 }
 

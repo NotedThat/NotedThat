@@ -156,7 +156,7 @@ fn parse_patch_content_range(content_range: &str, body: Bytes) -> Result<PatchMo
         }
         "lines" => {
             let line_range = parse_line_range_header(&format!("lines={range_str}"))
-                .map_err(|_| format!("malformed Content-Range lines range: {range_str}"))?;
+                .map_err(|e| format!("malformed Content-Range lines range: {range_str}: {e}"))?;
             Ok(PatchMode::Lines {
                 range: line_range,
                 body,
