@@ -136,11 +136,11 @@ fn selector_filter(selector: &PointSelector) -> Filter {
 ///
 /// Qdrant reports a missing collection as a gRPC `NotFound` status whose message
 /// names the collection ("Collection `kb_notes_v1` doesn't exist!"). The status
-/// code alone is not enough: a missing point, a missing shard, or a missing
-/// payload index under strict mode can also come back as `NotFound`, and those
-/// are backend faults, not an unknown knowledge base. So both the code and the
-/// collection name must match. Anything else keeps Qdrant's message as a
-/// [`VectorStoreError::Backend`].
+/// code alone is not enough: a missing point or a missing shard also comes back
+/// as `NotFound`, and those are backend faults, not an unknown knowledge base.
+/// So both the code and the collection name must match. (A strict-mode missing
+/// payload index is `InvalidArgument`, so the code check alone excludes it.)
+/// Anything else keeps Qdrant's message as a [`VectorStoreError::Backend`].
 ///
 /// Applied ONLY on the paths whose callers act on the distinction:
 /// `collection_exists`, `hybrid_search` and the two `indexed_*` reads, where an
