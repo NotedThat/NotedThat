@@ -2430,6 +2430,43 @@ mod announcing {
         assert!(events[0].occurred_at.ends_with('Z'));
     }
 
+    /// A PUT with an empty `Content-Type:` stores `""`; the key names the type,
+    /// and the event and the chunks agree on it, so a `mime` search filter finds
+    /// what `object.indexed` reported (D65).
+    #[tokio::test]
+    async fn an_untyped_markdown_key_is_reported_and_stored_under_the_same_type() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "notes/Draft.MD", "# Draft\n\nbody", "");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("notes/Draft.MD", "\"advisory\"")],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        let indexed = indexed_events(&events);
+        assert_eq!(indexed.len(), 1, "{events:?}");
+        let ObjectEventKind::Indexed { mime, .. } = &indexed[0].kind else {
+            unreachable!("filtered to indexed events");
+        };
+        assert_eq!(mime, "text/markdown");
+        let points = scroll_points(&store, &kb(), "notes/Draft.MD", false).await;
+        assert!(!points.is_empty());
+        for point in &points {
+            assert_eq!(
+                string_payload(point, "mime"),
+                mime,
+                "chunk mime is the event's"
+            );
+        }
+    }
+
     /// An upsert names a key, not a version: it indexes whatever is current
     /// when the worker reaches it. Two writes in quick succession therefore
     /// yield verdicts that both carry the second version's stamp — the first
@@ -2989,45 +3026,73 @@ async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
 // ─── Untyped objects (#278) ─────────────────────────────────────────────────
 
 /// The fs backend records no type for a file written outside the server with an
-/// extension it does not know, such as a vault's image attachments.
+/// extension it does not know, such as a vault's image attachments. A key with
+/// no extension names no text type either, however readable its bytes. Each one
+/// was indexed before under a declared type, so the removal is observable.
 #[tokio::test]
-async fn an_untyped_binary_is_removed_from_the_index_without_being_read() {
-    for declared in [None, Some("")] {
-        let kb = kb();
-        let (store, provisioner) = make_store();
-        provisioner.ensure_collection(&kb, 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        let png = Bytes::from_static(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
-        match declared {
-            None => storage.insert_untyped("test-kb", "photo.png", png),
-            Some(content_type) => storage.insert_bytes("test-kb", "photo.png", png, content_type),
+async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() {
+    let cases: [(&str, &'static [u8]); 2] = [
+        ("photo.png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"),
+        ("attachments/README", b"plain, valid UTF-8 text"),
+    ];
+    for (key, bytes) in cases {
+        for declared in [None, Some("")] {
+            let kb = kb();
+            let (store, provisioner) = make_store();
+            provisioner.ensure_collection(&kb, 4).await.unwrap();
+            let storage = Arc::new(MockStorage::new());
+            storage.insert("test-kb", key, "# Earlier\n\nonce text", "text/markdown");
+            index_once(
+                Arc::clone(&storage),
+                Arc::new(ScriptedEmbedder::new(None, None)),
+                Arc::new(store.clone()),
+                &kb,
+                key,
+                32,
+            )
+            .await;
+            assert!(
+                count_points(&store, &kb, key).await > 0,
+                "{key} {declared:?}: the typed version is indexed first"
+            );
+
+            let content = Bytes::from_static(bytes);
+            match declared {
+                None => storage.insert_untyped("test-kb", key, content),
+                Some(content_type) => storage.insert_bytes("test-kb", key, content, content_type),
+            }
+            let reads_before = storage.stream_calls();
+            let health = Arc::new(IndexHealth::new());
+
+            run_one_with_health(
+                Arc::clone(&storage),
+                Arc::new(ScriptedEmbedder::new(None, None)),
+                Arc::new(store.clone()),
+                IndexEvent::Refresh {
+                    kb: kb.clone(),
+                    object_key: opath(key),
+                    origin: RefreshOrigin::Reconcile,
+                },
+                Arc::clone(&health),
+            )
+            .await;
+
+            assert_eq!(
+                storage.stream_calls(),
+                reads_before,
+                "{key} {declared:?}: never read the body"
+            );
+            assert_eq!(
+                count_points(&store, &kb, key).await,
+                0,
+                "{key} {declared:?}: the earlier version's chunks are gone"
+            );
+            assert_eq!(
+                health.snapshot("test-kb").last_failure,
+                None,
+                "{key} {declared:?}: an attachment is not an indexing failure"
+            );
         }
-        let health = Arc::new(IndexHealth::new());
-
-        run_one_with_health(
-            Arc::clone(&storage),
-            Arc::new(ScriptedEmbedder::new(None, None)),
-            Arc::new(store.clone()),
-            IndexEvent::Refresh {
-                kb: kb.clone(),
-                object_key: opath("photo.png"),
-                origin: RefreshOrigin::Reconcile,
-            },
-            Arc::clone(&health),
-        )
-        .await;
-
-        assert_eq!(
-            storage.stream_calls(),
-            0,
-            "{declared:?}: never read the body"
-        );
-        assert_eq!(count_points(&store, &kb, "photo.png").await, 0);
-        assert_eq!(
-            health.snapshot("test-kb").last_failure,
-            None,
-            "{declared:?}: an attachment is not an indexing failure"
-        );
     }
 }
 
@@ -3058,6 +3123,14 @@ async fn an_untyped_markdown_key_is_still_indexed() {
     )
     .await;
 
-    assert!(count_points(&store, &kb, "notes/Draft.MD").await > 0);
+    let points = scroll_points(&store, &kb, "notes/Draft.MD", false).await;
+    assert!(!points.is_empty());
+    for point in &points {
+        assert_eq!(
+            string_payload(point, "mime"),
+            "text/markdown",
+            "the chunks carry the type the key names"
+        );
+    }
     assert_eq!(health.snapshot("test-kb").last_failure, None);
 }

@@ -114,35 +114,39 @@ impl IndexerWorker {
             .await;
         }
 
-        // From here on a failure knows which version it was working on.
-        let (etag, mime) = (head.etag.clone(), head.content_type.clone());
-        self.index_head(kb, object_key, head, skip)
-            .await
-            .map_err(|message| PipelineFailure {
-                message,
-                etag,
-                mime,
-            })
-    }
-
-    /// Index the object `head` describes, or take it out of the index when it
-    /// is not something the index holds.
-    async fn index_head(
-        &self,
-        kb: KbSlug,
-        object_key: ObjectPath,
-        head: ObjectMeta,
-        skip: Skip,
-    ) -> Result<PipelineOutcome, String> {
         // An object with no declared type — a file the fs backend could not
-        // guess one for — is judged by its key, so an attachment is not read as
-        // Markdown.
+        // guess one for, or a PUT with an empty `Content-Type` — is judged by its
+        // key, so an attachment is not read as Markdown. The type resolved here is
+        // the one the outcome event reports and the chunks carry (D65).
         let mime = match head.content_type.as_deref().map(str::trim) {
             Some(declared) if !declared.is_empty() => declared.to_owned(),
             _ => content_type_from_key(object_key.as_str())
                 .unwrap_or_default()
                 .to_owned(),
         };
+
+        // From here on a failure knows which version it was working on.
+        let failure_etag = head.etag.clone();
+        let failure_mime = Some(mime.clone()).filter(|mime| !mime.is_empty());
+        self.index_head(kb, object_key, head, mime, skip)
+            .await
+            .map_err(|message| PipelineFailure {
+                message,
+                etag: failure_etag,
+                mime: failure_mime,
+            })
+    }
+
+    /// Index the object `head` describes as `mime`, or take it out of the index
+    /// when it is not something the index holds.
+    async fn index_head(
+        &self,
+        kb: KbSlug,
+        object_key: ObjectPath,
+        head: ObjectMeta,
+        mime: String,
+        skip: Skip,
+    ) -> Result<PipelineOutcome, String> {
         if !is_indexable(&mime) {
             tracing::debug!(
                 target: "notedthat::indexing",
@@ -179,7 +183,10 @@ impl IndexerWorker {
         if max_input_tokens == 0 {
             return Err("embedder input limit must be greater than zero".to_owned());
         }
-        let snapshot = self.stage_snapshot(&kb, &object_key, head).await?;
+        let mut snapshot = self.stage_snapshot(&kb, &object_key, head).await?;
+        // The chunks carry the type the event reports, so a `mime` search filter
+        // finds what `object.indexed` said was indexed, key-derived or declared.
+        snapshot.meta.content_type = Some(mime.clone());
         let max_chars =
             chunker::SOFT_CHAR_CAP.min((max_input_tokens / MAX_UTF8_BYTES_PER_SCALAR).max(1));
         let cursor =

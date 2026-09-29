@@ -1428,7 +1428,7 @@ granted nothing answers `403`; an anonymous caller granted nothing is concealed 
 |-----------|-------------|
 | `prefix` | Only keys starting with this string, e.g. `prefix=inbox/` |
 | `event` | `written`, `deleted`, `indexed` or `index_failed` (the `object.` prefix is accepted, so `event=object.indexed` works too); anything else is `400` |
-| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported. Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
+| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported (or, when it reported none, the type the key's suffix names). Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
 
 **Request headers:**
 
@@ -1482,7 +1482,7 @@ own.
 | `object_key` | all | The key, without a leading slash |
 | `etag` | `object.written`, `object.indexed`; `object.index_failed` when known | The `ETag` of the version the event is about, quoted as in `HEAD`. On `object.indexed` it is the version now in the index — the one the indexer read and verified on the bytes it embedded — so it matches the `object.written` for that write |
 | `size` | `object.written` | Size in bytes |
-| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome |
+| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome — or, when `HEAD` reported none, the type the key's suffix names (`.md`/`.markdown` → `text/markdown`, `.txt` → `text/plain`), which is also the `mime` the object's chunks carry in search |
 | `mtime` | `object.written` | Last-modified Unix timestamp, seconds |
 | `chunks` | `object.indexed` | How many points now represent the object in the index |
 | `summary` | `object.index_failed` | The pipeline's own error, first line, at most 200 characters — the same string [`GET …/index`](#get-apiv1knowledgebaseskb_slugindex) reports as `last_failure.summary`. Present only for a subscriber whose `list` grant covers the whole knowledge base; everyone else receives the frame without it |
