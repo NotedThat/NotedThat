@@ -240,7 +240,7 @@ Qdrant upsert  (dense vector + Document{text, "qdrant/bm25"} sparse + payload)
 ```
 
 Chunker implementation `[DECIDED]`:
-- `text-splitter` v0.32 with `MarkdownSplitter` — stable default; byte offsets tracked in the driver loop.
+- In-house bounded streaming chunker (`chunker::stream_chunks`): a heading scanner over a bounded read window, splitting oversized sections at a paragraph or whitespace break near the character bound and merging short sections (D72); byte offsets tracked in the driver loop. No third-party splitter.
 - `julienne` v0.1 rejected for v1 because it is too early/beta.
 
 Wiki-links `[[note]]` — `[POST-v1]` (candidate: `turbovault-parser` v1.5).

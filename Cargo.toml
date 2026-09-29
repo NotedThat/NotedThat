@@ -129,7 +129,6 @@ thiserror = "2.0"
 anyhow = "1"
 
 # Text processing
-text-splitter = { version = "0.32", features = ["markdown"] }
 
 # Security & IDs
 subtle = "2.4"
