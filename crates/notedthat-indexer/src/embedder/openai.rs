@@ -204,16 +204,19 @@ impl Embedder for OpenAiCompatibleEmbedder {
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
-                    // As for `Http`: reqwest's text names the URL, query included, and the
-                    // error's text reaches callers, so the URL goes to the log alone.
-                    let message = reqwest_error_text(e);
+                    // As for `Http`: the error's text reaches callers (503 body, `/index`,
+                    // the event stream), and reqwest's text names the URL, query included,
+                    // while the cause chain can name the host (a TLS name mismatch lists the
+                    // expected host and the certificate's names). The log gets all of it;
+                    // callers get a coarse class.
+                    let class = transport_class(&e);
                     tracing::warn!(
                         target: "notedthat::indexing",
                         url = %self.url_for_logs,
-                        error = %message,
+                        error = %reqwest_error_text(e),
                         "EMBEDDER_TRANSPORT_ERROR"
                     );
-                    return Err(EmbedderError::Transport(message));
+                    return Err(EmbedderError::Transport(class.to_string()));
                 }
             }
         }
@@ -228,6 +231,25 @@ impl Embedder for OpenAiCompatibleEmbedder {
     fn model_id(&self) -> &str {
         &self.config.model
     }
+}
+
+/// A transport failure's class, safe to show a caller: it names no host, address or URL.
+fn transport_class(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        return "request timed out";
+    }
+    if e.is_connect() {
+        let mut source = std::error::Error::source(e);
+        while let Some(cause) = source {
+            let text = cause.to_string().to_ascii_lowercase();
+            if text.contains("certificate") || text.contains("tls") {
+                return "TLS handshake failed";
+            }
+            source = cause.source();
+        }
+        return "connection failed";
+    }
+    "request failed"
 }
 
 /// `e`'s text without the request URL, which reqwest appends (`for url (…)`) with its query
@@ -682,8 +704,7 @@ mod tests {
     }
 
     /// A transport failure's text, which reaches search callers, `/index` and the event
-    /// stream, names neither the embedder's URL nor a credential in its query, but keeps
-    /// the cause.
+    /// stream, is its class alone: no URL, host or credential from the query.
     #[tokio::test]
     async fn transport_error_text_leaves_out_the_url() {
         let mut config = make_config("http://127.0.0.1:1");
@@ -694,13 +715,27 @@ mod tests {
         let EmbedderError::Transport(text) = &err else {
             panic!("expected Transport, got {err:?}");
         };
-        assert!(!text.contains("secret"), "{text}");
-        assert!(!text.contains("127.0.0.1"), "{text}");
-        assert!(text.contains("error sending request"), "{text}");
-        assert!(
-            text.len() > "error sending request".len(),
-            "cause kept: {text}"
-        );
+        assert_eq!(text, "connection failed");
+        assert!(!err.to_string().contains("secret"), "{err}");
+    }
+
+    /// A timeout reaches the caller as its class alone.
+    #[tokio::test]
+    async fn transport_timeout_is_reported_as_its_class() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut config = make_config(&server.uri());
+        config.timeout = Duration::from_millis(100);
+        config.max_retries = 1;
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
+        let err = embedder.embed(&["x".to_string()]).await.unwrap_err();
+        let EmbedderError::Transport(text) = &err else {
+            panic!("expected Transport, got {err:?}");
+        };
+        assert_eq!(text, "request timed out");
     }
 
     #[test]
