@@ -15,6 +15,9 @@ use notedthat_server::run::Backends;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Bearer token the fixture configures and every authorized request sends.
+const API_TOKEN: &str = "e2e-test-token";
+
 /// Vector width the stub embedder and the provisioned collection agree on.
 const EMBEDDING_DIM: u32 = 3;
 
@@ -33,6 +36,7 @@ fn in_memory_backends() -> Backends {
 fn test_config(listen_addr: std::net::SocketAddr) -> Config {
     let base = Config::for_tests();
     Config {
+        api_token: API_TOKEN.to_string(),
         listen_addr,
         embedder: EmbedderConfig {
             dimensions: EMBEDDING_DIM,
@@ -102,7 +106,7 @@ async fn e2e_healthz_and_put_get() {
 
     let resp = client
         .put(format!("{base}/api/v1/knowledgebases/notes/hello.md"))
-        .header("authorization", "Bearer e2e-test-token")
+        .bearer_auth(API_TOKEN)
         .header("content-type", "text/markdown")
         .body("# Hello")
         .send()
@@ -116,7 +120,7 @@ async fn e2e_healthz_and_put_get() {
 
     let resp = client
         .get(format!("{base}/api/v1/knowledgebases/notes/hello.md"))
-        .header("authorization", "Bearer e2e-test-token")
+        .bearer_auth(API_TOKEN)
         .send()
         .await
         .unwrap();
@@ -146,7 +150,7 @@ async fn e2e_list_and_delete() {
     for name in &["file1.md", "file2.md"] {
         client
             .put(format!("{base}/api/v1/knowledgebases/notes/{name}"))
-            .header("authorization", "Bearer e2e-test-token")
+            .bearer_auth(API_TOKEN)
             .body("content")
             .send()
             .await
@@ -155,7 +159,7 @@ async fn e2e_list_and_delete() {
 
     let resp = client
         .get(format!("{base}/api/v1/knowledgebases/notes"))
-        .header("authorization", "Bearer e2e-test-token")
+        .bearer_auth(API_TOKEN)
         .send()
         .await
         .unwrap();
@@ -166,7 +170,7 @@ async fn e2e_list_and_delete() {
 
     let resp = client
         .delete(format!("{base}/api/v1/knowledgebases/notes/file1.md"))
-        .header("authorization", "Bearer e2e-test-token")
+        .bearer_auth(API_TOKEN)
         .send()
         .await
         .unwrap();
@@ -174,7 +178,7 @@ async fn e2e_list_and_delete() {
 
     let resp = client
         .delete(format!("{base}/api/v1/knowledgebases/notes/file1.md"))
-        .header("authorization", "Bearer e2e-test-token")
+        .bearer_auth(API_TOKEN)
         .send()
         .await
         .unwrap();

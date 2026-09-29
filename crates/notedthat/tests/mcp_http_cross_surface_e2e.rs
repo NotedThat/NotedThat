@@ -11,6 +11,8 @@ use notedthat_mcp::testing::McpSession;
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const API_TOKEN: &str = "e2e-test-token";
+const WEBDAV_USER: &str = "e2e-webdav-user";
+const WEBDAV_PASS: &str = "e2e-webdav-pass";
 const EXPECTED_M7_TOOLS: &str =
     "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace,index_status";
 
@@ -55,6 +57,8 @@ fn test_config_with_kbs_and_mcp_http(
             .map(|kb| ((*kb).to_string(), KbSlug::try_new(*kb).unwrap()))
             .collect(),
         listen_addr,
+        webdav_username: WEBDAV_USER.to_string(),
+        webdav_password: WEBDAV_PASS.to_string(),
         embedder: EmbedderConfig {
             dimensions: EMBEDDING_DIM,
             ..base.embedder
@@ -501,7 +505,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .get(&api_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .send()
         .await
         .expect("GET API with Basic credentials failed");
@@ -513,7 +517,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .post(&mcp_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .header("Content-Type", "application/json")
         .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
         .send()
@@ -542,7 +546,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .request(reqwest::Method::OPTIONS, &webdav_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .send()
         .await
         .expect("OPTIONS WebDAV with Basic credentials failed");
