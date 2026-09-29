@@ -348,13 +348,17 @@ pub fn parse_line_range_header(value: &str) -> Result<LineRange, RangeParseError
     }
 
     let first = parse_u64(start, range_set)?;
+    // Lines are 1-based, so line 0 is a syntax error on every form.
+    if first == 0 {
+        return Err(RangeParseError::InvalidSpec(range_set.to_string()));
+    }
     if end.is_empty() {
         return Ok(LineRange::FromStartOpen { first });
     }
 
     let last = parse_u64(end, range_set)?;
     // `last` may sit one below `first` (an insert point), never further.
-    if first == 0 || last < first - 1 {
+    if last < first - 1 {
         return Err(RangeParseError::InvalidSpec(range_set.to_string()));
     }
     if last == first - 1 {
@@ -383,6 +387,11 @@ fn parse_byte_range_spec(spec: &str) -> Result<ByteRange, RangeParseError> {
         Ok(ByteRange::FromStartOpen { first })
     } else {
         let last = parse_u64(end, spec)?;
+        // A byte-range-spec whose last-pos precedes its first-pos is invalid,
+        // not unsatisfiable (RFC 9110 §14.1.1). Bytes have no insert form.
+        if last < first {
+            return Err(RangeParseError::InvalidSpec(spec.to_string()));
+        }
         Ok(ByteRange::FromStart { first, last })
     }
 }
@@ -640,6 +649,14 @@ mod tests {
         }
 
         #[test]
+        fn zero_start_open_ended_is_invalid_spec() {
+            assert_eq!(
+                parse_line_range_header("lines=0-"),
+                Err(RangeParseError::InvalidSpec("0-".into()))
+            );
+        }
+
+        #[test]
         fn reversed_range_is_invalid_spec() {
             assert_eq!(
                 parse_line_range_header("lines=5-1"),
@@ -736,16 +753,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_start_greater_than_end() {
+    fn parse_start_greater_than_end_is_invalid_spec() {
         assert_eq!(
             parse_range_header("bytes=100-50"),
-            Ok(ParsedRange {
-                unit: "bytes".into(),
-                range: Some(ByteRange::FromStart {
-                    first: 100,
-                    last: 50,
-                }),
-            })
+            Err(RangeParseError::InvalidSpec("100-50".into()))
+        );
+        assert_eq!(
+            parse_range_header("bytes=5-4"),
+            Err(RangeParseError::InvalidSpec("5-4".into()))
         );
     }
 

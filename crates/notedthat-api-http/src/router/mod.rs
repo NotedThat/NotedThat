@@ -523,6 +523,64 @@ mod patch_route {
     }
 
     #[tokio::test]
+    async fn reversed_lines_content_range_returns_invalid_request_with_reason() {
+        let (router, etag) = router_with_object(b"one\ntwo\nthree\nfour\n", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "lines 5-1/*",
+            Some(&etag),
+            Bytes::from_static(b"X\n"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "invalid_request");
+        let message = json["message"].as_str().unwrap();
+        assert!(message.contains("invalid range spec: 5-1"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn insert_lines_content_range_returns_ok() {
+        let (router, etag) = router_with_object(b"one\ntwo\nthree\nfour\n", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "lines 5-4/*",
+            Some(&etag),
+            Bytes::from_static(b"five\n"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn reversed_bytes_content_range_returns_invalid_request() {
+        let (router, etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
+
+        let response = patch_request(
+            router,
+            "content-range",
+            "bytes 5-3/*",
+            Some(&etag),
+            Bytes::from_static(b"X"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "invalid_request");
+        let message = json["message"].as_str().unwrap();
+        assert!(message.contains("last precedes first"), "{message}");
+    }
+
+    #[tokio::test]
     async fn append_mode_without_if_match_returns_ok() {
         let (router, _etag) = router_with_object(b"one\n", MAX_BODY_BYTES).await;
 
@@ -1148,6 +1206,20 @@ mod line_range_get {
             assert_eq!(json["error"], "malformed_range");
             let message = json["message"].as_str().unwrap();
             assert!(message.contains("invalid range spec: 5-1"), "{message}");
+        }
+
+        #[tokio::test]
+        async fn rejects_an_open_ended_range_from_line_zero() {
+            let router = router_with_markdown_object(ten_line_markdown()).await;
+
+            let response = get_ranges_md(router, "lines=0-").await;
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], "malformed_range");
+            let message = json["message"].as_str().unwrap();
+            assert!(message.contains("invalid range spec: 0-"), "{message}");
         }
     }
 }
