@@ -568,6 +568,66 @@ pub struct Config {
     pub oidc: Option<OidcSettings>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl Config {
+    /// A complete config for tests, to spread into a fixture with
+    /// `Config { listen_addr, kbs, ..Config::for_tests() }`.
+    ///
+    /// Every tunable is its production default, so a fixture only names what
+    /// its test depends on, and a new field is added here rather than in every
+    /// fixture. Every endpoint is unroutable, like
+    /// [`unroutable_storage_placeholder`]: a test that injects its own
+    /// [`crate::run::Backends`] never reaches them, and one that does fails
+    /// loudly. There are no knowledge bases, and the listener asks for any free
+    /// port.
+    #[must_use]
+    pub fn for_tests() -> Self {
+        Self {
+            api_token: "test-token".to_string(),
+            kbs: BTreeMap::new(),
+            tenant_slug: TenantSlug::default(),
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            storage: unroutable_storage_placeholder(),
+            events: EventsConfig::None,
+            log_format: LogFormat::Pretty,
+            qdrant: ServerQdrantConfig {
+                url: "http://127.0.0.1:1".to_string(),
+                api_key: None,
+                timeout_ms: 30_000,
+                connect_timeout_ms: 10_000,
+            },
+            embedder: EmbedderConfig {
+                endpoint_url: "http://127.0.0.1:1".to_string(),
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+                dimensions: 4,
+                batch_size: 32,
+                timeout_ms: 30_000,
+                max_retries: 3,
+                max_input_tokens: 8192,
+            },
+            index_concurrency: DEFAULT_INDEX_CONCURRENCY,
+            webdav_username: "test-webdav-user".to_string(),
+            webdav_password: "test-webdav-pass".to_string(),
+            mcp_http_allowed_origins: vec!["null".to_string()],
+            mcp_http_allowed_hosts: vec![
+                "127.0.0.1".to_string(),
+                "localhost".to_string(),
+                "::1".to_string(),
+            ],
+            mcp_anonymous: McpAnonymous::Auto,
+            max_patchable_size: 100 * 1024 * 1024,
+            mcp_max_read_bytes: notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+            mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
+            ready_probe_interval_ms: 5_000,
+            metrics_listen_addr: None,
+            request_bounds: RequestBoundsConfig::default(),
+            staging: StagingConfig::default(),
+            oidc: None,
+        }
+    }
+}
+
 /// Limits on one request to the product listener (D71).
 ///
 /// Both request limits end when the response head is produced, not when the
@@ -1881,6 +1941,55 @@ pub(crate) mod tests {
         "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
         "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
     ];
+
+    /// Fixtures spread `for_tests()` and override only what they depend on, so
+    /// a tunable that drifted from production would quietly change every one.
+    #[test]
+    fn the_test_config_keeps_every_production_default() {
+        let production = run_with_env(&[], Config::from_env).unwrap();
+        let test = Config::for_tests();
+
+        assert_eq!(test.tenant_slug, production.tenant_slug);
+        assert_eq!(test.log_format, production.log_format);
+        assert_eq!(test.index_concurrency, production.index_concurrency);
+        assert_eq!(
+            test.mcp_http_allowed_origins,
+            production.mcp_http_allowed_origins
+        );
+        assert_eq!(
+            test.mcp_http_allowed_hosts,
+            production.mcp_http_allowed_hosts
+        );
+        assert_eq!(test.mcp_anonymous, production.mcp_anonymous);
+        assert_eq!(test.max_patchable_size, production.max_patchable_size);
+        assert_eq!(test.mcp_max_read_bytes, production.mcp_max_read_bytes);
+        assert_eq!(test.mcp_max_sessions, production.mcp_max_sessions);
+        assert_eq!(
+            test.ready_probe_interval_ms,
+            production.ready_probe_interval_ms
+        );
+        assert_eq!(test.metrics_listen_addr, production.metrics_listen_addr);
+        assert_eq!(test.request_bounds, production.request_bounds);
+        assert_eq!(
+            format!("{:?}", test.staging),
+            format!("{:?}", production.staging)
+        );
+        assert!(matches!(test.events, EventsConfig::None));
+        assert!(matches!(production.events, EventsConfig::None));
+        assert!(test.oidc.is_none() && production.oidc.is_none());
+        assert_eq!(test.qdrant.timeout_ms, production.qdrant.timeout_ms);
+        assert_eq!(
+            test.qdrant.connect_timeout_ms,
+            production.qdrant.connect_timeout_ms
+        );
+        assert_eq!(test.embedder.batch_size, production.embedder.batch_size);
+        assert_eq!(test.embedder.timeout_ms, production.embedder.timeout_ms);
+        assert_eq!(test.embedder.max_retries, production.embedder.max_retries);
+        assert_eq!(
+            test.embedder.max_input_tokens,
+            production.embedder.max_input_tokens
+        );
+    }
 
     #[test]
     fn request_bounds_default_to_the_documented_values() {

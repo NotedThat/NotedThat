@@ -44,8 +44,8 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
 }
 
 fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_server::config::Config {
-    use notedthat_core::{KbSlug, TenantSlug};
-    use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+    use notedthat_core::KbSlug;
+    use notedthat_server::config::{Config, EmbedderConfig};
     use std::collections::BTreeMap;
 
     let mut kbs = BTreeMap::new();
@@ -54,46 +54,14 @@ fn test_config_with_webdav(listen_addr: std::net::SocketAddr) -> notedthat_serve
     Config {
         api_token: API_TOKEN.to_string(),
         kbs,
-        tenant_slug: TenantSlug::default(),
         listen_addr,
-        metrics_listen_addr: None,
-        storage: notedthat_server::config::unroutable_storage_placeholder(),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
-        embedder: EmbedderConfig {
-            // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
-            dimensions: EMBEDDING_DIM,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
-        },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
         webdav_username: WEBDAV_USER.to_string(),
         webdav_password: WEBDAV_PASS.to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 10 * 1024 * 1024,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        embedder: EmbedderConfig {
+            dimensions: EMBEDDING_DIM,
+            ..Config::for_tests().embedder
+        },
+        ..Config::for_tests()
     }
 }
 

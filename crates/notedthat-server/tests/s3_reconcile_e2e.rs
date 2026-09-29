@@ -26,11 +26,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use notedthat_api_http::testing::InMemoryStorage;
-use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, TenantSlug};
+use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage};
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
-use notedthat_server::config::{
-    Config, EmbedderConfig, LogFormat, ServerQdrantConfig, StorageConfig,
-};
+use notedthat_server::config::{Config, EmbedderConfig, StorageConfig};
 use notedthat_server::run::Backends;
 
 const TOKEN: &str = "s3-reconcile-token";
@@ -163,41 +161,13 @@ fn config(listen_addr: std::net::SocketAddr, reconcile_on_startup: bool) -> Conf
     Config {
         api_token: TOKEN.to_string(),
         kbs,
-        tenant_slug: TenantSlug::default(),
         listen_addr,
-        metrics_listen_addr: None,
         storage: StorageConfig::S3(s3),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
         embedder: EmbedderConfig {
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
             dimensions: EMBEDDING_DIM,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
+            ..Config::for_tests().embedder
         },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "s3-e2e-user".to_string(),
-        webdav_password: "s3-e2e-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 10 * 1024 * 1024,
-        ready_probe_interval_ms: 5_000,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        ..Config::for_tests()
     }
 }
 
