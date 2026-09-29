@@ -1944,51 +1944,86 @@ pub(crate) mod tests {
 
     /// Fixtures spread `for_tests()` and override only what they depend on, so
     /// a tunable that drifted from production would quietly change every one.
+    ///
+    /// The destructuring names every field with no `..`, so a new field fails
+    /// to compile here until it is either compared or marked test-specific.
     #[test]
     fn the_test_config_keeps_every_production_default() {
         let production = run_with_env(&[], Config::from_env).unwrap();
-        let test = Config::for_tests();
+        let Config {
+            // Test-specific: a fixed token, no knowledge bases, a free port and
+            // unroutable storage, so a test never reaches a real deployment.
+            api_token: _,
+            kbs: _,
+            listen_addr: _,
+            storage: _,
+            // Test-specific: production requires both, so there is no default.
+            webdav_username: _,
+            webdav_password: _,
+            tenant_slug,
+            events,
+            log_format,
+            qdrant:
+                ServerQdrantConfig {
+                    // Test-specific: required in production, unroutable here.
+                    url: _,
+                    api_key,
+                    timeout_ms: qdrant_timeout_ms,
+                    connect_timeout_ms,
+                },
+            embedder:
+                EmbedderConfig {
+                    // Test-specific: all four are required in production.
+                    endpoint_url: _,
+                    model: _,
+                    api_key: _,
+                    dimensions: _,
+                    batch_size,
+                    timeout_ms: embedder_timeout_ms,
+                    max_retries,
+                    max_input_tokens,
+                },
+            index_concurrency,
+            mcp_http_allowed_origins,
+            mcp_http_allowed_hosts,
+            mcp_anonymous,
+            max_patchable_size,
+            mcp_max_read_bytes,
+            mcp_max_sessions,
+            ready_probe_interval_ms,
+            metrics_listen_addr,
+            request_bounds,
+            staging,
+            oidc,
+        } = Config::for_tests();
 
-        assert_eq!(test.tenant_slug, production.tenant_slug);
-        assert_eq!(test.log_format, production.log_format);
-        assert_eq!(test.index_concurrency, production.index_concurrency);
+        assert_eq!(tenant_slug, production.tenant_slug);
+        assert!(matches!(events, EventsConfig::None));
+        assert!(matches!(production.events, EventsConfig::None));
+        assert_eq!(log_format, production.log_format);
+        assert_eq!(api_key, production.qdrant.api_key);
+        assert_eq!(qdrant_timeout_ms, production.qdrant.timeout_ms);
+        assert_eq!(connect_timeout_ms, production.qdrant.connect_timeout_ms);
+        assert_eq!(batch_size, production.embedder.batch_size);
+        assert_eq!(embedder_timeout_ms, production.embedder.timeout_ms);
+        assert_eq!(max_retries, production.embedder.max_retries);
+        assert_eq!(max_input_tokens, production.embedder.max_input_tokens);
+        assert_eq!(index_concurrency, production.index_concurrency);
         assert_eq!(
-            test.mcp_http_allowed_origins,
+            mcp_http_allowed_origins,
             production.mcp_http_allowed_origins
         );
-        assert_eq!(
-            test.mcp_http_allowed_hosts,
-            production.mcp_http_allowed_hosts
-        );
-        assert_eq!(test.mcp_anonymous, production.mcp_anonymous);
-        assert_eq!(test.max_patchable_size, production.max_patchable_size);
-        assert_eq!(test.mcp_max_read_bytes, production.mcp_max_read_bytes);
-        assert_eq!(test.mcp_max_sessions, production.mcp_max_sessions);
-        assert_eq!(
-            test.ready_probe_interval_ms,
-            production.ready_probe_interval_ms
-        );
-        assert_eq!(test.metrics_listen_addr, production.metrics_listen_addr);
-        assert_eq!(test.request_bounds, production.request_bounds);
-        assert_eq!(
-            format!("{:?}", test.staging),
-            format!("{:?}", production.staging)
-        );
-        assert!(matches!(test.events, EventsConfig::None));
-        assert!(matches!(production.events, EventsConfig::None));
-        assert!(test.oidc.is_none() && production.oidc.is_none());
-        assert_eq!(test.qdrant.timeout_ms, production.qdrant.timeout_ms);
-        assert_eq!(
-            test.qdrant.connect_timeout_ms,
-            production.qdrant.connect_timeout_ms
-        );
-        assert_eq!(test.embedder.batch_size, production.embedder.batch_size);
-        assert_eq!(test.embedder.timeout_ms, production.embedder.timeout_ms);
-        assert_eq!(test.embedder.max_retries, production.embedder.max_retries);
-        assert_eq!(
-            test.embedder.max_input_tokens,
-            production.embedder.max_input_tokens
-        );
+        assert_eq!(mcp_http_allowed_hosts, production.mcp_http_allowed_hosts);
+        assert_eq!(mcp_anonymous, production.mcp_anonymous);
+        assert_eq!(max_patchable_size, production.max_patchable_size);
+        assert_eq!(mcp_max_read_bytes, production.mcp_max_read_bytes);
+        assert_eq!(mcp_max_sessions, production.mcp_max_sessions);
+        assert_eq!(ready_probe_interval_ms, production.ready_probe_interval_ms);
+        assert_eq!(metrics_listen_addr, production.metrics_listen_addr);
+        // Whole-struct comparisons, so a field added to either is covered too.
+        assert_eq!(request_bounds, production.request_bounds);
+        assert_eq!(staging, production.staging);
+        assert!(oidc.is_none() && production.oidc.is_none());
     }
 
     #[test]
