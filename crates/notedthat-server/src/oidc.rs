@@ -362,6 +362,7 @@ fn describe(error: &jsonwebtoken::errors::Error) -> String {
         ErrorKind::InvalidAudience => "audience mismatch".to_string(),
         ErrorKind::InvalidSignature => "signature does not verify".to_string(),
         ErrorKind::MissingRequiredClaim(claim) => format!("missing `{claim}`"),
+        ErrorKind::InvalidClaimFormat(claim) => format!("malformed `{claim}`"),
         ErrorKind::InvalidAlgorithm => "key and algorithm disagree".to_string(),
         other => format!("invalid: {other:?}"),
     }
@@ -576,6 +577,41 @@ mod tests {
             .await
             .expect_err("expired");
         assert_eq!(rejected.reason, "expired");
+    }
+
+    #[tokio::test]
+    async fn a_token_not_yet_valid_is_rejected() {
+        // Given — not valid until well beyond the leeway.
+        let mut claims = claims(ISSUER, "alice", &[]);
+        claims["nbf"] = serde_json::json!(now() + 3600);
+
+        // When / Then
+        let rejected = verifier()
+            .verify(&mint(&claims))
+            .await
+            .expect_err("immature");
+        assert_eq!(rejected.reason, "not yet valid (`nbf`)");
+    }
+
+    #[tokio::test]
+    async fn an_nbf_that_is_not_a_number_is_rejected_not_skipped() {
+        // GHSA-h395-gr6q-cpjc: jsonwebtoken before 10.3 parsed a wrong-typed
+        // `nbf` as absent and so skipped the not-before check entirely.
+        // Given
+        let mut claims = claims(ISSUER, "alice", &[]);
+        claims["nbf"] = serde_json::json!("9999999999");
+
+        // When / Then
+        let rejected = verifier()
+            .verify(&mint(&claims))
+            .await
+            .expect_err("string nbf");
+        assert_eq!(rejected.reason, "malformed `nbf`");
+
+        // An object fails claim deserialisation outright rather than reaching
+        // the format check, so only the refusal is asserted, not its wording.
+        claims["nbf"] = serde_json::json!({ "at": 9_999_999_999_u64 });
+        assert!(verifier().verify(&mint(&claims)).await.is_err());
     }
 
     #[tokio::test]
