@@ -133,11 +133,20 @@ pub async fn intercept_propfind_too_large(
             PROPFIND_TOO_LARGE_DAV_XML,
         )
             .into_response(),
+        // Any other failure is answered here: dav-server logs a `read_dir` error and
+        // then answers `207` with the collection shown empty, which a sync client
+        // takes for a complete listing and deletes the difference.
+        Err(dav_server::fs::FsError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(dav_server::fs::FsError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(error) => {
+            tracing::warn!(error = ?error, path = %req.uri().path(), "PROPFIND_LISTING_FAILED");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Ok(Some(listing)) => {
             req.extensions_mut().insert(listing);
             next.run(req).await
         }
-        Ok(None) | Err(_) => next.run(req).await,
+        Ok(None) => next.run(req).await,
     }
 }
 
