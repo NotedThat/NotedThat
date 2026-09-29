@@ -194,6 +194,19 @@ fn describe_all() {
         name::EVENTS_REPLAY_GONE,
         "Subscribers turned away because their position is no longer retained."
     );
+    describe_counter!(
+        name::EVENTS_PUBLISH_DEDUPLICATED,
+        "Event publishes the broker recognised as a repeat of one it already holds."
+    );
+
+    describe_gauge!(
+        name::NATS_CONNECTED,
+        "1 while the NATS connection is up, 0 while it is down."
+    );
+    describe_counter!(
+        name::NATS_RECONNECTS,
+        "Times the NATS connection was re-established after a loss."
+    );
 
     describe_counter!(name::FS_WATCH_LOST, "Filesystem watches lost at runtime.");
 
