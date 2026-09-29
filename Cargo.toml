@@ -90,7 +90,6 @@ http = "1"
 
 # S3
 aws-sdk-s3 = { version = "1.137", default-features = false, features = ["rt-tokio", "http-1x", "default-https-client"] }
-aws-config = { version = "1.1", default-features = false, features = ["behavior-version-latest"] }
 aws-smithy-runtime-api = "1"
 
 # Event log broker (JetStream)

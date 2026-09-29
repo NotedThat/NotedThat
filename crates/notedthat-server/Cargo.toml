@@ -48,7 +48,6 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json"] }
-thiserror.workspace = true
 # OIDC: discovery and JWKS fetches, token verification, settings.
 jsonwebtoken.workspace = true
 reqwest.workspace = true
