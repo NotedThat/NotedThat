@@ -29,7 +29,8 @@ use notedthat_indexer::{
     index_queue,
 };
 use qdrant_client::qdrant::{
-    RetrievedPoint, VectorsOutput, value::Kind, vectors_output::VectorsOptions,
+    RetrievedPoint, VectorsOutput, point_id::PointIdOptions, value::Kind,
+    vectors_output::VectorsOptions,
 };
 use std::{
     collections::HashMap,
@@ -700,6 +701,17 @@ fn string_list_payload<'a>(point: &'a RetrievedPoint, key: &str) -> Vec<&'a str>
             })
             .collect(),
         other => panic!("expected list payload for {key}, got {other:?}"),
+    }
+}
+
+fn numeric_id(point: &RetrievedPoint) -> u64 {
+    match point
+        .id
+        .as_ref()
+        .and_then(|id| id.point_id_options.as_ref())
+    {
+        Some(PointIdOptions::Num(id)) => *id,
+        other => panic!("expected a numeric point id, got {other:?}"),
     }
 }
 
@@ -1757,6 +1769,103 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
             .iter()
             .all(|point| !string_payload(point, "text").contains("new-")
                 || string_payload(point, "text").contains("newest-"))
+    );
+}
+
+/// A re-index that failed part-way leaves some chunks on the new `ETag` and the rest on
+/// the old one. A later `Refresh` must see that as "not indexed" whichever chunk the store
+/// happens to read first — point ids are hashes, so that chunk is effectively random
+/// (issue #276). Keys are tried until both orders have been exercised: one whose
+/// lowest-id point is a rewritten chunk, and one whose lowest-id point is a stale one.
+#[tokio::test]
+async fn refresh_repairs_a_half_written_object_whichever_chunk_sorts_first() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    let version = |word: &str| {
+        (0..8).fold(String::new(), |mut output, index| {
+            write!(output, "# {word} {index}\n{word}-{index}\n").expect("write fixture");
+            output
+        })
+    };
+
+    let mut lowest_rewritten = false;
+    let mut lowest_stale = false;
+    for attempt in 0..64 {
+        if lowest_rewritten && lowest_stale {
+            break;
+        }
+        let key = format!("mix-{attempt}.md");
+        storage.insert("test-kb", &key, &version("old"), "text/markdown");
+        index_once(
+            Arc::clone(&storage),
+            Arc::new(ScriptedEmbedder::new(None, None)),
+            Arc::new(store.clone()),
+            &kb,
+            &key,
+            2,
+        )
+        .await;
+
+        storage.insert("test-kb", &key, &version("new"), "text/markdown");
+        index_once(
+            Arc::clone(&storage),
+            Arc::new(ScriptedEmbedder::new(Some(2), None)),
+            Arc::new(store.clone()),
+            &kb,
+            &key,
+            2,
+        )
+        .await;
+        let half_written = scroll_points(&store, &kb, &key, false).await;
+        let new_etag = string_payload(&half_written[0], "etag").to_owned();
+        assert!(
+            half_written
+                .iter()
+                .any(|point| string_payload(point, "etag") != new_etag),
+            "{key}: the failed batch must leave stale chunks behind"
+        );
+        let lowest = half_written
+            .iter()
+            .min_by_key(|point| numeric_id(point))
+            .expect("points");
+        if string_payload(lowest, "etag") == new_etag {
+            lowest_rewritten = true;
+        } else {
+            lowest_stale = true;
+        }
+
+        let repair = Arc::new(ScriptedEmbedder::new(None, None));
+        refresh_once(
+            Arc::clone(&storage),
+            Arc::clone(&repair) as Arc<dyn Embedder>,
+            Arc::new(store.clone()),
+            &kb,
+            &key,
+        )
+        .await;
+        assert!(
+            repair.calls() > 0,
+            "{key}: refresh skipped a half-written object"
+        );
+        let repaired = scroll_points(&store, &kb, &key, false).await;
+        assert!(
+            repaired
+                .iter()
+                .all(|point| !string_payload(point, "text").contains("old-")),
+            "{key}: stale chunks survived the refresh"
+        );
+        assert!(
+            repaired
+                .iter()
+                .all(|point| string_payload(point, "etag") == new_etag),
+            "{key}: chunks still disagree on their ETag"
+        );
+    }
+    assert!(
+        lowest_rewritten && lowest_stale,
+        "no key put a rewritten and a stale chunk first; widen the search"
     );
 }
 

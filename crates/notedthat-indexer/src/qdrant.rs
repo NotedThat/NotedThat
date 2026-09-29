@@ -9,17 +9,18 @@
 
 use crate::vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    merge_chunk_etag,
 };
 use crate::worker::collection_name;
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
-    Distance, Document, FieldType, Filter, Fusion, Modifier, PayloadIncludeSelector, PointStruct,
-    PrefetchQueryBuilder, Query, QueryPointsBuilder, Range, RetrievedPoint, ScoredPoint,
-    ScrollPointsBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
-    UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
+    Condition, CountPointsBuilder, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder,
+    DeletePointsBuilder, Distance, Document, FieldType, Filter, Fusion, Modifier,
+    PayloadIncludeSelector, PointStruct, PrefetchQueryBuilder, Query, QueryPointsBuilder, Range,
+    RetrievedPoint, ScoredPoint, ScrollPointsBuilder, SparseVectorParamsBuilder,
+    SparseVectorsConfigBuilder, UpsertPointsBuilder, VectorParamsBuilder, VectorsConfigBuilder,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -294,9 +295,10 @@ impl VectorStore for QdrantClient {
         kb: &KbSlug,
         object_key: &str,
     ) -> Result<Option<String>, VectorStoreError> {
-        // One point is enough: every chunk of an object carries the same `ETag`. Selecting
-        // by filter rather than by the chunk-0 point id keeps this correct even if the
-        // chunk numbering ever changes.
+        // Any one chunk gives the candidate `ETag`; a count of chunks that do not carry it
+        // then confirms the object is not half-written (see the trait docs). Selecting by
+        // filter rather than by the chunk-0 point id keeps this correct even if the chunk
+        // numbering ever changes.
         let response = self
             .inner()
             .scroll(
@@ -312,10 +314,34 @@ impl VectorStore for QdrantClient {
             .await
             .map_err(|err| classify(kb, &err))?;
 
-        Ok(response
+        let Some(etag) = response
             .result
             .first()
-            .and_then(|point| payload_string(point, "etag")))
+            .and_then(|point| payload_string(point, "etag"))
+        else {
+            return Ok(None);
+        };
+
+        // A chunk with no `etag` field fails the `must_not` match too, so it counts as
+        // disagreeing — the same answer the in-memory store gives. A response with no
+        // count confirms nothing, so it answers "not indexed" as well.
+        let consistent = self
+            .inner()
+            .count(
+                CountPointsBuilder::new(collection_name(kb))
+                    .filter(Filter {
+                        must: vec![Condition::matches("object_key", object_key.to_string())],
+                        must_not: vec![Condition::matches("etag", etag.clone())],
+                        ..Filter::default()
+                    })
+                    .exact(true),
+            )
+            .await
+            .map_err(|err| classify(kb, &err))?
+            .result
+            .is_some_and(|result| result.count == 0);
+
+        Ok(consistent.then_some(etag))
     }
 
     async fn indexed_objects(
@@ -352,11 +378,7 @@ impl VectorStore for QdrantClient {
                 if prefix.is_some_and(|prefix| !object_key.starts_with(prefix)) {
                     continue;
                 }
-                // Every chunk repeats its object's `ETag`, so the first one wins and the
-                // rest are the same value.
-                by_key
-                    .entry(object_key)
-                    .or_insert_with(|| payload_string(point, "etag").unwrap_or_default());
+                merge_chunk_etag(&mut by_key, object_key, payload_string(point, "etag"));
             }
 
             match response.next_page_offset {

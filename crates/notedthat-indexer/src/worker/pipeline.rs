@@ -205,6 +205,9 @@ impl IndexerWorker {
     /// recorded stamp no longer describes the file (see `notedthat_storage_fs::meta`). So
     /// an unchanged corpus is confirmed unchanged without reading one byte of content.
     ///
+    /// An object a failed re-index left half-written answers "not indexed" too: the store
+    /// only reports an `ETag` every chunk agrees on (issue #276).
+    ///
     /// A backend failure answers "not indexed". Re-indexing something that did not need it
     /// costs an embedding request; skipping something that did leaves a document wrong in
     /// search until it is written again, and nothing would notice.

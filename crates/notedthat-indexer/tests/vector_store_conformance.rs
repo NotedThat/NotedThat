@@ -506,12 +506,19 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     // once, not once per chunk. Written in an order that is not key order, so an
     // implementation reporting insertion order fails the ordering assertion below
     // instead of passing by coincidence.
+    //
+    // `notes/mixed.md` is a re-index that failed part-way: two chunks rewritten, one
+    // still on the old `ETag`. Its lowest point id is a rewritten chunk, the order in
+    // which reading any single chunk wrongly reports it indexed (issue #276).
     let points: Vec<PointStruct> = [
         ("other/c.md", 0, "\"ccc\""),
         ("notes/b.md", 0, "\"bbb\""),
         ("notes/a.md", 2, "\"aaa\""),
         ("notes/a.md", 0, "\"aaa\""),
         ("notes/a.md", 1, "\"aaa\""),
+        ("notes/mixed.md", 0, "\"new\""),
+        ("notes/mixed.md", 2, "\"old\""),
+        ("notes/mixed.md", 1, "\"new\""),
     ]
     .iter()
     .enumerate()
@@ -548,6 +555,16 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
         format!(
             "{:?}",
             store.indexed_etag(kb, "nope.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_mixed_object",
+        format!(
+            "{:?}",
+            store
+                .indexed_etag(kb, "notes/mixed.md")
+                .await
+                .expect("etag")
         ),
     ));
     out.push(("all_objects", render(store.indexed_objects(kb, None).await)));
@@ -781,7 +798,42 @@ async fn both_backends_report_the_same_indexed_objects() {
         assert_ascending(observations, "objects_under_prefix");
     }
 
+    // Both agreeing that a half-written object is indexed would pass `assert_agree`.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_mixed_object_not_indexed(observations);
+    }
+
     assert_agree(&from_qdrant, &from_memory);
+}
+
+/// The in-memory half of the check above, run without a container so it is not only
+/// exercised when someone passes `--ignored`.
+#[tokio::test]
+async fn in_memory_does_not_report_a_mixed_etag_object_indexed() {
+    let observations = observe_indexed(&InMemoryVectorStore::new(), &slug("indexed")).await;
+    assert_mixed_object_not_indexed(&observations);
+}
+
+/// A mixed-`ETag` object has no indexed `ETag`, and is listed with an empty one so
+/// reconciliation sees it as changed.
+fn assert_mixed_object_not_indexed(observations: &Observations) {
+    let observed = |name: &str| {
+        let (_, value) = observations
+            .iter()
+            .find(|(observed, _)| *observed == name)
+            .unwrap_or_else(|| panic!("no observation named '{name}'"));
+        value.as_str()
+    };
+    assert_eq!(observed("etag_of_mixed_object"), "None");
+    for name in ["all_objects", "objects_under_prefix"] {
+        assert!(
+            observed(name)
+                .split(',')
+                .any(|entry| entry == "notes/mixed.md="),
+            "{name} must list the mixed object with an empty ETag: {}",
+            observed(name)
+        );
+    }
 }
 
 /// Assert one rendered `indexed_objects` observation is in ascending key order.
