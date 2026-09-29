@@ -230,11 +230,13 @@ impl Embedder for BlockingEmbedder {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
         self.started.add_permits(1);
-        let _permit = self
-            .release
+        // Consumed, not returned: each release permit lets exactly one call
+        // through, so a test can open one slot at a time.
+        self.release
             .acquire()
             .await
-            .expect("test semaphore stays open");
+            .expect("test semaphore stays open")
+            .forget();
         self.running.fetch_sub(1, Ordering::SeqCst);
         Ok(vec![vec![1.0; 4]; texts.len()])
     }
@@ -1210,7 +1212,7 @@ async fn bounded_queue_keeps_active_handlers_within_its_limit() {
 
 /// Queue `files` distinct files on a worker limited to `limit`, and check that
 /// exactly `limit` run at once: no more start while they are held, a finished
-/// one frees a slot, and every file is indexed in the end.
+/// one frees exactly one slot, and every file is indexed in the end.
 ///
 /// The queue is far larger than the limit, so what holds the rest back is the
 /// concurrency bound, not a full queue.
@@ -1247,6 +1249,10 @@ async fn assert_runs_at_most(limit: usize, files: usize) {
 
     embedder.release.add_permits(1);
     embedder.wait_started(1).await;
+    assert!(
+        !embedder.another_starts().await,
+        "one finished file frees exactly one slot"
+    );
 
     embedder.release_all();
     drop(tx);
