@@ -1429,8 +1429,55 @@ mod tests {
         }
     }
 
+    /// Each event's level and fields, captured by a subscriber scoped to one
+    /// test thread, for asserting what a response logged.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+    /// One event: its level and each field's value as it would be printed.
+    type CapturedEvent = (tracing::Level, BTreeMap<String, String>);
+
+    impl CapturedEvents {
+        fn take(&self) -> Vec<CapturedEvent> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(BTreeMap<String, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+            }
+            let mut fields = Fields(BTreeMap::new());
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), fields.0));
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
     /// A `5xx` carries its status and code but none of the adapter's text: no
-    /// bucket, no path, no OS error (#282).
+    /// bucket, no path, no OS error. The full text goes to the log at `ERROR`,
+    /// under the `request_id` the body carries (#282).
     #[tokio::test]
     async fn a_5xx_body_names_no_backend_detail() {
         const DETAIL: &str = "stat nt-acme-notes: Permission denied (os error 13)";
@@ -1491,12 +1538,26 @@ mod tests {
                 "internal error",
             ),
         ];
+        let captured = CapturedEvents::default();
         for (error, status, code, message) in cases {
-            let resp = ApiErrorResponse {
-                error,
-                request_id: "req-1".into(),
-            }
-            .into_response();
+            let logged_error = error.to_string();
+            let resp = tracing::subscriber::with_default(captured.clone(), || {
+                ApiErrorResponse {
+                    error,
+                    request_id: "req-1".into(),
+                }
+                .into_response()
+            });
+            let errors: Vec<_> = captured
+                .take()
+                .into_iter()
+                .filter(|(level, _)| *level == tracing::Level::ERROR)
+                .map(|(_, fields)| fields)
+                .collect();
+            assert_eq!(errors.len(), 1, "{logged_error}: {errors:?}");
+            assert_eq!(errors[0]["request_id"], "req-1", "{errors:?}");
+            assert_eq!(errors[0]["error"], logged_error, "{errors:?}");
+            assert!(errors[0]["error"].contains("nt-acme-notes"), "{errors:?}");
             assert_eq!(resp.status(), status);
             let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
             let text = String::from_utf8(body.to_vec()).unwrap();
