@@ -33,6 +33,13 @@
 # routes are the GOOSE_*_BASE_URL secrets and the proxy's host the
 # GOOSE_PROXY_EGRESS variable, kept out of the repository on purpose.
 #
+# The proxy's free pool (notedthat_free, model `free`) is installed too but
+# runs no lane: it answers with whichever free upstream model is available,
+# so a finding could not be tied to one model, and an exhausted pool returns
+# an availability error instead of falling back to a paid model. Its route is
+# the GOOSE_FREE_BASE_URL secret; setup-providers.sh stops the run on a
+# template that has no route.
+#
 # (DeepSeek V4.1 Flash on OpenRouter had a lane, reaching openrouter.ai
 # directly, until it was turned off for its cost. Its provider file stays;
 # to turn it back on, add a lane with `provider: notedthat_openrouter`,
@@ -135,5 +142,6 @@ jobs:
       PROVIDER_ROUTES: |
         notedthat_thirdparty=${{ secrets.GOOSE_THIRDPARTY_BASE_URL }}
         notedthat_minimax=${{ secrets.GOOSE_MINIMAX_BASE_URL }}
+        notedthat_free=${{ secrets.GOOSE_FREE_BASE_URL }}
       PROVIDER_ENV: |
         NOTEDTHAT_PROXY_TOKEN=${{ secrets.GOOSE_PROXY_TOKEN }}

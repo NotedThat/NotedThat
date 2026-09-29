@@ -448,7 +448,11 @@ Every model call goes through our self-hosted LLM egress proxy, which holds
 the provider keys, paces requests per model, and fixes tool calling on the
 third-party route. (A DeepSeek V4.1 lane on OpenRouter, calling openrouter.ai directly with the
 `OPENROUTER_API_KEY` secret, is turned off for its cost; its provider file stays, and the
-workflow's header says how to turn it back on.) Locally you need the proxy's token and its two routes — ask a
+workflow's header says how to turn it back on.) A third route, the proxy's free pool
+(`notedthat_free`, model `free`), is installed alongside the other two but runs no lane: it
+answers with whichever free upstream model is available, not DeepSeek or MiniMax, and when
+the pool is exhausted it returns an availability error rather than falling back to a paid
+model. Locally you need the proxy's token and its three routes — ask a
 maintainer; none of them are in the repository on purpose — or an OpenRouter key of your own
 for `--provider notedthat_openrouter` (copy `.github/goose/providers/notedthat_openrouter.json`
 into your Goose `custom_providers` as is). Goose 1.52 or
@@ -466,7 +470,8 @@ gr=../goose-review
 # The providers into your Goose config, pointed at the proxy routes
 export GOOSE_REVIEW_PROVIDER_ENV='NOTEDTHAT_PROXY_TOKEN=<proxy token>'
 export GOOSE_REVIEW_PROVIDER_ROUTES='notedthat_thirdparty=<third-party route>
-notedthat_minimax=<MiniMax route>'
+notedthat_minimax=<MiniMax route>
+notedthat_free=<free-pool route>'
 $gr/setup-providers.sh .github/goose/providers "${XDG_CONFIG_HOME:-$HOME/.config}/goose/custom_providers"
 
 # Review everything changed since origin/main, as the DeepSeek lane would
