@@ -65,6 +65,7 @@ pub(crate) async fn prepare_propfind_listing(
 }
 
 pub(crate) enum PropfindDepth {
+    /// No `Depth` header, which RFC 4918 §9.1 says to treat as `infinity`.
     Default,
     Zero,
     One,
@@ -89,9 +90,11 @@ pub(crate) fn parse_propfind_depth(req: &axum::extract::Request) -> PropfindDept
     }
 }
 
+/// The refusal of an infinite-depth PROPFIND: RFC 4918 §9.1.1 answers `403` with the
+/// `propfind-finite-depth` precondition, so a client knows to walk with `Depth: 1`.
 pub(crate) fn depth_infinity_response() -> axum::response::Response {
     (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
+        axum::http::StatusCode::FORBIDDEN,
         [(
             axum::http::header::CONTENT_TYPE,
             "application/xml; charset=utf-8",

@@ -205,11 +205,11 @@ async fn test_propfind_kb_lists_objects() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. PROPFIND Depth: infinity → 501
+// 5. PROPFIND Depth: infinity → 403 propfind-finite-depth (RFC 4918 §9.1.1)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_propfind_depth_infinity_returns_501() {
+async fn test_propfind_depth_infinity_returns_403() {
     let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
@@ -221,7 +221,18 @@ async fn test_propfind_depth_infinity_returns_501() {
         .await
         .expect("PROPFIND Depth: infinity");
 
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("<D:propfind-finite-depth/>"), "{body}");
+
+    // RFC 4918 §9.1: a PROPFIND without Depth is an infinite one.
+    let resp = client
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav"))
+        .header("Authorization", basic_auth(&username, &password))
+        .send()
+        .await
+        .expect("PROPFIND without Depth");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     handle.abort();
 }

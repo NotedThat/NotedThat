@@ -1340,7 +1340,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn propfind_without_depth_keeps_dav_server_default_listing() {
+    async fn propfind_without_depth_is_refused_as_infinite() {
+        // RFC 4918 §9.1: no Depth header means infinity, which is refused before any
+        // listing, so the uncapped walk dav-server would do cannot happen.
         let storage = Arc::new(MockStorage::with_pages(propfind_pages(1_500)));
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
@@ -1349,6 +1351,7 @@ mod tests {
             .oneshot(propfind_request_without_depth("/notes/"))
             .await
             .expect("PROPFIND request succeeds");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = String::from_utf8(
             to_bytes(response.into_body(), usize::MAX)
                 .await
@@ -1357,8 +1360,8 @@ mod tests {
         )
         .expect("UTF-8 body");
 
-        assert!(body.contains("file-01499.md"));
-        assert_eq!(storage.list_calls().len(), 2);
+        assert!(body.contains("<D:propfind-finite-depth/>"));
+        assert!(storage.list_calls().is_empty());
     }
 
     #[tokio::test]
@@ -1397,7 +1400,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn propfind_infinity_with_litmus_returns_not_implemented() {
+    async fn propfind_infinity_with_litmus_is_refused_as_forbidden() {
         let storage = Arc::new(MockStorage::with_pages(propfind_pages(1)));
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
@@ -1411,7 +1414,7 @@ mod tests {
             .await
             .expect("PROPFIND request succeeds");
 
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert!(storage.list_calls().is_empty());
     }
 

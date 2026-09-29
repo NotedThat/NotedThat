@@ -107,10 +107,12 @@ pub async fn intercept_propfind_too_large(
         return next.run(req).await;
     }
 
+    // A missing Depth means infinity (RFC 4918 §9.1), and an infinite walk of a
+    // knowledge base is refused rather than listed without the size cap.
     match parse_propfind_depth(&req) {
-        PropfindDepth::Infinity => return depth_infinity_response(),
+        PropfindDepth::Default | PropfindDepth::Infinity => return depth_infinity_response(),
         PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
-        PropfindDepth::Default | PropfindDepth::Zero => return next.run(req).await,
+        PropfindDepth::Zero => return next.run(req).await,
         PropfindDepth::One => {}
     }
 
