@@ -487,6 +487,34 @@ pub async fn observe_conditional_reads(store: &dyn Storage, kb: &KbSlug) -> Obse
                 ..ConditionalHeaders::default()
             },
         ),
+        // RFC 9110 §13.1.4: If-Unmodified-Since is ignored beside If-Match.
+        (
+            "if_match_current_and_stale_ius",
+            ConditionalHeaders {
+                if_match: Some(etag.clone()),
+                if_unmodified_since: Some(before_mtime.clone()),
+                ..ConditionalHeaders::default()
+            },
+        ),
+        // RFC 9110 §13.1.3: If-Modified-Since is ignored beside If-None-Match, so a
+        // changed ETag with a same-second date is served rather than a stale 304.
+        (
+            "if_none_match_other_and_ims_at_mtime",
+            ConditionalHeaders {
+                if_none_match: Some("\"other\"".into()),
+                if_modified_since: Some(at_mtime.clone()),
+                ..ConditionalHeaders::default()
+            },
+        ),
+        (
+            "superseded_malformed_dates",
+            ConditionalHeaders {
+                if_match: Some(etag.clone()),
+                if_none_match: Some("\"other\"".into()),
+                if_modified_since: Some("not-a-date".into()),
+                if_unmodified_since: Some("not-a-date".into()),
+            },
+        ),
     ];
 
     for (name, conditionals) in cases {

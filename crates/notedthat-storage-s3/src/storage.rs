@@ -625,6 +625,8 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.head_object().bucket(&bucket).key(key);
 
         if let Some(v) = conditionals.if_match {
@@ -664,6 +666,8 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.get_object().bucket(&bucket).key(key);
 
         if let Some(range) = &range {
@@ -724,6 +728,8 @@ impl Storage for S3Storage {
     ) -> Result<ObjectStream, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.get_object().bucket(&bucket).key(key);
         if let Some(range) = &range {
             req = req.range(range.to_http_string());

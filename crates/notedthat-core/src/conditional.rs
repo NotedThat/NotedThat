@@ -31,6 +31,30 @@ impl ConditionalHeaders {
             && self.if_unmodified_since.is_none()
     }
 
+    /// The headers a read evaluates, with each date condition its `ETag` counterpart
+    /// supersedes removed.
+    ///
+    /// RFC 9110 §13.1.3 and §13.1.4: a recipient must ignore `If-Unmodified-Since` when
+    /// the request carries `If-Match`, and `If-Modified-Since` when it carries
+    /// `If-None-Match`. The `ETag` is the finer validator; HTTP-dates only resolve to a
+    /// second, so a changed object and a same-second date would otherwise answer 304.
+    /// Every backend reads through this, so they agree whatever S3 does on its own.
+    #[must_use]
+    pub fn for_read(&self) -> Self {
+        Self {
+            if_match: self.if_match.clone(),
+            if_none_match: self.if_none_match.clone(),
+            if_modified_since: self
+                .if_modified_since
+                .clone()
+                .filter(|_| self.if_none_match.is_none()),
+            if_unmodified_since: self
+                .if_unmodified_since
+                .clone()
+                .filter(|_| self.if_match.is_none()),
+        }
+    }
+
     /// Extracts the four conditional headers from an HTTP `HeaderMap`.
     ///
     /// Non-UTF-8 header values are silently dropped (treated as missing).
@@ -167,6 +191,29 @@ mod tests {
             Some("Wed, 21 Oct 2015 07:28:00 GMT".to_string())
         );
         assert!(!headers.is_empty());
+    }
+
+    #[test]
+    fn for_read_drops_each_date_its_etag_counterpart_supersedes() {
+        let date = "Wed, 21 Oct 2015 07:28:00 GMT".to_string();
+        let all = ConditionalHeaders {
+            if_match: Some("\"a\"".into()),
+            if_none_match: Some("\"b\"".into()),
+            if_modified_since: Some(date.clone()),
+            if_unmodified_since: Some(date.clone()),
+        };
+        let read = all.for_read();
+        assert_eq!(read.if_match, all.if_match);
+        assert_eq!(read.if_none_match, all.if_none_match);
+        assert_eq!(read.if_modified_since, None);
+        assert_eq!(read.if_unmodified_since, None);
+
+        let dates_only = ConditionalHeaders {
+            if_modified_since: Some(date.clone()),
+            if_unmodified_since: Some(date),
+            ..ConditionalHeaders::default()
+        };
+        assert_eq!(dates_only.for_read(), dates_only);
     }
 
     #[test]

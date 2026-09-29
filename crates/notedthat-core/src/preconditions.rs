@@ -127,14 +127,17 @@ pub fn evaluate_write_preconditions(
     Ok(())
 }
 
-/// Evaluate the preconditions that gate a read, in RFC 7232 §6 precedence order.
+/// Evaluate the preconditions that gate a read, in RFC 9110 §13.2.2 precedence order.
 ///
 /// `If-Match` is checked before `If-None-Match`, so a request carrying both a failing
-/// `If-Match` and a matching `If-None-Match` is a 412 rather than a 304.
+/// `If-Match` and a matching `If-None-Match` is a 412 rather than a 304. A date header
+/// whose `ETag` counterpart is present is ignored, unparsed ([`ConditionalHeaders::for_read`]).
 pub fn evaluate_read_preconditions(
     state: ObjectState<'_>,
     conditionals: &ConditionalHeaders,
 ) -> Result<(), StorageError> {
+    let conditionals = &conditionals.for_read();
+
     if let Some(if_match) = &conditionals.if_match
         && !matches_if_match(state.etag, if_match)
     {
@@ -280,6 +283,38 @@ mod tests {
             evaluate_read_preconditions(state(), &conditionals),
             Err(StorageError::NotModified)
         ));
+    }
+
+    #[test]
+    fn read_ignores_if_unmodified_since_when_if_match_is_present() {
+        let conditionals = ConditionalHeaders {
+            if_match: Some(ETAG.into()),
+            if_unmodified_since: Some(http_date(0)),
+            ..ConditionalHeaders::default()
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
+    }
+
+    #[test]
+    fn read_ignores_if_modified_since_when_if_none_match_is_present() {
+        // A changed ETag with a same-second date: the ETag decides, so no stale 304.
+        let conditionals = ConditionalHeaders {
+            if_none_match: Some("\"stale\"".into()),
+            if_modified_since: Some(http_date(1_000)),
+            ..ConditionalHeaders::default()
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
+    }
+
+    #[test]
+    fn read_does_not_parse_a_superseded_date() {
+        let conditionals = ConditionalHeaders {
+            if_match: Some(ETAG.into()),
+            if_none_match: Some("\"stale\"".into()),
+            if_modified_since: Some("not-a-date".into()),
+            if_unmodified_since: Some("not-a-date".into()),
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
     }
 
     #[test]
