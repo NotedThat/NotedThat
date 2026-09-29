@@ -403,8 +403,8 @@ CI reviews every PR with [Goose](https://github.com/block/goose)
 [StephanMeijer/goose-review](https://github.com/StephanMeijer/goose-review), pinned by
 commit; the engine, its tests and its documentation live there, and what the review looks
 for lives here: `.agents/checks/`, `.agents/facts/`, `.github/goose/providers/` and the Rust
-tool hints in `.agents/goose-review/tools.md`) in four lanes, one per model:
-DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5 and the free pool (`mystery`). Each lane
+tool hints in `.agents/goose-review/tools.md`) in four lanes:
+DeepSeek V4 Flash, MiniMax M3, Mistral Medium 3.5, and `mystery` on the free pool. Each lane
 runs the checks in `.agents/checks/` with its own model, a model of another
 family re-checks every finding against the code, and only confirmed
 findings are posted, as that lane's review on the code. When the verifier's provider is down
