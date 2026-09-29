@@ -1,5 +1,4 @@
 use super::super::*;
-use async_trait::async_trait;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -8,57 +7,52 @@ use axum::{
     routing::any,
 };
 use bytes::Bytes;
-use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, PutOutcome, StagedBody, Storage, StorageError,
+use notedthat_core::testing::{
+    InMemoryStorage, ScriptedStorage, StorageCall, StorageOp, compute_etag,
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-    sync::Mutex,
-};
-use tokio::io::AsyncReadExt;
+use notedthat_core::{CopyObjectOptions, KbSlug, ObjectPath, ObjectRead, Storage};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::mpsc;
 use tower::util::ServiceExt;
 
-#[derive(Clone)]
-struct StoredObject {
-    bytes: Bytes,
-    content_type: Option<String>,
-    etag: String,
+/// A store with both declared knowledge bases provisioned and nothing in them.
+fn empty_storage() -> ScriptedStorage {
+    ScriptedStorage::with_kbs([&kb_slug("notes"), &kb_slug("scratch")])
 }
 
-#[derive(Default)]
-struct MockStorage {
-    objects: Mutex<HashMap<String, StoredObject>>,
-    calls: Mutex<Vec<&'static str>>,
-    copy_options: Mutex<Vec<CopyObjectOptions>>,
-    staged_paths: Mutex<Vec<std::path::PathBuf>>,
-    staged_lengths: Mutex<Vec<u64>>,
-    next_etag: Mutex<u64>,
-    race_destination_before_copy: Mutex<bool>,
-    change_source_before_copy: Mutex<bool>,
-    change_source_after_copy: Mutex<bool>,
+/// Seeding, inspection and race shorthands over the store these tests drive.
+trait Fixture {
+    /// Store a Markdown object with a pinned `ETag`.
+    async fn insert(&self, kb: &str, path: &str, bytes: impl Into<Bytes>, etag: &str);
+    async fn insert_with_content_type(
+        &self,
+        kb: &str,
+        path: &str,
+        bytes: impl Into<Bytes>,
+        etag: &str,
+        content_type: &str,
+    );
+    async fn get_stored(&self, kb: &str, path: &str) -> Option<ObjectRead>;
+    /// Whether any write of a request body reached the store.
+    fn put_called(&self) -> bool;
+    fn copy_options(&self) -> Vec<CopyObjectOptions>;
+    fn staged_paths(&self) -> Vec<std::path::PathBuf>;
+    fn staged_lengths(&self) -> Vec<u64>;
+    /// A concurrent writer creates the copy's destination just before the copy lands.
+    fn race_destination_before_copy(&self, kb: &str, path: &str);
+    /// A concurrent writer changes the copy's source just before the copy lands.
+    fn change_source_before_copy(&self, kb: &str, path: &str);
+    /// A concurrent writer changes the copy's source just after the copy lands.
+    fn change_source_after_copy(&self, kb: &str, path: &str);
 }
 
-impl MockStorage {
-    fn key(kb: &KbSlug, path: &ObjectPath) -> String {
-        format!("{}/{}", kb.as_str(), path.as_str())
+impl Fixture for ScriptedStorage {
+    async fn insert(&self, kb: &str, path: &str, bytes: impl Into<Bytes>, etag: &str) {
+        self.insert_with_content_type(kb, path, bytes, etag, "text/markdown")
+            .await;
     }
 
-    fn record(&self, call: &'static str) {
-        self.calls.lock().expect("mutex not poisoned").push(call);
-    }
-
-    fn calls(&self) -> Vec<&'static str> {
-        self.calls.lock().expect("mutex not poisoned").clone()
-    }
-
-    fn insert(&self, kb: &str, path: &str, bytes: impl Into<Bytes>, etag: &str) {
-        self.insert_with_content_type(kb, path, bytes, etag, "text/markdown");
-    }
-
-    fn insert_with_content_type(
+    async fn insert_with_content_type(
         &self,
         kb: &str,
         path: &str,
@@ -66,344 +60,94 @@ impl MockStorage {
         etag: &str,
         content_type: &str,
     ) {
-        self.objects.lock().expect("mutex not poisoned").insert(
-            format!("{kb}/{path}"),
-            StoredObject {
-                bytes: bytes.into(),
-                content_type: Some(content_type.to_string()),
-                etag: etag.to_string(),
-            },
-        );
+        self.inner()
+            .seed(kb, path, bytes, Some(content_type), Some(etag))
+            .await;
     }
 
-    fn get_stored(&self, kb: &str, path: &str) -> Option<StoredObject> {
-        self.objects
-            .lock()
-            .expect("mutex not poisoned")
-            .get(&format!("{kb}/{path}"))
-            .cloned()
+    async fn get_stored(&self, kb: &str, path: &str) -> Option<ObjectRead> {
+        self.inner().object(kb, path).await
+    }
+
+    fn put_called(&self) -> bool {
+        self.count(StorageOp::PutObject) + self.count(StorageOp::PutStagedObject) > 0
     }
 
     fn copy_options(&self) -> Vec<CopyObjectOptions> {
-        self.copy_options
-            .lock()
-            .expect("mutex not poisoned")
-            .clone()
+        self.calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                StorageCall::CopyObject { options, .. } => Some(options),
+                _ => None,
+            })
+            .collect()
     }
 
     fn staged_paths(&self) -> Vec<std::path::PathBuf> {
-        self.staged_paths
-            .lock()
-            .expect("mutex not poisoned")
-            .clone()
+        self.calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                StorageCall::PutStagedObject { staged_file, .. } => staged_file,
+                _ => None,
+            })
+            .collect()
     }
 
     fn staged_lengths(&self) -> Vec<u64> {
-        self.staged_lengths
-            .lock()
-            .expect("mutex not poisoned")
-            .clone()
+        self.calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                StorageCall::PutStagedObject { len, .. } => Some(len),
+                _ => None,
+            })
+            .collect()
     }
 
-    fn race_destination_before_copy(&self) {
-        *self
-            .race_destination_before_copy
-            .lock()
-            .expect("mutex not poisoned") = true;
-    }
-
-    fn change_source_after_copy(&self) {
-        *self
-            .change_source_after_copy
-            .lock()
-            .expect("mutex not poisoned") = true;
-    }
-
-    fn change_source_before_copy(&self) {
-        *self
-            .change_source_before_copy
-            .lock()
-            .expect("mutex not poisoned") = true;
-    }
-}
-
-fn unavailable() -> StorageError {
-    StorageError::BackendUnavailable {
-        message: "mock storage method is not configured for this test".to_string(),
-    }
-}
-
-fn object_meta(key: String, object: &StoredObject) -> ObjectMeta {
-    ObjectMeta {
-        key,
-        size: object.bytes.len() as u64,
-        last_modified: Some(1),
-        content_type: object.content_type.clone(),
-        etag: Some(object.etag.clone()),
-    }
-}
-
-fn check_if_match(
-    conditionals: &ConditionalHeaders,
-    object: Option<&StoredObject>,
-) -> Result<(), StorageError> {
-    if let Some(if_match) = conditionals.if_match.as_deref()
-        && object.is_none_or(|stored| stored.etag != if_match)
-    {
-        return Err(StorageError::PreconditionFailed);
-    }
-    Ok(())
-}
-
-#[async_trait]
-impl Storage for MockStorage {
-    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Err(unavailable())
-    }
-
-    async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-        Err(unavailable())
-    }
-
-    async fn write_manifest(
-        &self,
-        _kb: &KbSlug,
-        _manifest: &KbManifest,
-    ) -> Result<(), StorageError> {
-        Err(unavailable())
-    }
-
-    async fn head_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectMeta, StorageError> {
-        self.record("head_object");
-        let key = Self::key(kb, path);
-        let objects = self.objects.lock().expect("mutex not poisoned");
-        let object = objects.get(&key);
-        check_if_match(&conditionals, object)?;
-        object
-            .map(|stored| object_meta(path.as_str().to_string(), stored))
-            .ok_or(StorageError::NotFound { key })
-    }
-
-    async fn get_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _range: Option<ByteRange>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectRead, StorageError> {
-        self.record("get_object");
-        let key = Self::key(kb, path);
-        let objects = self.objects.lock().expect("mutex not poisoned");
-        let object = objects
-            .get(&key)
-            .ok_or_else(|| StorageError::NotFound { key: key.clone() })?;
-        check_if_match(&conditionals, Some(object))?;
-        Ok(ObjectRead {
-            bytes: object.bytes.clone(),
-            meta: object_meta(path.as_str().to_string(), object),
-            content_range: None,
-        })
-    }
-
-    async fn get_object_stream(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _range: Option<ByteRange>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<notedthat_core::ObjectStream, StorageError> {
-        Err(unavailable())
-    }
-
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        self.record("put_object");
-        let key = Self::key(kb, path);
-        let mut objects = self.objects.lock().expect("mutex not poisoned");
-        check_if_match(&conditionals, objects.get(&key))?;
-
-        let mut next_etag = self.next_etag.lock().expect("mutex not poisoned");
-        *next_etag += 1;
-        let etag = format!("\"etag-{next_etag}\"");
-        let replaced = objects.insert(
-            key,
-            StoredObject {
-                bytes,
-                content_type: content_type.map(str::to_string),
-                etag: etag.clone(),
-            },
-        );
-        Ok(PutOutcome {
-            etag: Some(etag),
-            created: replaced.is_none(),
-        })
-    }
-
-    async fn put_staged_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        body: StagedBody,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let staged_len = body.len();
-        if let Some(path) = body.file_path() {
-            self.staged_paths
-                .lock()
-                .expect("mutex not poisoned")
-                .push(path.to_path_buf());
-        }
-        let mut reader = body.open().await.map_err(|source| StorageError::Other {
-            source: Box::new(source),
-        })?;
-        let bytes = if body.is_file() {
-            let mut buffer = vec![0_u8; 64 * 1024];
-            let mut read = 0_u64;
-            loop {
-                let count =
-                    reader
-                        .read(&mut buffer)
-                        .await
-                        .map_err(|source| StorageError::Other {
-                            source: Box::new(source),
-                        })?;
-                if count == 0 {
-                    break;
-                }
-                read += u64::try_from(count).unwrap();
+    fn race_destination_before_copy(&self, kb: &str, path: &str) {
+        let (kb, path) = (kb.to_string(), path.to_string());
+        self.before(StorageOp::CopyObject, move |store| {
+            let (kb, path) = (kb.clone(), path.clone());
+            async move {
+                store
+                    .seed(
+                        &kb,
+                        &path,
+                        "racing writer",
+                        Some("text/plain"),
+                        Some("\"race\""),
+                    )
+                    .await;
             }
-            assert_eq!(read, staged_len);
-            Vec::new()
-        } else {
-            let mut bytes = Vec::new();
-            reader
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|source| StorageError::Other {
-                    source: Box::new(source),
-                })?;
-            bytes
-        };
-        self.staged_lengths
-            .lock()
-            .expect("mutex not poisoned")
-            .push(staged_len);
-        self.put_object(kb, path, Bytes::from(bytes), content_type, conditionals)
-            .await
+        });
     }
 
-    async fn copy_object(
-        &self,
-        kb: &KbSlug,
-        source: &ObjectPath,
-        destination: &ObjectPath,
-        options: CopyObjectOptions,
-    ) -> Result<PutOutcome, StorageError> {
-        self.record("copy_object");
-        self.copy_options
-            .lock()
-            .expect("mutex not poisoned")
-            .push(options.clone());
-        let source_key = Self::key(kb, source);
-        let destination_key = Self::key(kb, destination);
-        let mut objects = self.objects.lock().expect("mutex not poisoned");
-        if *self
-            .change_source_before_copy
-            .lock()
-            .expect("mutex not poisoned")
-            && let Some(source) = objects.get_mut(&source_key)
-        {
-            source.etag = "\"changed\"".to_string();
-        }
-        let source_object =
-            objects
-                .get(&source_key)
-                .cloned()
-                .ok_or_else(|| StorageError::NotFound {
-                    key: source_key.clone(),
-                })?;
-        if options
-            .source_if_match
-            .as_deref()
-            .is_some_and(|etag| etag != source_object.etag)
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-        if *self
-            .race_destination_before_copy
-            .lock()
-            .expect("mutex not poisoned")
-        {
-            objects.insert(
-                destination_key.clone(),
-                StoredObject {
-                    bytes: Bytes::from_static(b"racing writer"),
-                    content_type: Some("text/plain".to_string()),
-                    etag: "\"race\"".to_string(),
-                },
-            );
-        }
-        if options.destination_if_none_match.as_deref() == Some("*")
-            && objects.contains_key(&destination_key)
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-        let mut copied = source_object;
-        copied.content_type = options.content_type;
-        let etag = copied.etag.clone();
-        let created = objects.insert(destination_key, copied).is_none();
-        if *self
-            .change_source_after_copy
-            .lock()
-            .expect("mutex not poisoned")
-            && let Some(source) = objects.get_mut(&source_key)
-        {
-            source.etag = "\"changed\"".to_string();
-        }
-        Ok(PutOutcome {
-            etag: Some(etag),
-            created,
-        })
+    fn change_source_before_copy(&self, kb: &str, path: &str) {
+        let (kb, path) = (kb.to_string(), path.to_string());
+        self.before(StorageOp::CopyObject, move |store| {
+            retag(store, kb.clone(), path.clone(), "\"changed\"")
+        });
     }
 
-    async fn delete_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
-        self.record("delete_object");
-        let key = Self::key(kb, path);
-        let mut objects = self.objects.lock().expect("mutex not poisoned");
-        check_if_match(&conditionals, objects.get(&key))?;
-        objects.remove(&key);
-        Ok(())
+    fn change_source_after_copy(&self, kb: &str, path: &str) {
+        let (kb, path) = (kb.to_string(), path.to_string());
+        self.after(StorageOp::CopyObject, move |store| {
+            retag(store, kb.clone(), path.clone(), "\"changed\"")
+        });
     }
+}
 
-    async fn list_objects(
-        &self,
-        _kb: &KbSlug,
-        _prefix: Option<&str>,
-        _limit: u32,
-        _cursor: Option<&str>,
-    ) -> Result<ListResponse, StorageError> {
-        Err(unavailable())
+/// Give the object at `path` a new `ETag`, keeping its bytes and content type.
+async fn retag(store: InMemoryStorage, kb: String, path: String, etag: &'static str) {
+    if let Some(current) = store.object(&kb, &path).await {
+        store
+            .seed(
+                &kb,
+                &path,
+                current.bytes,
+                current.meta.content_type.as_deref(),
+                Some(etag),
+            )
+            .await;
     }
 }
 
@@ -418,17 +162,17 @@ fn declared_kbs(values: &[&str]) -> BTreeMap<String, KbSlug> {
         .collect()
 }
 
-fn test_state(storage: Arc<MockStorage>) -> WebDavState {
+fn test_state(storage: ScriptedStorage) -> WebDavState {
     let (indexer_tx, _rx) = mpsc::channel(1024);
     test_state_with_indexer_tx(storage, indexer_tx)
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn test_state_with_indexer_tx(
-    storage: Arc<MockStorage>,
+    storage: ScriptedStorage,
     indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
 ) -> WebDavState {
-    let storage: Arc<dyn Storage> = storage;
+    let storage: Arc<dyn Storage> = Arc::new(storage);
     WebDavState {
         authenticator: Arc::new(
             notedthat_core::Authenticator::new("test-service-token")
@@ -444,7 +188,7 @@ fn test_state_with_indexer_tx(
     }
 }
 
-fn app(storage: Arc<MockStorage>) -> Router {
+fn app(storage: ScriptedStorage) -> Router {
     Router::new()
         .fallback(any(|| async { "inner handler reached" }))
         .layer(from_fn_with_state(
@@ -454,7 +198,7 @@ fn app(storage: Arc<MockStorage>) -> Router {
 }
 
 fn app_with_indexer_tx(
-    storage: Arc<MockStorage>,
+    storage: ScriptedStorage,
     indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
 ) -> Router {
     Router::new()
@@ -466,7 +210,7 @@ fn app_with_indexer_tx(
 }
 
 fn app_with_staging_config(
-    storage: Arc<MockStorage>,
+    storage: ScriptedStorage,
     staging_config: notedthat_core::StagingConfig,
 ) -> Router {
     let mut state = test_state(storage);
@@ -489,7 +233,7 @@ mod mutation_safety;
 
 #[tokio::test]
 async fn test_get_passes_through() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -506,7 +250,7 @@ async fn test_get_passes_through() {
 
 #[tokio::test]
 async fn test_put_creates_and_returns_201_etag() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -520,15 +264,20 @@ async fn test_put_creates_and_returns_201_etag() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::CREATED);
-    assert_eq!(resp.headers().get("etag").unwrap(), "\"etag-1\"");
+    assert_eq!(
+        resp.headers().get("etag").unwrap(),
+        compute_etag(b"# New").as_str()
+    );
     // No pre-write HEAD: the write itself reports that it created the object.
-    assert_eq!(storage.calls(), vec!["put_object"]);
+    assert_eq!(storage.ops(), vec![StorageOp::PutStagedObject]);
 }
 
 #[tokio::test]
 async fn test_put_overwrite_returns_204() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "old.md", Bytes::from_static(b"old"), "\"old\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "old.md", Bytes::from_static(b"old"), "\"old\"")
+        .await;
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -555,8 +304,10 @@ const DISPLAYNAME: &str = r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:
 /// RFC 4918 §9.2: PROPPATCH answers 207 per property and stores nothing.
 #[tokio::test]
 async fn test_proppatch_refuses_protected_properties_with_207() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"")
+        .await;
     let resp = app(storage.clone())
         .oneshot(proppatch("/webdav/notes/a.md", &[], DISPLAYNAME))
         .await
@@ -573,12 +324,12 @@ async fn test_proppatch_refuses_protected_properties_with_207() {
         body.contains("<D:cannot-modify-protected-property/>"),
         "{body}"
     );
-    assert_eq!(storage.calls(), vec!["head_object"]);
+    assert_eq!(storage.ops(), vec![StorageOp::HeadObject]);
 }
 
 #[tokio::test]
 async fn test_proppatch_on_a_knowledge_base_root_returns_207() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(proppatch("/webdav/notes/", &[], DISPLAYNAME))
         .await
@@ -588,8 +339,10 @@ async fn test_proppatch_on_a_knowledge_base_root_returns_207() {
 
 #[tokio::test]
 async fn test_proppatch_honours_if_and_if_match() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"")
+        .await;
     for headers in [
         &[("if-match", "\"stale\"")][..],
         &[("if", "([\"stale\"])")],
@@ -618,8 +371,10 @@ async fn test_proppatch_honours_if_and_if_match() {
 
 #[tokio::test]
 async fn test_proppatch_with_a_malformed_body_returns_400() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"")
+        .await;
     let resp = app(storage)
         .oneshot(proppatch("/webdav/notes/a.md", &[], "<D:oops"))
         .await
@@ -629,8 +384,10 @@ async fn test_proppatch_with_a_malformed_body_returns_400() {
 
 #[tokio::test]
 async fn test_put_with_if_match_wrong_etag_returns_412() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "old.md", Bytes::from_static(b"old"), "\"old\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "old.md", Bytes::from_static(b"old"), "\"old\"")
+        .await;
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -647,7 +404,7 @@ async fn test_put_with_if_match_wrong_etag_returns_412() {
 
 #[tokio::test]
 async fn test_put_content_length_over_5gib_returns_413_before_reading_body() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -663,12 +420,12 @@ async fn test_put_content_length_over_5gib_returns_413_before_reading_body() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -681,13 +438,13 @@ async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let stored = storage.get_stored("notes", "sniff.md").unwrap();
-    assert_eq!(stored.content_type.as_deref(), Some("text/markdown"));
+    let stored = storage.get_stored("notes", "sniff.md").await.unwrap();
+    assert_eq!(stored.meta.content_type.as_deref(), Some("text/markdown"));
 }
 
 #[tokio::test]
 async fn test_put_to_non_declared_kb_returns_403() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -703,7 +460,7 @@ async fn test_put_to_non_declared_kb_returns_403() {
 
 #[tokio::test]
 async fn test_put_returns_503_with_retry_after_when_indexer_backpressure() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let (indexer_tx, _rx) = mpsc::channel(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
@@ -730,12 +487,12 @@ async fn test_put_returns_503_with_retry_after_when_indexer_backpressure() {
     let body = response_body(resp).await;
     assert!(body.contains("backend_unavailable"));
     assert!(body.contains("object stored"));
-    assert!(storage.get_stored("notes", "x.md").is_some());
+    assert!(storage.get_stored("notes", "x.md").await.is_some());
 }
 
 #[tokio::test]
 async fn test_delete_idempotent_returns_204() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let first = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -762,8 +519,10 @@ async fn test_delete_idempotent_returns_204() {
 
 #[tokio::test]
 async fn test_delete_with_if_match_wrong_etag_returns_412() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "delete.md", Bytes::from_static(b"old"), "\"old\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "delete.md", Bytes::from_static(b"old"), "\"old\"")
+        .await;
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -780,8 +539,10 @@ async fn test_delete_with_if_match_wrong_etag_returns_412() {
 
 #[tokio::test]
 async fn test_delete_returns_503_with_retry_after_when_indexer_backpressure() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "y.md", Bytes::from_static(b"y"), "\"old\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "y.md", Bytes::from_static(b"y"), "\"old\"")
+        .await;
     let (indexer_tx, _rx) = mpsc::channel(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Tombstone {
@@ -807,12 +568,12 @@ async fn test_delete_returns_503_with_retry_after_when_indexer_backpressure() {
     assert!(body.contains("backend_unavailable"));
     assert!(body.contains("deleted from storage; retry to clear from search index"));
     assert!(!body.contains("object stored; indexer queue full — retry to re-enqueue"));
-    assert!(storage.get_stored("notes", "y.md").is_none());
+    assert!(storage.get_stored("notes", "y.md").await.is_none());
 }
 
 #[tokio::test]
 async fn test_move_missing_destination_returns_400() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -828,7 +589,7 @@ async fn test_move_missing_destination_returns_400() {
 
 #[tokio::test]
 async fn test_move_cross_server_returns_502_destination_different_server() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -851,7 +612,7 @@ async fn test_move_cross_server_returns_502_destination_different_server() {
 
 #[tokio::test]
 async fn test_move_cross_kb_returns_403_cannot_modify_source() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -869,13 +630,15 @@ async fn test_move_cross_kb_returns_403_cannot_modify_source() {
 
 #[tokio::test]
 async fn test_move_single_object_returns_201_and_calls_commit_then_commit_delete() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert(
-        "notes",
-        "source.md",
-        Bytes::from_static(b"source"),
-        "\"source\"",
-    );
+    let storage = empty_storage();
+    storage
+        .insert(
+            "notes",
+            "source.md",
+            Bytes::from_static(b"source"),
+            "\"source\"",
+        )
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -889,22 +652,28 @@ async fn test_move_single_object_returns_201_and_calls_commit_then_commit_delete
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(
-        storage.calls(),
-        vec!["head_object", "copy_object", "delete_object"]
+        storage.ops(),
+        vec![
+            StorageOp::HeadObject,
+            StorageOp::CopyObject,
+            StorageOp::DeleteObject
+        ]
     );
-    assert!(storage.get_stored("notes", "source.md").is_none());
-    assert!(storage.get_stored("notes", "dest.md").is_some());
+    assert!(storage.get_stored("notes", "source.md").await.is_none());
+    assert!(storage.get_stored("notes", "dest.md").await.is_some());
 }
 
 #[tokio::test]
 async fn test_copy_single_object_returns_201_and_calls_only_commit() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert(
-        "notes",
-        "source.md",
-        Bytes::from_static(b"source"),
-        "\"source\"",
-    );
+    let storage = empty_storage();
+    storage
+        .insert(
+            "notes",
+            "source.md",
+            Bytes::from_static(b"source"),
+            "\"source\"",
+        )
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -918,17 +687,22 @@ async fn test_copy_single_object_returns_201_and_calls_only_commit() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(resp.headers().get("etag").unwrap(), "\"source\"");
-    assert_eq!(storage.calls(), vec!["head_object", "copy_object"]);
-    assert!(storage.get_stored("notes", "source.md").is_some());
-    assert!(storage.get_stored("notes", "copy.md").is_some());
-    assert!(!storage.calls().contains(&"get_object"));
+    assert_eq!(
+        storage.ops(),
+        vec![StorageOp::HeadObject, StorageOp::CopyObject]
+    );
+    assert!(storage.get_stored("notes", "source.md").await.is_some());
+    assert!(storage.get_stored("notes", "copy.md").await.is_some());
+    assert!(!storage.ops().contains(&StorageOp::GetObject));
     assert_eq!(storage.copy_options()[0].destination_if_none_match, None);
 }
 
 #[tokio::test]
 async fn test_copy_or_move_maps_destination_indexer_backpressure_to_503() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
+        .await;
     let (indexer_tx, _rx) = mpsc::channel(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
@@ -956,14 +730,16 @@ async fn test_copy_or_move_maps_destination_indexer_backpressure_to_503() {
     let body = response_body(resp).await;
     assert!(body.contains("backend_unavailable"));
     assert!(body.contains("destination write succeeded but destination index event failed"));
-    assert!(storage.get_stored("notes", "dst.md").is_some());
-    assert!(storage.get_stored("notes", "src.md").is_some());
+    assert!(storage.get_stored("notes", "dst.md").await.is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
 }
 
 #[tokio::test]
 async fn test_move_returns_503_when_destination_upsert_backpressured() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
+        .await;
     let (indexer_tx, _rx) = mpsc::channel(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
@@ -991,14 +767,16 @@ async fn test_move_returns_503_when_destination_upsert_backpressured() {
     assert!(response_body(resp).await.contains(
         "destination write succeeded but destination index event failed; source unchanged. Retry MOVE to re-enqueue destination index event."
     ));
-    assert!(storage.get_stored("notes", "dst.md").is_some());
-    assert!(storage.get_stored("notes", "src.md").is_some());
+    assert!(storage.get_stored("notes", "dst.md").await.is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
 }
 
 #[tokio::test]
 async fn test_move_returns_503_when_source_tombstone_backpressured_after_destination_put() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
+        .await;
     let (indexer_tx, _rx) = mpsc::channel(2);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
@@ -1026,13 +804,13 @@ async fn test_move_returns_503_when_source_tombstone_backpressured_after_destina
     assert!(response_body(resp).await.contains(
         "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source."
     ));
-    assert!(storage.get_stored("notes", "dst.md").is_some());
-    assert!(storage.get_stored("notes", "src.md").is_none());
+    assert!(storage.get_stored("notes", "dst.md").await.is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_none());
 }
 
 #[tokio::test]
 async fn test_source_not_found_returns_404() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -1049,7 +827,7 @@ async fn test_source_not_found_returns_404() {
 
 #[tokio::test]
 async fn test_put_to_root_returns_400() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -1065,7 +843,7 @@ async fn test_put_to_root_returns_400() {
 
 #[tokio::test]
 async fn test_delete_to_kb_root_returns_400() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -1081,7 +859,7 @@ async fn test_delete_to_kb_root_returns_400() {
 
 #[tokio::test]
 async fn test_move_collection_source_returns_403_no_collection_move() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
@@ -1099,7 +877,7 @@ async fn test_move_collection_source_returns_403_no_collection_move() {
 
 #[tokio::test]
 async fn encoded_uri_put_stores_decoded_key() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1115,11 +893,17 @@ async fn encoded_uri_put_stores_decoded_key() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     // The key should be stored DECODED as "Untitled 1.canvas", not encoded as "Untitled%201.canvas"
     assert!(
-        storage.get_stored("notes", "Untitled 1.canvas").is_some(),
+        storage
+            .get_stored("notes", "Untitled 1.canvas")
+            .await
+            .is_some(),
         "expected decoded key 'Untitled 1.canvas' to be stored"
     );
     assert!(
-        storage.get_stored("notes", "Untitled%201.canvas").is_none(),
+        storage
+            .get_stored("notes", "Untitled%201.canvas")
+            .await
+            .is_none(),
         "encoded key 'Untitled%201.canvas' must not be stored"
     );
 }
@@ -1128,7 +912,7 @@ async fn encoded_uri_put_stores_decoded_key() {
 async fn encoded_uri_put_multi_segment() {
     // Multi-segment path with percent-encoded directory name proves split-before-decode:
     // raw '/' separates segments, then %20 in "my%20folder" decodes within that segment.
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1142,14 +926,17 @@ async fn encoded_uri_put_multi_segment() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert!(
-        storage.get_stored("notes", "my folder/notes.md").is_some(),
+        storage
+            .get_stored("notes", "my folder/notes.md")
+            .await
+            .is_some(),
         "expected decoded multi-segment key 'my folder/notes.md'"
     );
 }
 
 #[tokio::test]
 async fn encoded_uri_put_literal_percent_round_trips() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1164,11 +951,11 @@ async fn encoded_uri_put_literal_percent_round_trips() {
 
     assert!(resp.status().is_success());
     assert!(
-        storage.get_stored("notes", "file%.md").is_some(),
+        storage.get_stored("notes", "file%.md").await.is_some(),
         "expected decoded literal percent key 'file%.md'"
     );
     assert!(
-        storage.get_stored("notes", "file%25.md").is_none(),
+        storage.get_stored("notes", "file%25.md").await.is_none(),
         "encoded key 'file%25.md' must not be stored"
     );
 }
@@ -1247,7 +1034,7 @@ async fn edge_case_uri_segment_decoding_matrix() {
     ];
 
     for case in cases {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage();
         let resp = app(storage.clone())
             .oneshot(
                 HttpRequest::builder()
@@ -1269,7 +1056,7 @@ async fn edge_case_uri_segment_decoding_matrix() {
             );
             let stored_key = case.stored_key.expect("success case stores a key");
             assert!(
-                storage.get_stored("notes", stored_key).is_some(),
+                storage.get_stored("notes", stored_key).await.is_some(),
                 "{} should store decoded key {stored_key:?}",
                 case.name
             );
@@ -1281,7 +1068,7 @@ async fn edge_case_uri_segment_decoding_matrix() {
                 case.name
             );
             assert!(
-                storage.calls().is_empty(),
+                storage.ops().is_empty(),
                 "{} must not hit storage",
                 case.name
             );
@@ -1291,7 +1078,7 @@ async fn edge_case_uri_segment_decoding_matrix() {
 
 #[tokio::test]
 async fn encoded_uri_put_unicode() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1305,14 +1092,14 @@ async fn encoded_uri_put_unicode() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert!(
-        storage.get_stored("notes", "日本語.md").is_some(),
+        storage.get_stored("notes", "日本語.md").await.is_some(),
         "expected decoded unicode key '日本語.md'"
     );
 }
 
 #[tokio::test]
 async fn encoded_uri_put_reserved_chars() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1326,14 +1113,17 @@ async fn encoded_uri_put_reserved_chars() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert!(
-        storage.get_stored("notes", "file#with?chars.md").is_some(),
+        storage
+            .get_stored("notes", "file#with?chars.md")
+            .await
+            .is_some(),
         "expected decoded key 'file#with?chars.md'"
     );
 }
 
 #[tokio::test]
 async fn encoded_uri_put_non_utf8_returns_400() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1353,18 +1143,20 @@ async fn encoded_uri_put_non_utf8_returns_400() {
         "write-method 400 must not include x-request-id"
     );
     // Nothing was stored
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn encoded_destination_move_decodes_key() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert(
-        "notes",
-        "source.md",
-        Bytes::from_static(b"source content"),
-        "\"etag-source\"",
-    );
+    let storage = empty_storage();
+    storage
+        .insert(
+            "notes",
+            "source.md",
+            Bytes::from_static(b"source content"),
+            "\"etag-source\"",
+        )
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1379,25 +1171,30 @@ async fn encoded_destination_move_decodes_key() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     // Destination key must be decoded
     assert!(
-        storage.get_stored("notes", "renamed file.md").is_some(),
+        storage
+            .get_stored("notes", "renamed file.md")
+            .await
+            .is_some(),
         "expected decoded destination key 'renamed file.md'"
     );
     // Source must be gone (MOVE deletes source)
     assert!(
-        storage.get_stored("notes", "source.md").is_none(),
+        storage.get_stored("notes", "source.md").await.is_none(),
         "MOVE source should be deleted"
     );
 }
 
 #[tokio::test]
 async fn encoded_destination_copy_decodes_key() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert(
-        "notes",
-        "source.md",
-        Bytes::from_static(b"source content"),
-        "\"etag-source\"",
-    );
+    let storage = empty_storage();
+    storage
+        .insert(
+            "notes",
+            "source.md",
+            Bytes::from_static(b"source content"),
+            "\"etag-source\"",
+        )
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -1412,25 +1209,30 @@ async fn encoded_destination_copy_decodes_key() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     // Destination key must be decoded
     assert!(
-        storage.get_stored("notes", "renamed file.md").is_some(),
+        storage
+            .get_stored("notes", "renamed file.md")
+            .await
+            .is_some(),
         "expected decoded destination key 'renamed file.md'"
     );
     // Source must still exist (COPY keeps source)
     assert!(
-        storage.get_stored("notes", "source.md").is_some(),
+        storage.get_stored("notes", "source.md").await.is_some(),
         "COPY source should still exist"
     );
 }
 
 #[tokio::test]
 async fn destination_with_fragment_returns_400_before_uri_parse() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert(
-        "notes",
-        "source.md",
-        Bytes::from_static(b"source content"),
-        "\"etag-source\"",
-    );
+    let storage = empty_storage();
+    storage
+        .insert(
+            "notes",
+            "source.md",
+            Bytes::from_static(b"source content"),
+            "\"etag-source\"",
+        )
+        .await;
     let resp = app(storage)
         .oneshot(
             HttpRequest::builder()
