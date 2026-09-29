@@ -12,9 +12,9 @@ pub mod connect;
 pub mod stream;
 
 pub use config::{
-    DEFAULT_NATS_DUPLICATE_WINDOW_SECS, DEFAULT_NATS_REPLICAS, NATS_CONNECT_ENV_VARS, NatsAuth,
-    NatsConnectConfig, NatsConnectSettings, NatsStorage, NatsStreamSettings, NatsTls,
-    parse_positive, parse_stream_name,
+    DEFAULT_NATS_DUPLICATE_WINDOW_SECS, DEFAULT_NATS_REPLICAS, MIN_NATS_DUPLICATE_WINDOW_SECS,
+    NATS_CONNECT_ENV_VARS, NatsAuth, NatsConnectConfig, NatsConnectSettings, NatsStorage,
+    NatsStreamSettings, NatsTls, parse_positive, parse_stream_name,
 };
 pub use connect::{NatsConnectError, TIMEOUT, connect};
 pub use stream::{StreamSetupError, StreamSpec, ensure_stream};

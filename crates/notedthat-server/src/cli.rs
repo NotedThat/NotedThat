@@ -331,11 +331,13 @@ pub struct ServerCli {
     )]
     pub nats_token: Option<String>,
 
-    /// Extra root certificates (PEM) for a broker signed by a private CA.
+    /// Root certificates (PEM) trusted instead of the system roots: include every
+    /// CA the broker's certificates chain to. Setting it requires TLS.
     #[arg(long, env = "NOTEDTHAT_NATS_TLS_CA_FILE", value_name = "PATH")]
     pub nats_tls_ca_file: Option<OsString>,
 
     /// Client certificate (PEM) for mutual TLS; needs `--nats-tls-key-file`.
+    /// Setting it requires TLS.
     #[arg(long, env = "NOTEDTHAT_NATS_TLS_CERT_FILE", value_name = "PATH")]
     pub nats_tls_cert_file: Option<OsString>,
 
@@ -357,9 +359,9 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_NATS_STORAGE", value_name = "STORAGE")]
     pub nats_storage: Option<OsString>,
 
-    /// How long the broker drops a repeated publish, in seconds; at most the
-    /// retention. Unset, a new stream gets 120 (or the retention, if shorter) and
-    /// an existing one keeps its own.
+    /// How long the broker drops a repeated publish, in seconds; at least 10 and
+    /// at most the retention. Unset, a new stream gets 120 (or the retention, if
+    /// shorter) and an existing one keeps its own.
     #[arg(
         long,
         env = "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
@@ -371,7 +373,8 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_NATS_STREAM", value_name = "NAME")]
     pub nats_stream: Option<String>,
 
-    /// How long the stream retains an event, in seconds [default: 604800].
+    /// How long the stream retains an event, in seconds; at least 10
+    /// [default: 604800].
     #[arg(long, env = "NOTEDTHAT_NATS_MAX_AGE_SECS", value_name = "SECS")]
     pub nats_max_age_secs: Option<OsString>,
 

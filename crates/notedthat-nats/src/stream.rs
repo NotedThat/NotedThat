@@ -8,7 +8,8 @@ use async_nats::jetstream::stream::{
 };
 
 use crate::config::{
-    DEFAULT_NATS_DUPLICATE_WINDOW_SECS, DEFAULT_NATS_REPLICAS, NatsStorage, NatsStreamSettings,
+    DEFAULT_NATS_DUPLICATE_WINDOW_SECS, DEFAULT_NATS_REPLICAS, MIN_NATS_DUPLICATE_WINDOW_SECS,
+    NatsStorage, NatsStreamSettings,
 };
 
 /// What a NotedThat-owned stream must look like.
@@ -184,14 +185,26 @@ pub async fn ensure_stream(js: &Context, spec: &StreamSpec) -> Result<Stream, St
         return Err(StreamSetupError::Immutable {
             stream: spec.name.clone(),
             field: "retention",
-            found: format!("{:?}", found.retention),
-            wanted: format!("{:?}", desired.retention),
+            found: format!("{:?}", found.retention).to_lowercase(),
+            wanted: format!("{:?}", desired.retention).to_lowercase(),
         });
     }
 
     // The operator changed a setting; the stream follows the config. Only the
     // configured fields: the rest of the existing configuration is kept as found.
     let updated = spec.apply_to(&found);
+    if updated.duplicate_window < Duration::from_secs(MIN_NATS_DUPLICATE_WINDOW_SECS) {
+        // Only an existing stream's own window, set by hand while the setting
+        // is unset, gets here: a configured one is refused below the minimum.
+        tracing::warn!(
+            target: "notedthat::nats",
+            stream = %spec.name,
+            window_secs = updated.duplicate_window.as_secs(),
+            minimum_secs = MIN_NATS_DUPLICATE_WINDOW_SECS,
+            "NATS_DUPLICATE_WINDOW_SHORT: a publish retried after a timed-out \
+             acknowledgement can be stored twice; set NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"
+        );
+    }
     if updated == found {
         return Ok(stream);
     }

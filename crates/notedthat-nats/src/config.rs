@@ -32,6 +32,12 @@ pub const DEFAULT_NATS_REPLICAS: usize = 1;
 /// `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` is unset: two minutes, the server's own
 /// default, shortened to the stream's retention when that is shorter.
 pub const DEFAULT_NATS_DUPLICATE_WINDOW_SECS: u64 = 120;
+/// The shortest duplicate window accepted: twice the publish acknowledgement
+/// timeout. A publish whose acknowledgement timed out is retried under the same
+/// `Nats-Msg-Id` only after waiting that long, and the window counts from when
+/// the broker stored the first copy; a shorter window has usually expired by the
+/// time the retry arrives, and the broker stores the event a second time.
+pub const MIN_NATS_DUPLICATE_WINDOW_SECS: u64 = 2 * crate::connect::TIMEOUT.as_secs();
 /// The most replicas `JetStream` accepts for a stream.
 const MAX_NATS_REPLICAS: u64 = 5;
 
@@ -117,12 +123,28 @@ impl std::fmt::Debug for NatsAuth {
 /// TLS on with the system roots.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NatsTls {
-    /// Extra root certificates, PEM, for a broker signed by a private CA.
+    /// Root certificates, PEM, trusted *instead of* the system roots: the file
+    /// must hold every CA the broker's certificates, and those of any cluster
+    /// peer it advertises, chain to.
     pub ca_file: Option<PathBuf>,
     /// A client certificate and its key, PEM, for mutual TLS.
     pub client_cert: Option<(PathBuf, PathBuf)>,
     /// Refuse a plaintext connection even when the URL does not say `tls://`.
     pub required: bool,
+}
+
+impl NatsTls {
+    /// Whether the connection refuses plaintext: when required, and whenever a
+    /// CA or a client certificate is configured.
+    ///
+    /// Either one only means something over TLS. Without this, the client
+    /// upgrades only when the server's first `INFO` asks for it, so a broker
+    /// that allows plaintext — or anyone on the path who rewrites that `INFO` —
+    /// would get the credentials in the clear and the pinned CA never checked.
+    #[must_use]
+    pub fn enforced(&self) -> bool {
+        self.required || self.ca_file.is_some() || self.client_cert.is_some()
+    }
 }
 
 /// Where `JetStream` keeps a stream's messages.
@@ -213,7 +235,8 @@ impl NatsConnectConfig {
     ///
     /// `Error::Config` when the URL is absent or empty, more than one
     /// authentication method is supplied, a path is empty, only half of a
-    /// client certificate pair is supplied, or a number or choice is invalid.
+    /// client certificate pair is supplied, a number or choice is invalid, or
+    /// the duplicate window is shorter than [`MIN_NATS_DUPLICATE_WINDOW_SECS`].
     pub fn from_settings(settings: NatsConnectSettings) -> Result<Self, Error> {
         let url = settings.url.filter(|url| !url.is_empty()).ok_or_else(|| {
             config_error(format!("{} is required", setting("NOTEDTHAT_NATS_URL")))
@@ -274,6 +297,16 @@ impl NatsConnectConfig {
             settings.duplicate_window_secs.as_deref(),
             "a positive number of seconds",
         )?;
+        if let Some(window) = duplicate_window
+            && window < MIN_NATS_DUPLICATE_WINDOW_SECS
+        {
+            return Err(config_error(format!(
+                "{} is invalid: expected at least {MIN_NATS_DUPLICATE_WINDOW_SECS} seconds, got \
+                 \"{window}\"; a publish retried after its acknowledgement timed out must still \
+                 find the first copy inside the window",
+                setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS")
+            )));
+        }
 
         Ok(Self {
             url,
@@ -678,6 +711,29 @@ mod tests {
     }
 
     #[test]
+    fn a_ca_or_client_certificate_makes_tls_required() {
+        assert!(!NatsTls::default().enforced());
+        for settings in [
+            NatsConnectSettings {
+                tls_ca_file: Some("/ca.pem".into()),
+                ..with_url()
+            },
+            NatsConnectSettings {
+                tls_cert_file: Some("/c.pem".into()),
+                tls_key_file: Some("/k.pem".into()),
+                ..with_url()
+            },
+            NatsConnectSettings {
+                tls_required: Some("true".into()),
+                ..with_url()
+            },
+        ] {
+            let config = NatsConnectConfig::from_settings(settings).unwrap();
+            assert!(config.tls.enforced(), "{:?}", config.tls);
+        }
+    }
+
+    #[test]
     fn tls_required_is_strictly_true_or_false() {
         let err = message(
             NatsConnectConfig::from_settings(NatsConnectSettings {
@@ -742,6 +798,30 @@ mod tests {
         ] {
             let err = message(NatsConnectConfig::from_settings(settings).unwrap_err());
             assert!(err.contains(var), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_window_must_outlast_a_timed_out_acknowledgement() {
+        let window = |secs: &str| {
+            NatsConnectConfig::from_settings(NatsConnectSettings {
+                duplicate_window_secs: Some(secs.into()),
+                ..with_url()
+            })
+        };
+        assert_eq!(MIN_NATS_DUPLICATE_WINDOW_SECS, 2 * crate::TIMEOUT.as_secs());
+        let min = MIN_NATS_DUPLICATE_WINDOW_SECS.to_string();
+        assert_eq!(
+            window(&min).unwrap().streams.duplicate_window,
+            Some(Duration::from_secs(MIN_NATS_DUPLICATE_WINDOW_SECS))
+        );
+        for short in ["1", "5", &(MIN_NATS_DUPLICATE_WINDOW_SECS - 1).to_string()] {
+            let err = message(window(short).unwrap_err());
+            assert!(
+                err.contains("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS (--nats-duplicate-window-secs)"),
+                "{err}"
+            );
+            assert!(err.contains(&format!("at least {min} seconds")), "{err}");
         }
     }
 

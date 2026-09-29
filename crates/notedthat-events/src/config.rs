@@ -9,7 +9,10 @@ use std::ffi::{OsStr, OsString};
 use std::time::Duration;
 
 use notedthat_core::{Error, setting};
-use notedthat_nats::{NatsConnectConfig, NatsConnectSettings, parse_positive, parse_stream_name};
+use notedthat_nats::{
+    MIN_NATS_DUPLICATE_WINDOW_SECS, NatsConnectConfig, NatsConnectSettings, parse_positive,
+    parse_stream_name,
+};
 
 /// Every environment variable the `memory` adapter reads.
 pub const MEMORY_ENV_VARS: [&str; 1] = ["NOTEDTHAT_EVENTS_MEMORY_CAPACITY"];
@@ -160,6 +163,16 @@ impl NatsConfig {
             DEFAULT_NATS_MAX_AGE_SECS,
             "a positive number of seconds",
         )?;
+        // An unset window is shortened to fit the retention
+        // (`notedthat_nats::StreamSpec`), so a retention shorter than the
+        // minimum window would bring back the double store the minimum prevents.
+        if max_age_secs < MIN_NATS_DUPLICATE_WINDOW_SECS {
+            return Err(config_error(format!(
+                "{} is {max_age_secs} seconds, shorter than the {MIN_NATS_DUPLICATE_WINDOW_SECS}-second \
+                 duplicate window a publish retried after a timed-out acknowledgement needs",
+                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+            )));
+        }
         // nats-server refuses a duplicate window longer than the retention; an
         // unset window is shortened to fit instead (`notedthat_nats::StreamSpec`).
         if let Some(window) = connect.streams.duplicate_window
@@ -315,6 +328,31 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn a_retention_shorter_than_the_minimum_duplicate_window_is_refused() {
+        let max_age = |secs: &str| {
+            NatsConfig::from_settings(NatsSettings {
+                connect: url("nats://localhost:4222"),
+                max_age_secs: Some(secs.into()),
+                ..NatsSettings::default()
+            })
+        };
+        let min = MIN_NATS_DUPLICATE_WINDOW_SECS;
+        assert_eq!(
+            max_age(&min.to_string()).unwrap().max_age,
+            Duration::from_secs(min)
+        );
+        let err = message(max_age(&(min - 1).to_string()).unwrap_err());
+        assert!(
+            err.contains("NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs)"),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("{min}-second duplicate window")),
+            "{err}"
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ url.workspace = true
 async-nats.workspace = true
 # Reads what the connection-event callback records; already in the tree.
 metrics-util = { version = "0.20", features = ["debugging"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 temp-env = "0.3"
 # A token-protected broker for tests/connect_nats.rs, under --ignored like every NATS suite.
 testcontainers = { workspace = true }
