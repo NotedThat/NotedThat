@@ -277,7 +277,7 @@ mod tests {
         let configured = StreamSpec {
             max_messages: Some(10),
             ..spec(
-                Duration::from_secs(900),
+                Duration::from_mins(15),
                 NatsStreamSettings {
                     replicas: Some(1),
                     storage: None,
@@ -286,7 +286,7 @@ mod tests {
             )
         };
         let updated = configured.apply_to(&found);
-        assert_eq!(updated.max_age, Duration::from_secs(900));
+        assert_eq!(updated.max_age, Duration::from_mins(15));
         assert_eq!(updated.max_messages, 10);
         assert_eq!(updated.num_replicas, 1);
         assert_eq!(updated.duplicate_window, Duration::from_secs(30));
