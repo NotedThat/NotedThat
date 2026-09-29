@@ -119,14 +119,16 @@ pub async fn commit_copy(
     Ok(outcome)
 }
 
-/// Holds the `Upsert` for a write whose bytes are already stored, and enqueues
-/// it from `Drop` if the normal path never got there.
+/// Holds the index event for a change storage has already applied — the
+/// `Upsert` of a stored write or the `Tombstone` of a delete — and enqueues it
+/// from `Drop` if the normal path never got there.
 ///
-/// Only ever fires on cancellation: [`after_write`] disarms it the moment it
-/// takes the event to send properly, so the ordinary path — including every
-/// queue-full and queue-closed case, which need the health view and the error
-/// this cannot produce — is untouched. What it covers is the future being
-/// dropped between the store and the enqueue.
+/// Only ever fires on cancellation: [`after_write`] and [`commit_delete`]
+/// disarm it the moment they take the event to send properly, so the ordinary
+/// path — including every queue-full and queue-closed case, which need the
+/// health view and the error this cannot produce — is untouched. What it
+/// covers is the future being dropped between the storage change and the
+/// enqueue.
 struct EnqueueOnDrop {
     indexer_tx: IndexQueueSender,
     event: Option<IndexEvent>,
@@ -150,8 +152,8 @@ impl Drop for EnqueueOnDrop {
         if self.indexer_tx.try_send(event).is_err() {
             tracing::warn!(
                 target: "notedthat::indexing",
-                "INDEX_ENQUEUE_LOST_ON_CANCEL: a write was cancelled after its bytes were stored \
-                 and its Upsert could not be queued; reconciliation will repair it"
+                "INDEX_ENQUEUE_LOST_ON_CANCEL: a write or delete was cancelled after storage \
+                 changed and its index event could not be queued; reconciliation will repair it"
             );
         }
     }
@@ -265,7 +267,17 @@ pub async fn commit_delete(
 
     // As in `after_write`: publish first, enqueue regardless, answer with the
     // publish's outcome — a refused publish must not leave a deleted object's
-    // points searchable until a client retries.
+    // points searchable until a client retries. Armed before the publish for
+    // the same reason too: a caller that gives up while it awaits would
+    // otherwise leave the object deleted and its points searchable.
+    let mut enqueue = EnqueueOnDrop {
+        indexer_tx: sinks.indexer_tx.clone(),
+        event: Some(IndexEvent::Tombstone {
+            kb: kb.clone(),
+            object_key: path.clone(),
+        }),
+    };
+
     let published = match sinks.events {
         Some(events) => {
             let event = ObjectEvent::deleted(kb.clone(), path.clone(), sinks.source);
@@ -274,10 +286,7 @@ pub async fn commit_delete(
         None => Ok(()),
     };
 
-    let event = IndexEvent::Tombstone {
-        kb: kb.clone(),
-        object_key: path.clone(),
-    };
+    let event = enqueue.disarm();
     match sinks.indexer_tx.try_send(event) {
         Ok(()) => {
             if let Some(health) = sinks.index_health {
@@ -509,6 +518,29 @@ mod tests {
         );
     }
 
+    /// A broker that accepts the connection and then never answers.
+    struct NeverAnswers;
+
+    #[async_trait::async_trait]
+    impl EventPublisher for NeverAnswers {
+        async fn publish(&self, _event: ObjectEvent) -> Result<EventId, PublishError> {
+            std::future::pending().await
+        }
+        async fn subscribe(
+            &self,
+            _kb: &KbSlug,
+            _after: Option<EventId>,
+        ) -> Result<EventStream, SubscribeError> {
+            unreachable!("these tests never subscribe")
+        }
+        fn ready(&self) -> bool {
+            true
+        }
+        fn backend_name(&self) -> &'static str {
+            "never-answers"
+        }
+    }
+
     /// A write cancelled between storing the bytes and enqueuing the `Upsert`
     /// must still enqueue it. The window is `publish`, which can await for
     /// seconds against a slow or unreachable broker, and D71's request timeout
@@ -517,29 +549,6 @@ mod tests {
     /// it until the next reconciliation pass.
     #[tokio::test]
     async fn a_write_cancelled_while_publishing_still_enqueues_its_upsert() {
-        /// A broker that accepts the connection and then never answers.
-        struct NeverAnswers;
-
-        #[async_trait::async_trait]
-        impl EventPublisher for NeverAnswers {
-            async fn publish(&self, _event: ObjectEvent) -> Result<EventId, PublishError> {
-                std::future::pending().await
-            }
-            async fn subscribe(
-                &self,
-                _kb: &KbSlug,
-                _after: Option<EventId>,
-            ) -> Result<EventStream, SubscribeError> {
-                unreachable!("this test never subscribes")
-            }
-            fn ready(&self) -> bool {
-                true
-            }
-            fn backend_name(&self) -> &'static str {
-                "never-answers"
-            }
-        }
-
         let storage = storage();
         let kb = kb();
         let path = path_named("cancelled.md");
@@ -581,6 +590,60 @@ mod tests {
         match rx.try_recv().expect("an Upsert must have been enqueued") {
             IndexEvent::Upsert { object_key, .. } => assert_eq!(object_key, path),
             other => panic!("expected an Upsert, got {other:?}"),
+        }
+    }
+
+    /// A delete cancelled between removing the object and enqueuing the
+    /// `Tombstone` must still enqueue it — the same window as the write above,
+    /// with the opposite failure: without the guard the deleted content stays
+    /// searchable, on `s3` until the next reconciliation pass.
+    #[tokio::test]
+    async fn a_delete_cancelled_while_publishing_still_enqueues_its_tombstone() {
+        let storage = storage();
+        let kb = kb();
+        let path = path_named("cancelled-delete.md");
+        storage
+            .put_object(
+                &kb,
+                &path,
+                Bytes::from_static(b"# Doomed"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("prepopulate object");
+        let (indexer_tx, mut rx) = mpsc::channel(4);
+        let events = NeverAnswers;
+        let sinks = WriteSinks {
+            indexer_tx: (&indexer_tx).into(),
+            events: Some(&events),
+            index_health: None,
+            source: EventSource::Http,
+        };
+
+        // Given a delete whose publish never returns, when the caller gives up
+        // on it — exactly what the request timeout does.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            commit_delete(&storage, &sinks, &kb, &path, ConditionalHeaders::default()),
+        )
+        .await;
+        assert!(cancelled.is_err(), "the publish should never have returned");
+
+        // Then: the object is gone …
+        assert!(
+            matches!(
+                storage
+                    .head_object(&kb, &path, ConditionalHeaders::default())
+                    .await,
+                Err(StorageError::NotFound { .. })
+            ),
+            "the delete completed before the publish that was cancelled"
+        );
+        // … and the index was told to forget it anyway.
+        match rx.try_recv().expect("a Tombstone must have been enqueued") {
+            IndexEvent::Tombstone { object_key, .. } => assert_eq!(object_key, path),
+            other => panic!("expected a Tombstone, got {other:?}"),
         }
     }
 
