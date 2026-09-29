@@ -79,7 +79,7 @@ binary to install. Point the client at `http://localhost:8080/mcp` with the
   fn test_full_index_round_trip() { ... }
   ```
 - **Run ignored tests**: `cargo test --workspace -- --ignored`
-- **The OpenAPI document** (D75): `docs/openapi.json` is generated from the `#[utoipa::path]`
+- **The OpenAPI document** (D77): `docs/openapi.json` is generated from the `#[utoipa::path]`
   on each `/api/v1` handler and the `ToSchema` on each body type, and `cargo test` fails when the
   committed copy is stale. A new route needs its annotation, its `paths(...)` entry in
   `crates/notedthat-api-http/src/router/openapi.rs`, and a regenerated file; the tests in that

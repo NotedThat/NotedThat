@@ -34,8 +34,8 @@ const LIST_SCAN_MAX_CALLS: usize = 20;
 pub(super) struct ListQuery {
     /// Only keys starting with this prefix.
     prefix: Option<String>,
-    /// Page size. `0` or absent is `100`; larger than `1000` is `1000`.
-    #[param(maximum = 1000)]
+    /// Page size. `0` or absent is `100`; a value larger than `1000` is
+    /// accepted and clamped to `1000`.
     limit: Option<u32>,
     /// The `next_cursor` of the previous page.
     cursor: Option<String>,

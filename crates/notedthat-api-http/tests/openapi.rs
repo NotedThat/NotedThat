@@ -1,4 +1,4 @@
-//! `docs/openapi.json` is the generated document, byte for byte (D75).
+//! `docs/openapi.json` is the generated document, byte for byte (D77).
 //!
 //! The committed copy is what a client reads without running a server, so it
 //! may not drift from what the server serves. When this fails, regenerate it:

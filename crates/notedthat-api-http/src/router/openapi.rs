@@ -1,4 +1,4 @@
-//! The `OpenAPI` 3.1 document for `/api/v1` (D75), generated from the handlers.
+//! The `OpenAPI` 3.1 document for `/api/v1` (D77), generated from the handlers.
 //!
 //! Each operation is declared by a `#[utoipa::path]` on its handler; this
 //! module gathers them, adds what every operation shares — the reusable error
@@ -25,6 +25,12 @@ use crate::search_route;
 
 /// The document, as served and as committed: pretty-printed, one trailing
 /// newline.
+///
+/// # Panics
+///
+/// If the document does not serialize to JSON. It is built from static
+/// declarations, so this cannot happen at run time without also failing
+/// `tests/openapi.rs`.
 pub fn document_json() -> &'static str {
     static JSON: OnceLock<String> = OnceLock::new();
     JSON.get_or_init(|| {
@@ -75,6 +81,11 @@ pub(crate) async fn openapi_json() -> Response {
             explains behaviour; where the two disagree, `docs/API.md` is wrong.\n\nEvery \
             response carries `x-request-id`, echoing the request's when it sent one.",
         license(name = "MPL-2.0", identifier = "MPL-2.0"),
+        // The version of the API this document describes, which is `v1` in
+        // its paths — not the crate's. The crate version would change the
+        // committed document on every release bump and tell anonymous callers
+        // the exact build.
+        version = "1",
     ),
     servers((url = "/api/v1")),
     paths(

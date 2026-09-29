@@ -19,7 +19,7 @@ path = "src/lib.rs"
 # the filesystem adapter needs it in a production build.
 test-support = []
 # `utoipa::ToSchema` on the wire types, for the HTTP API's OpenAPI document
-# (D75). Off by default so a consumer of the domain types does not build a
+# (D77). Off by default so a consumer of the domain types does not build a
 # schema generator it never calls.
 openapi = ["dep:utoipa"]
 

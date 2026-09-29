@@ -46,7 +46,9 @@ fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
 
 /// Read an object's metadata.
 ///
-/// The headers `GET` would send, without the body. `Range` is ignored.
+/// The headers `GET` would send, without the body, except `Content-Type`:
+/// `HEAD` sends it only when one was stored, where `GET` falls back to
+/// `application/octet-stream`. `Range` is ignored.
 #[utoipa::path(
     head,
     path = "/knowledgebases/{kb_slug}/{object_path}",
@@ -56,7 +58,7 @@ fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     responses(
         (status = 200, description = "The object exists.",
             headers(
-                ("Content-Type" = String, description = "As stored; `application/octet-stream` when none was."),
+                ("Content-Type" = String, description = "As stored; absent when none was stored."),
                 ("Content-Length" = u64, description = "The object's size in bytes."),
                 ("ETag" = String, description = "The object's entity tag."),
                 ("Last-Modified" = String, description = "The object's modification time."),

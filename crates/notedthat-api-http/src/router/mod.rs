@@ -69,7 +69,7 @@ macro_rules! api_routes {
 /// Mount point of the versioned machine API on the unified listener (D44).
 pub const API_V1_PREFIX: &str = "/api/v1";
 
-/// Where the `OpenAPI` document for [`API_V1_PREFIX`] is served (D75).
+/// Where the `OpenAPI` document for [`API_V1_PREFIX`] is served (D77).
 ///
 /// Registered absolutely beside `/llms.txt` rather than nested under the API:
 /// it is public and describes routes rather than knowledge bases, so it has no

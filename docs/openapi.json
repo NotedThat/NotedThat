@@ -10,7 +10,7 @@
       "name": "MPL-2.0",
       "identifier": "MPL-2.0"
     },
-    "version": "0.12.3"
+    "version": "1"
   },
   "servers": [
     {
@@ -88,12 +88,11 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size. `0` or absent is `100`; larger than `1000` is `1000`.",
+            "description": "Page size. `0` or absent is `100`; a value larger than `1000` is\naccepted and clamped to `1000`.",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
-              "maximum": 1000,
               "minimum": 0
             }
           },
@@ -880,7 +879,7 @@
           "objects"
         ],
         "summary": "Read an object's metadata.",
-        "description": "The headers `GET` would send, without the body. `Range` is ignored.",
+        "description": "The headers `GET` would send, without the body, except `Content-Type`:\n`HEAD` sends it only when one was stored, where `GET` falls back to\n`application/octet-stream`. `Range` is ignored.",
         "operationId": "head_object",
         "parameters": [
           {
@@ -960,7 +959,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "As stored; `application/octet-stream` when none was."
+                "description": "As stored; absent when none was stored."
               },
               "ETag": {
                 "schema": {
