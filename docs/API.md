@@ -1381,7 +1381,18 @@ curl -sSf -X POST \
 > until their object is indexed again, so `mime: "text/markdown"` does not find them yet. Likewise,
 > an untyped key with no text suffix that was indexed before (a `README`, say) stays searchable
 > until it is written or deleted. `POST …/index/reconcile` only refreshes objects whose bytes
-> changed, so PUT affected documents again, as for M4 → M5 above.
+> changed, so PUT affected documents again with their type:
+>
+> ```bash
+> curl -sSf -X PUT -H "Authorization: Bearer $TOKEN" \
+>   -H 'Content-Type: text/plain' --data-binary @todo.txt \
+>   http://localhost:8080/api/v1/knowledgebases/notes/todo.txt
+> ```
+>
+> Use `text/markdown` for `.md` and `.markdown` keys and `text/plain` for `.txt`. Leaving the header
+> out stores a `.txt` key as `application/octet-stream`, and `curl --data-binary` without `-H` sends
+> `application/x-www-form-urlencoded`. Both types are non-indexable, so either PUT removes the
+> document from search instead of refreshing it.
 
 #### Upgrade notes (strict search body)
 
