@@ -972,11 +972,14 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
   issuer is configured; the rule can never match, and the base is named. Not a refusal, because
   manifests live in buckets that outlive one deployment's configuration.
 - `EMBEDDING_ENDPOINT_URL_NO_PATH` — `EMBEDDING_ENDPOINT_URL` is a bare origin (no path, or
-  just `/`), at `warn`, with the URL minus any credentials. Releases up to 0.12 appended
+  just `/`), at `warn`, with the URL minus userinfo, query and fragment. Releases up to 0.12 appended
   `/v1/embeddings` themselves; the URL is now the full API base and only `/embeddings` is
   appended, so a value written for them reaches `/embeddings` at the root and every write fails
-  with `INDEXING_FAILED` (HTTP 404, naming the URL). Add `/v1`, or the provider's own prefix.
-  Not a refusal, because a gateway may serve `/embeddings` at its root. See
+  with `INDEXING_FAILED` (HTTP 404). Add `/v1`, or the provider's own prefix. An embedder
+  request refused with a status it does not retry (a 4xx other than 429) also logs
+  `EMBEDDER_HTTP_ERROR` at `warn` with the status and the URL
+  requested, redacted the same way; the URL stays out of the error text that search callers,
+  `/index` and the event stream see. Not a refusal, because a gateway may serve `/embeddings` at its root. See
   [Embedding](#embedding).
 - `MCP_ANONYMOUS enabled` / `MCP_ANONYMOUS disabled_no_anonymous_grants` /
   `MCP_ANONYMOUS disabled_by_setting` — whether `/mcp` admits a request with no credential, with

@@ -15,12 +15,10 @@ pub enum EmbedderError {
     #[error("embedder transport error: {0}")]
     Transport(String),
     /// Non-2xx HTTP status from the embedding endpoint.
-    #[error("embedder returned HTTP {status} from {url}: {body}")]
+    #[error("embedder returned HTTP {status}: {body}")]
     Http {
         /// HTTP status code.
         status: u16,
-        /// The URL requested, without credentials, so a wrong base URL shows in the log.
-        url: String,
         /// Response body.
         body: String,
     },
@@ -98,11 +96,9 @@ mod tests {
     fn error_display_http() {
         let e = EmbedderError::Http {
             status: 429,
-            url: "https://api.example/v1/embeddings".into(),
             body: "rate limited".into(),
         };
         assert!(e.to_string().contains("429"));
-        assert!(e.to_string().contains("https://api.example/v1/embeddings"));
     }
 
     #[test]

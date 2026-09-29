@@ -31,8 +31,9 @@ pub struct OpenAiCompatibleEmbedder {
     config: OpenAiCompatibleConfig,
     /// The embeddings URL every request is sent to.
     url: reqwest::Url,
-    /// `url` without credentials, for error messages.
-    url_for_errors: String,
+    /// `url` without userinfo, query or fragment, any of which may carry a credential
+    /// (`?api-key=…`), for the server log only.
+    url_for_logs: String,
 }
 
 impl OpenAiCompatibleEmbedder {
@@ -49,6 +50,8 @@ impl OpenAiCompatibleEmbedder {
         // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
         let _ = redacted.set_username("");
         let _ = redacted.set_password(None);
+        redacted.set_query(None);
+        redacted.set_fragment(None);
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
@@ -57,7 +60,7 @@ impl OpenAiCompatibleEmbedder {
             client,
             config,
             url,
-            url_for_errors: redacted.to_string(),
+            url_for_logs: redacted.to_string(),
         })
     }
 }
@@ -181,9 +184,17 @@ impl Embedder for OpenAiCompatibleEmbedder {
                     if retriable {
                         return Err(EmbedderError::RetriesExhausted { attempts });
                     }
+                    // The URL goes to the log, not into the error: the error's text reaches
+                    // search callers (503 body), `/index` and the event stream, and the
+                    // embedder's host is not theirs to see.
+                    tracing::warn!(
+                        target: "notedthat::indexing",
+                        url = %self.url_for_logs,
+                        status = status.as_u16(),
+                        "EMBEDDER_HTTP_ERROR"
+                    );
                     return Err(EmbedderError::Http {
                         status: status.as_u16(),
-                        url: self.url_for_errors.clone(),
                         body: body_text,
                     });
                 }
@@ -629,26 +640,41 @@ mod tests {
         assert_eq!(result, vec![vec![1.0_f32, 0.0, 0.0]]);
     }
 
-    /// A 404 names the URL it came from, without the credentials a base URL may carry,
-    /// so a base URL missing its version segment is diagnosable from the log.
+    /// The URL logged for an HTTP failure drops everything that may carry a credential:
+    /// userinfo, query (`?api-key=…`) and fragment.
+    #[test]
+    fn logged_url_carries_no_credentials() {
+        let mut config = make_config("http://unused");
+        config.endpoint_url =
+            "https://user:secret@gw.example/openai/v1?api-key=secret#secret".to_string();
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
+        assert_eq!(
+            embedder.url_for_logs,
+            "https://gw.example/openai/v1/embeddings"
+        );
+        assert_eq!(
+            embedder.url.as_str(),
+            "https://user:secret@gw.example/openai/v1/embeddings?api-key=secret#secret"
+        );
+    }
+
+    /// An HTTP failure's text, which reaches search callers, `/index` and the event stream,
+    /// names neither the embedder's URL nor a credential in its query.
     #[tokio::test]
-    async fn http_error_names_the_url_without_credentials() {
+    async fn http_error_text_leaves_out_the_url() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
         let mut config = make_config(&server.uri());
-        let authority = server.uri().trim_start_matches("http://").to_string();
-        config.endpoint_url = format!("http://user:secret@{authority}");
+        config.endpoint_url = format!("{}/v1?api-key=secret", server.uri());
         let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
         let err = embedder.embed(&["x".to_string()]).await.unwrap_err();
-        let EmbedderError::Http { status, url, .. } = &err else {
-            panic!("expected Http, got {err:?}");
-        };
-        assert_eq!(*status, 404);
-        assert_eq!(url, &format!("http://{authority}/embeddings"));
-        assert!(!err.to_string().contains("secret"));
+        assert!(matches!(err, EmbedderError::Http { status: 404, .. }));
+        let text = err.to_string();
+        assert!(!text.contains("secret"), "{text}");
+        assert!(!text.contains(&server.uri()), "{text}");
     }
 
     #[test]

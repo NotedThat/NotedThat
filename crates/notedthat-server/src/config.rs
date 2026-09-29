@@ -1505,7 +1505,7 @@ impl EmbedderConfig {
 }
 
 impl EmbedderConfig {
-    /// The endpoint URL without credentials, when its path is empty or `/`.
+    /// The endpoint URL without userinfo, query or fragment, when its path is empty or `/`.
     ///
     /// Releases up to 0.12 appended `/v1/embeddings` themselves, so a value written for
     /// them (`https://api.openai.com`, `http://127.0.0.1:11434`) is a bare origin, and now
@@ -1521,6 +1521,9 @@ impl EmbedderConfig {
         // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
         let _ = url.set_username("");
         let _ = url.set_password(None);
+        // A query (`?api-key=…`) or fragment may carry a credential too.
+        url.set_query(None);
+        url.set_fragment(None);
         Some(url.as_str().trim_end_matches('/').to_string())
     }
 }
@@ -2398,6 +2401,11 @@ pub(crate) mod tests {
             ("https://api.openai.com", Some("https://api.openai.com")),
             ("http://127.0.0.1:11434/", Some("http://127.0.0.1:11434")),
             ("https://user:secret@gw.example", Some("https://gw.example")),
+            (
+                "https://gw.example/?api-key=secret#secret",
+                Some("https://gw.example"),
+            ),
+            ("https://gw.example?key=secret", Some("https://gw.example")),
             ("https://api.openai.com/v1", None),
             ("https://api.openai.com/v1/", None),
             (
