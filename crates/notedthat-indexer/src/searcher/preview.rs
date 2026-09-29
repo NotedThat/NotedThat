@@ -9,8 +9,12 @@ const WORD_BACKOFF_CHARS: usize = 50;
 ///
 /// Guarantees: `truncate_preview(t, N).chars().count() <= N`
 ///
+/// Trailing whitespace is dropped before measuring, so a chunk that ends in a
+/// paragraph break is not cut or marked `…` because of that break alone.
+///
 /// If `max_chars` is 0, returns an empty string.
-/// If `text` has at most `max_chars` characters, returns the full text.
+/// If `text` without its trailing whitespace has at most `max_chars`
+/// characters, returns it in full with that whitespace trimmed.
 /// Otherwise the preview ends at the cut when whitespace follows it, else at
 /// the last whitespace within the final `WORD_BACKOFF_CHARS` characters (or at
 /// the hard cut when there is none), followed by `…`.
@@ -18,6 +22,7 @@ pub fn truncate_preview(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
+    let text = text.trim_end();
     let Some((cut, _)) = text.char_indices().nth(max_chars - 1) else {
         return text.to_owned();
     };
@@ -129,6 +134,25 @@ mod tests {
     #[test]
     fn max_chars_zero_returns_empty() {
         assert_eq!(truncate_preview("hello", 0), "");
+    }
+
+    #[test]
+    fn trailing_whitespace_does_not_count_towards_the_limit() {
+        assert_eq!(truncate_preview("abc \n", 3), "abc");
+        assert_eq!(truncate_preview("abc\r\n\r\n", 3), "abc");
+        assert_eq!(truncate_preview("hello world\n\n", 500), "hello world");
+        assert_eq!(truncate_preview("a ", 1), "a");
+    }
+
+    #[test]
+    fn content_that_fits_keeps_its_last_word_without_ellipsis() {
+        let exact = "word ".repeat(99) + "last.";
+        assert_eq!(exact.chars().count(), 500);
+        assert_eq!(truncate_preview(&(exact.clone() + "\n\n"), 500), exact);
+        assert_eq!(truncate_preview(&(exact.clone() + "\r\n\r\n"), 500), exact);
+
+        let short = "word ".repeat(99) + "las";
+        assert_eq!(truncate_preview(&(short.clone() + "\n\n\n"), 500), short);
     }
 
     #[test]
