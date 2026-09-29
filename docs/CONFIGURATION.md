@@ -1367,11 +1367,11 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
-NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible `/v1/embeddings` endpoint works, hosted or local. The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
+NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible embeddings API works, hosted or local. `EMBEDDING_ENDPOINT_URL` is that API's base URL as the provider documents it, version segment included (usually ending in `/v1`); the server appends `/embeddings`. Releases up to 0.12 appended `/v1/embeddings` themselves, so when upgrading add `/v1` to an existing value (`https://api.openai.com` becomes `https://api.openai.com/v1`). The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
 
 | Variable | Flag | Required | Default | Description |
 |---|---|---|---|---|
-| `EMBEDDING_ENDPOINT_URL` | `--embedding-endpoint-url` | Yes | | Base URL of the OpenAI-compatible endpoint (e.g. `https://api.openai.com`) |
+| `EMBEDDING_ENDPOINT_URL` | `--embedding-endpoint-url` | Yes | | Base URL of the OpenAI-compatible API, version segment included (e.g. `https://api.openai.com/v1`); `/embeddings` is appended |
 | `EMBEDDING_MODEL` | `--embedding-model` | Yes | | Model name (e.g. `text-embedding-3-small`, `voyage-3`, `BAAI/bge-m3`) |
 | `EMBEDDING_API_KEY` | `--embedding-api-key` | Yes | | Bearer token / API key for the endpoint |
 | `EMBEDDING_DIMENSIONS` | `--embedding-dimensions` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
@@ -1383,27 +1383,27 @@ NotedThat ships no embedding model: you set one up and point the server at it. T
 
 ### Examples
 
-**Ollama** (local and free). [Ollama](https://ollama.com) serves `/v1/embeddings`, so no key is needed and any value works. Good options are [EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) (`embeddinggemma`, 768 dimensions) and [BGE-M3](https://huggingface.co/BAAI/bge-m3) (`bge-m3`, 1024 dimensions):
+**Ollama** (local and free). [Ollama](https://ollama.com) serves an OpenAI-compatible API under `/v1`, so no key is needed and any value works. Good options are [EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) (`embeddinggemma`, 768 dimensions) and [BGE-M3](https://huggingface.co/BAAI/bge-m3) (`bge-m3`, 1024 dimensions):
 
 ```sh
 ollama pull embeddinggemma
 ```
 
 ```env
-EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
+EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434/v1
 EMBEDDING_MODEL=embeddinggemma
 EMBEDDING_API_KEY=ollama
 EMBEDDING_DIMENSIONS=768
 ```
 
-That URL is for a server run natively. Under Compose the server runs in a container, so use `http://host.docker.internal:11434` to reach Ollama on the host. The README's native flows read the same `.env`, so if it holds the Compose URL, uncomment the `EMBEDDING_ENDPOINT_URL` override there to use `http://127.0.0.1:11434`.
+That URL is for a server run natively. Under Compose the server runs in a container, so use `http://host.docker.internal:11434/v1` to reach Ollama on the host. The README's native flows read the same `.env`, so if it holds the Compose URL, uncomment the `EMBEDDING_ENDPOINT_URL` override there to use `http://127.0.0.1:11434/v1`.
 
 On Linux, `host.docker.internal` is the Docker bridge address, not the host's loopback, and Ollama listens only on `127.0.0.1` by default, so the container's connection is refused. Make Ollama listen on the bridge too: run `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0:11434"` under `[Service]`, then `sudo systemctl restart ollama`. That also exposes Ollama on your network unless a firewall blocks port 11434; to avoid that, bind it to the bridge address only (e.g. `OLLAMA_HOST=172.17.0.1:11434`, see `ip -4 addr show docker0`), which leaves native runs needing that address instead of `127.0.0.1`. Docker Desktop on macOS and Windows forwards `host.docker.internal` to the host's loopback, so it needs neither.
 
 **OpenAI** (`text-embedding-3-small`, 1536 dimensions):
 
 ```env
-EMBEDDING_ENDPOINT_URL=https://api.openai.com
+EMBEDDING_ENDPOINT_URL=https://api.openai.com/v1
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_API_KEY=sk-...
 EMBEDDING_DIMENSIONS=1536
@@ -1412,7 +1412,7 @@ EMBEDDING_DIMENSIONS=1536
 **Voyage AI** (`voyage-3`, 1024 dimensions):
 
 ```env
-EMBEDDING_ENDPOINT_URL=https://api.voyageai.com
+EMBEDDING_ENDPOINT_URL=https://api.voyageai.com/v1
 EMBEDDING_MODEL=voyage-3
 EMBEDDING_API_KEY=pa-...
 EMBEDDING_DIMENSIONS=1024
@@ -1421,10 +1421,19 @@ EMBEDDING_DIMENSIONS=1024
 **Self-hosted TEI** (Text Embeddings Inference, `BAAI/bge-m3`, 1024 dimensions):
 
 ```env
-EMBEDDING_ENDPOINT_URL=http://tei:80
+EMBEDDING_ENDPOINT_URL=http://tei:80/v1
 EMBEDDING_MODEL=BAAI/bge-m3
 EMBEDDING_API_KEY=any          # TEI doesn't require a key; set to any value
 EMBEDDING_DIMENSIONS=1024
+```
+
+**Google Gemini** (`gemini-embedding-001`, 3072 dimensions). Its OpenAI-compatible API is not under `/v1`, so the base URL carries its own path:
+
+```env
+EMBEDDING_ENDPOINT_URL=https://generativelanguage.googleapis.com/v1beta/openai
+EMBEDDING_MODEL=gemini-embedding-001
+EMBEDDING_API_KEY=...
+EMBEDDING_DIMENSIONS=3072
 ```
 
 ### Changing the embedding model
