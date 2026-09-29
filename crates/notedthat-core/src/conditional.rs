@@ -1,15 +1,18 @@
 //! Raw HTTP conditional request headers as received from the client.
 //!
-//! Per SPECIFICATIONS.md D9, `NotedThat` forwards these values verbatim to the S3 backend
-//! without validation. Each field holds the raw header value as a string; the S3 adapter
-//! performs any parsing (e.g., HTTP-date conversion for `If-*-Since`).
+//! Per SPECIFICATIONS.md D9, `NotedThat` forwards these values to the S3 backend without
+//! validation. Each field holds the raw header value as a string; the S3 adapter
+//! performs any parsing (e.g., HTTP-date conversion for `If-*-Since`). The one
+//! normalisation is on reads: [`ConditionalHeaders::for_read`] drops a date condition its
+//! `ETag` counterpart supersedes (RFC 9110 §13.2.2).
 
 /// Raw HTTP conditional request headers as received from the client.
 ///
-/// This struct is a pure carrier per SPECIFICATIONS.md D9 — `NotedThat` forwards
-/// these values verbatim to the S3 backend without validation. Each field holds
-/// the raw header value as a string; the S3 adapter performs any parsing
-/// (e.g., HTTP-date conversion for `If-*-Since`).
+/// This struct is a carrier per SPECIFICATIONS.md D9 — `NotedThat` forwards these
+/// values to the S3 backend without validation, after the read-side precedence
+/// normalisation of [`ConditionalHeaders::for_read`]. Each field holds the raw header
+/// value as a string; the S3 adapter performs any parsing (e.g., HTTP-date conversion
+/// for `If-*-Since`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConditionalHeaders {
     /// Value of the `If-Match` header, if present.
