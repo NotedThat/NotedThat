@@ -9,9 +9,9 @@
 //! provisioning, the same indexer worker, the same listeners.
 
 use notedthat_api_http::testing::InMemoryStorage;
-use notedthat_core::{EventPublisher, KbSlug, TenantSlug};
+use notedthat_core::{EventPublisher, KbSlug};
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
-use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use notedthat_server::config::{Config, EmbedderConfig};
 use notedthat_server::run::Backends;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -78,62 +78,24 @@ pub(super) fn in_memory_backends() -> Backends {
     }
 }
 
-/// Config for a server whose backends are injected.
-///
-/// The S3 and Qdrant sections still have to be populated — `Config` is the
-/// production type — but nothing reads them, because `run_with` never builds a
-/// client from them. They are pointed at unroutable placeholders so that a
-/// regression which *does* reach for them fails loudly instead of quietly
-/// talking to something real.
+/// Config for a server whose backends are injected; the rest is
+/// [`Config::for_tests`], whose backend addresses are unroutable.
 fn test_config(kb: &str, listeners: ListenerAddrs, max_patchable_size: u64) -> Config {
-    let mut kbs = BTreeMap::new();
-    kbs.insert(
-        kb.to_string(),
-        KbSlug::try_new(kb).expect("test KB slug is valid"),
-    );
-
+    let base = Config::for_tests();
     Config {
         api_token: API_TOKEN.to_string(),
-        kbs,
-        tenant_slug: TenantSlug::default(),
+        kbs: BTreeMap::from([(
+            kb.to_string(),
+            KbSlug::try_new(kb).expect("test KB slug is valid"),
+        )]),
         listen_addr: listeners.http,
-        metrics_listen_addr: None,
-        storage: notedthat_server::config::unroutable_storage_placeholder(),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
         embedder: EmbedderConfig {
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
             dimensions: EMBEDDING_DIM,
             batch_size: 1,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
+            ..base.embedder
         },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "e2e-webdav-user".to_string(),
-        webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
         max_patchable_size,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        ..base
     }
 }
 

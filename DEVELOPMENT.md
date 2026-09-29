@@ -141,6 +141,10 @@ Startup, provisioning, the indexer worker, every listener and the shutdown
 sequence are the real code path; only S3, Qdrant and the embedding endpoint are
 substituted. See `crates/notedthat-server/tests/support/patch_backends.rs`.
 
+Build the `Config` from `Config::for_tests()` and override only what the test
+varies — `Config { listen_addr, kbs, ..Config::for_tests() }` — so a new
+`Config` field is added in one place rather than in every fixture.
+
 Two things the substitutes do not cover, so do not read a green run as covering
 them either:
 

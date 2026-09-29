@@ -1,5 +1,5 @@
 use notedthat_core::{KbSlug, Storage, TenantSlug};
-use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use notedthat_server::config::{Config, EmbedderConfig, ServerQdrantConfig};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 use testcontainers::{
@@ -95,46 +95,30 @@ impl Backends {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let base = Config::for_tests();
         Config {
             api_token: API_TOKEN.to_string(),
             kbs,
-            tenant_slug: TenantSlug::default(),
             listen_addr: free_addr(),
-            metrics_listen_addr: None,
             storage: notedthat_server::config::StorageConfig::S3(self.s3_config.clone()),
-            events: notedthat_server::config::EventsConfig::None,
-            log_format: LogFormat::Pretty,
             qdrant: ServerQdrantConfig {
                 url: self.qdrant_url.clone(),
-                api_key: None,
-                timeout_ms: 30_000,
-                connect_timeout_ms: 10_000,
+                ..base.qdrant
             },
             embedder: EmbedderConfig {
                 endpoint_url: self.embedder.uri(),
                 model: "phase3-model".to_string(),
                 api_key: "phase3-embedder-key".to_string(),
-                dimensions: 4,
-                batch_size: 32,
-                timeout_ms: 30_000,
                 max_retries: 1,
-                max_input_tokens: 8192,
+                ..base.embedder
             },
-            index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
             webdav_username: DAV_USER.to_string(),
             webdav_password: DAV_PASS.to_string(),
-            mcp_http_allowed_origins: vec!["null".to_string()],
             mcp_http_allowed_hosts: vec!["127.0.0.1".to_string()],
-            mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-            max_patchable_size: 10 * 1024 * 1024,
-            mcp_max_read_bytes: 16 * 1024 * 1024,
-            mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-            request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
             // Short enough that the readiness assertion in `phase3_access_e2e` sees
             // several real `HeadBucket` / `HealthCheck` rounds before it moves on.
             ready_probe_interval_ms: 200,
-            staging: notedthat_core::StagingConfig::default(),
-            oidc: None,
+            ..base
         }
     }
 

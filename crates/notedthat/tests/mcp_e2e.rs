@@ -43,56 +43,17 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
 }
 
 fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Config {
-    use notedthat_core::{KbSlug, StagingConfig, TenantSlug};
-    use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
-    use std::collections::BTreeMap;
+    use notedthat_server::config::{Config, EmbedderConfig};
 
-    let mut kbs = BTreeMap::new();
-    kbs.insert("notes".to_string(), KbSlug::try_new("notes").unwrap());
-
+    let base = Config::for_tests();
     Config {
         api_token: API_TOKEN.to_string(),
-        kbs,
-        tenant_slug: TenantSlug::default(),
         listen_addr: http_addr,
-        metrics_listen_addr: None,
-        storage: notedthat_server::config::unroutable_storage_placeholder(),
-        events: notedthat_server::config::EventsConfig::None,
-        staging: StagingConfig::default(),
-        oidc: None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
         embedder: EmbedderConfig {
-            // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
             dimensions: EMBEDDING_DIM,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
+            ..base.embedder
         },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "e2e-webdav-user".to_string(),
-        webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 100 * 1024 * 1024,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
+        ..base
     }
 }
 
