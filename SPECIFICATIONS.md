@@ -202,7 +202,7 @@ Payload schema:
 | `byte_end`         | int      | byte offset where chunk ends |
 | `etag`             | string   | S3 ETag captured at index time — used for dedup / re-index detection. Content-derived on non-multipart PUTs (D36), so no separate SHA256 is stored. |
 | `mtime`            | int      | last-modified Unix timestamp |
-| `mime`             | string   | source MIME |
+| `mime`             | string   | source media type: parameters dropped, trimmed, lowercased (`text/markdown; charset=utf-8` → `text/markdown`). The `mime` search filter is normalised the same way. |
 | `heading_path`     | string[] | markdown headings, e.g. `["Introduction", "Motivation"]` |
 | `tags` | string[] | OKF frontmatter tags; empty for ordinary documents. |
 | `okf` | object, optional | Concept ID derived from the path, type, optional title/description/resource, and tags. |

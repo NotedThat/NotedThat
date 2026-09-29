@@ -361,6 +361,15 @@ async fn observe_filters(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
                 ..SearchFilter::default()
             }),
         ),
+        // Parameters and case are not part of the media type: this admits
+        // exactly what "mime" does (#286).
+        (
+            "mime_with_params",
+            Some(SearchFilter {
+                mime: Some("Text/Plain; charset=UTF-8".to_string()),
+                ..SearchFilter::default()
+            }),
+        ),
         // Nested payload: the condition addresses `okf.type`, not `type`.
         (
             "concept_type",
@@ -734,6 +743,17 @@ async fn filters_admit_the_same_points_in_both_backends() {
         "the unfiltered query must return the whole corpus, otherwise the \
          filtered comparisons prove nothing"
     );
+
+    // Agreeing on nothing would pass assert_agree: the parameterised type must
+    // admit what the bare one does, and that must not be empty.
+    let observed = |name: &str| {
+        from_qdrant
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, admitted)| admitted.as_str())
+    };
+    assert_eq!(observed("mime"), Some("beta.txt#0"));
+    assert_eq!(observed("mime_with_params"), observed("mime"));
 
     assert_agree(&from_qdrant, &from_memory);
 }

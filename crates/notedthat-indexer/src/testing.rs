@@ -318,7 +318,7 @@ fn matches_filter(payload: &HashMap<String, Value>, filter: &SearchFilter) -> bo
         return false;
     }
     if let Some(mime) = &filter.mime
-        && string_field("mime").as_ref() != Some(mime)
+        && string_field("mime") != Some(crate::mime::essence(mime))
     {
         return false;
     }

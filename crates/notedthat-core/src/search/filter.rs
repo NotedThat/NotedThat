@@ -14,7 +14,8 @@ pub struct SearchFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_key_prefix: Option<String>,
 
-    /// Only return hits with exactly this MIME type (e.g. `"text/markdown"`).
+    /// Only return hits with this media type (e.g. `"text/markdown"`). Parameters
+    /// such as `charset`, and case, are ignored on both sides of the match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
 

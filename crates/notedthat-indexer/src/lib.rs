@@ -6,6 +6,7 @@ pub mod chunker;
 pub mod embedder;
 pub mod event;
 pub mod health;
+mod mime;
 pub mod okf;
 pub mod provisioner;
 pub mod qdrant;

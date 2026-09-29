@@ -1,3 +1,4 @@
+use crate::mime::essence;
 use notedthat_core::search::SearchFilter;
 use qdrant_client::qdrant::{Condition, Filter, Range};
 
@@ -47,9 +48,9 @@ impl PostFilter {
 pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
     let mut conditions: Vec<Condition> = Vec::new();
 
-    // mime: exact keyword match against the mime payload index added in T1.
+    // mime: keyword match on the media-type essence, the form build_points stores.
     if let Some(mime) = &filter.mime {
-        conditions.push(Condition::matches("mime", mime.clone()));
+        conditions.push(Condition::matches("mime", essence(mime)));
     }
 
     if let Some(concept_type) = &filter.concept_type {
@@ -153,6 +154,18 @@ mod tests {
         let t = translate_filter(&f);
         assert!(t.qdrant.is_some());
         assert!(t.post.is_empty());
+    }
+
+    #[test]
+    fn mime_filter_matches_on_the_media_type_essence() {
+        let f = SearchFilter {
+            mime: Some("Text/Markdown; charset=UTF-8".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            translate_filter(&f).qdrant.unwrap().must,
+            vec![Condition::matches("mime", "text/markdown".to_string())]
+        );
     }
 
     #[test]
