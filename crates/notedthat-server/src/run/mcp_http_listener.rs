@@ -21,7 +21,7 @@ fn test_config() -> Config {
         KbSlug::try_new("notes").expect("test KB slug is valid"),
     );
     Config {
-        index_concurrency: 8,
+        index_concurrency: crate::config::DEFAULT_INDEX_CONCURRENCY,
         api_token: "test-token".to_string(),
         kbs,
         tenant_slug: TenantSlug::default(),

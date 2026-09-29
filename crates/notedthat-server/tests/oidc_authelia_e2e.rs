@@ -102,7 +102,7 @@ fn test_config(listen_addr: std::net::SocketAddr) -> Config {
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        index_concurrency: 8,
+        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
         webdav_username: "authelia-e2e-user".to_string(),
         webdav_password: "authelia-e2e-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],

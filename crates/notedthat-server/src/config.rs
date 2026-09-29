@@ -15,6 +15,7 @@ use notedthat_write::MAX_UPLOAD_BYTES;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 /// Which storage backend the server runs on.
@@ -498,6 +499,9 @@ pub fn unroutable_storage_placeholder() -> StorageConfig {
     })
 }
 
+/// Files indexed at once when `NOTEDTHAT_INDEX_CONCURRENCY` is unset or blank.
+pub const DEFAULT_INDEX_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
 /// Server-wide configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -521,8 +525,9 @@ pub struct Config {
     pub qdrant: ServerQdrantConfig,
     /// Embedder configuration.
     pub embedder: EmbedderConfig,
-    /// Complete file handlers allowed to execute at once.
-    pub index_concurrency: usize,
+    /// Complete file handlers allowed to execute at once
+    /// (`NOTEDTHAT_INDEX_CONCURRENCY`; default [`DEFAULT_INDEX_CONCURRENCY`]).
+    pub index_concurrency: NonZeroUsize,
     /// `WebDAV` Basic authentication username (`NOTEDTHAT_WEBDAV_USERNAME`; required).
     pub webdav_username: String,
     /// `WebDAV` Basic authentication password (`NOTEDTHAT_WEBDAV_PASSWORD`; required).
@@ -900,8 +905,8 @@ impl Config {
         })?;
         let index_concurrency = parse_positive_usize(
             "NOTEDTHAT_INDEX_CONCURRENCY",
-            cli.index_concurrency.as_deref(),
-            8,
+            non_blank(cli.index_concurrency.as_ref()),
+            DEFAULT_INDEX_CONCURRENCY,
         )?;
 
         let webdav_username = cli.webdav_username.ok_or_else(|| Error::Config {
@@ -1391,20 +1396,20 @@ where
         .transpose()
 }
 
-fn parse_positive_usize(var: &str, supplied: Option<&str>, default: usize) -> Result<usize, Error> {
-    let value = supplied.unwrap_or("");
-    if supplied.is_none() {
+fn parse_positive_usize(
+    var: &str,
+    supplied: Option<&str>,
+    default: NonZeroUsize,
+) -> Result<NonZeroUsize, Error> {
+    let Some(value) = supplied else {
         return Ok(default);
-    }
+    };
     let parsed = value.parse::<usize>().map_err(|_| Error::Config {
         message: format!("{} must be a valid positive integer", setting(var)),
     })?;
-    if parsed == 0 {
-        return Err(Error::Config {
-            message: format!("{} must be > 0", setting(var)),
-        });
-    }
-    Ok(parsed)
+    NonZeroUsize::new(parsed).ok_or_else(|| Error::Config {
+        message: format!("{} must be > 0", setting(var)),
+    })
 }
 
 #[cfg(test)]
@@ -1549,6 +1554,7 @@ pub(crate) mod tests {
             ("EMBEDDING_TIMEOUT_MS", None),
             ("EMBEDDING_MAX_RETRIES", None),
             ("EMBEDDING_MAX_INPUT_TOKENS", None),
+            ("NOTEDTHAT_INDEX_CONCURRENCY", None),
         ];
 
         for (key, value) in overrides {
@@ -2185,6 +2191,66 @@ pub(crate) mod tests {
     fn embedding_batch_size_default() {
         let cfg = run_with_env(&[("EMBEDDING_BATCH_SIZE", None)], Config::from_env).unwrap();
         assert_eq!(cfg.embedder.batch_size, 32);
+    }
+
+    fn index_concurrency_from(value: Option<&str>) -> Result<NonZeroUsize, Error> {
+        run_with_env(&[("NOTEDTHAT_INDEX_CONCURRENCY", value)], Config::from_env)
+            .map(|cfg| cfg.index_concurrency)
+    }
+
+    #[test]
+    fn index_concurrency_defaults_to_eight_when_unset_or_blank() {
+        for value in [None, Some(""), Some("  ")] {
+            let concurrency = index_concurrency_from(value).unwrap();
+            assert_eq!(concurrency, DEFAULT_INDEX_CONCURRENCY, "for {value:?}");
+            assert_eq!(concurrency.get(), 8);
+        }
+    }
+
+    #[test]
+    fn index_concurrency_accepts_any_positive_integer() {
+        assert_eq!(index_concurrency_from(Some("1")).unwrap().get(), 1);
+        assert_eq!(index_concurrency_from(Some("16")).unwrap().get(), 16);
+    }
+
+    #[test]
+    fn index_concurrency_rejects_zero() {
+        let message = index_concurrency_from(Some("0")).unwrap_err().to_string();
+        assert!(
+            names_setting(&message, "NOTEDTHAT_INDEX_CONCURRENCY", "must be > 0"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn index_concurrency_rejects_negative_and_malformed_values() {
+        for value in ["-1", "abc", "2.5", "8 files"] {
+            let message = index_concurrency_from(Some(value)).unwrap_err().to_string();
+            assert!(
+                names_setting(
+                    &message,
+                    "NOTEDTHAT_INDEX_CONCURRENCY",
+                    "must be a valid positive integer"
+                ),
+                "for {value:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn index_concurrency_flag_overrides_the_variable() {
+        use clap::Parser as _;
+        let cfg = run_with_env(&[("NOTEDTHAT_INDEX_CONCURRENCY", Some("16"))], || {
+            let cli = ServerCli::try_parse_from(["notedthat-server", "--index-concurrency", "3"])
+                .expect("arguments must parse");
+            Config::from_cli(cli)
+        })
+        .unwrap();
+        assert_eq!(cfg.index_concurrency.get(), 3);
+        assert_eq!(
+            cfg.embedder.batch_size, 32,
+            "file concurrency leaves batch size alone"
+        );
     }
 
     #[test]

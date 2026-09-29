@@ -1282,7 +1282,7 @@ NotedThat ships no embedding model: you set one up and point the server at it. T
 | `EMBEDDING_API_KEY` | `--embedding-api-key` | Yes | | Bearer token / API key for the endpoint |
 | `EMBEDDING_DIMENSIONS` | `--embedding-dimensions` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
 | `EMBEDDING_BATCH_SIZE` | `--embedding-batch-size` | No | `32` | Number of text chunks per HTTP embedding request |
-| `NOTEDTHAT_INDEX_CONCURRENCY` | `--index-concurrency` | No | `8` | Complete file indexing handlers allowed to run in parallel |
+| `NOTEDTHAT_INDEX_CONCURRENCY` | `--index-concurrency` | No | `8` | Complete file indexing handlers allowed to run in parallel; `1` indexes one file at a time. Must be a positive integer; unset or empty uses the default |
 | `EMBEDDING_TIMEOUT_MS` | `--embedding-timeout-ms` | No | `30000` | Per-request HTTP timeout (milliseconds) |
 | `EMBEDDING_MAX_RETRIES` | `--embedding-max-retries` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
 | `EMBEDDING_MAX_INPUT_TOKENS` | `--embedding-max-input-tokens` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
