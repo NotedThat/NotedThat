@@ -42,7 +42,7 @@ repository = "https://github.com/NotedThat/NotedThat"
 homepage = "https://github.com/NotedThat/NotedThat"
 authors = ["NotedThat Contributors"]
 
-# Populated in M2. Features left minimal here; crates opt into features they need.
+# Features left minimal here; crates opt into features they need.
 [workspace.dependencies]
 # Workspace crates
 notedthat-core = { path = "crates/notedthat-core", version = "0.12.3" }
