@@ -78,7 +78,7 @@ fn test_config(http_addr: std::net::SocketAddr) -> notedthat_server::config::Con
             max_retries: 3,
             max_input_tokens: 8192,
         },
-        index_concurrency: 8,
+        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
         webdav_username: "e2e-webdav-user".to_string(),
         webdav_password: "e2e-webdav-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],

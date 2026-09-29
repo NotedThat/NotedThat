@@ -35,6 +35,7 @@ use std::{
     collections::HashMap,
     fmt::Write as _,
     io::Cursor,
+    num::NonZeroUsize,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -179,6 +180,9 @@ impl Embedder for ScriptedEmbedder {
 struct BlockingEmbedder {
     started: Arc<Semaphore>,
     release: Arc<Semaphore>,
+    /// Embed calls currently inside `embed`, and the most there ever were.
+    running: AtomicUsize,
+    peak: AtomicUsize,
 }
 
 impl BlockingEmbedder {
@@ -186,19 +190,52 @@ impl BlockingEmbedder {
         Self {
             started: Arc::new(Semaphore::new(0)),
             release: Arc::new(Semaphore::new(0)),
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
         }
+    }
+
+    /// Wait until `n` more embed calls have begun.
+    async fn wait_started(&self, n: u32) {
+        tokio::time::timeout(Duration::from_secs(10), self.started.acquire_many(n))
+            .await
+            .expect("embed calls did not start in time")
+            .unwrap()
+            .forget();
+    }
+
+    /// True when another embed call begins within a short grace period.
+    async fn another_starts(&self) -> bool {
+        tokio::time::timeout(Duration::from_millis(100), self.started.acquire())
+            .await
+            .is_ok_and(|permit| {
+                permit.unwrap().forget();
+                true
+            })
+    }
+
+    /// Let every current and future embed call through.
+    fn release_all(&self) {
+        self.release.add_permits(Semaphore::MAX_PERMITS / 2);
+    }
+
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
 impl Embedder for BlockingEmbedder {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
         self.started.add_permits(1);
         let _permit = self
             .release
             .acquire()
             .await
             .expect("test semaphore stays open");
+        self.running.fetch_sub(1, Ordering::SeqCst);
         Ok(vec![vec![1.0; 4]; texts.len()])
     }
 
@@ -521,6 +558,38 @@ fn make_worker_with_batch(
         shutdown,
         batch_size,
     )
+}
+
+/// A worker over the bounded production queue, running up to `concurrency`
+/// files at once, with its sender.
+fn make_queue_worker(
+    storage: Arc<MockStorage>,
+    embedder: Arc<dyn Embedder>,
+    store: Arc<dyn VectorStore>,
+    shutdown: CancellationToken,
+    capacity: usize,
+    concurrency: usize,
+) -> (notedthat_indexer::IndexQueueSender, IndexerWorker) {
+    let (tx, rx) = index_queue(capacity);
+    let worker = IndexerWorker::new_queue(
+        storage as Arc<dyn Storage>,
+        embedder,
+        store,
+        rx,
+        shutdown,
+        32,
+        NonZeroUsize::new(concurrency).expect("tests use a positive concurrency"),
+    );
+    (tx, worker)
+}
+
+fn upsert(kb: &KbSlug, key: &str) -> IndexEvent {
+    IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath(key),
+        etag: format!("etag-{key}"),
+        mtime: 0,
+    }
 }
 
 async fn index_once(
@@ -1114,89 +1183,263 @@ async fn bounded_queue_keeps_active_handlers_within_its_limit() {
     storage.insert("test-kb", "one.md", "# One", "text/markdown");
     storage.insert("test-kb", "two.md", "# Two", "text/markdown");
     let embedder = Arc::new(BlockingEmbedder::new());
-    let (tx, rx) = index_queue(2);
-    let worker = IndexerWorker::new_queue(
-        storage as Arc<dyn Storage>,
+    let (tx, worker) = make_queue_worker(
+        storage,
         Arc::clone(&embedder) as Arc<dyn Embedder>,
         Arc::new(store),
-        rx,
         CancellationToken::new(),
-        32,
+        2,
         2,
     );
     let handle = tokio::spawn(worker.run());
 
     for key in ["one.md", "two.md"] {
-        tx.send(IndexEvent::Upsert {
-            kb: kb.clone(),
-            object_key: opath(key),
-            etag: format!("etag-{key}"),
-            mtime: 0,
-        })
-        .await
-        .unwrap();
+        tx.send(upsert(&kb, key)).await.unwrap();
     }
-    embedder.started.acquire().await.unwrap().forget();
-    embedder.started.acquire().await.unwrap().forget();
+    embedder.wait_started(2).await;
     assert_eq!(tx.depth(), 2, "active handlers retain their queue permits");
     assert!(matches!(
-        tx.try_send(IndexEvent::Upsert {
-            kb,
-            object_key: opath("three.md"),
-            etag: "etag-three".to_owned(),
-            mtime: 0,
-        }),
+        tx.try_send(upsert(&kb, "three.md")),
         Err(tokio::sync::mpsc::error::TrySendError::Full(_))
     ));
 
-    embedder.release.add_permits(2);
+    embedder.release_all();
     drop(tx);
     handle.await.unwrap();
 }
 
-#[tokio::test]
-async fn queue_scheduler_serializes_events_for_the_same_path() {
+/// Queue `files` distinct files on a worker limited to `limit`, and check that
+/// exactly `limit` run at once: no more start while they are held, a finished
+/// one frees a slot, and every file is indexed in the end.
+///
+/// The queue is far larger than the limit, so what holds the rest back is the
+/// concurrency bound, not a full queue.
+async fn assert_runs_at_most(limit: usize, files: usize) {
+    assert!(files > limit, "the check needs files left waiting");
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "serial.md", "# Serial", "text/markdown");
+    let keys: Vec<String> = (0..files).map(|i| format!("file{i}.md")).collect();
+    for key in &keys {
+        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+    }
     let embedder = Arc::new(BlockingEmbedder::new());
-    let (tx, rx) = index_queue(2);
-    let worker = IndexerWorker::new_queue(
-        storage as Arc<dyn Storage>,
+    let (tx, worker) = make_queue_worker(
+        storage,
         Arc::clone(&embedder) as Arc<dyn Embedder>,
-        Arc::new(store),
-        rx,
+        Arc::new(store.clone()),
         CancellationToken::new(),
-        32,
-        2,
+        64,
+        limit,
     );
     let handle = tokio::spawn(worker.run());
 
-    for etag in ["first", "second"] {
-        tx.send(IndexEvent::Upsert {
-            kb: kb.clone(),
-            object_key: opath("serial.md"),
-            etag: etag.to_owned(),
-            mtime: 0,
-        })
-        .await
-        .unwrap();
+    for key in &keys {
+        tx.send(upsert(&kb, key)).await.unwrap();
     }
-    embedder.started.acquire().await.unwrap().forget();
+    embedder.wait_started(u32::try_from(limit).unwrap()).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), embedder.started.acquire())
-            .await
-            .is_err(),
+        !embedder.another_starts().await,
+        "no file beyond the limit of {limit} may start while {limit} are running"
+    );
+    assert_eq!(tx.depth(), files, "every file was accepted and is waiting");
+
+    embedder.release.add_permits(1);
+    embedder.wait_started(1).await;
+
+    embedder.release_all();
+    drop(tx);
+    handle.await.unwrap();
+    assert_eq!(embedder.peak(), limit, "files running at once");
+    for key in &keys {
+        assert!(
+            count_points(&store, &kb, key).await > 0,
+            "{key} was indexed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrency_limit_caps_running_files() {
+    assert_runs_at_most(2, 5).await;
+}
+
+#[tokio::test]
+async fn concurrency_of_one_indexes_files_serially() {
+    assert_runs_at_most(1, 3).await;
+}
+
+#[tokio::test]
+async fn concurrency_of_eight_indexes_eight_files_at_once() {
+    assert_runs_at_most(8, 10).await;
+}
+
+/// Run an upsert of `a.md` that is held mid-embedding, queue `delete` for the
+/// same file behind it and an upsert of `b.md` beside it, then let everything
+/// finish. The delete must wait for the upsert, or the upsert's chunks would
+/// land after it and outlive the file; the unrelated file must not wait.
+async fn assert_delete_waits_for_update(delete: IndexEvent, remove_object: bool) {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "a.md", "# A\n\nalpha", "text/markdown");
+    storage.insert("test-kb", "b.md", "# B\n\nbeta", "text/markdown");
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let (tx, worker) = make_queue_worker(
+        Arc::clone(&storage),
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        16,
+        8,
+    );
+    let handle = tokio::spawn(worker.run());
+
+    tx.send(upsert(&kb, "a.md")).await.unwrap();
+    embedder.wait_started(1).await;
+    if remove_object {
+        storage.remove("test-kb", "a.md");
+    }
+    tx.send(delete).await.unwrap();
+    tx.send(upsert(&kb, "b.md")).await.unwrap();
+    // b.md embeds while a.md is still held: different files overlap.
+    embedder.wait_started(1).await;
+
+    embedder.release_all();
+    drop(tx);
+    handle.await.unwrap();
+    assert_eq!(
+        count_points(&store, &kb, "a.md").await,
+        0,
+        "the delete ran after the update, so no chunks survive it"
+    );
+    assert!(count_points(&store, &kb, "b.md").await > 0);
+}
+
+#[tokio::test]
+async fn a_tombstone_waits_for_an_update_of_the_same_file() {
+    let delete = IndexEvent::Tombstone {
+        kb: kb(),
+        object_key: opath("a.md"),
+    };
+    assert_delete_waits_for_update(delete, false).await;
+}
+
+#[tokio::test]
+async fn a_refresh_of_a_deleted_file_waits_for_its_update() {
+    let delete = IndexEvent::Refresh {
+        kb: kb(),
+        object_key: opath("a.md"),
+        origin: RefreshOrigin::Watch,
+    };
+    assert_delete_waits_for_update(delete, true).await;
+}
+
+#[tokio::test]
+async fn updates_of_the_same_file_run_in_order_and_keep_the_last_content() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert("test-kb", "serial.md", "# First\n\nalpha", "text/markdown");
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let (tx, worker) = make_queue_worker(
+        Arc::clone(&storage),
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        16,
+        8,
+    );
+    let handle = tokio::spawn(worker.run());
+
+    tx.send(upsert(&kb, "serial.md")).await.unwrap();
+    embedder.wait_started(1).await;
+    storage.insert("test-kb", "serial.md", "# Second\n\nbeta", "text/markdown");
+    tx.send(upsert(&kb, "serial.md")).await.unwrap();
+    assert!(
+        !embedder.another_starts().await,
         "a second event for the active path must not start"
     );
 
-    embedder.release.add_permits(1);
-    embedder.started.acquire().await.unwrap().forget();
-    embedder.release.add_permits(1);
+    embedder.release_all();
     drop(tx);
     handle.await.unwrap();
+    let points = scroll_points(&store, &kb, "serial.md", false).await;
+    assert!(!points.is_empty());
+    for point in &points {
+        let text = string_payload(point, "text");
+        assert!(
+            !text.contains("alpha"),
+            "stale first version survived: {text}"
+        );
+    }
+    assert!(
+        points
+            .iter()
+            .any(|point| string_payload(point, "text").contains("beta")),
+        "the second version is indexed"
+    );
+    assert_eq!(embedder.peak(), 1, "the two updates never overlapped");
+}
+
+#[tokio::test]
+async fn graceful_shutdown_drains_lanes_and_running_files_with_concurrency() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    let keys = ["d0.md", "d1.md", "d2.md", "d3.md"];
+    for key in keys {
+        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+    }
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let health = Arc::new(IndexHealth::new());
+    let shutdown = CancellationToken::new();
+    let (tx, worker) = make_queue_worker(
+        storage,
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store.clone()),
+        shutdown.clone(),
+        16,
+        2,
+    );
+    let handle = tokio::spawn(worker.with_health(Arc::clone(&health)).run());
+
+    // Four files plus a second event for d0.md, which has to wait in its lane.
+    for key in keys.iter().chain(["d0.md"].iter()) {
+        health.enqueued("test-kb");
+        tx.send(upsert(&kb, key)).await.unwrap();
+    }
+    embedder.wait_started(2).await;
+
+    // Shut down with two files running and three events still queued; the
+    // sender stays open, so only the drain can finish them.
+    shutdown.cancel();
+    embedder.release_all();
+    tokio::time::timeout(Duration::from_secs(30), handle)
+        .await
+        .expect("worker did not exit within 30 s after drain")
+        .unwrap();
+
+    assert_eq!(
+        embedder.started.available_permits(),
+        3,
+        "all five events ran, including both for d0.md"
+    );
+    assert!(embedder.peak() <= 2, "the drain kept to the limit");
+    assert_eq!(tx.depth(), 0, "every queue permit was returned");
+    for key in keys {
+        assert!(
+            count_points(&store, &kb, key).await > 0,
+            "{key} was indexed"
+        );
+    }
+    let snapshot = health.snapshot("test-kb");
+    assert_eq!(snapshot.pending, 0, "the drain finished what was queued");
+    assert!(!snapshot.worker_alive);
 }
 
 #[tokio::test]

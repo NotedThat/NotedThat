@@ -1,6 +1,7 @@
 //! `IndexerWorker` — keyed concurrent async task draining `IndexEvent`s into Qdrant.
 //!
-//! Behavior: one event at a time, batched embedding, drain on shutdown.
+//! Behavior: up to `index_concurrency` files at once, events for one (kb, key)
+//! strictly in order, batched embedding, drain on shutdown.
 
 mod chunks;
 mod last_seen;
@@ -19,6 +20,7 @@ use last_seen::LastSeen;
 use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
 use pipeline::{PipelineFailure, PipelineOutcome};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -26,6 +28,12 @@ use tokio_util::sync::CancellationToken;
 
 /// Maximum time to continue draining already queued events after cancellation.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Publish how many file handlers are currently executing.
+fn set_in_flight(running: usize) {
+    #[allow(clippy::cast_precision_loss)]
+    metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(running as f64);
+}
 
 /// Whether an upsert may be abandoned when the object's content is already indexed.
 ///
@@ -58,7 +66,7 @@ pub struct IndexerWorker {
     /// Maximum number of chunks sent to the embedder per request.
     pub batch_size: usize,
     /// Maximum complete file handlers executing at once.
-    pub index_concurrency: usize,
+    pub index_concurrency: NonZeroUsize,
     /// Directory configuration for private index snapshots.
     pub staging: StagingConfig,
     /// Where detected changes and indexing outcomes are published, when an
@@ -93,7 +101,7 @@ impl IndexerWorker {
             crate::IndexQueueReceiver::from_mpsc(rx),
             shutdown,
             batch_size,
-            1,
+            NonZeroUsize::MIN,
         )
     }
 
@@ -106,7 +114,7 @@ impl IndexerWorker {
         rx: crate::IndexQueueReceiver,
         shutdown: CancellationToken,
         batch_size: usize,
-        index_concurrency: usize,
+        index_concurrency: NonZeroUsize,
     ) -> Self {
         Self::with_receiver(
             storage,
@@ -126,7 +134,7 @@ impl IndexerWorker {
         rx: crate::IndexQueueReceiver,
         shutdown: CancellationToken,
         batch_size: usize,
-        index_concurrency: usize,
+        index_concurrency: NonZeroUsize,
     ) -> Self {
         Self {
             storage,
@@ -169,6 +177,7 @@ impl IndexerWorker {
     /// Run until the channel closes or shutdown is requested.
     pub async fn run(mut self) {
         self.run_loop().await;
+        set_in_flight(0);
         // Whatever ended the loop, nothing drains the queue from here on, and
         // the health view says so rather than reporting `indexing` forever.
         self.health.worker_stopped();
@@ -182,9 +191,7 @@ impl IndexerWorker {
         let mut receiver_open = true;
         loop {
             Self::start_ready(&mut lanes, &mut active, &mut running, self);
-            #[allow(clippy::cast_precision_loss)]
-            let in_flight = running.len() as f64;
-            metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(in_flight);
+            set_in_flight(running.len());
             if !receiver_open && lanes.is_empty() && running.is_empty() {
                 break;
             }
@@ -201,9 +208,7 @@ impl IndexerWorker {
                 }
                 Some(key) = running.next(), if !running.is_empty() => {
                     active.remove(&key);
-                    #[allow(clippy::cast_precision_loss)]
-                    let in_flight = running.len() as f64;
-                    metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(in_flight);
+                    set_in_flight(running.len());
                 }
                 queued = rx.recv(), if receiver_open => match queued {
                     Some(queued) => lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued),
@@ -219,7 +224,7 @@ impl IndexerWorker {
         running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
         worker: &Self,
     ) {
-        while running.len() < worker.index_concurrency {
+        while running.len() < worker.index_concurrency.get() {
             let Some(key) = lanes.keys().find(|key| !active.contains(*key)).cloned() else {
                 break;
             };
@@ -248,6 +253,7 @@ impl IndexerWorker {
     ) {
         while !lanes.is_empty() || !running.is_empty() {
             Self::start_ready(lanes, active, running, worker);
+            set_in_flight(running.len());
             if let Some(key) = running.next().await {
                 active.remove(&key);
             }

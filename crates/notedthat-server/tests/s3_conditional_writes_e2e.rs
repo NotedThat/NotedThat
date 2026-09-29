@@ -76,7 +76,7 @@ fn config(endpoint: &str, allow_unenforced: bool) -> Config {
             max_retries: 0,
             max_input_tokens: 8192,
         },
-        index_concurrency: 8,
+        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
         webdav_username: "conditional-writes-user".to_string(),
         webdav_password: "conditional-writes-pass".to_string(),
         mcp_http_allowed_origins: vec!["null".to_string()],
