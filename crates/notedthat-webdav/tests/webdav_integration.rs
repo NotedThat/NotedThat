@@ -994,3 +994,67 @@ async fn test_proppatch_returns_207() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn test_proppatch_of_a_folder_url_with_a_trailing_slash_returns_207() {
+    // Windows Explorer sets its timestamps on a copied folder's canonical URL.
+    let (handle, url, username, password) = start_webdav_server().await;
+
+    let client = reqwest::Client::new();
+    client
+        .put(format!("{url}/webdav/notes/sub/child.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# Child")
+        .send()
+        .await
+        .expect("PUT sub/child.md");
+    let resp = client
+        .request(webdav_method(b"PROPPATCH"), format!("{url}/webdav/notes/sub/"))
+        .header("Authorization", basic_auth(&username, &password))
+        .header("Content-Type", "application/xml")
+        .body(
+            r#"<D:propertyupdate xmlns:D="DAV:" xmlns:Z="urn:schemas-microsoft-com:"><D:set><D:prop><Z:Win32LastModifiedTime>Mon, 01 Jan 2024 00:00:00 GMT</Z:Win32LastModifiedTime></D:prop></D:set></D:propertyupdate>"#,
+        )
+        .send()
+        .await
+        .expect("PROPPATCH");
+
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("/webdav/notes/sub/</D:href>"), "{body}");
+    assert!(body.contains("HTTP/1.1 200 OK"), "{body}");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_proppatch_of_a_missing_target_is_404_whatever_the_preconditions() {
+    // RFC 9110 §13.2.1: a request that would be 404 without its preconditions ignores
+    // them, so If-Match on a missing target is 404, not 412.
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+
+    for (name, value) in [
+        ("If-Match", "\"a\""),
+        ("If-Match", "*"),
+        ("If-None-Match", "*"),
+        ("If", "([\"a\"])"),
+    ] {
+        let resp = client
+            .request(
+                webdav_method(b"PROPPATCH"),
+                format!("{url}/webdav/notes/absent.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header(name, value)
+            .body(
+                r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>"#,
+            )
+            .send()
+            .await
+            .expect("PROPPATCH");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}: {value}");
+    }
+
+    handle.abort();
+}

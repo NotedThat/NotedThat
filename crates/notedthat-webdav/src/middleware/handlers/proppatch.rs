@@ -45,7 +45,13 @@ impl Property {
 
 pub(crate) async fn handle_proppatch(state: WebDavState, req: Request) -> Response {
     let uri_path = req.uri().path().to_string();
-    let Ok(target) = parse_webdav_uri_path(&uri_path, &state.declared_kbs) else {
+    // A collection's canonical URL ends in `/`; parse it without, as the access
+    // middleware does. The raw path stays the `<D:href>` and the `If` comparand.
+    let target_path = uri_path
+        .strip_suffix('/')
+        .filter(|path| !path.is_empty())
+        .unwrap_or(&uri_path);
+    let Ok(target) = parse_webdav_uri_path(target_path, &state.declared_kbs) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let Ok(if_header) = IfHeader::from_headers(req.headers()) else {
