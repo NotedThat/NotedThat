@@ -77,6 +77,8 @@ axum = { version = "0.8", default-features = false }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 base64 = "0.22"
 dav-server = { version = "0.11", default-features = false }
+# The version dav-server already brings; parses PROPPATCH bodies.
+xmltree = "0.12"
 headers = "0.4"
 hex = "0.4"
 httpdate = "1.0"

@@ -941,25 +941,56 @@ async fn test_unlock_returns_405() {
 }
 
 // ---------------------------------------------------------------------------
-// 21. PROPPATCH returns 405
+// 21. PROPPATCH answers 207 and stores nothing (RFC 4918 §9.2)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_proppatch_returns_405() {
+async fn test_proppatch_returns_207() {
     let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
-    let resp = client
-        .request(
-            webdav_method(b"PROPPATCH"),
-            format!("{url}/webdav/notes/any-file.md"),
-        )
+    client
+        .put(format!("{url}/webdav/notes/patched.md"))
         .header("Authorization", basic_auth(&username, &password))
+        .body("# Patched")
         .send()
         .await
-        .expect("PROPPATCH request");
+        .expect("PUT patched.md");
+    let proppatch = |body: &'static str| {
+        client
+            .request(
+                webdav_method(b"PROPPATCH"),
+                format!("{url}/webdav/notes/patched.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header("Content-Type", "application/xml")
+            .body(body)
+            .send()
+    };
 
-    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    // Windows Explorer's timestamps are accepted without being stored.
+    let resp = proppatch(
+        r#"<D:propertyupdate xmlns:D="DAV:" xmlns:Z="urn:schemas-microsoft-com:"><D:set><D:prop><Z:Win32LastModifiedTime>Mon, 01 Jan 2024 00:00:00 GMT</Z:Win32LastModifiedTime></D:prop></D:set></D:propertyupdate>"#,
+    )
+    .await
+    .expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("HTTP/1.1 200 OK"), "{body}");
+
+    // Anything else is a protected property.
+    let resp = proppatch(
+        r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><x:color xmlns:x="urn:x">red</x:color></D:prop></D:set></D:propertyupdate>"#,
+    )
+    .await
+    .expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("HTTP/1.1 403 Forbidden"), "{body}");
+    assert!(body.contains("cannot-modify-protected-property"), "{body}");
+
+    let resp = proppatch("not xml").await.expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     handle.abort();
 }

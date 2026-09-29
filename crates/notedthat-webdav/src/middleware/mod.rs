@@ -21,7 +21,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use handlers::{handle_copy, handle_delete, handle_move, handle_put};
+use handlers::{handle_copy, handle_delete, handle_move, handle_proppatch, handle_put};
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
@@ -55,23 +55,6 @@ pub async fn intercept_options(req: Request, next: Next) -> Response {
         if let Ok(value) = HeaderValue::from_str(&allow) {
             headers.insert("allow", value);
         }
-        return response;
-    }
-    next.run(req).await
-}
-
-/// Intercept PROPPATCH requests and return 405 before dav-server.
-///
-/// dav-server v0.11 always handles PROPPATCH and returns 207. Issue #22 requires 405.
-pub async fn intercept_proppatch(req: Request, next: Next) -> Response {
-    if req.method().as_str() == "PROPPATCH" {
-        let mut response = (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
-        response.headers_mut().insert(
-            "allow",
-            HeaderValue::from_static(
-                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
-            ),
-        );
         return response;
     }
     next.run(req).await
@@ -155,6 +138,7 @@ pub async fn intercept_write_methods(
         "DELETE" => handle_delete(state, req).await,
         "MOVE" => handle_move(state, req).await,
         "COPY" => handle_copy(state, req).await,
+        "PROPPATCH" => handle_proppatch(state, req).await,
         _ => next.run(req).await,
     }
 }
@@ -533,48 +517,6 @@ mod intercept_options {
             let resp = app().oneshot(req).await.unwrap();
 
             assert_eq!(resp.status(), StatusCode::OK);
-        }
-    }
-}
-
-#[cfg(test)]
-mod intercept_proppatch {
-    mod tests {
-        use super::super::*;
-        use axum::{
-            Router, body::Body, http::Request as HttpRequest, middleware::from_fn, routing::any,
-        };
-        use tower::util::ServiceExt;
-
-        fn app() -> Router {
-            Router::new()
-                .route("/webdav", any(|| async { "inner handler reached" }))
-                .layer(from_fn(intercept_proppatch))
-        }
-
-        #[tokio::test]
-        async fn test_proppatch_returns_405() {
-            let req = HttpRequest::builder()
-                .method("PROPPATCH")
-                .uri("/webdav")
-                .body(Body::empty())
-                .unwrap();
-            let resp = app().oneshot(req).await.unwrap();
-
-            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
-        }
-
-        #[tokio::test]
-        async fn test_proppatch_allow_header_present() {
-            let req = HttpRequest::builder()
-                .method("PROPPATCH")
-                .uri("/webdav")
-                .body(Body::empty())
-                .unwrap();
-            let resp = app().oneshot(req).await.unwrap();
-
-            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
-            assert!(resp.headers().contains_key("allow"));
         }
     }
 }
@@ -1165,6 +1107,91 @@ mod intercept_write_methods {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        }
+
+        fn proppatch(uri: &str, headers: &[(&str, &str)], body: &'static str) -> HttpRequest<Body> {
+            let mut builder = HttpRequest::builder().method("PROPPATCH").uri(uri);
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(Body::from(body)).unwrap()
+        }
+
+        const DISPLAYNAME: &str = r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>"#;
+
+        /// RFC 4918 §9.2: PROPPATCH answers 207 per property and stores nothing.
+        #[tokio::test]
+        async fn test_proppatch_refuses_protected_properties_with_207() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            let resp = app(storage.clone())
+                .oneshot(proppatch("/webdav/notes/a.md", &[], DISPLAYNAME))
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+            let body = response_body(resp).await;
+            assert!(
+                body.contains("<D:href>/webdav/notes/a.md</D:href>"),
+                "{body}"
+            );
+            assert!(body.contains("HTTP/1.1 403 Forbidden"), "{body}");
+            assert!(
+                body.contains("<D:cannot-modify-protected-property/>"),
+                "{body}"
+            );
+            assert_eq!(storage.calls(), vec!["head_object"]);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_on_a_knowledge_base_root_returns_207() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage)
+                .oneshot(proppatch("/webdav/notes/", &[], DISPLAYNAME))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_honours_if_and_if_match() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            for headers in [
+                &[("if-match", "\"stale\"")][..],
+                &[("if", "([\"stale\"])")],
+                &[("if", "(<opaquelocktoken:x>)")],
+            ] {
+                let resp = app(storage.clone())
+                    .oneshot(proppatch("/webdav/notes/a.md", headers, DISPLAYNAME))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::PRECONDITION_FAILED,
+                    "{headers:?}"
+                );
+            }
+            let resp = app(storage)
+                .oneshot(proppatch(
+                    "/webdav/notes/a.md",
+                    &[("if", "([\"a\"])")],
+                    DISPLAYNAME,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_with_a_malformed_body_returns_400() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            let resp = app(storage)
+                .oneshot(proppatch("/webdav/notes/a.md", &[], "<D:oops"))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
 
         #[tokio::test]

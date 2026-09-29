@@ -38,9 +38,10 @@ pub(crate) fn policy_for(state: &WebDavState, kb: &KbSlug) -> Arc<AccessPolicy> 
 ///
 /// `OPTIONS` is the only method needing no verb of its own — it reports what the
 /// others allow. Everything unrecognised is treated as a mutation and needs
-/// [`Verb::Write`]: `PROPPATCH`, `LOCK` and `UNLOCK` are refused further in with
-/// `405`, and an anonymous caller should be told to authenticate before being
-/// told which methods this server declines to implement.
+/// [`Verb::Write`]: `PROPPATCH` is a write even though it never stores anything,
+/// `LOCK` and `UNLOCK` are refused further in with `405`, and an anonymous caller
+/// should be told to authenticate before being told which methods this server
+/// declines to implement.
 pub(crate) fn verbs_for_method(method: &str) -> &'static [Verb] {
     match method {
         "OPTIONS" => &[],
