@@ -3,14 +3,14 @@
 ## Prerequisites
 
 - Rust stable — develop on it: `rustup default stable`, installed via [rustup](https://rustup.rs/).
-- The workspace declares `rust-version = "1.91.1"` (`Cargo.toml`, `[workspace.package]`). That is the
-  floor the published crates promise, derived from the dependency graph rather than chosen: 1.90.0 is
+- The workspace declares `rust-version = "1.94.1"` (`Cargo.toml`, `[workspace.package]`). That is the
+  floor the published crates promise, derived from the dependency graph rather than chosen: 1.93.0 is
   refused by Cargo naming the `aws-sdk-s3` / `aws-smithy-*` family. Edition 2024's own 1.85 floor stopped
   being the binding constraint some time ago.
 - No `rust-toolchain.toml` is present, deliberately — pinning developers to the floor is not the point.
-  CI's `test` job runs the suite on `[stable, 1.91.1]` instead, so the declared MSRV is a checked fact
+  CI's `test` job runs the suite on `[stable, 1.94.1]` instead, so the declared MSRV is a checked fact
   rather than a claim. To reproduce the MSRV leg locally:
-  `rustup toolchain install 1.91.1 && cargo +1.91.1 test --workspace --locked`.
+  `rustup toolchain install 1.94.1 && cargo +1.94.1 test --workspace --locked`.
 - Docker with Compose v2, to run Qdrant (and SeaweedFS) for the local server.
 - An embedding model to run the server; see [Embedding](docs/CONFIGURATION.md#embedding). The test
   suite does not need one.
@@ -307,16 +307,9 @@ or the arm64 build breaks in a way amd64 never reveals.
 
 The `advisories` job in `ci.yml` checks the committed `Cargo.lock` against the
 [RustSec advisory database](https://rustsec.org/) and fails the build on any **vulnerability**,
-**unmaintained** or **yanked** crate anywhere in the dependency graph — and on **unsound**
-advisories against workspace crates only, because `deny.toml` sets `unsound = "workspace"`.
-
-That last exception is worth knowing before you read a green run as "no advisories in the graph",
-because it is load-bearing right now: `Cargo.lock` carries `lru` 0.16.4 via `aws-sdk-s3`, which has
-RUSTSEC-2026-0253 (a use-after-free in `LruCache::pop()`), and the check still prints `advisories
-ok`. `deny.toml` explains the choice — widening it would make every pull request red over a bump
-only the AWS SDK can make. Unlike an `ignore` entry, it has no `unused-ignored-advisory` tripwire,
-so nothing will prompt a revisit when the SDK moves off `lru` 0.16; this paragraph is the only
-place that exception is recorded.
+**unsound**, **unmaintained** or **yanked** crate anywhere in the dependency graph, transitive ones
+included. A green run means no advisory matches the tree except those listed, with a reason, in
+`deny.toml`'s `ignore`.
 
 It runs on pull requests and on pushes to `main`, and `advisories.yml` runs the same check on a
 weekday schedule so an advisory filed while the repository is quiet does not wait for the next
@@ -367,7 +360,7 @@ command line where nobody reads it, and every entry needs a reason and, where th
 link — so the next person can tell a considered deferral from an unreviewed one. An entry also fails
 the check the day the advisory stops matching the tree, so a suppression rots loudly: delete it, do
 not extend it. `deny.toml` likewise records why the `licenses`, `bans` and `sources` checks are off,
-and why `unsound` stays at its narrower scope; those are decisions, not defaults.
+and why `unsound` covers the whole graph; those are decisions, not defaults.
 
 ## Dependency Ownership Rules
 

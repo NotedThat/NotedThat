@@ -7,6 +7,10 @@
     "minimumReleaseAge": null,
     "labels": ["security"]
   },
+  "lockFileMaintenance": {
+    "description": "Every cargo call in CI passes --locked, so without this Cargo.lock only moves when someone runs cargo update by hand, and semver-compatible fixes (advisories included) sit unapplied. Runs in the shared preset's weekly window; the MSRV leg of the test matrix catches a refresh that raises the rust-version floor.",
+    "enabled": true
+  },
   "packageRules": [
     {
       "description": "Base-image digest bumps are unscheduled, because the image scan in .github/workflows/docker.yml gates on them. Both FROM lines in the Dockerfile are pinned by digest and the runtime stage does not apt-get upgrade, so a rebuild cannot take a Debian security fix — only a new digest can. Debian republishes bookworm-slim when it ships one, Renovate raises that as a digest update, and until it merges the scan is red on every pull request and releases are blocked. Leaving this in the Monday window would make that a week.",

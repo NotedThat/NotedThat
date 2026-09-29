@@ -29,8 +29,9 @@ use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use notedthat_core::search::SearchFilter;
 use qdrant_client::qdrant::{
-    NamedVectorsOutput, PointId, PointStruct, RetrievedPoint, ScoredPoint, Value, VectorOutput,
-    VectorsOutput, value::Kind, vector, vectors_output::VectorsOptions,
+    DenseVector, NamedVectorsOutput, PointId, PointStruct, RetrievedPoint, ScoredPoint, Value,
+    VectorOutput, VectorsOutput, value::Kind, vector, vector_output,
+    vectors_output::VectorsOptions,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -201,15 +202,15 @@ impl InMemoryVectorStore {
                             .vector_names
                             .iter()
                             .map(|name| {
-                                let data = if name == "dense" {
-                                    point.dense.clone()
-                                } else {
-                                    Vec::new()
-                                };
+                                let vector = (name == "dense").then(|| {
+                                    vector_output::Vector::Dense(DenseVector {
+                                        data: point.dense.clone(),
+                                    })
+                                });
                                 (
                                     name.clone(),
                                     VectorOutput {
-                                        data,
+                                        vector,
                                         ..VectorOutput::default()
                                     },
                                 )

@@ -39,14 +39,13 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # An abandoned crate is abandoned whoever pulled it in, so `unmaintained` is
 # "all" — cargo-deny's default, restated because it is a choice.
 unmaintained = "all"
-# `unsound` stays at cargo-deny's narrower default, and here that is currently
-# load-bearing rather than incidental: aws-sdk-s3 1.137.0 pulls lru 0.16.4,
-# which carries RUSTSEC-2026-0253 (use-after-free in `LruCache::pop()`, fixed
-# in 0.18.2). Widening this to "all" makes every pull request red over a bump
-# only the AWS SDK can make. An unsound crate this workspace chose itself is
-# ours to answer for; one four levels down is not. Worth revisiting if that
-# ever stops being a single crate.
-unsound = "workspace"
+# `unsound` is "all" for the same reason: an unsound crate is unsound whoever
+# pulled it in. It used to stay at cargo-deny's narrower "workspace" default
+# while aws-sdk-s3 held lru on 0.16 (RUSTSEC-2026-0253); aws-sdk-s3 1.144 moved
+# to lru 0.18, so nothing in the tree needs the exception any more. If a
+# transitive crate ever does, answer it with a reasoned `ignore` entry below,
+# which rots loudly, rather than by narrowing this again, which rots silently.
+unsound = "all"
 
 # A yank is a maintainer saying "do not use this", which is worth hearing even
 # when no advisory was filed. Every cargo invocation in CI passes `--locked`, so
@@ -71,6 +70,4 @@ maximum-db-staleness = "P7D"
 # with neither cannot be reviewed and should be refused in review. Suppressing an
 # advisory belongs here, in the tree, and never as a flag on the command line
 # where nobody reads it.
-ignore = [
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained; the repository was archived in August 2025. Not a direct dependency: it arrives as tonic 0.12.3 <- qdrant-client 1.15.0, so there is nothing to act on here until qdrant-client moves to a tonic that dropped it. The replacement is rustls-pki-types' PemObject, which is upstream's call to make, not ours. Announcement: https://github.com/rustls/pemfile/issues/61" },
-]
+ignore = []

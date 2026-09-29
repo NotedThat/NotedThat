@@ -41,7 +41,7 @@ jobs:
       # diagnosis from "both red", and fail-fast would hide which one it is.
       fail-fast: false
       matrix:
-        toolchain: [stable, "1.91.1"]
+        toolchain: [stable, "1.94.1"]
     permissions:
       contents: read
     steps:
