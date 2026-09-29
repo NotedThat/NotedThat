@@ -31,6 +31,8 @@ fn no_panic_on_adversarial_inputs() {
         "# A\n\n## B\n\n### C\n\n#### D",
         "\0",
         "a\nb\nc",
+        "# A\r\n\r\nb\r\nc\r\n",
+        "e\u{301}\u{1F44D}\u{1F3FD} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
         &repeated_h,
     ];
     for max_chars in [1, 7, 3_000] {
@@ -47,6 +49,10 @@ fn no_panic_on_adversarial_inputs() {
                     "round-trip failed for max_chars={max_chars} input={shown:?}"
                 );
                 assert!(c.byte_start < c.byte_end);
+                assert!(
+                    c.text.chars().count() <= max_chars,
+                    "over bound for max_chars={max_chars} input={shown:?}"
+                );
             }
             // Whitespace-only chunks are dropped (D72), so the chunks cover the
             // input in order except for gaps that are only whitespace.
