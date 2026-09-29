@@ -186,6 +186,10 @@ announce-in-tag = true
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+# Dead code is deleted, not suppressed (#304). `deny`, not `forbid`: clap's
+# derive emits its own allow(dead_code), which `forbid` rejects. Suppressing it
+# ourselves is refused instead by the "No dead_code suppressions" step in ci.yml.
+dead_code = "deny"
 
 [workspace.lints.clippy]
 # Groups at priority -1 so individual allows (priority 0) override them.

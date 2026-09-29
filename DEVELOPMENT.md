@@ -37,6 +37,14 @@ cargo deny --locked check advisories
 cargo fmt --all
 ```
 
+Dead code is a build error (`dead_code = "deny"` in the workspace lints), and
+CI refuses any `#[allow]` or `#[expect]` of `dead_code` or `unused`. Delete the
+code instead. A fixture shared by several test binaries is the usual trap: each
+binary compiles its own copy of a `#[path]` module and leaves whatever it does
+not call dead. Split it so each binary includes only what it uses, or move it
+into the crate's `testing` module behind the `test-support` feature, as
+`notedthat_server::testing` does.
+
 ## Local service setup
 
 The supported development paths are documented in the root [README](README.md):
@@ -139,7 +147,7 @@ To bring up a whole server over them, build a `notedthat_server::run::Backends`
 and hand it to `run_with` (enable `notedthat-server`'s `test-support` feature).
 Startup, provisioning, the indexer worker, every listener and the shutdown
 sequence are the real code path; only S3, Qdrant and the embedding endpoint are
-substituted. See `crates/notedthat-server/tests/support/patch_backends.rs`.
+substituted. See `crates/notedthat-server/src/testing/backends.rs`.
 
 Build the `Config` from `Config::for_tests()` and override only what the test
 varies — `Config { listen_addr, kbs, ..Config::for_tests() }` — so a new
