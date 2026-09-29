@@ -13,10 +13,7 @@ use notedthat_server::{cli::ServerCli, config::Config, run::run, tracing_init::i
 /// (configuration missing or invalid, S3 provisioning error, etc.).
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::from_cli(ServerCli::parse()).map_err(|e| {
-        eprintln!("startup: {e}");
-        e
-    })?;
+    let config = Config::from_cli(ServerCli::parse())?;
     init_tracing(config.log_format)?;
     run(config).await
 }

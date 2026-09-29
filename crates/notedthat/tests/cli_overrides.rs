@@ -123,6 +123,19 @@ fn a_startup_diagnostic_names_both_forms() {
     assert!(stderr.contains("--api-token"), "{stderr}");
 }
 
+/// A startup failure is reported once, so operators and log alerting do not
+/// count one misconfiguration as two.
+#[test]
+fn a_startup_failure_is_reported_on_exactly_one_line() {
+    let output = clean(SERVER_BIN).output().unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("Error: "), "{stderr}");
+}
+
 /// A setting supplied only as a flag reaches the same cross-backend rule as the
 /// variable form — the check is over resolved values, not over the environment.
 #[test]
