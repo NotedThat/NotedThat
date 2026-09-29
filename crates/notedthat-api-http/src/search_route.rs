@@ -77,13 +77,21 @@ impl Drop for SearchCall {
 
 /// Search one knowledge base.
 ///
-/// Hybrid: dense embeddings and keyword matching, fused by rank. Hits are
-/// limited to keys the caller's `search` grant spans. The body is at most
-/// 64 KiB.
+/// # Errors
+///
+/// Returns an [`ApiErrorResponse`] carrying the request id when the slug is malformed, the
+/// knowledge base is not declared or the caller may not search it, the body exceeds its
+/// limit, is not `application/json` or is not a valid search request, or the search itself
+/// fails.
 #[utoipa::path(
     post,
     path = "/knowledgebases/{kb_slug}/search",
     tag = "search",
+    // Set here rather than in the doc comment, so the `# Errors` section stays out of the
+    // published operation.
+    description = "Hybrid: dense embeddings and keyword matching, fused by rank. Hits are\n\
+                   limited to keys the caller's `search` grant spans. The body is at most\n\
+                   64 KiB.",
     params(KbPath),
     request_body(content = SearchRequest, content_type = "application/json"),
     security(("bearer" = []), ()),
