@@ -44,7 +44,7 @@ A client that speaks the streamable HTTP transport needs only this configuration
 
 ## WebDAV
 
-`/webdav/` serves the same knowledge bases as a WebDAV share, one directory per knowledge base. It accepts `Authorization: Bearer <token>` like the other surfaces and, alone among them, HTTP Basic with the deployment's WebDAV username and password. The access rules apply per method: `PROPFIND` needs `list`, `GET` and `HEAD` need `read`, `PUT`, `MKCOL` and `COPY` need `write`, `DELETE` needs `delete`, and `MOVE` needs both; where `anyone` holds a verb the corresponding methods work without credentials. It is a Class 1 server: there is no `LOCK`, so clients that insist on one before saving cannot write through it.
+`/webdav/` serves the same knowledge bases as a WebDAV share, one directory per knowledge base. It accepts `Authorization: Bearer <token>` like the other surfaces and, alone among them, HTTP Basic with the deployment's WebDAV username and password. The access rules apply per method: `PROPFIND` needs `list`, `GET` and `HEAD` need `read`, `PUT`, `MKCOL`, `COPY` and `PROPPATCH` need `write`, `DELETE` needs `delete`, and `MOVE` needs both; where `anyone` holds a verb the corresponding methods work without credentials. `PROPFIND` takes `Depth: 0` or `Depth: 1`; on a collection, `Depth: infinity` and a request with no `Depth` are refused with `403`, while a file ignores `Depth`. It is a Class 1 server: there is no `LOCK`, so clients that insist on one before saving cannot write through it, and `PROPPATCH` stores no properties.
 
 ## Everything else
 

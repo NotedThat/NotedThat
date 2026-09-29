@@ -198,7 +198,8 @@ pub(crate) async fn map_response(
         .map_or_else(|| format!("HTTP {}", status.as_u16()), str::to_owned);
 
     Err(match status.as_u16() {
-        400 => McpToolError::InvalidRequest(message),
+        // 428 (RFC 6585): a write that must be conditional arrived without If-Match.
+        400 | 428 => McpToolError::InvalidRequest(message),
         401 => McpToolError::Unauthorized,
         403 => McpToolError::Forbidden,
         404 => McpToolError::NotFound(message),
@@ -381,6 +382,7 @@ mod tests {
             (404, |e| matches!(e, McpToolError::NotFound(_))),
             (412, |e| matches!(e, McpToolError::PreconditionFailed)),
             (413, |e| matches!(e, McpToolError::PayloadTooLarge)),
+            (428, |e| matches!(e, McpToolError::InvalidRequest(_))),
             (416, |e| matches!(e, McpToolError::RangeNotSatisfiable)),
             (500, |e| matches!(e, McpToolError::InternalError(_))),
             (503, |e| matches!(e, McpToolError::BackendUnavailable)),

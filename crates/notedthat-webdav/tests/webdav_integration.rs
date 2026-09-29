@@ -205,11 +205,11 @@ async fn test_propfind_kb_lists_objects() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. PROPFIND Depth: infinity → 501
+// 5. PROPFIND Depth: infinity → 403 propfind-finite-depth (RFC 4918 §9.1.1)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_propfind_depth_infinity_returns_501() {
+async fn test_propfind_depth_infinity_returns_403() {
     let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
@@ -221,7 +221,66 @@ async fn test_propfind_depth_infinity_returns_501() {
         .await
         .expect("PROPFIND Depth: infinity");
 
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("<D:propfind-finite-depth/>"), "{body}");
+
+    // RFC 4918 §9.1: a PROPFIND without Depth is an infinite one.
+    let resp = client
+        .request(webdav_method(b"PROPFIND"), format!("{url}/webdav"))
+        .header("Authorization", basic_auth(&username, &password))
+        .send()
+        .await
+        .expect("PROPFIND without Depth");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_propfind_of_a_file_ignores_a_missing_or_infinite_depth() {
+    // RFC 4918 §10.2: a resource without members ignores Depth, so a file answers
+    // as it would at `Depth: 0`. Its folder is still refused.
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+    client
+        .put(format!("{url}/webdav/notes/sub/a.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# A")
+        .send()
+        .await
+        .expect("PUT sub/a.md");
+    let propfind = |path: &'static str, depth: Option<&'static str>| {
+        let request = client
+            .request(
+                webdav_method(b"PROPFIND"),
+                format!("{url}/webdav/notes/{path}"),
+            )
+            .header("Authorization", basic_auth(&username, &password));
+        match depth {
+            Some(depth) => request.header("Depth", depth),
+            None => request,
+        }
+        .send()
+    };
+
+    for depth in [None, Some("infinity")] {
+        let resp = propfind("sub/a.md", depth).await.expect("PROPFIND file");
+        assert_eq!(resp.status(), StatusCode::MULTI_STATUS, "{depth:?}");
+        let body = resp.text().await.expect("body");
+        assert!(body.contains("a.md"), "{body}");
+
+        let resp = propfind("sub/", depth).await.expect("PROPFIND folder");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{depth:?}");
+
+        let resp = propfind("sub", depth)
+            .await
+            .expect("PROPFIND folder, no slash");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{depth:?}");
+
+        let resp = propfind("absent.md", depth).await.expect("PROPFIND absent");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{depth:?}");
+    }
 
     handle.abort();
 }
@@ -769,6 +828,45 @@ async fn test_single_object_copy_succeeds() {
     handle.abort();
 }
 
+#[tokio::test]
+async fn test_move_honours_if_match_and_the_if_header() {
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+    let put = client
+        .put(format!("{url}/webdav/notes/guarded.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# Guarded")
+        .send()
+        .await
+        .expect("PUT guarded.md");
+    let etag = put.headers()["etag"].to_str().unwrap().to_string();
+    let move_with = |name: &'static str, value: String| {
+        client
+            .request(
+                webdav_method(b"MOVE"),
+                format!("{url}/webdav/notes/guarded.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header("Destination", format!("{url}/webdav/notes/moved.md"))
+            .header(name, value)
+            .send()
+    };
+
+    // A stale validator in either header refuses the MOVE (RFC 9110 §13.2.1,
+    // RFC 4918 §10.4) and leaves the source in place.
+    let stale = move_with("If-Match", "\"stale\"".into())
+        .await
+        .expect("MOVE");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    let stale = move_with("If", "([\"stale\"])".into()).await.expect("MOVE");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    let current = move_with("If", format!("([{etag}])")).await.expect("MOVE");
+    assert_eq!(current.status(), StatusCode::CREATED);
+
+    handle.abort();
+}
+
 // ---------------------------------------------------------------------------
 // 17. MOVE of KB root (collection) returns 403 + <nt:no-collection-move/>
 // ---------------------------------------------------------------------------
@@ -891,25 +989,120 @@ async fn test_unlock_returns_405() {
 }
 
 // ---------------------------------------------------------------------------
-// 21. PROPPATCH returns 405
+// 21. PROPPATCH answers 207 and stores nothing (RFC 4918 §9.2)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_proppatch_returns_405() {
+async fn test_proppatch_returns_207() {
     let (handle, url, username, password) = start_webdav_server().await;
 
     let client = reqwest::Client::new();
-    let resp = client
-        .request(
-            webdav_method(b"PROPPATCH"),
-            format!("{url}/webdav/notes/any-file.md"),
-        )
+    client
+        .put(format!("{url}/webdav/notes/patched.md"))
         .header("Authorization", basic_auth(&username, &password))
+        .body("# Patched")
         .send()
         .await
-        .expect("PROPPATCH request");
+        .expect("PUT patched.md");
+    let proppatch = |body: &'static str| {
+        client
+            .request(
+                webdav_method(b"PROPPATCH"),
+                format!("{url}/webdav/notes/patched.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header("Content-Type", "application/xml")
+            .body(body)
+            .send()
+    };
 
-    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    // Windows Explorer's timestamps are accepted without being stored.
+    let resp = proppatch(
+        r#"<D:propertyupdate xmlns:D="DAV:" xmlns:Z="urn:schemas-microsoft-com:"><D:set><D:prop><Z:Win32LastModifiedTime>Mon, 01 Jan 2024 00:00:00 GMT</Z:Win32LastModifiedTime></D:prop></D:set></D:propertyupdate>"#,
+    )
+    .await
+    .expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("HTTP/1.1 200 OK"), "{body}");
+
+    // Anything else is a protected property.
+    let resp = proppatch(
+        r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><x:color xmlns:x="urn:x">red</x:color></D:prop></D:set></D:propertyupdate>"#,
+    )
+    .await
+    .expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("HTTP/1.1 403 Forbidden"), "{body}");
+    assert!(body.contains("cannot-modify-protected-property"), "{body}");
+
+    let resp = proppatch("not xml").await.expect("PROPPATCH");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_proppatch_of_a_folder_url_with_a_trailing_slash_returns_207() {
+    // Windows Explorer sets its timestamps on a copied folder's canonical URL.
+    let (handle, url, username, password) = start_webdav_server().await;
+
+    let client = reqwest::Client::new();
+    client
+        .put(format!("{url}/webdav/notes/sub/child.md"))
+        .header("Authorization", basic_auth(&username, &password))
+        .body("# Child")
+        .send()
+        .await
+        .expect("PUT sub/child.md");
+    let resp = client
+        .request(webdav_method(b"PROPPATCH"), format!("{url}/webdav/notes/sub/"))
+        .header("Authorization", basic_auth(&username, &password))
+        .header("Content-Type", "application/xml")
+        .body(
+            r#"<D:propertyupdate xmlns:D="DAV:" xmlns:Z="urn:schemas-microsoft-com:"><D:set><D:prop><Z:Win32LastModifiedTime>Mon, 01 Jan 2024 00:00:00 GMT</Z:Win32LastModifiedTime></D:prop></D:set></D:propertyupdate>"#,
+        )
+        .send()
+        .await
+        .expect("PROPPATCH");
+
+    assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+    let body = resp.text().await.expect("body");
+    assert!(body.contains("/webdav/notes/sub/</D:href>"), "{body}");
+    assert!(body.contains("HTTP/1.1 200 OK"), "{body}");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_proppatch_of_a_missing_target_is_404_whatever_the_preconditions() {
+    // RFC 9110 §13.2.1: a request that would be 404 without its preconditions ignores
+    // them, so If-Match on a missing target is 404, not 412.
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+
+    for (name, value) in [
+        ("If-Match", "\"a\""),
+        ("If-Match", "*"),
+        ("If-None-Match", "*"),
+        ("If", "([\"a\"])"),
+    ] {
+        let resp = client
+            .request(
+                webdav_method(b"PROPPATCH"),
+                format!("{url}/webdav/notes/absent.md"),
+            )
+            .header("Authorization", basic_auth(&username, &password))
+            .header(name, value)
+            .body(
+                r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>"#,
+            )
+            .send()
+            .await
+            .expect("PROPPATCH");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}: {value}");
+    }
 
     handle.abort();
 }

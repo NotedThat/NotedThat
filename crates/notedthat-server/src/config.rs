@@ -1142,13 +1142,7 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         cli.oidc_http_timeout_ms.as_deref(),
         OidcSettings::DEFAULT_HTTP_TIMEOUT_MS,
     )?);
-    let resource = cli
-        .oidc_resource
-        .as_deref()
-        .map(str::trim)
-        .map(|resource| absolute_http_url("NOTEDTHAT_OIDC_RESOURCE", resource))
-        .transpose()?
-        .map(|url| url.to_string().trim_end_matches('/').to_string());
+    let resource = parse_oidc_resource(cli.oidc_resource.as_deref())?;
 
     let ca_cert = match cli.oidc_ca_cert.as_deref() {
         None => None,
@@ -1181,6 +1175,26 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         resource,
         ca_cert,
     }))
+}
+
+/// `NOTEDTHAT_OIDC_RESOURCE`: an absolute `http(s)` URL, trailing slash dropped.
+///
+/// RFC 9728 §1.2 forbids a fragment, and a query would have to ride along into the
+/// metadata URL (§3.1), which this server routes by path alone, so both are refused.
+fn parse_oidc_resource(raw: Option<&str>) -> Result<Option<String>, Error> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(None);
+    };
+    absolute_http_url("NOTEDTHAT_OIDC_RESOURCE", raw)?;
+    if url::Url::parse(raw).is_ok_and(|url| url.query().is_some() || url.fragment().is_some()) {
+        return Err(Error::Config {
+            message: format!(
+                "{} must not carry a query or a fragment",
+                setting("NOTEDTHAT_OIDC_RESOURCE")
+            ),
+        });
+    }
+    Ok(Some(raw.trim_end_matches('/').to_string()))
 }
 
 /// Parse an `http(s)` URL setting, keeping the operator's spelling.
@@ -3109,6 +3123,14 @@ pub(crate) mod tests {
                 ("NOTEDTHAT_OIDC_GROUPS_CLAIM", ""),
                 ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", "0"),
                 ("NOTEDTHAT_OIDC_RESOURCE", "notes.example.com"),
+                (
+                    "NOTEDTHAT_OIDC_RESOURCE",
+                    "https://notes.example.com/mcp?tenant=a",
+                ),
+                (
+                    "NOTEDTHAT_OIDC_RESOURCE",
+                    "https://notes.example.com/mcp#top",
+                ),
                 ("NOTEDTHAT_OIDC_CA_CERT", "/nonexistent/ca.pem"),
             ] {
                 let error = run_with_env(

@@ -336,7 +336,7 @@ pub fn storage_outcome<T>(result: &Result<T, StorageError>) -> &'static str {
         Ok(_) => outcome::OK,
         Err(StorageError::NotFound { .. }) => outcome::NOT_FOUND,
         Err(
-            StorageError::NotModified
+            StorageError::NotModified(_)
             | StorageError::PreconditionFailed
             | StorageError::RangeNotSatisfiable { .. },
         ) => outcome::PRECONDITION,
@@ -358,7 +358,7 @@ pub fn storage_outcome<T>(result: &Result<T, StorageError>) -> &'static str {
 pub fn storage_error_kind(error: &StorageError) -> Option<&'static str> {
     match error {
         StorageError::NotFound { .. }
-        | StorageError::NotModified
+        | StorageError::NotModified(_)
         | StorageError::PreconditionFailed
         | StorageError::RangeNotSatisfiable { .. } => None,
         StorageError::BucketNotFound { .. } => Some("bucket_not_found"),
@@ -514,7 +514,7 @@ mod tests {
             StorageError::NotFound {
                 key: "some/key.md".to_string(),
             },
-            StorageError::NotModified,
+            StorageError::NotModified(crate::Validators::default()),
             StorageError::PreconditionFailed,
             StorageError::RangeNotSatisfiable { complete_length: 9 },
         ] {

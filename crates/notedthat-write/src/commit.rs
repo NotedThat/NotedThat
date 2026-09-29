@@ -429,8 +429,11 @@ mod tests {
             }
 
             let etag = format!("\"etag-{}\"", objects.len() + 1);
-            objects.insert(key, etag.clone());
-            Ok(PutOutcome { etag: Some(etag) })
+            let replaced = objects.insert(key, etag.clone());
+            Ok(PutOutcome {
+                etag: Some(etag),
+                created: replaced.is_none(),
+            })
         }
 
         async fn put_staged_object(
@@ -461,8 +464,11 @@ mod tests {
             let key = format!("{}/{}", kb.as_str(), destination.as_str());
             let mut objects = self.objects.lock().expect("mutex not poisoned");
             let etag = format!("\"etag-{}\"", objects.len() + 1);
-            objects.insert(key, etag.clone());
-            Ok(PutOutcome { etag: Some(etag) })
+            let replaced = objects.insert(key, etag.clone());
+            Ok(PutOutcome {
+                etag: Some(etag),
+                created: replaced.is_none(),
+            })
         }
 
         async fn delete_object(

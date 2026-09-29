@@ -1,9 +1,12 @@
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{ConditionalHeaders, CopyObjectOptions, StorageError};
+use notedthat_core::{
+    ConditionalHeaders, CopyObjectOptions, ObjectState, StorageError, evaluate_write_preconditions,
+};
 use notedthat_write::sniff_content_type;
 
+use crate::if_header::IfHeader;
 use crate::state::WebDavState;
 
 use super::super::backpressure::{
@@ -22,6 +25,23 @@ fn single_header(headers: &HeaderMap, name: &'static str) -> Result<Option<Strin
     first
         .map(|value| value.to_str().map(str::to_owned).map_err(|_| ()))
         .transpose()
+}
+
+/// Whether the `If` resource tag `tag` names `kb`/`object`. The tag is an absolute URI
+/// or an absolute path, spelled like the `Destination` header.
+fn same_object(
+    tag: &str,
+    state: &WebDavState,
+    kb: &notedthat_core::KbSlug,
+    object: &notedthat_core::ObjectPath,
+) -> bool {
+    let Ok(uri) = tag.parse::<Uri>() else {
+        return false;
+    };
+    parse_webdav_uri_path(uri.path(), &state.declared_kbs)
+        .ok()
+        .and_then(|target| object_target_or_collection_error(target).ok())
+        .is_some_and(|(tag_kb, tag_object)| &tag_kb == kb && &tag_object == object)
 }
 
 pub(crate) async fn handle_move(state: WebDavState, req: Request) -> Response {
@@ -95,12 +115,22 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         };
         return (StatusCode::FORBIDDEN, dav_error_body(condition)).into_response();
     }
+    // The client's preconditions on the source: If-Match / If-None-Match (RFC 9110
+    // §13.2.1) and the WebDAV If header (RFC 4918 §10.4). Both are judged against the
+    // ETag the HEAD below reports, and the copy and the MOVE's delete are then pinned to
+    // that same ETag, so a write landing after the check still fails with 412.
+    let conditionals = ConditionalHeaders::from_header_map(req.headers());
+    let Ok(if_header) = IfHeader::from_headers(req.headers()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let src_meta = match state
         .storage
         .head_object(&src_kb, &src_obj, ConditionalHeaders::default())
         .await
     {
         Ok(meta) => meta,
+        // Without its preconditions this request would be a 404, so they are ignored
+        // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
         Err(StorageError::NotFound { .. } | StorageError::BucketNotFound { .. }) => {
             return StatusCode::NOT_FOUND.into_response();
         }
@@ -109,12 +139,43 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     let Some(source_etag) = src_meta.etag else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let dst_exists = overwrite
-        && state
+    let source_state = ObjectState {
+        etag: &source_etag,
+        // Write preconditions never read the dates (see `evaluate_write_preconditions`).
+        last_modified: std::time::UNIX_EPOCH,
+    };
+    if evaluate_write_preconditions(Some(source_state), &conditionals).is_err() {
+        return StatusCode::PRECONDITION_FAILED.into_response();
+    }
+    // The destination is looked up only when a tagged `If` list names it and so needs
+    // its ETag. Whether the copy created it comes from the backend (`outcome.created`).
+    let names_destination = if_header.as_ref().is_some_and(|header| {
+        header
+            .resources()
+            .any(|resource| same_object(resource, &state, &dst_kb, &dst_obj))
+    });
+    let dst_etag = if names_destination {
+        state
             .storage
             .head_object(&dst_kb, &dst_obj, ConditionalHeaders::default())
             .await
-            .is_ok();
+            .ok()
+            .map(|meta| meta.etag.unwrap_or_default())
+    } else {
+        None
+    };
+    if let Some(header) = &if_header {
+        let holds = header.evaluate(|resource| match resource {
+            None => Some(source_etag.as_str()),
+            Some(tag) if same_object(tag, &state, &src_kb, &src_obj) => Some(source_etag.as_str()),
+            Some(tag) if same_object(tag, &state, &dst_kb, &dst_obj) => dst_etag.as_deref(),
+            // Any other resource is none this request touches; treat it as absent.
+            Some(_) => None,
+        });
+        if !holds {
+            return StatusCode::PRECONDITION_FAILED.into_response();
+        }
+    }
     let outcome = match notedthat_write::commit_copy(
         state.storage.as_ref(),
         &state.sinks(),
@@ -190,10 +251,10 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         }
     }
     response_with_optional_etag(
-        if dst_exists {
-            StatusCode::NO_CONTENT
-        } else {
+        if outcome.created {
             StatusCode::CREATED
+        } else {
+            StatusCode::NO_CONTENT
         },
         outcome.etag,
     )

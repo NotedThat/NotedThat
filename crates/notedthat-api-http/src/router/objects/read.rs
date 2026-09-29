@@ -3,16 +3,17 @@ use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
+use crate::validators::with_validators;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
+use axum::http::header::{ACCEPT_RANGES, IF_RANGE};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
-    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, StorageError, Verb,
-    parse_line_range_header, parse_range_header,
+    ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, ObjectRead,
+    StorageError, Verb, if_range_matches, parse_line_range_header, parse_range_header,
 };
 use std::borrow::Cow;
-use std::time::{Duration, UNIX_EPOCH};
 
 fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     let Ok(media_type) = content_type.parse::<mime::Mime>() else {
@@ -78,16 +79,8 @@ pub(in crate::router) async fn head_object(
         let content_type = normalize_content_type(ct);
         builder = builder.header("content-type", content_type.as_ref());
     }
-    if let Some(etag) = &meta.etag {
-        builder = builder.header("etag", etag.as_str());
-    }
-    if let Some(last_modified) = meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header("last-modified", httpdate::fmt_http_date(last_modified));
-    }
+    builder = with_validators(builder, meta.etag.as_deref(), meta.last_modified)
+        .header(ACCEPT_RANGES, "bytes");
     // Content-Length from metadata size, not body length (HEAD has no body).
     builder = builder.header("content-length", meta.size.to_string());
 
@@ -114,6 +107,11 @@ pub(in crate::router) async fn get_object(
     access.require(Verb::Read, path.as_str()).map_err(&err)?;
     let kb = access.kb().clone();
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
+    // A non-UTF-8 `If-Range` can match nothing, so it reads as a stale validator.
+    let if_range = req
+        .headers()
+        .get(IF_RANGE)
+        .map(|value| value.to_str().unwrap_or_default().to_owned());
 
     let range = match req.headers().get(axum::http::header::RANGE) {
         None => None,
@@ -132,6 +130,7 @@ pub(in crate::router) async fn get_object(
                     &path,
                     raw_str,
                     conditionals,
+                    if_range.as_deref(),
                     &request_id,
                 )
                 .await;
@@ -140,16 +139,60 @@ pub(in crate::router) async fn get_object(
         }
     };
 
+    let not_found = |error: StorageError| match error {
+        StorageError::NotFound { .. } => err(ApiError::Core(CoreError::NotFound {
+            resource: path.as_str().to_string(),
+        })),
+        other => err(ApiError::from(other)),
+    };
+    let ranged = range.is_some();
     let read = state
         .storage
-        .get_object(&kb, &path, range, conditionals)
+        .get_object(&kb, &path, range, conditionals.clone())
+        .await;
+
+    // RFC 9110 §13.1.5: `If-Range` makes the range conditional on the validator still
+    // describing the object. It is checked against the metadata that came back with the
+    // slice — the version the bytes were cut from, so no write can slip in between. On
+    // a mismatch the slice is discarded and the whole current object served as a 200.
+    let Some(if_range) = if_range.filter(|_| ranged) else {
+        return Ok(full_or_partial_response(read.map_err(not_found)?));
+    };
+    let unsatisfiable = match read {
+        Ok(read)
+            if if_range_matches(
+                &if_range,
+                read.meta.etag.as_deref(),
+                read.meta.last_modified,
+            ) =>
+        {
+            return Ok(full_or_partial_response(read));
+        }
+        Ok(_) => None,
+        // A 416 stands only if the validator matches; a stale one gets the full body.
+        Err(error @ StorageError::RangeNotSatisfiable { .. }) => Some(error),
+        Err(error) => return Err(not_found(error)),
+    };
+    let full = state
+        .storage
+        .get_object(&kb, &path, None, conditionals)
         .await
-        .map_err(|error| match error {
-            StorageError::NotFound { .. } => err(ApiError::Core(CoreError::NotFound {
-                resource: path.as_str().to_string(),
-            })),
-            other => err(ApiError::from(other)),
-        })?;
+        .map_err(not_found)?;
+    if let Some(error) = unsatisfiable
+        && if_range_matches(
+            &if_range,
+            full.meta.etag.as_deref(),
+            full.meta.last_modified,
+        )
+    {
+        return Err(not_found(error));
+    }
+    Ok(full_or_partial_response(full))
+}
+
+/// The response for a byte read: `206` with `Content-Range` when the backend served a
+/// slice, `200` with the whole object otherwise.
+fn full_or_partial_response(read: ObjectRead) -> Response {
     let content_type = normalize_content_type(
         read.meta
             .content_type
@@ -165,31 +208,17 @@ pub(in crate::router) async fn get_object(
     let mut builder = Response::builder()
         .status(status)
         .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
-        .header(axum::http::header::CONTENT_LENGTH, read.bytes.len());
+        .header(axum::http::header::CONTENT_LENGTH, read.bytes.len())
+        .header(ACCEPT_RANGES, "bytes");
 
-    if let Some(etag) = &read.meta.etag {
-        builder = builder.header(axum::http::header::ETAG, etag.as_str());
-    }
-    if let Some(last_modified) = read
-        .meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header(
-            axum::http::header::LAST_MODIFIED,
-            httpdate::fmt_http_date(last_modified),
-        );
-    }
+    builder = with_validators(builder, read.meta.etag.as_deref(), read.meta.last_modified);
     if let Some(content_range) = &read.content_range {
         builder = builder.header(axum::http::header::CONTENT_RANGE, content_range.as_str());
     }
 
-    let resp = builder
+    builder
         .body(Body::from(read.bytes))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-
-    Ok(resp)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn serve_line_range_read(
@@ -198,6 +227,7 @@ async fn serve_line_range_read(
     path: &ObjectPath,
     raw_range: &str,
     conditionals: ConditionalHeaders,
+    if_range: Option<&str>,
     request_id: &str,
 ) -> Result<Response, ApiErrorResponse> {
     let err = |error: ApiError| ApiErrorResponse {
@@ -217,6 +247,13 @@ async fn serve_line_range_read(
             })),
             other => err(ApiError::from(other)),
         })?;
+
+    // The whole object is already in hand, so a stale `If-Range` simply serves it.
+    if if_range.is_some_and(|if_range| {
+        !if_range_matches(if_range, read.meta.etag.as_deref(), read.meta.last_modified)
+    }) {
+        return Ok(full_or_partial_response(read));
+    }
 
     let idx = LineIndex::from_bytes(&read.bytes);
     let byte_range = idx.byte_range(&line_range).ok_or_else(|| {
@@ -248,20 +285,7 @@ async fn serve_line_range_read(
         .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
         .header(axum::http::header::CONTENT_LENGTH, sliced.len());
 
-    if let Some(etag) = &read.meta.etag {
-        builder = builder.header(axum::http::header::ETAG, etag.as_str());
-    }
-    if let Some(last_modified) = read
-        .meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header(
-            axum::http::header::LAST_MODIFIED,
-            httpdate::fmt_http_date(last_modified),
-        );
-    }
+    builder = with_validators(builder, read.meta.etag.as_deref(), read.meta.last_modified);
 
     let content_range_value = idx.content_range_string(&line_range);
     builder = builder.header("Content-Range", content_range_value);

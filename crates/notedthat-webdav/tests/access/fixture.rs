@@ -80,9 +80,14 @@ pub(super) fn state_with_policies(
 
 pub(super) fn request(method: &str, uri: &str) -> Request<Body> {
     let scoped_uri = format!("/webdav{uri}");
-    Request::builder()
-        .method(method)
-        .uri(scoped_uri)
+    let builder = Request::builder().method(method).uri(scoped_uri);
+    // A listing: without Depth, RFC 4918 §9.1 makes it infinite and it is refused.
+    let builder = if method == "PROPFIND" {
+        builder.header("depth", "1")
+    } else {
+        builder
+    };
+    builder
         .body(if method == "PROPFIND" {
             Body::from(PROPFIND_BODY)
         } else {

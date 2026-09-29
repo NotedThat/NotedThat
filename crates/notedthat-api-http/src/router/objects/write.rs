@@ -83,10 +83,14 @@ pub(in crate::router) async fn put_object(
     .await
     .map_err(|e| err(ApiError::from(e)))?;
 
-    let location = object_location(&kb_slug, path.as_str());
-    let mut builder = Response::builder()
-        .status(StatusCode::CREATED)
-        .header("location", location);
+    // RFC 9110 §9.3.4: 201 with a Location for a new object, 204 for a replacement.
+    let mut builder = if outcome.created {
+        Response::builder()
+            .status(StatusCode::CREATED)
+            .header("location", object_location(&kb_slug, path.as_str()))
+    } else {
+        Response::builder().status(StatusCode::NO_CONTENT)
+    };
     if let Some(etag) = &outcome.etag {
         builder = builder.header(axum::http::header::ETAG, etag.as_str());
     }

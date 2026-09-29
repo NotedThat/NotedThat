@@ -11,7 +11,7 @@ use bytes::Bytes;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
     ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
-    TenantSlug, derive_bucket_name,
+    TenantSlug, Validators, derive_bucket_name,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::{debug, info, warn};
@@ -58,6 +58,50 @@ impl S3Storage {
 
     fn bucket_name(&self, kb: &KbSlug) -> String {
         derive_bucket_name(&self.tenant, kb)
+    }
+
+    /// Whether a write to `key` will replace an existing object, for
+    /// [`PutOutcome::created`].
+    ///
+    /// S3's `PutObject` and `CopyObject` responses do not say. A precondition that the
+    /// write must satisfy settles it for free — `If-Match` holds only for an existing
+    /// object and `If-None-Match: *` only for a missing one — and otherwise a `HEAD`
+    /// taken just before the write answers it. That `HEAD` can race a concurrent
+    /// writer; the worst outcome is a `201` where a `204` was due, or the reverse.
+    ///
+    /// The `HEAD` only picks the status, so it never fails the write: any answer but
+    /// `404` counts as an existing object, and a backend fault is left for the write
+    /// itself to report.
+    async fn key_exists_before_write(
+        &self,
+        bucket: &str,
+        key: &str,
+        if_match: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> bool {
+        if if_none_match.is_some_and(|value| value.trim() == "*") {
+            return false;
+        }
+        if if_match.is_some() {
+            return true;
+        }
+        match self
+            .client
+            .head_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(_) => true,
+            Err(error) => match map_head_error(&error, bucket, key) {
+                StorageError::NotFound { .. } => false,
+                other => {
+                    warn!(bucket = %bucket, key = %key, error = %other, "HEAD before write failed; answering as a replace");
+                    true
+                }
+            },
+        }
     }
 
     /// Find out whether `kb`'s bucket enforces the preconditions `NotedThat` forwards on a
@@ -366,6 +410,17 @@ fn extract_complete_length_from_content_range(raw: &HttpResponse) -> Option<u64>
     after_slash.trim().parse::<u64>().ok()
 }
 
+/// The validators S3 sent on a 304, which the API repeats (RFC 9110 §15.4.5).
+fn not_modified_from(raw: &HttpResponse) -> StorageError {
+    let header = |name: &str| raw.headers().get(name).map(str::to_string);
+    StorageError::NotModified(Validators {
+        etag: header("etag"),
+        last_modified: header("last-modified")
+            .and_then(|value| httpdate::parse_http_date(&value).ok())
+            .map(notedthat_core::unix_seconds_i64),
+    })
+}
+
 fn map_get_error(
     err: &SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
     bucket: &str,
@@ -374,7 +429,7 @@ fn map_get_error(
     if let SdkError::ServiceError(inner) = err {
         let raw = inner.raw();
         match raw.status().as_u16() {
-            304 => return StorageError::NotModified,
+            304 => return not_modified_from(raw),
             412 => return StorageError::PreconditionFailed,
             416 => {
                 let complete_length = extract_complete_length_from_content_range(raw).unwrap_or(0);
@@ -406,7 +461,7 @@ fn map_head_error(
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err {
         match inner.raw().status().as_u16() {
-            304 => return StorageError::NotModified,
+            304 => return not_modified_from(inner.raw()),
             412 => return StorageError::PreconditionFailed,
             _ => {}
         }
@@ -625,6 +680,8 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.head_object().bucket(&bucket).key(key);
 
         if let Some(v) = conditionals.if_match {
@@ -664,6 +721,8 @@ impl Storage for S3Storage {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.get_object().bucket(&bucket).key(key);
 
         if let Some(range) = &range {
@@ -724,6 +783,8 @@ impl Storage for S3Storage {
     ) -> Result<ObjectStream, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
+        // RFC 9110 §13.2.2 precedence, identical on every backend.
+        let conditionals = conditionals.for_read();
         let mut req = self.client.get_object().bucket(&bucket).key(key);
         if let Some(range) = &range {
             req = req.range(range.to_http_string());
@@ -777,6 +838,14 @@ impl Storage for S3Storage {
     ) -> Result<PutOutcome, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                key,
+                conditionals.if_match.as_deref(),
+                conditionals.if_none_match.as_deref(),
+            )
+            .await;
 
         let mut req = self
             .client
@@ -806,6 +875,7 @@ impl Storage for S3Storage {
         info!(bucket = %bucket, key = %key, "object stored");
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
+            created: !existed,
         })
     }
 
@@ -831,6 +901,14 @@ impl Storage for S3Storage {
                 })?,
             _ => return Err(storage_other("invalid staged body storage".into())),
         };
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                key,
+                conditionals.if_match.as_deref(),
+                conditionals.if_none_match.as_deref(),
+            )
+            .await;
         let mut req = self
             .client
             .put_object()
@@ -852,6 +930,7 @@ impl Storage for S3Storage {
             .map_err(|error| map_put_error(&error, &bucket))?;
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
+            created: !existed,
         })
     }
 
@@ -870,6 +949,14 @@ impl Storage for S3Storage {
             .collect::<Vec<_>>()
             .join("/");
         let copy_source = format!("{bucket}/{encoded_source}");
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                destination.as_str(),
+                None,
+                options.destination_if_none_match.as_deref(),
+            )
+            .await;
         let mut req = self
             .client
             .copy_object()
@@ -896,6 +983,7 @@ impl Storage for S3Storage {
                 .copy_object_result()
                 .and_then(|result| result.e_tag())
                 .map(normalize_etag),
+            created: !existed,
         })
     }
 

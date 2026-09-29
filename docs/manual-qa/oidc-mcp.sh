@@ -133,7 +133,7 @@ m["access"]=[
   {"who":"user:alice","may":["delete"],"under":["personal/alice/**"]},
 ]
 print(json.dumps(m))')
-    assert "group-scoped manifest written" "201" "$(status -X PUT -H "Authorization: Bearer $NT_TOKEN" -H 'Content-Type: application/json' --data-binary "$MANIFEST" "$(obj .notedthat%2Fmanifest.json)")"
+    assert "group-scoped manifest replaced" "204" "$(status -X PUT -H "Authorization: Bearer $NT_TOKEN" -H 'Content-Type: application/json' --data-binary "$MANIFEST" "$(obj .notedthat%2Fmanifest.json)")"
     echo
     echo "Phase 1 complete. Policies are a startup snapshot, so now:"
     echo "  docker compose -f docker-compose.yml -f docker-compose.auth.yml restart notedthat-server"
@@ -143,7 +143,7 @@ else
     assert "ivan reads handbook.md" "200" "$(status -H "Authorization: Bearer $IVAN" "$(obj handbook.md)")"
     assert "ivan is barred from hr/" "403" "$(status -H "Authorization: Bearer $IVAN" "$(obj hr%2Fsalaries.md)")"
     assert "alice reads hr/" "200" "$(status -H "Authorization: Bearer $ALICE" "$(obj hr%2Fsalaries.md)")"
-    assert "alice (editor) writes" "201" "$(status -X PUT -H "Authorization: Bearer $ALICE" -H 'Content-Type: text/markdown' --data-binary '# Handbook v2' "$(obj handbook.md)")"
+    assert "alice (editor) replaces handbook.md" "204" "$(status -X PUT -H "Authorization: Bearer $ALICE" -H 'Content-Type: text/markdown' --data-binary '# Handbook v2' "$(obj handbook.md)")"
     assert "ivan (intern) cannot write" "403" "$(status -X PUT -H "Authorization: Bearer $IVAN" -H 'Content-Type: text/markdown' --data-binary '# nope' "$(obj handbook.md)")"
     assert "alice deletes under personal/alice/" "204" "$(status -X DELETE -H "Authorization: Bearer $ALICE" "$(obj personal%2Falice%2Ftodo.md)")"
     assert "ivan's MCP read of hr/ is a forbidden tool error" "forbidden" "$(mcp_call "$IVAN" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"read\",\"arguments\":{\"kb\":\"$NT_KB\",\"path\":\"hr/salaries.md\"}}}" \

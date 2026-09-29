@@ -18,7 +18,7 @@ use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::conditional::ConditionalHeaders;
-use crate::error::StorageError;
+use crate::error::{StorageError, Validators};
 use crate::range::ByteRange;
 
 /// The two facts about a stored object that every precondition check needs.
@@ -28,6 +28,16 @@ pub struct ObjectState<'a> {
     pub etag: &'a str,
     /// The object's last modification time.
     pub last_modified: SystemTime,
+}
+
+impl ObjectState<'_> {
+    /// The 304 this object answers, carrying its validators (RFC 9110 §15.4.5).
+    fn not_modified(self) -> StorageError {
+        StorageError::NotModified(Validators {
+            etag: Some(self.etag.to_string()),
+            last_modified: Some(unix_seconds_i64(self.last_modified)),
+        })
+    }
 }
 
 /// Whole seconds since the Unix epoch, saturating at zero for pre-epoch times.
@@ -127,14 +137,17 @@ pub fn evaluate_write_preconditions(
     Ok(())
 }
 
-/// Evaluate the preconditions that gate a read, in RFC 7232 §6 precedence order.
+/// Evaluate the preconditions that gate a read, in RFC 9110 §13.2.2 precedence order.
 ///
 /// `If-Match` is checked before `If-None-Match`, so a request carrying both a failing
-/// `If-Match` and a matching `If-None-Match` is a 412 rather than a 304.
+/// `If-Match` and a matching `If-None-Match` is a 412 rather than a 304. A date header
+/// whose `ETag` counterpart is present is ignored, unparsed ([`ConditionalHeaders::for_read`]).
 pub fn evaluate_read_preconditions(
     state: ObjectState<'_>,
     conditionals: &ConditionalHeaders,
 ) -> Result<(), StorageError> {
+    let conditionals = &conditionals.for_read();
+
     if let Some(if_match) = &conditionals.if_match
         && !matches_if_match(state.etag, if_match)
     {
@@ -151,17 +164,35 @@ pub fn evaluate_read_preconditions(
     if let Some(if_none_match) = &conditionals.if_none_match
         && matches_if_none_match(Some(state.etag), if_none_match)
     {
-        return Err(StorageError::NotModified);
+        return Err(state.not_modified());
     }
 
     if let Some(if_modified_since) = &conditionals.if_modified_since {
         let threshold = parse_http_date_or_err(if_modified_since)?;
         if unix_seconds(state.last_modified) <= unix_seconds(threshold) {
-            return Err(StorageError::NotModified);
+            return Err(state.not_modified());
         }
     }
 
     Ok(())
+}
+
+/// Whether an `If-Range` validator still describes the object, per RFC 9110 §13.1.5.
+///
+/// `etag` and `last_modified` (Unix seconds) are those of the representation the range
+/// would be cut from. An entity tag must match by the strong comparison, so a weak tag
+/// never matches; an HTTP-date must equal `Last-Modified` exactly. Anything else,
+/// including a value that is neither, is a mismatch, and the caller then ignores `Range`
+/// and serves the whole representation.
+#[must_use]
+pub fn if_range_matches(if_range: &str, etag: Option<&str>, last_modified: Option<i64>) -> bool {
+    let if_range = if_range.trim();
+    if if_range.starts_with('"') || if_range.starts_with("W/") {
+        return !if_range.starts_with("W/")
+            && etag.is_some_and(|current| !current.starts_with("W/") && current == if_range);
+    }
+    httpdate::parse_http_date(if_range)
+        .is_ok_and(|date| last_modified == Some(unix_seconds_i64(date)))
 }
 
 /// Resolve a requested byte range against an object of `total_size` bytes.
@@ -195,8 +226,8 @@ pub fn resolve_range(
 #[cfg(test)]
 mod tests {
     use super::{
-        ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
-        matches_if_none_match, parse_http_date_or_err, resolve_range,
+        ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
+        matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range,
     };
     use crate::conditional::ConditionalHeaders;
     use crate::error::StorageError;
@@ -276,10 +307,45 @@ mod tests {
             if_modified_since: Some(http_date(1_000)),
             ..ConditionalHeaders::default()
         };
-        assert!(matches!(
-            evaluate_read_preconditions(state(), &conditionals),
-            Err(StorageError::NotModified)
-        ));
+        let Err(StorageError::NotModified(validators)) =
+            evaluate_read_preconditions(state(), &conditionals)
+        else {
+            panic!("expected NotModified");
+        };
+        assert_eq!(validators.etag.as_deref(), Some(ETAG));
+        assert_eq!(validators.last_modified, Some(1_000));
+    }
+
+    #[test]
+    fn read_ignores_if_unmodified_since_when_if_match_is_present() {
+        let conditionals = ConditionalHeaders {
+            if_match: Some(ETAG.into()),
+            if_unmodified_since: Some(http_date(0)),
+            ..ConditionalHeaders::default()
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
+    }
+
+    #[test]
+    fn read_ignores_if_modified_since_when_if_none_match_is_present() {
+        // A changed ETag with a same-second date: the ETag decides, so no stale 304.
+        let conditionals = ConditionalHeaders {
+            if_none_match: Some("\"stale\"".into()),
+            if_modified_since: Some(http_date(1_000)),
+            ..ConditionalHeaders::default()
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
+    }
+
+    #[test]
+    fn read_does_not_parse_a_superseded_date() {
+        let conditionals = ConditionalHeaders {
+            if_match: Some(ETAG.into()),
+            if_none_match: Some("\"stale\"".into()),
+            if_modified_since: Some("not-a-date".into()),
+            if_unmodified_since: Some("not-a-date".into()),
+        };
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
     }
 
     #[test]
@@ -293,6 +359,24 @@ mod tests {
             Err(StorageError::Other { .. })
         ));
         assert!(parse_http_date_or_err("not-a-date").is_err());
+    }
+
+    #[test]
+    fn if_range_entity_tags_compare_strongly() {
+        assert!(if_range_matches(ETAG, Some(ETAG), None));
+        assert!(!if_range_matches("\"stale\"", Some(ETAG), None));
+        assert!(!if_range_matches("W/\"abc\"", Some(ETAG), None));
+        assert!(!if_range_matches("W/\"abc\"", Some("W/\"abc\""), None));
+        assert!(!if_range_matches(ETAG, None, Some(1_000)));
+    }
+
+    #[test]
+    fn if_range_dates_must_equal_last_modified() {
+        assert!(if_range_matches(&http_date(1_000), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(999), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(1_001), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(1_000), None, None));
+        assert!(!if_range_matches("not-a-date", Some(ETAG), Some(1_000)));
     }
 
     #[test]

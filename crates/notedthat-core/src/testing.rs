@@ -324,7 +324,9 @@ impl Storage for InMemoryStorage {
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
         let key = (kb.as_str().to_string(), path.as_str().to_string());
-        evaluate_write_preconditions(inner.objects.get(&key).map(object_state), &conditionals)?;
+        let existing = inner.objects.get(&key);
+        evaluate_write_preconditions(existing.map(object_state), &conditionals)?;
+        let created = existing.is_none();
 
         let etag = compute_etag(&bytes);
         inner.objects.insert(
@@ -336,7 +338,10 @@ impl Storage for InMemoryStorage {
                 last_modified: SystemTime::now(),
             },
         );
-        Ok(PutOutcome { etag: Some(etag) })
+        Ok(PutOutcome {
+            etag: Some(etag),
+            created,
+        })
     }
 
     async fn put_staged_object(
@@ -401,10 +406,9 @@ impl Storage for InMemoryStorage {
             if_none_match: options.destination_if_none_match,
             ..ConditionalHeaders::default()
         };
-        evaluate_write_preconditions(
-            inner.objects.get(&destination_key).map(object_state),
-            &destination_conditions,
-        )?;
+        let existing = inner.objects.get(&destination_key);
+        evaluate_write_preconditions(existing.map(object_state), &destination_conditions)?;
+        let created = existing.is_none();
         let etag = source_object.etag.clone();
         inner.objects.insert(
             destination_key,
@@ -415,7 +419,10 @@ impl Storage for InMemoryStorage {
                 last_modified: SystemTime::now(),
             },
         );
-        Ok(PutOutcome { etag: Some(etag) })
+        Ok(PutOutcome {
+            etag: Some(etag),
+            created,
+        })
     }
 
     async fn delete_object(
@@ -882,7 +889,7 @@ mod tests {
         else {
             panic!("If-None-Match should return NotModified");
         };
-        assert!(matches!(err, StorageError::NotModified));
+        assert!(matches!(err, StorageError::NotModified(_)));
     }
 
     #[tokio::test]

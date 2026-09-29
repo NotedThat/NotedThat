@@ -159,6 +159,11 @@ pub fn build_bounded_router(state: AppState, bounds: &RequestBounds) -> Router {
             "/.well-known/oauth-protected-resource",
             get(protected_resource_metadata),
         )
+        // RFC 9728 §3.1: a resource with a path is described at suffix + path.
+        .route(
+            "/.well-known/oauth-protected-resource/{*path}",
+            get(protected_resource_metadata),
+        )
         .route(BROWSE_PREFIX, get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))
@@ -260,6 +265,7 @@ mod bounded_routes {
             (Method::PUT, "/api/v1/knowledgebases/notes/a.md"),
             (Method::GET, "/llms.txt"),
             (Method::GET, "/.well-known/oauth-protected-resource"),
+            (Method::GET, "/.well-known/oauth-protected-resource/mcp"),
             (Method::GET, "/browse"),
             (Method::GET, "/browse/notes/"),
         ] {
@@ -559,7 +565,7 @@ mod patch_route {
     }
 
     #[tokio::test]
-    async fn bytes_content_range_without_if_match_returns_invalid_request() {
+    async fn bytes_content_range_without_if_match_returns_precondition_required() {
         let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
 
         let response = patch_request(
@@ -571,7 +577,12 @@ mod patch_route {
         )
         .await;
 
-        assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+        assert_error_code(
+            response,
+            StatusCode::PRECONDITION_REQUIRED,
+            "precondition_required",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -759,7 +770,7 @@ mod patch_route {
         }
 
         #[tokio::test]
-        async fn missing_if_match_for_bytes_mode_returns_invalid_request() {
+        async fn missing_if_match_for_bytes_mode_returns_precondition_required() {
             let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
 
             let response = patch_request(
@@ -771,7 +782,12 @@ mod patch_route {
             )
             .await;
 
-            assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+            assert_error_code(
+                response,
+                StatusCode::PRECONDITION_REQUIRED,
+                "precondition_required",
+            )
+            .await;
         }
 
         #[tokio::test]

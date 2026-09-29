@@ -107,7 +107,7 @@ async fn appends_without_caller_if_match() {
 }
 
 #[tokio::test]
-async fn byte_patch_without_if_match_is_invalid() {
+async fn byte_patch_without_if_match_requires_a_precondition() {
     let storage = TestStorage::with_body(b"base");
 
     let err = run_patch(
@@ -122,7 +122,7 @@ async fn byte_patch_without_if_match_is_invalid() {
     .await
     .expect_err("missing If-Match fails");
 
-    assert!(matches!(err, WriteError::PatchInvalidRange { .. }));
+    assert!(matches!(err, WriteError::PreconditionRequired { .. }));
 }
 
 #[tokio::test]

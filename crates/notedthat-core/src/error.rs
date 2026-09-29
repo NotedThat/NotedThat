@@ -54,9 +54,10 @@ pub enum Error {
     #[error("malformed Range header: {0}")]
     MalformedRange(String),
 
-    /// Backend returned 304 Not Modified (conditional request). Maps to HTTP 304.
+    /// Backend returned 304 Not Modified (conditional request). Maps to HTTP 304,
+    /// carrying the validators a 200 would have (RFC 9110 §15.4.5).
     #[error("not modified")]
-    NotModified,
+    NotModified(Validators),
 
     /// Backend returned 412 Precondition Failed (conditional request). Maps to HTTP 412.
     #[error("precondition failed")]
@@ -69,6 +70,18 @@ pub enum Error {
         /// The total size of the object in bytes.
         complete_length: u64,
     },
+}
+
+/// The validators of the object a 304 Not Modified refers to.
+///
+/// RFC 9110 §15.4.5: a 304 must carry the `ETag` and `Last-Modified` a 200 for the same
+/// request would have. Either can be absent when the backend did not report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Validators {
+    /// The object's `ETag`, quoted per RFC 9110 §8.8.3.
+    pub etag: Option<String>,
+    /// The object's last modification time, in Unix seconds.
+    pub last_modified: Option<i64>,
 }
 
 /// Storage-layer error — distinct from [`enum@Error`] so that different backends
@@ -99,8 +112,9 @@ pub enum StorageError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// S3 backend returned 304 Not Modified.
-    NotModified,
+    /// The read's preconditions answered 304 Not Modified. Carries the object's
+    /// validators, which the 304 must repeat (RFC 9110 §15.4.5).
+    NotModified(Validators),
 
     /// S3 backend returned 412 Precondition Failed.
     PreconditionFailed,
@@ -120,7 +134,7 @@ impl std::fmt::Display for StorageError {
             Self::BucketNotFound { bucket } => write!(f, "bucket not found: {bucket}"),
             Self::BackendUnavailable { message } => write!(f, "backend unavailable: {message}"),
             Self::Other { source } => write!(f, "storage error: {source}"),
-            Self::NotModified => write!(f, "not modified"),
+            Self::NotModified(_) => write!(f, "not modified"),
             Self::PreconditionFailed => write!(f, "precondition failed"),
             Self::RangeNotSatisfiable { complete_length } => {
                 write!(f, "range not satisfiable (object size: {complete_length})")
@@ -149,7 +163,7 @@ impl StorageError {
 impl From<StorageError> for Error {
     fn from(err: StorageError) -> Self {
         match err {
-            StorageError::NotModified => Error::NotModified,
+            StorageError::NotModified(validators) => Error::NotModified(validators),
             StorageError::PreconditionFailed => Error::PreconditionFailed,
             StorageError::RangeNotSatisfiable { complete_length } => {
                 Error::RangeNotSatisfiable { complete_length }
@@ -298,9 +312,12 @@ mod tests {
 
     #[test]
     fn storage_error_not_modified_converts_to_error() {
-        let storage_err = StorageError::NotModified;
-        let err: Error = Error::from(storage_err);
-        assert!(matches!(err, Error::NotModified));
+        let validators = Validators {
+            etag: Some("\"v1\"".into()),
+            last_modified: Some(1_000),
+        };
+        let err: Error = Error::from(StorageError::NotModified(validators.clone()));
+        assert!(matches!(err, Error::NotModified(carried) if carried == validators));
     }
 
     #[test]

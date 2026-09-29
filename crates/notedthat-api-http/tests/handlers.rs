@@ -876,7 +876,8 @@ async fn put_if_match_correct_returns_new_etag() {
         .await
         .unwrap();
 
-    assert_eq!(second.status(), StatusCode::CREATED);
+    assert_eq!(second.status(), StatusCode::NO_CONTENT);
+    assert!(second.headers().get("location").is_none());
     let second_etag = second.headers().get("etag").unwrap().to_str().unwrap();
     assert!(
         !second_etag.is_empty(),
@@ -997,9 +998,10 @@ async fn put_overwrites_existing_object() {
         put_text(a.clone(), KB, "same.md", "first").await,
         StatusCode::CREATED
     );
+    // RFC 9110 §9.3.4: replacing an object is 204, not 201.
     assert_eq!(
         put_text(a.clone(), KB, "same.md", "second").await,
-        StatusCode::CREATED
+        StatusCode::NO_CONTENT
     );
 
     let resp = a
@@ -1412,6 +1414,126 @@ async fn get_range_206() {
     assert_eq!(&response_body[..], b"0123456789");
 }
 
+/// GET `path` with `Range` and `If-Range`, after seeding it with 100 bytes.
+///
+/// `validator` picks the `If-Range` value from the seeded object's 200 response.
+async fn get_with_if_range(
+    path: &str,
+    range: &str,
+    validator: impl FnOnce(&axum::http::HeaderMap) -> String,
+) -> axum::response::Response {
+    let a = app();
+    let body = "0123456789".repeat(10);
+    assert_eq!(
+        put_text(a.clone(), KB, path, &body).await,
+        StatusCode::CREATED
+    );
+    let first = a
+        .clone()
+        .oneshot(authed_request(
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}/{path}"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    let if_range = validator(first.headers());
+    a.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
+            .header(auth().0, auth().1)
+            .header("range", range)
+            .header("if-range", if_range)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+fn header(headers: &axum::http::HeaderMap, name: &str) -> String {
+    headers[name].to_str().unwrap().to_string()
+}
+
+/// RFC 9110 §13.1.5: a matching `If-Range` keeps the range.
+#[tokio::test]
+async fn get_if_range_current_etag_is_206() {
+    let resp = get_with_if_range("if-range-etag.txt", "bytes=0-9", |h| header(h, "etag")).await;
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(resp.headers()["content-range"], "bytes 0-9/100");
+}
+
+#[tokio::test]
+async fn get_if_range_current_date_is_206() {
+    let resp = get_with_if_range("if-range-date.txt", "bytes=0-9", |h| {
+        header(h, "last-modified")
+    })
+    .await;
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+}
+
+/// A stale validator means the client's partial copy is of another version: the
+/// range is ignored and the whole current object is served.
+#[tokio::test]
+async fn get_if_range_stale_etag_is_full_200() {
+    let resp = get_with_if_range("if-range-stale.txt", "bytes=0-9", |_| "\"stale\"".into()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get("content-range").is_none());
+    let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(body.len(), 100);
+}
+
+/// `If-Range` compares strongly, so even the current tag marked weak does not match.
+#[tokio::test]
+async fn get_if_range_weak_etag_is_full_200() {
+    let resp = get_with_if_range("if-range-weak.txt", "bytes=0-9", |h| {
+        format!("W/{}", header(h, "etag"))
+    })
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// An unsatisfiable range with a stale validator is not a 416: the range is ignored.
+#[tokio::test]
+async fn get_if_range_stale_unsatisfiable_range_is_full_200() {
+    let resp = get_with_if_range("if-range-416.txt", "bytes=500-600", |_| "\"stale\"".into()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = get_with_if_range("if-range-416b.txt", "bytes=500-600", |h| header(h, "etag")).await;
+    assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+#[tokio::test]
+async fn get_if_range_stale_line_range_is_full_200() {
+    let resp = get_with_if_range("if-range-lines.txt", "lines=1-1", |_| "\"stale\"".into()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert_eq!(body.len(), 100);
+}
+
+/// RFC 9110 §14.3: byte ranges are advertised on GET and HEAD.
+#[tokio::test]
+async fn get_and_head_advertise_accept_ranges_bytes() {
+    let a = app();
+    assert_eq!(
+        put_text(a.clone(), KB, "accept-ranges.txt", "body").await,
+        StatusCode::CREATED
+    );
+    for method in ["GET", "HEAD"] {
+        let resp = a
+            .clone()
+            .oneshot(authed_request(
+                method,
+                format!("/api/v1/knowledgebases/{KB}/accept-ranges.txt"),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.headers()["accept-ranges"], "bytes", "{method}");
+    }
+}
+
 #[tokio::test]
 async fn get_range_416() {
     let a = app();
@@ -1550,6 +1672,10 @@ async fn get_if_none_match_304() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    // RFC 9110 §15.4.5: the 304 repeats the ETag the 200 carried, and with an
+    // ETag to validate by it does not add Last-Modified.
+    assert_eq!(resp.headers()["etag"], etag);
+    assert!(resp.headers().get("last-modified").is_none());
     let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
     assert!(response_body.is_empty());
 }
@@ -2291,6 +2417,7 @@ async fn head_if_none_match_304() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(resp.headers()["etag"], etag.as_str());
     let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
     assert!(body_bytes.is_empty(), "304 must return empty body");
 }
@@ -2398,7 +2525,7 @@ async fn m3_round_trip() {
         )
         .await
         .unwrap();
-    assert_eq!(second_put_resp.status(), StatusCode::CREATED);
+    assert_eq!(second_put_resp.status(), StatusCode::NO_CONTENT);
     let e2 = second_put_resp
         .headers()
         .get("etag")
@@ -2557,7 +2684,7 @@ async fn m3_multi_etag_if_match() {
         .unwrap();
     assert_eq!(
         resp_ok.status(),
-        StatusCode::CREATED,
+        StatusCode::NO_CONTENT,
         "If-Match list containing the current ETag must succeed"
     );
 }

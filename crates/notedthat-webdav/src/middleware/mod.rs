@@ -8,7 +8,7 @@ mod path_validation;
 
 use crate::state::WebDavState;
 use crate::{
-    filesystem::PROPFIND_TOO_LARGE_DAV_XML,
+    filesystem::{DavTarget, PROPFIND_TOO_LARGE_DAV_XML},
     propfind::{
         PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
     },
@@ -21,7 +21,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use handlers::{handle_copy, handle_delete, handle_move, handle_put};
+use handlers::{handle_copy, handle_delete, handle_move, handle_proppatch, handle_put};
+use notedthat_core::ConditionalHeaders;
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
@@ -60,23 +61,6 @@ pub async fn intercept_options(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Intercept PROPPATCH requests and return 405 before dav-server.
-///
-/// dav-server v0.11 always handles PROPPATCH and returns 207. Issue #22 requires 405.
-pub async fn intercept_proppatch(req: Request, next: Next) -> Response {
-    if req.method().as_str() == "PROPPATCH" {
-        let mut response = (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
-        response.headers_mut().insert(
-            "allow",
-            HeaderValue::from_static(
-                "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY",
-            ),
-        );
-        return response;
-    }
-    next.run(req).await
-}
-
 /// Intercept LOCK/UNLOCK requests and return 405 before dav-server.
 ///
 /// dav-server v0.11 already returns 405 when no `LockSystem` is registered, but we
@@ -107,19 +91,34 @@ pub async fn intercept_propfind_too_large(
         return next.run(req).await;
     }
 
-    match parse_propfind_depth(&req) {
-        PropfindDepth::Infinity => return depth_infinity_response(),
-        PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
-        PropfindDepth::Default | PropfindDepth::Zero => return next.run(req).await,
-        PropfindDepth::One => {}
-    }
-
     let uri_path = req.uri().path();
     let target_path = uri_path
         .strip_suffix('/')
         .filter(|path| !path.is_empty())
         .unwrap_or(uri_path);
-    let Ok(target) = parse_webdav_uri_path(target_path, &state.declared_kbs) else {
+    let target = parse_webdav_uri_path(target_path, &state.declared_kbs);
+
+    // A missing Depth means infinity (RFC 4918 §9.1), and an infinite walk of a
+    // knowledge base is refused rather than listed without the size cap. Only a
+    // collection has members to walk: anything else ignores its Depth (§10.2) and
+    // answers as `Depth: 0` — a file with its properties, a missing path with `404`.
+    match parse_propfind_depth(&req) {
+        PropfindDepth::Default | PropfindDepth::Infinity => {
+            if let Ok(DavTarget::Object(kb, path)) = &target
+                && !is_virtual_folder(&state, kb, path).await
+            {
+                req.headers_mut()
+                    .insert("depth", HeaderValue::from_static("0"));
+                return next.run(req).await;
+            }
+            return depth_infinity_response();
+        }
+        PropfindDepth::Invalid => return StatusCode::BAD_REQUEST.into_response(),
+        PropfindDepth::Zero => return next.run(req).await,
+        PropfindDepth::One => {}
+    }
+
+    let Ok(target) = target else {
         return next.run(req).await;
     };
 
@@ -142,6 +141,31 @@ pub async fn intercept_propfind_too_large(
     }
 }
 
+/// Whether `path` is a folder: no object of its own, and at least one beneath it.
+/// A backend error reads as "not a folder", so the request goes on at `Depth: 0`
+/// and reports the error there rather than as a depth refusal.
+async fn is_virtual_folder(
+    state: &WebDavState,
+    kb: &notedthat_core::KbSlug,
+    path: &notedthat_core::ObjectPath,
+) -> bool {
+    match state
+        .storage
+        .head_object(kb, path, ConditionalHeaders::default())
+        .await
+    {
+        Err(error) if error.is_not_found() => {
+            let prefix = format!("{}/", path.as_str());
+            state
+                .storage
+                .list_objects(kb, Some(&prefix), 1, None)
+                .await
+                .is_ok_and(|listing| !listing.objects.is_empty())
+        }
+        Ok(_) | Err(_) => false,
+    }
+}
+
 /// Intercept `WebDAV` write methods before `dav-server` so raw HTTP headers remain available.
 pub async fn intercept_write_methods(
     State(state): State<WebDavState>,
@@ -153,6 +177,7 @@ pub async fn intercept_write_methods(
         "DELETE" => handle_delete(state, req).await,
         "MOVE" => handle_move(state, req).await,
         "COPY" => handle_copy(state, req).await,
+        "PROPPATCH" => handle_proppatch(state, req).await,
         _ => next.run(req).await,
     }
 }
@@ -536,48 +561,6 @@ mod intercept_options {
 }
 
 #[cfg(test)]
-mod intercept_proppatch {
-    mod tests {
-        use super::super::*;
-        use axum::{
-            Router, body::Body, http::Request as HttpRequest, middleware::from_fn, routing::any,
-        };
-        use tower::util::ServiceExt;
-
-        fn app() -> Router {
-            Router::new()
-                .route("/webdav", any(|| async { "inner handler reached" }))
-                .layer(from_fn(intercept_proppatch))
-        }
-
-        #[tokio::test]
-        async fn test_proppatch_returns_405() {
-            let req = HttpRequest::builder()
-                .method("PROPPATCH")
-                .uri("/webdav")
-                .body(Body::empty())
-                .unwrap();
-            let resp = app().oneshot(req).await.unwrap();
-
-            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
-        }
-
-        #[tokio::test]
-        async fn test_proppatch_allow_header_present() {
-            let req = HttpRequest::builder()
-                .method("PROPPATCH")
-                .uri("/webdav")
-                .body(Body::empty())
-                .unwrap();
-            let resp = app().oneshot(req).await.unwrap();
-
-            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
-            assert!(resp.headers().contains_key("allow"));
-        }
-    }
-}
-
-#[cfg(test)]
 mod intercept_lock {
     mod tests {
         use super::super::*;
@@ -863,7 +846,7 @@ mod intercept_write_methods {
                 let mut next_etag = self.next_etag.lock().expect("mutex not poisoned");
                 *next_etag += 1;
                 let etag = format!("\"etag-{next_etag}\"");
-                objects.insert(
+                let replaced = objects.insert(
                     key,
                     StoredObject {
                         bytes,
@@ -871,7 +854,10 @@ mod intercept_write_methods {
                         etag: etag.clone(),
                     },
                 );
-                Ok(PutOutcome { etag: Some(etag) })
+                Ok(PutOutcome {
+                    etag: Some(etag),
+                    created: replaced.is_none(),
+                })
             }
 
             async fn put_staged_object(
@@ -985,7 +971,7 @@ mod intercept_write_methods {
                 let mut copied = source_object;
                 copied.content_type = options.content_type;
                 let etag = copied.etag.clone();
-                objects.insert(destination_key, copied);
+                let created = objects.insert(destination_key, copied).is_none();
                 if *self
                     .change_source_after_copy
                     .lock()
@@ -994,7 +980,10 @@ mod intercept_write_methods {
                 {
                     source.etag = "\"changed\"".to_string();
                 }
-                Ok(PutOutcome { etag: Some(etag) })
+                Ok(PutOutcome {
+                    etag: Some(etag),
+                    created,
+                })
             }
 
             async fn delete_object(
@@ -1138,7 +1127,8 @@ mod intercept_write_methods {
 
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(resp.headers().get("etag").unwrap(), "\"etag-1\"");
-            assert_eq!(storage.calls(), vec!["head_object", "put_object"]);
+            // No pre-write HEAD: the write itself reports that it created the object.
+            assert_eq!(storage.calls(), vec!["put_object"]);
         }
 
         #[tokio::test]
@@ -1156,6 +1146,91 @@ mod intercept_write_methods {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        }
+
+        fn proppatch(uri: &str, headers: &[(&str, &str)], body: &'static str) -> HttpRequest<Body> {
+            let mut builder = HttpRequest::builder().method("PROPPATCH").uri(uri);
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(Body::from(body)).unwrap()
+        }
+
+        const DISPLAYNAME: &str = r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>"#;
+
+        /// RFC 4918 §9.2: PROPPATCH answers 207 per property and stores nothing.
+        #[tokio::test]
+        async fn test_proppatch_refuses_protected_properties_with_207() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            let resp = app(storage.clone())
+                .oneshot(proppatch("/webdav/notes/a.md", &[], DISPLAYNAME))
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+            let body = response_body(resp).await;
+            assert!(
+                body.contains("<D:href>/webdav/notes/a.md</D:href>"),
+                "{body}"
+            );
+            assert!(body.contains("HTTP/1.1 403 Forbidden"), "{body}");
+            assert!(
+                body.contains("<D:cannot-modify-protected-property/>"),
+                "{body}"
+            );
+            assert_eq!(storage.calls(), vec!["head_object"]);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_on_a_knowledge_base_root_returns_207() {
+            let storage = Arc::new(MockStorage::default());
+            let resp = app(storage)
+                .oneshot(proppatch("/webdav/notes/", &[], DISPLAYNAME))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_honours_if_and_if_match() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            for headers in [
+                &[("if-match", "\"stale\"")][..],
+                &[("if", "([\"stale\"])")],
+                &[("if", "(<opaquelocktoken:x>)")],
+            ] {
+                let resp = app(storage.clone())
+                    .oneshot(proppatch("/webdav/notes/a.md", headers, DISPLAYNAME))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::PRECONDITION_FAILED,
+                    "{headers:?}"
+                );
+            }
+            let resp = app(storage)
+                .oneshot(proppatch(
+                    "/webdav/notes/a.md",
+                    &[("if", "([\"a\"])")],
+                    DISPLAYNAME,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::MULTI_STATUS);
+        }
+
+        #[tokio::test]
+        async fn test_proppatch_with_a_malformed_body_returns_400() {
+            let storage = Arc::new(MockStorage::default());
+            storage.insert("notes", "a.md", Bytes::from_static(b"body"), "\"a\"");
+            let resp = app(storage)
+                .oneshot(proppatch("/webdav/notes/a.md", &[], "<D:oops"))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         }
 
         #[tokio::test]
@@ -1421,7 +1496,7 @@ mod intercept_write_methods {
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(
                 storage.calls(),
-                vec!["head_object", "head_object", "copy_object", "delete_object"]
+                vec!["head_object", "copy_object", "delete_object"]
             );
             assert!(storage.get_stored("notes", "source.md").is_none());
             assert!(storage.get_stored("notes", "dest.md").is_some());
@@ -1449,10 +1524,7 @@ mod intercept_write_methods {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(resp.headers().get("etag").unwrap(), "\"source\"");
-            assert_eq!(
-                storage.calls(),
-                vec!["head_object", "head_object", "copy_object"]
-            );
+            assert_eq!(storage.calls(), vec!["head_object", "copy_object"]);
             assert!(storage.get_stored("notes", "source.md").is_some());
             assert!(storage.get_stored("notes", "copy.md").is_some());
             assert!(!storage.calls().contains(&"get_object"));

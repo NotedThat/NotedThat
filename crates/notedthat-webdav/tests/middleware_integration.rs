@@ -102,9 +102,7 @@ impl Storage for MockStorage {
         _content_type: Option<&str>,
         _conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".to_string()),
-        })
+        Ok(PutOutcome::created(Some("\"test-etag\"".to_string())))
     }
 
     async fn put_staged_object(
@@ -132,9 +130,7 @@ impl Storage for MockStorage {
         _destination: &ObjectPath,
         _options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".into()),
-        })
+        Ok(PutOutcome::created(Some("\"test-etag\"".into())))
     }
 
     async fn delete_object(
@@ -400,18 +396,21 @@ async fn options_dav_header_not_class_2_or_3() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn proppatch_returns_405() {
+async fn proppatch_of_a_missing_object_returns_404() {
+    // PROPPATCH is a class-1 method (RFC 4918 §18.1), so it is answered, not 405.
     let app = build_router(make_state());
     let req = Request::builder()
         .method(Method::from_bytes(b"PROPPATCH").unwrap())
         .uri("/webdav/notes/test.md")
         .header("Authorization", good_auth())
-        .body(Body::empty())
+        .body(Body::from(
+            r#"<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>"#,
+        ))
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
 
-    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------

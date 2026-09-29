@@ -295,7 +295,7 @@ async fn a_group_scoped_manifest_binds_an_oidc_caller_on_the_api() {
             .body("edited")
             .send()
     };
-    assert_eq!(put(&alice).await.expect("put").status(), 201);
+    assert_eq!(put(&alice).await.expect("put").status(), 204);
     assert_eq!(put(&bob).await.expect("put").status(), 403);
     let todo = "/api/v1/knowledgebases/notes/personal%2Falice%2Ftodo.md";
     assert_eq!(
@@ -451,6 +451,35 @@ async fn the_protected_resource_document_and_challenge_are_served_when_configure
             expected
         );
     }
+}
+
+/// RFC 9728 §3.1: for a resource with a path — the `/mcp` URL `docs/CLIENTS.md`
+/// recommends — the challenge names a metadata URL with the well-known suffix
+/// between the host and the path, and that URL is served.
+#[tokio::test]
+async fn a_resource_with_a_path_is_described_where_the_challenge_points() {
+    // Given
+    let server = Server::start_with(Some("https://notes.example.com/mcp".to_string())).await;
+
+    // When
+    let refused = server
+        .get("/api/v1/knowledgebases/notes/handbook.md", Some("nope"))
+        .await;
+    let document = server
+        .get("/.well-known/oauth-protected-resource/mcp", None)
+        .await;
+
+    // Then
+    assert_eq!(refused.status(), 401);
+    assert_eq!(
+        refused.headers()["www-authenticate"]
+            .to_str()
+            .expect("ascii"),
+        "Bearer resource_metadata=\"https://notes.example.com/.well-known/oauth-protected-resource/mcp\""
+    );
+    assert_eq!(document.status(), 200);
+    let json: serde_json::Value = document.json().await.expect("json");
+    assert_eq!(json["resource"], "https://notes.example.com/mcp");
 }
 
 #[tokio::test]

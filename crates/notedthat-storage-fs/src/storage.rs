@@ -241,7 +241,7 @@ impl Inner {
         key: &str,
         content_type: Option<&str>,
         write: impl FnOnce(&mut std::fs::File, &mut EtagHasher) -> std::io::Result<()>,
-    ) -> Result<PutOutcome, StorageError> {
+    ) -> Result<String, StorageError> {
         let path = self.layout.object_path(bucket, key)?;
         let parent = path
             .parent()
@@ -263,7 +263,7 @@ impl Inner {
         let attrs = ObjectAttrs::new(etag.clone(), content_type.map(str::to_string), &metadata);
         self.meta.write(&self.layout, bucket, key, &attrs)?;
 
-        Ok(PutOutcome { etag: Some(etag) })
+        Ok(etag)
     }
 }
 
@@ -519,9 +519,13 @@ impl Storage for FsStorage {
                     .map(|(metadata, attrs)| Inner::state(attrs, metadata)),
                 &conditionals,
             )?;
-            inner.store(&bucket, &key, content_type.as_deref(), |file, hasher| {
+            let etag = inner.store(&bucket, &key, content_type.as_deref(), |file, hasher| {
                 hasher.update(&bytes);
                 file.write_all(&bytes)
+            })?;
+            Ok(PutOutcome {
+                etag: Some(etag),
+                created: current.is_none(),
             })
         })
         .await
@@ -550,7 +554,7 @@ impl Storage for FsStorage {
                 &conditionals,
             )?;
 
-            inner.store(&bucket, &key, content_type.as_deref(), |file, hasher| {
+            let etag = inner.store(&bucket, &key, content_type.as_deref(), |file, hasher| {
                 // Copied rather than renamed into place, deliberately. StagedBody owns a
                 // TempPath that unlinks on drop and offers no way to take it, so a
                 // rename would delete the object we just committed; the staging directory
@@ -569,6 +573,10 @@ impl Storage for FsStorage {
                     hasher.update(&buffer[..read]);
                     file.write_all(&buffer[..read])?;
                 }
+            })?;
+            Ok(PutOutcome {
+                etag: Some(etag),
+                created: current.is_none(),
             })
         })
         .await
@@ -617,7 +625,7 @@ impl Storage for FsStorage {
                 .clone()
                 .or_else(|| source_attrs.content_type.clone());
 
-            let outcome = inner.store(
+            let etag = inner.store(
                 &bucket,
                 &destination_key,
                 content_type.as_deref(),
@@ -634,7 +642,10 @@ impl Storage for FsStorage {
                     }
                 },
             )?;
-            Ok(outcome)
+            Ok(PutOutcome {
+                etag: Some(etag),
+                created: current.is_none(),
+            })
         })
         .await
     }

@@ -1,4 +1,4 @@
-//! Per-method `WebDAV` write handlers (PUT / DELETE / MOVE / COPY).
+//! Per-method `WebDAV` write handlers (PUT / DELETE / MOVE / COPY / PROPPATCH).
 
 use axum::extract::Request;
 use axum::http::StatusCode;
@@ -11,9 +11,11 @@ use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
 
 mod copy_move;
+mod proppatch;
 mod put;
 
 pub(super) use copy_move::{handle_copy, handle_move};
+pub(super) use proppatch::handle_proppatch;
 pub(super) use put::handle_put;
 
 pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response {

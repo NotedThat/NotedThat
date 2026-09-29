@@ -464,7 +464,11 @@ async fn mcp_writes_are_attributed_to_mcp_and_the_header_is_informational() {
     assert_eq!(frames[0].source(), "mcp");
 
     // Any client may say so; nothing checks it.
-    for (claimed, expected) in [("mcp", "mcp"), ("bogus", "http")] {
+    // The second PUT replaces the first, so it answers 204 (RFC 9110 §9.3.4).
+    for (claimed, expected, status) in [
+        ("mcp", "mcp", StatusCode::CREATED),
+        ("bogus", "http", StatusCode::NO_CONTENT),
+    ] {
         let response = server
             .client
             .put(server.object_url("claimed.md"))
@@ -474,7 +478,7 @@ async fn mcp_writes_are_attributed_to_mcp_and_the_header_is_informational() {
             .send()
             .await
             .expect("PUT");
-        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.status(), status);
         let frames = sub.events_where(1, WAIT, change_events).await;
         assert_eq!(frames[0].source(), expected, "claimed {claimed}");
     }

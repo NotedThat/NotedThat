@@ -49,11 +49,6 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
     if expected_len.is_some_and(|length| length > notedthat_write::MAX_UPLOAD_BYTES) {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
-    let exists = state
-        .storage
-        .head_object(&kb, &path, ConditionalHeaders::default())
-        .await
-        .is_ok();
     let body = match StagedBody::stage_stream(
         req.into_body().into_data_stream(),
         expected_len,
@@ -84,11 +79,13 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
     )
     .await
     {
+        // The backend says whether the write replaced an object, decided under the
+        // same lock as the write itself, so a concurrent PUT cannot make it lie.
         Ok(outcome) => response_with_optional_etag(
-            if exists {
-                StatusCode::NO_CONTENT
-            } else {
+            if outcome.created {
                 StatusCode::CREATED
+            } else {
+                StatusCode::NO_CONTENT
             },
             outcome.etag,
         ),

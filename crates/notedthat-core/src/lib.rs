@@ -30,15 +30,15 @@ pub use access::{
     Verb, Who, signed_in_policies,
 };
 pub use auth::{
-    Authenticator, CredentialRefused, ProtectedResource, Schemes, TokenRejected, TokenVerifier,
-    extract_basic_from_header, extract_bearer_from_header, verify_basic_credentials,
-    verify_bearer_token,
+    Authenticator, CredentialRefused, PROTECTED_RESOURCE_WELL_KNOWN, ProtectedResource, Schemes,
+    TokenRejected, TokenVerifier, extract_basic_from_header, extract_bearer_from_header,
+    verify_basic_credentials, verify_bearer_token,
 };
 pub use bucket_name::{
     BUCKET_NAME_MAX, BUCKET_NAME_PREFIX, derive_bucket_name, validate_bucket_name,
 };
 pub use conditional::ConditionalHeaders;
-pub use error::{Error, StorageError};
+pub use error::{Error, StorageError, Validators};
 pub use etag::{EtagHasher, compute_etag};
 pub use events::{
     EventId, EventPublisher, EventSource, EventStream, ObjectEvent, ObjectEventKind, PublishError,
@@ -48,8 +48,9 @@ pub use kb::{KbDetails, KbManifest, ManifestEmbedding, ObjectMeta, slug_kb_detai
 pub use listing::{Rollup, roll_up};
 pub use object_path::{ObjectPath, is_internal_path};
 pub use preconditions::{
-    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
-    matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds, unix_seconds_i64,
+    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
+    matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds,
+    unix_seconds_i64,
 };
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRange, RangeParseError, parse_line_range_header,

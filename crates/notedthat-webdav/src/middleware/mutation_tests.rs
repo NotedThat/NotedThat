@@ -246,6 +246,54 @@ async fn copy_overwrite_false_existing_destination_returns_412() {
 }
 
 #[tokio::test]
+async fn copy_status_follows_the_backend_when_the_destination_appears_mid_request() {
+    // The destination is written between the request's arrival and the copy; the
+    // copy replaces it, so the answer is 204 (RFC 4918 §9.8.5), not 201.
+    let storage = Arc::new(MockStorage::default());
+    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
+    storage.race_destination_before_copy();
+    let resp = app(storage.clone())
+        .oneshot(
+            HttpRequest::builder()
+                .method("COPY")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        Bytes::from_static(b"source")
+    );
+}
+
+#[tokio::test]
+async fn copy_or_move_of_a_missing_source_is_404_despite_if_match() {
+    // Without its preconditions the request is a 404, so they are ignored
+    // (RFC 9110 §13.2.1).
+    for method in ["COPY", "MOVE"] {
+        let storage = Arc::new(MockStorage::default());
+        let resp = app(storage.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .method(method)
+                    .uri("/webdav/notes/missing.md")
+                    .header("destination", "/webdav/notes/dst.md")
+                    .header("if-match", "*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method}");
+        assert!(!storage.calls().contains(&"copy_object"), "{method}");
+    }
+}
+
+#[tokio::test]
 async fn copy_overwrite_false_protects_destination_creation_race() {
     let storage = Arc::new(MockStorage::default());
     storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
@@ -418,4 +466,100 @@ async fn move_source_change_returns_412_with_partial_completion_body() {
     assert!(body.contains("source changed before deletion"));
     assert!(storage.get_stored("notes", "src.md").is_some());
     assert!(storage.get_stored("notes", "dst.md").is_some());
+}
+
+/// COPY or MOVE `src.md` (`ETag` `"src"`) onto `dst.md` (`ETag` `"dst"`) with `headers`.
+async fn copy_or_move_with(
+    method: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Arc<MockStorage>) {
+    let storage = Arc::new(MockStorage::default());
+    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
+    storage.insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"");
+    let mut builder = HttpRequest::builder()
+        .method(method)
+        .uri("/webdav/notes/src.md")
+        .header("destination", "/webdav/notes/dst.md");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let resp = app(storage.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    (resp.status(), storage)
+}
+
+/// RFC 9110 §13.2.1: the source's If-Match is the client's, not only our own pin.
+#[tokio::test]
+async fn copy_with_stale_if_match_returns_412_without_copying() {
+    let (status, storage) = copy_or_move_with("COPY", &[("if-match", "\"stale\"")]).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert!(storage.copy_options().is_empty());
+    assert_eq!(
+        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        Bytes::from_static(b"old")
+    );
+}
+
+#[tokio::test]
+async fn move_with_current_if_match_succeeds() {
+    let (status, storage) = copy_or_move_with("MOVE", &[("if-match", "\"src\"")]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(storage.get_stored("notes", "src.md").is_none());
+}
+
+#[tokio::test]
+async fn move_with_matching_if_none_match_returns_412() {
+    let (status, storage) = copy_or_move_with("MOVE", &[("if-none-match", "*")]).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert!(storage.get_stored("notes", "src.md").is_some());
+}
+
+/// RFC 4918 §10.4: an untagged `If` list applies to the source.
+#[tokio::test]
+async fn copy_honours_the_if_header() {
+    let (status, _) = copy_or_move_with("COPY", &[("if", "([\"src\"])")]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, storage) = copy_or_move_with("COPY", &[("if", "([\"stale\"])")]).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert!(storage.copy_options().is_empty());
+}
+
+/// There are no locks, so a list asserting a lock token cannot hold.
+#[tokio::test]
+async fn move_with_a_lock_token_in_the_if_header_returns_412() {
+    let (status, storage) = copy_or_move_with(
+        "MOVE",
+        &[("if", "(<opaquelocktoken:a515cfa4-5da4-22e1-f5bf-00a0451e6bf7>)")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert!(storage.get_stored("notes", "src.md").is_some());
+
+    let (status, _) = copy_or_move_with("MOVE", &[("if", "(Not <DAV:no-lock>)")]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+/// A tagged list naming the destination is judged against the destination's `ETag`.
+#[tokio::test]
+async fn copy_evaluates_a_tagged_list_against_the_destination() {
+    let (status, _) =
+        copy_or_move_with("COPY", &[("if", "</webdav/notes/dst.md> ([\"dst\"])")]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = copy_or_move_with(
+        "COPY",
+        &[("if", "<http://localhost/webdav/notes/dst.md> ([\"src\"])")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn copy_with_a_malformed_if_header_returns_400() {
+    let (status, storage) = copy_or_move_with("COPY", &[("if", "[\"src\"]")]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(storage.copy_options().is_empty());
 }

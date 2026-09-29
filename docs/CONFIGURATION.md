@@ -770,7 +770,7 @@ Any issuer that publishes discovery and a JWKS and can mint JWT access tokens wo
 | `NOTEDTHAT_OIDC_USERNAME_CLAIM` | `--oidc-username-claim` | claim name | `preferred_username` | The claim `user:<name>` rules match, and what logs identify a caller by. Falls back to `sub` when the claim is absent. |
 | `NOTEDTHAT_OIDC_GROUPS_CLAIM` | `--oidc-groups-claim` | claim name | `groups` | The claim `group:<name>` rules match. Its value may be an array of strings, a single string, or an object whose keys are the group names (Zitadel's roles shape). Absent or unreadable means "in no group". |
 | `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` | `--oidc-http-timeout-ms` | positive integer | `5000` | Timeout for the discovery and key-set requests to the issuer. |
-| `NOTEDTHAT_OIDC_RESOURCE` | `--oidc-resource` | `http(s)` URL | *(unset — nothing published)* | This deployment's public URL. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` and names it in a `WWW-Authenticate: Bearer resource_metadata="…"` challenge on every `401` from `/api/v1` and `/mcp`, which is how an MCP client finds the authorization server. |
+| `NOTEDTHAT_OIDC_RESOURCE` | `--oidc-resource` | `http(s)` URL | *(unset — nothing published)* | This deployment's public URL, without a query or fragment. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource` — followed by the URL's path, if it has one (`https://notes.example.com/mcp` is described at `/.well-known/oauth-protected-resource/mcp`, RFC 9728 §3.1) — and names it in a `WWW-Authenticate: Bearer resource_metadata="…"` challenge on every `401` from `/api/v1` and `/mcp`, which is how an MCP client finds the authorization server. |
 | `NOTEDTHAT_OIDC_CA_CERT` | `--oidc-ca-cert` | path to a PEM bundle | *(unset — public roots only)* | Extra CA certificates to trust when reaching the issuer, on top of the built-in Mozilla roots. A self-hosted provider is usually behind an internal or self-signed CA, and the server does not read the operating system's trust store. The file must exist at startup; a bundle that is not PEM, or holds no certificate, refuses startup. |
 
 Any `NOTEDTHAT_OIDC_*` setting other than the issuer, with the issuer unset, refuses startup rather
@@ -818,7 +818,9 @@ client registration, so register a public client for the MCP client on the provi
 redirect URI (the client documents it — `http://127.0.0.1:<port>/callback` or similar), and give
 the client that id. Add the id to `NOTEDTHAT_OIDC_AUDIENCE` if the provider puts the client id in
 `aud` (Authentik and Authelia do). Set `NOTEDTHAT_OIDC_RESOURCE` to the URL the client connects to,
-scheme and host exactly as it will use them.
+scheme and host exactly as it will use them. For `https://notes.example.com/mcp` the challenge
+points at `https://notes.example.com/.well-known/oauth-protected-resource/mcp`, where RFC 9728
+§3.1 says a client looks; a proxy in front of the server must pass that path through.
 
 The `401` is the trigger, and on a deployment where some knowledge base grants `anyone` a verb
 there is none: `/mcp` admits a request with no credential as the anonymous caller

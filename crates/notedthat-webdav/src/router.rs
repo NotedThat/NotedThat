@@ -14,8 +14,7 @@ use crate::{
     filesystem::WebDavStorage,
     middleware::{
         WEBDAV_PREFIX, basic_auth_middleware, intercept_lock_unlock, intercept_options,
-        intercept_propfind_too_large, intercept_proppatch, intercept_read_methods,
-        intercept_write_methods,
+        intercept_propfind_too_large, intercept_read_methods, intercept_write_methods,
     },
     propfind::PropfindListing,
     state::WebDavState,
@@ -84,7 +83,6 @@ pub fn build_bounded_router(state: WebDavState, bounds: &RequestBounds) -> Route
             .layer(from_fn_with_state(state.clone(), intercept_read_methods))
             .layer(from_fn_with_state(state, intercept_write_methods))
             .layer(from_fn(intercept_options))
-            .layer(from_fn(intercept_proppatch))
             .layer(from_fn(intercept_lock_unlock)),
     );
 

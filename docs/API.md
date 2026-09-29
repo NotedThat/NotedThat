@@ -100,8 +100,12 @@ them. A deployment without an issuer accepts only the service token. See
 [OIDC authentication](CONFIGURATION.md#oidc-authentication) for what a token must carry.
 
 When the deployment publishes RFC 9728 metadata (`NOTEDTHAT_OIDC_RESOURCE`), every `401` carries
-`WWW-Authenticate: Bearer resource_metadata="<url>/.well-known/oauth-protected-resource"`, and that
-document names the authorization server a client can obtain a token from.
+`WWW-Authenticate: Bearer resource_metadata="<metadata-url>"`, and that document names the
+authorization server a client can obtain a token from. Per RFC 9728 §3.1 the metadata URL puts
+`/.well-known/oauth-protected-resource` between the host and the resource's path: a resource of
+`https://notes.example.com` is described at
+`https://notes.example.com/.well-known/oauth-protected-resource`, and one of
+`https://notes.example.com/mcp` at `https://notes.example.com/.well-known/oauth-protected-resource/mcp`.
 
 Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
 public. An installation may additionally grant verbs to `anyone` through a knowledge base's
@@ -249,6 +253,7 @@ All error responses use the same JSON envelope:
 | 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
 | 404 | `not_found` | KB slug not declared, object does not exist, the KB's bucket or directory no longer exists in storage, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
+| 428 | `precondition_required` | `PATCH` (bytes or lines mode) or `POST …/replace` sent without the `If-Match` it requires (RFC 6585 §3) |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
 | 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
 | 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
@@ -370,8 +375,15 @@ curl -sI http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
 
 ## Conditional requests (optimistic concurrency)
 
-NotedThat forwards HTTP conditional headers verbatim to the S3 backend. The S3 backend evaluates
-preconditions and returns 304 or 412 as appropriate.
+NotedThat forwards HTTP conditional headers to the S3 backend, which evaluates them and returns
+304 or 412 as appropriate; the filesystem backend evaluates them itself, the same way.
+
+Precedence follows RFC 9110 §13.2.2. `If-Match` is evaluated before `If-None-Match`, and a date
+condition is ignored when its entity-tag counterpart is present: `If-Unmodified-Since` when the
+request carries `If-Match`, `If-Modified-Since` when it carries `If-None-Match`. An `ETag` is the
+finer validator — HTTP dates resolve only to the second — so a changed object is never answered with
+a stale 304. The superseded date is dropped before the request reaches any backend, so every backend
+agrees, and it is not parsed, so a malformed one is not an error.
 
 **Supported headers and applicable methods:**
 
@@ -386,8 +398,19 @@ Headers marked ❌ are silently ignored (not forwarded) because the S3 API doesn
 that method. This is intentional per the NotedThat pass-through architecture (SPECIFICATIONS.md D9).
 
 **Responses:**
-- **304 Not Modified** — GET/HEAD: `If-None-Match` or `If-Modified-Since` conditions met; no body
+- **304 Not Modified** — GET/HEAD: `If-None-Match` or `If-Modified-Since` conditions met; no body.
+  Carries the `ETag` a `200` would have, and `Last-Modified` only for an object without one
+  (RFC 9110 §15.4.5)
 - **412 Precondition Failed** — `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met
+- **428 Precondition Required** — `PATCH` in bytes or lines mode, or `POST …/replace`, without `If-Match`
+
+**`If-Range`** (RFC 9110 §13.1.5) makes a `Range` request conditional on the client's copy still
+being current. When the validator matches — a strong `ETag` compared exactly, or an HTTP date equal
+to `Last-Modified` — the range is served as a `206`. Otherwise the range is ignored and the whole
+current object is served as a `200`, including where the range would have been unsatisfiable. A
+weak `ETag` never matches. The check uses the metadata of the same read the bytes came from, so a
+concurrent write cannot mix versions. It applies to `lines=` ranges too. `GET` and `HEAD` answer
+`Accept-Ranges: bytes`.
 
 **curl examples:**
 
@@ -405,7 +428,7 @@ curl -sI -X PUT http://localhost:8080/api/v1/knowledgebases/notes/hello.md \
      -H "Content-Type: text/markdown" \
      -H 'If-Match: "abc123"' \
      --data-binary "updated content"
-# HTTP/1.1 201 Created (if ETag matched)
+# HTTP/1.1 204 No Content (if ETag matched — the object was replaced)
 # HTTP/1.1 412 Precondition Failed (if ETag didn't match)
 
 # PUT: only create if object doesn't exist
@@ -447,7 +470,6 @@ See `SPECIFICATIONS.md §9.1` for the full compatibility matrix.
 
 The following features are intentionally out of scope:
 
-- **`If-Range` header** (RFC 7233 §3.2) — not parsed, not forwarded
 - **`multipart/byteranges` response bodies** — a `Range` header naming more than one range is
   rejected with `400 malformed_range`; NotedThat never synthesizes `multipart/byteranges`
 - **Conditional DELETE with `If-None-Match` / `If-Modified-Since` / `If-Unmodified-Since`** —
@@ -787,13 +809,14 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | `content-type` | Stored MIME type; `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` without a charset receive `charset=utf-8` |
 | `last-modified` | Last modification time, if available |
 | `etag` | Object ETag, if provided by the backend |
+| `accept-ranges` | `bytes` |
 
 **Response:**
 
 | Status | Meaning |
 |--------|---------|
 | 200 OK | Object exists; metadata in headers, no body |
-| 304 Not Modified | Conditional request: `If-None-Match` or `If-Modified-Since` matched |
+| 304 Not Modified | Conditional request: `If-None-Match` or `If-Modified-Since` matched; carries `etag` (or `last-modified` when there is no ETag) |
 | 404 Not Found | Object or KB does not exist |
 | 412 Precondition Failed | `If-Match` mismatch |
 
@@ -826,6 +849,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | Header | Description |
 |--------|-------------|
 | `Range` | Request a byte range or line range (see [Range reads](#range-reads)) |
+| `If-Range` | Serve `Range` only if this `ETag` or date still describes the object; otherwise serve the whole object as `200` |
 | `If-Match` | Return 412 if ETag doesn't match |
 | `If-None-Match` | Return 304 if ETag matches |
 | `If-Modified-Since` | Return 304 if not modified since the given date |
@@ -838,6 +862,8 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | `content-type` | MIME type (falls back to `application/octet-stream` if not stored). Stored `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` types without a charset receive `charset=utf-8`; an explicit stored charset is preserved. |
 | `content-length` | Object size in bytes (or partial size on 206) |
 | `etag` | Object ETag, if provided by the backend |
+| `last-modified` | Last modification time, if available |
+| `accept-ranges` | `bytes` |
 | `content-range` | Range returned, present only on 206 responses. Format: `bytes <start>-<end>/<total>` for byte-range requests; `lines <first>-<last>/<total_lines>` for line-range requests |
 | `x-content-range-bytes` | Present only on 206 line-mode responses. Byte positions corresponding to the returned line range, in the form `<byte_start>-<byte_end>/<total_bytes>` (byte_end inclusive) |
 
@@ -847,7 +873,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 |--------|------|
 | 200 OK | Full object bytes |
 | 206 Partial Content | Partial object bytes (byte-range or line-range request satisfied) |
-| 304 Not Modified | No body (conditional request matched) |
+| 304 Not Modified | No body (conditional request matched); carries `etag` (or `last-modified` when there is no ETag) |
 | 400 Bad Request | `{"error": "malformed_range", ...}` — unparseable `Range` header, or more than one `bytes=` range |
 | 404 Not Found | `{"error": "not_found", ...}` |
 | 412 Precondition Failed | `{"error": "precondition_failed", ...}` |
@@ -917,18 +943,19 @@ it. Use `If-None-Match: *` to create-only, or `If-Match: <etag>` for optimistic 
 
 | Status | Meaning |
 |--------|---------|
-| 201 Created | Object stored successfully |
+| 201 Created | Object created: nothing existed at the path before |
+| 204 No Content | Existing object replaced (RFC 9110 §9.3.4) |
 | 400 Bad Request | Invalid path or KB slug |
 | 401 Unauthorized | Missing or invalid token |
 | 404 Not Found | KB slug not declared |
 | 412 Precondition Failed | `If-Match` mismatch or `If-None-Match: *` conflict |
 | 413 Payload Too Large | Body exceeds 16 MiB |
 
-**Response headers (on 201):**
+**Response headers (on 201/204):**
 
 | Header | Description |
 |--------|-------------|
-| `location` | Path to the created object, e.g. `/api/v1/knowledgebases/notes/hello.md` |
+| `location` | On 201 only: path to the created object, e.g. `/api/v1/knowledgebases/notes/hello.md` |
 | `etag` | Object ETag, if provided by the backend |
 
 The response body is empty on success.
@@ -985,7 +1012,7 @@ curl -X PUT \
   -H 'If-Match: "abc123"' \
   --data-binary @hello.md \
   http://localhost:8080/api/v1/knowledgebases/notes/hello.md
-# HTTP/1.1 201 Created (if ETag matched)
+# HTTP/1.1 204 No Content (if ETag matched)
 # HTTP/1.1 412 Precondition Failed (if ETag didn't match)
 ```
 
@@ -1063,7 +1090,7 @@ Partial write — replaces a byte range, a line range, or appends to the end of 
 | Header | Format | Required? | Notes |
 |--------|--------|-----------|-------|
 | `Content-Range` | `bytes <first>-<last>/*` or `lines <first>-<last>/*` | Required for bytes/lines mode | Mutually exclusive with `NT-Patch-Mode: append`. |
-| `If-Match` | `"<etag>"` | Required for bytes/lines mode; optional for append | Single strong ETag. `*` and comma-separated lists are rejected (400). |
+| `If-Match` | `"<etag>"` | Required for bytes/lines mode; optional for append | Single strong ETag. Missing: 428. `*` and comma-separated lists are rejected (400). |
 | `NT-Patch-Mode` | `append` | Optional | Mutually exclusive with `Content-Range`. Triggers single-round-trip append (server obtains ETag internally). |
 | `Content-Type` | MIME type | Optional | Hint for the resulting object's content type. |
 
@@ -1072,9 +1099,10 @@ Partial write — replaces a byte range, a line range, or appends to the end of 
 | Status | Condition | Response headers |
 |--------|-----------|-----------------|
 | `200 OK` | Splice succeeded | `ETag`, `Location` |
-| `400 invalid_request` | Malformed `Content-Range`, missing `If-Match` in bytes/lines mode, `If-Match: *`, multi-value `If-Match`, or `NT-Patch-Mode: append` combined with `Content-Range` | JSON error body |
+| `400 invalid_request` | Malformed `Content-Range`, `If-Match: *`, multi-value `If-Match`, or `NT-Patch-Mode: append` combined with `Content-Range` | JSON error body |
 | `404 not_found` | Object does not exist | JSON error body |
 | `412 precondition_failed` | `If-Match` does not match the current ETag (caller's OCC assertion failed, or retry budget exhausted) | JSON error body |
+| `428 precondition_required` | `If-Match` missing in bytes/lines mode (RFC 6585 §3) | JSON error body |
 | `413 payload_too_large` | Request body OR resulting object exceeds `NOTEDTHAT_MAX_PATCHABLE_SIZE` | JSON error body |
 | `416 range_not_satisfiable` | Line range beyond EOF | `Content-Range: lines */<total>`, `X-Content-Range-Bytes: */<total_bytes>`, empty body |
 | `503 backend_unavailable` | Indexer queue full (object IS stored; retry to re-enqueue index) | `Retry-After: 5`, JSON body |
@@ -1127,7 +1155,7 @@ String replace — find and replace an exact UTF-8 substring within an object wi
 
 | Header | Required | Notes |
 |--------|----------|-------|
-| `If-Match` | Required | Single strong ETag. `*` and comma-separated multi-value are rejected (400). |
+| `If-Match` | Required | Single strong ETag. Missing: 428. `*` and comma-separated multi-value are rejected (400). |
 | `Content-Type` | Required | Must be `application/json`. |
 
 #### Request body
@@ -1177,8 +1205,9 @@ Response body:
 
 | Status | `error` code | When |
 |--------|-------------|------|
-| 400 | `invalid_request` | Missing or blank `old_string`; `If-Match: *`; multi-value `If-Match`; missing `If-Match`; non-`application/json` Content-Type; malformed JSON body |
+| 400 | `invalid_request` | Missing or blank `old_string`; `If-Match: *`; multi-value `If-Match`; non-`application/json` Content-Type; malformed JSON body |
 | 412 | `precondition_failed` | `If-Match` does not match the current ETag |
+| 428 | `precondition_required` | `If-Match` missing (RFC 6585 §3) |
 | 413 | `payload_too_large` | Resulting object would exceed `NOTEDTHAT_MAX_PATCHABLE_SIZE` |
 | 422 | `no_match` | `old_string` not found in the object (storage unchanged) |
 | 422 | `ambiguous_match` | `old_string` found more than once and `replace_all=false` (storage unchanged); body includes `"match_count": N` |
@@ -1666,7 +1695,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/metrics` | — | **Not on this listener.** The Prometheus exposition is served on a separate, unauthenticated listener, off by default (D69); `GET /metrics` here is `404` with or without a credential. See [Metrics](CONFIGURATION.md#metrics) |
 | GET | `/llms.txt` | No | Plain-text navigation instructions for LLM clients: access rules, API, MCP, WebDAV |
-| GET | `/.well-known/oauth-protected-resource` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set |
+| GET | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/{resource-path}` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set. A resource with a path is described at the suffix followed by that path (RFC 9728 §3.1) |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |
 | GET | `/api/v1/knowledgebases/{kb_slug}` | Yes | List objects in a KB |
@@ -1751,12 +1780,31 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `OPTIONS` | 204 | `DAV: 1` (Class 1 only). `Allow` header lists all supported methods. |
 | `HEAD` | 200 | Returns metadata without body. |
 | `GET` | 200, 206 | Supports `Range` header for partial content. |
-| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity returns 501** (v1 limitation — see below). |
+| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` on a collection (see below); a file answers them as `Depth: 0`. |
 | `PUT` | 201 (create), 204 (overwrite) | Returns `ETag`. Supports `If-Match` / `If-None-Match`. MIME sniff applies. |
+| `PROPPATCH` | 207 | Stores nothing: every property is refused with `403` and `<D:cannot-modify-protected-property/>`, except the Windows `Win32*` timestamps (`urn:schemas-microsoft-com:`), which answer `200` so Explorer's copies succeed — or `424` alongside a refused property, since PROPPATCH is atomic (RFC 4918 §9.2). `404` for a missing target, `400` for a body that is not a `propertyupdate`. |
 | `DELETE` | 204 | Idempotent — deleting a non-existent object returns 204. |
 | `MKCOL` | 201 | Creates a virtual folder. See v1 quirks below. |
-| `MOVE` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. |
-| `COPY` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. |
+| `MOVE` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
+| `COPY` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
+
+### Preconditions on MOVE, COPY and PROPPATCH
+
+`If-Match` and `If-None-Match` are evaluated against the source (or the PROPPATCH target), and a
+failure answers `412` (RFC 9110 §13.2.1). So is the WebDAV `If` header (RFC 4918 §10.4):
+
+- Untagged lists apply to the request URI. A tagged list (`<uri> (...)`) applies to the resource it
+  names: the source or the MOVE/COPY destination. Any other resource counts as absent.
+- The header holds when any list holds, and a list holds when all of its conditions do. An entity
+  tag (`["etag"]`) is compared strongly, and `Not` negates.
+- There are no locks (D17), so a lock token never holds. A list asserting one fails with `412`, and
+  `(Not <token>)` holds.
+- A malformed `If` header answers `400`.
+- A missing source (or PROPPATCH target) answers `404` whatever the preconditions say: a request
+  that would be `404` without them ignores them (RFC 9110 §13.2.1).
+
+The `ETag` checked is the one the copy and the MOVE's delete are pinned to, so a write that lands
+after the check still ends in `412`.
 
 ### Rejected methods
 
@@ -1764,7 +1812,6 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 |--------|--------|--------|
 | `LOCK` | 405 | No lock system in v1 (D17). Finder and Office require LOCK to save — see Known-broken clients. |
 | `UNLOCK` | 405 | Same as LOCK. |
-| `PROPPATCH` | 405 | No custom DAV properties in v1. |
 | Collection `MOVE` / `COPY` | 403 + `<nt:no-collection-move/>` | S3 has no atomic collection rename. |
 | Cross-KB `MOVE` / `COPY` | 403 + `<nt:cannot-modify-source/>` | KBs are isolated storage namespaces. |
 | Cross-server `MOVE` / `COPY` | 502 + `<nt:destination-different-server/>` | Per RFC 4918 §9.9.2. |
@@ -1849,14 +1896,17 @@ Characters after `?` in the URL are query parameters and are never part of the o
 
 `Destination` headers containing `#` (fragment) are rejected with 400 Bad Request. Fragments are not transmitted in normal HTTP requests and are not supported in WebDAV operations.
 
-### Depth: infinity limitation
+### Depth: infinity refusal
 
-`PROPFIND` with `Depth: infinity` returns `501 Not Implemented`. This is a v1 limitation:
-dav-server v0.11 hardcodes 501 for infinity depth, and the underlying `Storage::list_objects()`
-has no continuation cursor (deferred to post-v1 per D41). Implementing recursive listing without
-a cursor would silently truncate at 1000 objects per KB, which is worse than an honest 501.
+`PROPFIND` with `Depth: infinity` is refused with `403 Forbidden` and the RFC 4918 §9.1.1
+`<D:propfind-finite-depth/>` precondition in the body, which tells a client to walk the tree with
+`Depth: 1` instead. A `PROPFIND` without a `Depth` header is an infinite one (RFC 4918 §9.1) and is
+refused the same way. An infinite walk of a knowledge base would enumerate every object in one
+response, past the 10 000-object cap that a `Depth: 1` listing enforces.
 
-A follow-up ticket will add proper infinity depth when the D41 cursor ships.
+The refusal applies to collections only: the root, a knowledge base and a folder. A file has no
+members, so its `Depth` is ignored (RFC 4918 §10.2) and a `PROPFIND` on it without `Depth`, or with
+`Depth: infinity`, answers `207` as `Depth: 0` does. A path that does not exist answers `404`.
 
 ### Known-broken clients
 

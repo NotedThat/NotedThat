@@ -166,7 +166,42 @@ pub struct ProtectedResource {
     pub metadata_url: String,
 }
 
+/// The well-known suffix RFC 9728 §3 registers for protected-resource metadata.
+pub const PROTECTED_RESOURCE_WELL_KNOWN: &str = "/.well-known/oauth-protected-resource";
+
 impl ProtectedResource {
+    /// The metadata for `resource`, served where RFC 9728 §3.1 says a client looks.
+    ///
+    /// `resource` is an absolute `http(s)` URL with no query or fragment and no
+    /// trailing slash, as configuration validates it.
+    #[must_use]
+    pub fn new(resource: String, authorization_servers: Vec<String>) -> Self {
+        let metadata_url = Self::metadata_url_for(&resource);
+        Self {
+            resource,
+            authorization_servers,
+            metadata_url,
+        }
+    }
+
+    /// Where the metadata for `resource` lives: the well-known suffix goes between
+    /// the host and the path (RFC 9728 §3.1), so `https://h/mcp` is described at
+    /// `https://h/.well-known/oauth-protected-resource/mcp`, not under `/mcp`.
+    #[must_use]
+    pub fn metadata_url_for(resource: &str) -> String {
+        let (origin, path) = split_origin(resource);
+        format!(
+            "{origin}{PROTECTED_RESOURCE_WELL_KNOWN}{}",
+            path.trim_end_matches('/')
+        )
+    }
+
+    /// The path component of [`Self::metadata_url`], which the server routes.
+    #[must_use]
+    pub fn metadata_path(&self) -> &str {
+        split_origin(&self.metadata_url).1
+    }
+
     /// The metadata document, as JSON.
     pub fn document(&self) -> serde_json::Value {
         serde_json::json!({
@@ -175,6 +210,15 @@ impl ProtectedResource {
             "bearer_methods_supported": ["header"],
         })
     }
+}
+
+/// Split an absolute URL into its origin (`scheme://authority`) and the rest.
+fn split_origin(url: &str) -> (&str, &str) {
+    let after_scheme = url.find("://").map_or(0, |index| index + 3);
+    let path_start = url[after_scheme..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |index| after_scheme + index);
+    url.split_at(path_start)
 }
 
 /// The single definition of the credential rules, shared by every surface.
@@ -737,5 +781,31 @@ mod authenticator_tests {
                 "bearer_methods_supported": ["header"],
             })
         );
+    }
+
+    /// RFC 9728 §3.1: the well-known suffix goes between the host and the path.
+    #[test]
+    fn the_metadata_url_inserts_the_well_known_suffix_before_the_path() {
+        for (resource, metadata_url, metadata_path) in [
+            (
+                "https://notes.example.com",
+                "https://notes.example.com/.well-known/oauth-protected-resource",
+                "/.well-known/oauth-protected-resource",
+            ),
+            (
+                "https://notes.example.com/mcp",
+                "https://notes.example.com/.well-known/oauth-protected-resource/mcp",
+                "/.well-known/oauth-protected-resource/mcp",
+            ),
+            (
+                "http://localhost:8080/a/b/",
+                "http://localhost:8080/.well-known/oauth-protected-resource/a/b",
+                "/.well-known/oauth-protected-resource/a/b",
+            ),
+        ] {
+            let published = ProtectedResource::new(resource.into(), vec![]);
+            assert_eq!(published.metadata_url, metadata_url, "{resource}");
+            assert_eq!(published.metadata_path(), metadata_path, "{resource}");
+        }
     }
 }

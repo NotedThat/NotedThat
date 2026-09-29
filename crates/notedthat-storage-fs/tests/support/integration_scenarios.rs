@@ -63,6 +63,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(head_returns_etag);
         $emit!(head_if_none_match_not_modified);
         $emit!(put_if_match_correct_succeeds);
+        $emit!(put_reports_created_then_replaced);
         $emit!(put_if_none_match_star_creates);
         $emit!(delete_if_match_correct_succeeds);
         $emit!(content_range_reflects_object_size);
@@ -451,7 +452,7 @@ pub async fn get_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
             &path(key),
             None,
             ConditionalHeaders {
-                if_none_match: Some(etag),
+                if_none_match: Some(etag.clone()),
                 ..ConditionalHeaders::default()
             },
         )
@@ -460,7 +461,12 @@ pub async fn get_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
         panic!("matching If-None-Match should return NotModified");
     };
 
-    assert!(matches!(error, StorageError::NotModified));
+    // RFC 9110 §15.4.5: the 304 repeats the ETag a 200 would carry. Last-Modified is
+    // optional there, and SeaweedFS leaves it off its 304s.
+    let StorageError::NotModified(validators) = error else {
+        panic!("expected NotModified, got {error:?}");
+    };
+    assert_eq!(validators.etag, Some(etag));
 }
 
 pub async fn get_range_unsatisfiable(store: &dyn Storage, kb: &KbSlug) {
@@ -612,7 +618,7 @@ pub async fn head_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
             kb,
             &path(key),
             ConditionalHeaders {
-                if_none_match: Some(etag),
+                if_none_match: Some(etag.clone()),
                 ..ConditionalHeaders::default()
             },
         )
@@ -621,7 +627,42 @@ pub async fn head_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
         panic!("matching If-None-Match on HEAD should return NotModified");
     };
 
-    assert!(matches!(error, StorageError::NotModified));
+    // RFC 9110 §15.4.5: the 304 repeats the ETag a 200 would carry. Last-Modified is
+    // optional there, and SeaweedFS leaves it off its 304s.
+    let StorageError::NotModified(validators) = error else {
+        panic!("expected NotModified, got {error:?}");
+    };
+    assert_eq!(validators.etag, Some(etag));
+}
+
+/// `PutOutcome::created` is what lets HTTP answer 201 or 204 (RFC 9110 §9.3.4), so every
+/// backend must tell a new object from a replaced one — S3 included, whose response does
+/// not say.
+pub async fn put_reports_created_then_replaced(store: &dyn Storage, kb: &KbSlug) {
+    store.ensure_bucket(kb).await.expect("ensure_bucket");
+    let (source, destination) = (path("created.txt"), path("copied.txt"));
+
+    for (body, created) in [(&b"first"[..], true), (&b"second"[..], false)] {
+        let outcome = store
+            .put_object(
+                kb,
+                &source,
+                Bytes::from_static(body),
+                Some("text/plain"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("PUT");
+        assert_eq!(outcome.created, created, "PUT of {body:?}");
+    }
+
+    for created in [true, false] {
+        let outcome = store
+            .copy_object(kb, &source, &destination, CopyObjectOptions::default())
+            .await
+            .expect("copy");
+        assert_eq!(outcome.created, created, "copy expected created={created}");
+    }
 }
 
 pub async fn put_if_match_correct_succeeds(store: &dyn Storage, kb: &KbSlug) {

@@ -8,6 +8,7 @@
 pub(crate) mod access;
 pub mod error;
 pub mod filesystem;
+pub(crate) mod if_header;
 pub mod metadata;
 pub mod middleware;
 pub(crate) mod propfind;

@@ -29,6 +29,7 @@ pub(crate) fn event_source(req: &Request) -> EventSource {
 
 pub(super) const REPLACE_IF_MATCH_ERROR: &str =
     "If-Match is required for POST replace and must be a single strong ETag";
+pub(super) const REPLACE_IF_MATCH_REQUIRED: &str = "If-Match is required for POST replace";
 
 pub(crate) fn lookup_kb(state: &AppState, slug: &str) -> Result<KbSlug, ApiError> {
     state
@@ -90,6 +91,12 @@ pub(super) fn replace_conditionals(req: &Request) -> Result<ConditionalHeaders, 
         .headers()
         .get(axum::http::header::IF_MATCH)
         .and_then(|value| value.to_str().ok());
+    // RFC 6585 §3: a missing precondition is 428; a present but unusable one is 400.
+    if !req.headers().contains_key(axum::http::header::IF_MATCH) {
+        return Err(ApiError::PreconditionRequired {
+            message: REPLACE_IF_MATCH_REQUIRED.into(),
+        });
+    }
     if if_match.is_none()
         || if_match == Some("*")
         || if_match.is_some_and(|value| value.contains(','))

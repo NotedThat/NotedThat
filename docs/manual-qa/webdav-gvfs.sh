@@ -69,10 +69,12 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X LOCK \
     -u "$DAV_USER:$DAV_PASS" "$DAV_URL/$DAV_KB/test.md")
 assert "LOCK returns 405" "405" "$STATUS"
 
-# 7. PROPPATCH returns 405
+# 7. PROPPATCH answers 207 and stores nothing (RFC 4918 §9.2)
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PROPPATCH \
-    -u "$DAV_USER:$DAV_PASS" "$DAV_URL/$DAV_KB/test.md")
-assert "PROPPATCH returns 405" "405" "$STATUS"
+    -u "$DAV_USER:$DAV_PASS" -H 'Content-Type: application/xml' \
+    --data-binary '<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>' \
+    "$DAV_URL/$DAV_KB/")
+assert "PROPPATCH returns 207" "207" "$STATUS"
 
 # 8. Missing auth returns 401
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DAV_URL/")

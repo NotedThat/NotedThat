@@ -72,7 +72,14 @@ pub enum WriteError {
         /// Total byte count in the object (for X-Content-Range-Bytes).
         total_bytes: u64,
     },
-    /// Invalid range, mode contradiction, or missing If-Match for PATCH.
+    /// A conditional-only write (PATCH in bytes or lines mode, replace) arrived without
+    /// `If-Match`. HTTP answers 428 Precondition Required (RFC 6585 §3).
+    #[error("precondition required: {message}")]
+    PreconditionRequired {
+        /// Human-readable reason.
+        message: String,
+    },
+    /// Invalid range, mode contradiction, or an `If-Match` of the wrong shape for PATCH.
     #[error("invalid patch request: {message}")]
     PatchInvalidRange {
         /// Human-readable reason.
