@@ -6,10 +6,15 @@ use notedthat_indexer::chunker::{Chunk, chunk, stream_chunks};
 
 #[path = "streaming_chunker/bounds.rs"]
 mod bounds;
+#[path = "streaming_chunker/merging.rs"]
+mod merging;
 
+/// Collects chunks without merging short sections, so heading detection is
+/// visible one section per chunk.
 fn collect(raw: &str, max_chars: usize, base: usize) -> Vec<Chunk> {
     stream_chunks(Cursor::new(raw.as_bytes()), max_chars, base)
         .expect("valid chunk iterator")
+        .with_min_chars(0)
         .collect::<std::io::Result<Vec<_>>>()
         .expect("valid UTF-8 input")
 }

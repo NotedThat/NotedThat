@@ -6,6 +6,12 @@
 //! Per §6.3 / D15: uses `pulldown-cmark::into_offset_iter` for byte offsets and
 //! `text-splitter::MarkdownSplitter` as the secondary splitter for oversized sections.
 //!
+//! [`stream_chunks`] is the chunker indexing uses. It also merges sections shorter
+//! than a quarter of the character bound with the sections after them, and a
+//! short final chunk into the one before it, so no chunk is only whitespace
+//! and only the last chunk can be shorter than that minimum (D72). [`chunk`]
+//! does not merge; it remains as a reference for heading boundaries.
+//!
 //! This low-level chunker treats frontmatter as raw Markdown; OKF indexing passes
 //! the body through it and translates offsets back into the original document.
 //!
