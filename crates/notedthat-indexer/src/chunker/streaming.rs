@@ -415,6 +415,8 @@ fn split_byte(text: &str, max_chars: usize, min_tail: usize, complete: bool) -> 
             line_blank = false;
         }
         if count == limit {
+            // Cutting before a leading `\r` would make an empty chunk and never advance, so
+            // with `max_chars == 1` a CRLF pair (two chars) is split rather than kept whole.
             hard = if cr_pending && byte > 0 { byte } else { end };
             break;
         }
