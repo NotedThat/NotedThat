@@ -509,7 +509,7 @@ pub struct Config {
     pub api_token: String,
     /// Declared knowledge bases, as a sorted map of slug string → [`KbSlug`].
     pub kbs: BTreeMap<String, KbSlug>,
-    /// Tenant slug — always `"default"`; single-tenant by design (SPECIFICATIONS.md D1, D11).
+    /// Tenant slug — always `"default"`: single-tenant in practice (SPECIFICATIONS.md D1, D11).
     pub tenant_slug: TenantSlug,
     /// Socket address the HTTP server binds to (`NOTEDTHAT_LISTEN_ADDR`; default `0.0.0.0:8080`).
     pub listen_addr: SocketAddr,
@@ -812,7 +812,7 @@ impl Config {
             });
         }
 
-        // Single-tenant by design (SPECIFICATIONS.md D1, D11): there is no
+        // Single-tenant in practice (SPECIFICATIONS.md D1, D11): there is no
         // NOTEDTHAT_TENANT_SLUG, so the slug is always "default" (docs/CONFIGURATION.md).
         let tenant_slug = TenantSlug::default();
 
