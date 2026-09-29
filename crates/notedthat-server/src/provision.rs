@@ -34,6 +34,14 @@ pub struct ProvisionedKbs {
 ///
 /// Any failure, including an unreachable Qdrant, returns immediately as
 /// `Err(Error)` (D39).
+///
+/// # Errors
+///
+/// Returns [`Error::BucketNameTooLong`] for a slug whose bucket name is too long; the
+/// storage error when the bucket cannot be ensured or the manifest cannot be read or
+/// written; the manifest's own validation error; and [`Error::Config`] when the manifest's
+/// embedding disagrees with the configured one or the Qdrant collection cannot be
+/// provisioned.
 pub async fn provision_kbs(
     storage: &dyn Storage,
     tenant: &TenantSlug,
