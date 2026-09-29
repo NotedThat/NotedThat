@@ -89,8 +89,8 @@ impl KbManifest {
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] when `manifest_version` is not
-    /// [`Self::CURRENT_VERSION`], or when `display_name` or `description` is blank, spans
-    /// more than one line, or is too long; and [`Error::Config`] from
+    /// [`Self::CURRENT_VERSION`], or when `display_name` or `description` is blank,
+    /// contains a control character (a line break or a tab, for instance), or is too long; and [`Error::Config`] from
     /// [`AccessPolicy::validate`] when the access rules are unsound.
     pub fn validate(&self) -> Result<(), Error> {
         if self.manifest_version != Self::CURRENT_VERSION {

@@ -70,8 +70,9 @@ impl StagedBody {
     ///
     /// Returns [`StageError::TooLarge`] when `expected_len` or the bytes received exceed
     /// `limit`; [`StageError::LengthMismatch`] when the bytes received differ from
-    /// `expected_len`; [`StageError::Read`] when the stream yields an error; and
-    /// [`StageError::Write`] when the staging file cannot be created or written.
+    /// `expected_len`; [`StageError::Read`] when the stream yields an error;
+    /// [`StageError::Write`] when the staging file cannot be created or written; and
+    /// [`StageError::Config`] when the blocking task that creates the staging file fails.
     pub async fn stage_stream<S, E>(
         stream: S,
         expected_len: Option<u64>,

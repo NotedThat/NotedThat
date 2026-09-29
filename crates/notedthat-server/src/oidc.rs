@@ -490,8 +490,8 @@ pub mod test_support {
     ///
     /// # Panics
     ///
-    /// Never for the fixture key and serializable claims: the key is compiled in and
-    /// parses.
+    /// Panics if `alg` is `ES256`, `ES384` or `EdDSA`: the fixture key is RSA, so only the
+    /// HMAC and RSA algorithms can be signed.
     pub fn mint_with(alg: Algorithm, kid: Option<&str>, claims: &serde_json::Value) -> String {
         let mut header = Header::new(alg);
         header.kid = kid.map(str::to_string);

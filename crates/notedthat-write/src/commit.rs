@@ -66,8 +66,11 @@ pub async fn commit<B: Into<StagedBody>>(
 ///
 /// # Errors
 ///
-/// As [`commit`], with the source's storage errors, and [`WriteError::InvalidManifest`]
-/// when the destination is the manifest key and the source is not a valid manifest.
+/// Returns [`WriteError::Storage`] when the source cannot be read or storage refuses the
+/// copy; [`WriteError::InvalidManifest`] when the destination is the manifest key and the
+/// source is not a valid manifest; [`WriteError::EventPublishFailed`] when the event log
+/// refuses the change after the copy; and [`WriteError::IndexerBackpressureUpsert`] when
+/// the indexer queue is full.
 pub async fn commit_copy(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,
