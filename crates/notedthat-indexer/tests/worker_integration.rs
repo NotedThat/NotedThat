@@ -101,6 +101,15 @@ impl MockStorage {
         );
     }
 
+    /// An object with no recorded type, as the fs backend reports a file written
+    /// outside the server whose extension it does not recognise.
+    fn insert_untyped(&self, kb: &str, key: &str, content: Bytes) {
+        self.objects
+            .lock()
+            .unwrap()
+            .insert((kb.to_string(), key.to_string()), (content, None));
+    }
+
     fn stream_calls(&self) -> usize {
         self.stream_calls.load(Ordering::SeqCst)
     }
@@ -2334,12 +2343,8 @@ mod announcing {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
         let storage = Arc::new(MockStorage::new());
-        storage.insert_bytes(
-            kb().as_str(),
-            "memo.mp3",
-            Bytes::from_static(b"ID3\x03"),
-            "audio/mpeg",
-        );
+        // No type: the fs backend records none for a file dropped into the tree.
+        storage.insert_untyped(kb().as_str(), "memo.mp3", Bytes::from_static(b"ID3\x03"));
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2359,11 +2364,12 @@ mod announcing {
             ObjectEventKind::Written {
                 etag: MockStorage::etag_for(b"ID3\x03"),
                 size: 4,
-                mime: "audio/mpeg".into(),
+                mime: String::new(),
                 mtime: 1_700_000_000,
             }
         );
         assert_eq!(count_points(&store, &kb(), "memo.mp3").await, 0);
+        assert_eq!(storage.stream_calls(), 0, "an mp3 is never read");
     }
 
     #[tokio::test]
@@ -2978,4 +2984,80 @@ async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
         "a skipped refresh confirmed the index is current, which is a success"
     );
     assert_eq!(snapshot.last_failure, None);
+}
+
+// ─── Untyped objects (#278) ─────────────────────────────────────────────────
+
+/// The fs backend records no type for a file written outside the server with an
+/// extension it does not know, such as a vault's image attachments.
+#[tokio::test]
+async fn an_untyped_binary_is_removed_from_the_index_without_being_read() {
+    for declared in [None, Some("")] {
+        let kb = kb();
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb, 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let png = Bytes::from_static(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        match declared {
+            None => storage.insert_untyped("test-kb", "photo.png", png),
+            Some(content_type) => storage.insert_bytes("test-kb", "photo.png", png, content_type),
+        }
+        let health = Arc::new(IndexHealth::new());
+
+        run_one_with_health(
+            Arc::clone(&storage),
+            Arc::new(ScriptedEmbedder::new(None, None)),
+            Arc::new(store.clone()),
+            IndexEvent::Refresh {
+                kb: kb.clone(),
+                object_key: opath("photo.png"),
+                origin: RefreshOrigin::Reconcile,
+            },
+            Arc::clone(&health),
+        )
+        .await;
+
+        assert_eq!(
+            storage.stream_calls(),
+            0,
+            "{declared:?}: never read the body"
+        );
+        assert_eq!(count_points(&store, &kb, "photo.png").await, 0);
+        assert_eq!(
+            health.snapshot("test-kb").last_failure,
+            None,
+            "{declared:?}: an attachment is not an indexing failure"
+        );
+    }
+}
+
+/// An API write without a `Content-Type` header still indexes under a Markdown key.
+#[tokio::test]
+async fn an_untyped_markdown_key_is_still_indexed() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert_untyped(
+        "test-kb",
+        "notes/Draft.MD",
+        Bytes::from_static(b"# Draft\n\nstill indexed"),
+    );
+    let health = Arc::new(IndexHealth::new());
+
+    run_one_with_health(
+        Arc::clone(&storage),
+        Arc::new(ScriptedEmbedder::new(None, None)),
+        Arc::new(store.clone()),
+        IndexEvent::Refresh {
+            kb: kb.clone(),
+            object_key: opath("notes/Draft.MD"),
+            origin: RefreshOrigin::Reconcile,
+        },
+        Arc::clone(&health),
+    )
+    .await;
+
+    assert!(count_points(&store, &kb, "notes/Draft.MD").await > 0);
+    assert_eq!(health.snapshot("test-kb").last_failure, None);
 }

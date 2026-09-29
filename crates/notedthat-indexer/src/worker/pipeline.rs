@@ -1,7 +1,7 @@
 use super::chunks::{ChunkCursor, open_chunk_cursor, take_chunk_batch, validate_chunk_byte_bound};
 use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
-use super::{IndexerWorker, Skip, is_indexable};
+use super::{IndexerWorker, Skip, content_type_from_key, is_indexable};
 use crate::chunker;
 use crate::vector_store::PointSelector;
 use futures::StreamExt;
@@ -134,7 +134,15 @@ impl IndexerWorker {
         head: ObjectMeta,
         skip: Skip,
     ) -> Result<PipelineOutcome, String> {
-        let mime = head.content_type.clone().unwrap_or_default();
+        // An object with no declared type — a file the fs backend could not
+        // guess one for — is judged by its key, so an attachment is not read as
+        // Markdown.
+        let mime = match head.content_type.as_deref().map(str::trim) {
+            Some(declared) if !declared.is_empty() => declared.to_owned(),
+            _ => content_type_from_key(object_key.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        };
         if !is_indexable(&mime) {
             tracing::debug!(
                 target: "notedthat::indexing",
