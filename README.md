@@ -397,6 +397,8 @@ Full API documentation: [`docs/API.md`](docs/API.md)
 | `notedthat-storage-fs` | `crates/notedthat-storage-fs` | Local filesystem storage adapter |
 | `notedthat-indexer` | `crates/notedthat-indexer` | Chunking, embedder client, Qdrant integration |
 | `notedthat-write` | `crates/notedthat-write` | Shared write path (`commit()`, `commit_delete()`, MIME sniff, 5 GiB limit) — used by HTTP API + WebDAV surfaces |
+| `notedthat-nats` | `crates/notedthat-nats` | Shared NATS connection — authentication, TLS and the settings of every NotedThat-owned JetStream stream |
+| `notedthat-events` | `crates/notedthat-events` | Object-change event log behind `GET …/events`: the in-process ring and the NATS JetStream adapter |
 | `notedthat-api-http` | `crates/notedthat-api-http` | HTTP API surface |
 | `notedthat-webdav` | `crates/notedthat-webdav` | WebDAV surface |
 | `notedthat-mcp` | `crates/notedthat-mcp` | MCP tool schemas and HTTP-backed implementation |
