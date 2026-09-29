@@ -1077,11 +1077,13 @@ mod tests {
     /// including a percent-encoded name and with or without a trailing slash.
     #[tokio::test]
     async fn propfind_serves_the_prepared_listing_without_listing_again() {
-        for uri in [
-            "/notes",
-            "/notes/",
-            "/notes/hello%20world",
-            "/notes/hello%20world/",
+        // Each case names the member href only a served listing produces: the
+        // collection's own href never contains it.
+        for (uri, member) in [
+            ("/notes", "/webdav/notes/hello%20world/</D:href>"),
+            ("/notes/", "/webdav/notes/hello%20world/</D:href>"),
+            ("/notes/hello%20world", "/hello%20world/bravo.md</D:href>"),
+            ("/notes/hello%20world/", "/hello%20world/bravo.md</D:href>"),
         ] {
             let storage = storage_with(["hello world/bravo.md"]).await;
             let state = test_state(storage.clone(), declared_kbs(&["notes"]));
@@ -1096,10 +1098,7 @@ mod tests {
             let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
 
             assert_eq!(status, StatusCode::MULTI_STATUS, "{uri}: {body}");
-            assert!(
-                body.contains("bravo.md") || body.contains("hello%20world"),
-                "{uri}: {body}"
-            );
+            assert!(body.contains(member), "{uri}: {body}");
             // The middleware lists once; a fallback in `read_dir` would list twice.
             // dav-server's `metadata` call on a folder probes it with a `limit: 1`
             // listing, which is not a listing of the collection and is left out.
