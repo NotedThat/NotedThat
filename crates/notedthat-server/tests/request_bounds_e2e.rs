@@ -352,9 +352,11 @@ fn counter(exposition: &str, series: &str) -> f64 {
 }
 
 /// The status code on a raw HTTP/1.1 response's status line, or `None` when
-/// there is no complete status line. Only the first line is read, so a header
-/// or body that happens to contain `201` or `408` (a request id, say) cannot
-/// change the answer.
+/// the response doesn't start with an `HTTP/1.1` status line carrying a
+/// three-digit code. The line need not be complete: a response cut off after
+/// the code still yields it, since a code that arrived is one the server sent.
+/// Only the first line is read, so a header or body that happens to contain
+/// `201` or `408` (a request id, say) cannot change the answer.
 fn status_code(response: &str) -> Option<StatusCode> {
     let line = response.lines().next()?;
     let code = line.strip_prefix("HTTP/1.1 ")?.split(' ').next()?;
@@ -524,6 +526,10 @@ fn a_request_id_cannot_change_the_status_code() {
 
     assert_eq!(status_code(""), None);
     assert_eq!(status_code("HTTP/1.1 4"), None);
+    assert_eq!(
+        status_code("HTTP/1.1 408"),
+        Some(StatusCode::REQUEST_TIMEOUT)
+    );
 }
 
 /// A tool call whose search never answers must come back as the
