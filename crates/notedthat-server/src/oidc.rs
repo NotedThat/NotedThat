@@ -615,6 +615,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_exp_that_is_not_a_number_is_rejected_not_skipped() {
+        // The sibling of the `nbf` case: a wrong-typed `exp` must not read as
+        // absent and so skip the expiry check. `exp` is a required claim, so
+        // jsonwebtoken refuses it as missing before it reaches the format check.
+        // Given
+        let mut claims = claims(ISSUER, "alice", &[]);
+        claims["exp"] = serde_json::json!("9999999999");
+
+        // When / Then
+        let rejected = verifier()
+            .verify(&mint(&claims))
+            .await
+            .expect_err("string exp");
+        assert_eq!(rejected.reason, "missing `exp`");
+    }
+
+    #[tokio::test]
     async fn a_token_for_another_audience_is_rejected() {
         let mut claims = claims(ISSUER, "alice", &[]);
         claims["aud"] = serde_json::json!("someone-else");
