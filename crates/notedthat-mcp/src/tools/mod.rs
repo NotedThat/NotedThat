@@ -80,11 +80,18 @@ impl NotedThatMcp {
         let caller = extensions
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Caller>());
-        match caller {
-            Some(Caller::Bearer(token)) => Ok(self.client.with_token(token)),
-            Some(Caller::Anonymous) => Ok(self.client.anonymous()),
-            None => Err(McpToolError::Forbidden.into()),
+        let client = match caller {
+            Some(Caller::Bearer(token)) => self.client.with_token(token),
+            Some(Caller::Anonymous) => self.client.anonymous(),
+            None => return Err(McpToolError::Forbidden.into()),
+        };
+        // Every call passes here, so this is where a refreshed token is first
+        // seen — and where subscriptions its expired predecessor left stranded
+        // move onto it.
+        if let Some(subscriptions) = &self.subscriptions {
+            subscriptions.note_caller(&client);
         }
+        Ok(client)
     }
 }
 
