@@ -153,18 +153,35 @@ impl Drop for EnqueueOnDrop<'_> {
         let kb = event.kb().clone();
         // Best effort by construction: there is no caller left to return an
         // error to, and a full queue here means the same as it does anywhere
-        // else — the reconciliation pass is the backstop.
-        if self.indexer_tx.try_send(event).is_ok() {
-            if let Some(health) = self.index_health {
-                health.enqueued(kb.as_str());
+        // else — the reconciliation pass is the backstop. The health view is
+        // told exactly what the normal path tells it: this is the one refused
+        // event nobody got a 503 for, so it must not go unrecorded.
+        let refused = match self.indexer_tx.try_send(event) {
+            Ok(()) => {
+                if let Some(health) = self.index_health {
+                    health.enqueued(kb.as_str());
+                }
+                return;
             }
-        } else {
-            tracing::warn!(
-                target: "notedthat::indexing",
-                "INDEX_ENQUEUE_LOST_ON_CANCEL: a write or delete was cancelled after storage \
-                 changed and its index event could not be queued; reconciliation will repair it"
-            );
-        }
+            Err(TrySendError::Full(_)) => {
+                if let Some(health) = self.index_health {
+                    health.backpressured(kb.as_str());
+                }
+                "full"
+            }
+            Err(TrySendError::Closed(_)) => {
+                if let Some(health) = self.index_health {
+                    health.worker_stopped();
+                }
+                "closed"
+            }
+        };
+        tracing::warn!(
+            target: "notedthat::indexing",
+            kb = %kb, queue = refused,
+            "INDEX_ENQUEUE_LOST_ON_CANCEL: a write or delete was cancelled after storage \
+             changed and its index event could not be queued; reconciliation will repair it"
+        );
     }
 }
 
@@ -664,6 +681,57 @@ mod tests {
         // … and counted as enqueued, so the worker's completion of it cannot
         // leave `pending` one short for the rest of the process (D62).
         assert_eq!(health.snapshot(kb.as_str()).pending, 1);
+    }
+
+    /// A delete cancelled while the queue is full loses its `Tombstone` —
+    /// nobody got a 503 and nobody will retry — so the health view must say so
+    /// the way the normal path does, or the deleted content stays searchable
+    /// while `/index` reports the knowledge base healthy.
+    #[tokio::test]
+    async fn a_delete_cancelled_against_a_full_queue_reports_backpressure() {
+        let storage = storage();
+        let kb = kb();
+        let path = path_named("cancelled-full.md");
+        storage
+            .put_object(
+                &kb,
+                &path,
+                Bytes::from_static(b"# Doomed"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("prepopulate object");
+        let (indexer_tx, _rx) = mpsc::channel(1);
+        indexer_tx
+            .try_send(IndexEvent::Tombstone {
+                kb: kb.clone(),
+                object_key: path_named("filler.md"),
+            })
+            .expect("fill the only queue slot");
+        let events = NeverAnswers;
+        let health = notedthat_indexer::IndexHealth::new();
+        let sinks = WriteSinks {
+            indexer_tx: (&indexer_tx).into(),
+            events: Some(&events),
+            index_health: Some(&health),
+            source: EventSource::Http,
+        };
+
+        // Given a full queue and a delete whose publish never returns, when
+        // the caller gives up on it.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            commit_delete(&storage, &sinks, &kb, &path, ConditionalHeaders::default()),
+        )
+        .await;
+        assert!(cancelled.is_err(), "the publish should never have returned");
+
+        // Then the refused Tombstone shows on the health view.
+        assert_eq!(
+            health.snapshot(kb.as_str()).state,
+            notedthat_indexer::IndexState::Backpressured
+        );
     }
 
     #[tokio::test]
