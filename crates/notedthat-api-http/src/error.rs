@@ -447,13 +447,18 @@ impl IntoResponse for ApiErrorResponse {
                 .into_response();
         }
 
-        // 304 Not Modified: RFC 7232 §4.1 forbids a message body, and RFC 9110
-        // §15.4.5 requires the validators a 200 would have carried.
+        // 304 Not Modified: RFC 7232 §4.1 forbids a message body. RFC 9110 §15.4.5
+        // requires the `ETag` a 200 would have carried, and says a 304 should not
+        // carry other metadata unless it guides a cache — `Last-Modified` only when
+        // there is no `ETag` to validate by.
         if let Some(validators) = self.error.not_modified_validators() {
+            let last_modified = validators
+                .last_modified
+                .filter(|_| validators.etag.is_none());
             return with_validators(
                 Response::builder().status(StatusCode::NOT_MODIFIED),
                 validators.etag.as_deref(),
-                validators.last_modified,
+                last_modified,
             )
             .body(axum::body::Body::empty())
             .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
@@ -1231,7 +1236,8 @@ mod tests {
         assert!(body.is_empty(), "304 must have an empty body");
     }
 
-    /// RFC 9110 §15.4.5: a 304 carries the `ETag` and `Last-Modified` a 200 would.
+    /// RFC 9110 §15.4.5: a 304 carries the `ETag` a 200 would, and `Last-Modified`
+    /// only when there is no `ETag` to validate by.
     #[tokio::test]
     async fn test_not_modified_304_carries_validators() {
         let resp = ApiError::NotModified(Validators {
@@ -1241,6 +1247,13 @@ mod tests {
         .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["etag"], "\"v1\"");
+        assert!(resp.headers().get("last-modified").is_none());
+
+        let resp = ApiError::NotModified(Validators {
+            etag: None,
+            last_modified: Some(784_111_777),
+        })
+        .into_response();
         assert_eq!(
             resp.headers()["last-modified"],
             "Sun, 06 Nov 1994 08:49:37 GMT"

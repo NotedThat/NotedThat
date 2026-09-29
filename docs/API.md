@@ -399,7 +399,8 @@ that method. This is intentional per the NotedThat pass-through architecture (SP
 
 **Responses:**
 - **304 Not Modified** — GET/HEAD: `If-None-Match` or `If-Modified-Since` conditions met; no body.
-  Carries the `ETag` and `Last-Modified` a `200` would have (RFC 9110 §15.4.5)
+  Carries the `ETag` a `200` would have, and `Last-Modified` only for an object without one
+  (RFC 9110 §15.4.5)
 - **412 Precondition Failed** — `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met
 - **428 Precondition Required** — `PATCH` in bytes or lines mode, or `POST …/replace`, without `If-Match`
 
@@ -815,7 +816,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | Status | Meaning |
 |--------|---------|
 | 200 OK | Object exists; metadata in headers, no body |
-| 304 Not Modified | Conditional request: `If-None-Match` or `If-Modified-Since` matched; carries `etag` and `last-modified` |
+| 304 Not Modified | Conditional request: `If-None-Match` or `If-Modified-Since` matched; carries `etag` (or `last-modified` when there is no ETag) |
 | 404 Not Found | Object or KB does not exist |
 | 412 Precondition Failed | `If-Match` mismatch |
 
@@ -872,7 +873,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 |--------|------|
 | 200 OK | Full object bytes |
 | 206 Partial Content | Partial object bytes (byte-range or line-range request satisfied) |
-| 304 Not Modified | No body (conditional request matched); carries `etag` and `last-modified` |
+| 304 Not Modified | No body (conditional request matched); carries `etag` (or `last-modified` when there is no ETag) |
 | 400 Bad Request | `{"error": "malformed_range", ...}` — unparseable `Range` header, or more than one `bytes=` range |
 | 404 Not Found | `{"error": "not_found", ...}` |
 | 412 Precondition Failed | `{"error": "precondition_failed", ...}` |
