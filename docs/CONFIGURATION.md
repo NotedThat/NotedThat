@@ -1271,7 +1271,7 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
-NotedThat ships no embedding model: you set one up and point the server at it before anything can start. Any model behind an OpenAI-compatible `/v1/embeddings` endpoint works, hosted or local. The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
+NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible `/v1/embeddings` endpoint works, hosted or local. The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
 
 | Variable | Flag | Required | Default | Description |
 |---|---|---|---|---|
@@ -1300,7 +1300,9 @@ EMBEDDING_API_KEY=ollama
 EMBEDDING_DIMENSIONS=768
 ```
 
-That URL is for a server run natively. Under Compose the server runs in a container, so use `http://host.docker.internal:11434` to reach Ollama on the host.
+That URL is for a server run natively. Under Compose the server runs in a container, so use `http://host.docker.internal:11434` to reach Ollama on the host. The README's native flows read the same `.env`, so if it holds the Compose URL, uncomment the `EMBEDDING_ENDPOINT_URL` override there to use `http://127.0.0.1:11434`.
+
+On Linux, `host.docker.internal` is the Docker bridge address, not the host's loopback, and Ollama listens only on `127.0.0.1` by default, so the container's connection is refused. Make Ollama listen on the bridge too: run `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0:11434"` under `[Service]`, then `sudo systemctl restart ollama`. That also exposes Ollama on your network unless a firewall blocks port 11434; to avoid that, bind it to the bridge address only (e.g. `OLLAMA_HOST=172.17.0.1:11434`, see `ip -4 addr show docker0`), which leaves native runs needing that address instead of `127.0.0.1`. Docker Desktop on macOS and Windows forwards `host.docker.internal` to the host's loopback, so it needs neither.
 
 **OpenAI** (`text-embedding-3-small`, 1536 dimensions):
 

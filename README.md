@@ -145,8 +145,9 @@ and keep provider credentials in ignored local environment files; never commit t
 Before you start you need:
 
 - Docker with Compose v2, for Qdrant (and the server itself in the Compose flows).
-- An embedding model. Set one up first; nothing starts without it. For a free local
-  setup, run [Ollama](https://ollama.com) with a model such as
+- An embedding model. The server needs its four values to start but only contacts the
+  endpoint when it indexes, so a wrong setup still starts and leaves search empty
+  ([Indexing behavior](docs/CONFIGURATION.md#indexing-behavior)). For a free local setup, run [Ollama](https://ollama.com) with a model such as
   [EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) or
   [BGE-M3](https://huggingface.co/BAAI/bge-m3). See
   [Embedding](docs/CONFIGURATION.md#embedding) for the values to put in `.env`.
@@ -255,6 +256,8 @@ provider, and nothing else:
 ```sh
 docker compose up -d qdrant
 set -a; . ./.env; set +a
+# If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_STORAGE_BACKEND=fs
 export NOTEDTHAT_FS_ROOT="$PWD/.notedthat-data"
@@ -288,6 +291,8 @@ server natively. Reuse your local embedding values from `.env` without committin
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d seaweedfs qdrant
 set -a; . ./.env; set +a
+# If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
 export NOTEDTHAT_S3_FORCE_PATH_STYLE=true
