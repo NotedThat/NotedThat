@@ -983,6 +983,10 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
   `MCP_ANONYMOUS disabled_by_setting` — whether `/mcp` admits a request with no credential, with
   the mode and whether any manifest grants `anyone` something. See
   [MCP HTTP listener](#mcp-http-listener).
+- `NATS_DUPLICATE_WINDOW_SHORT` — an existing NotedThat-owned stream keeps a hand-set duplicate
+  window under 10 seconds while `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` is unset, so a publish
+  retried after a timed-out acknowledgement can be stored twice; the stream, its window and the
+  minimum are named, at `warn`. See [NATS connection](#nats-connection).
 
 ## Upload and index staging directory
 
