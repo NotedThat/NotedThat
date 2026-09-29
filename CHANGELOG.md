@@ -10,6 +10,39 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/NotedThat/NotedThat/compare/v0.12.3...v0.13.0) - 2026-09-29
+
+### Fixed
+
+- *(indexer)* [**breaking**] enforce a positive index concurrency and cover the scheduler
+- *(api)* [**breaking**] answer 204 when PUT replaces an object
+- *(server)* place OAuth metadata between host and path per RFC 9728
+- *(api)* honour If-Range and advertise Accept-Ranges
+- *(api)* send ETag and Last-Modified on 304 Not Modified
+- *(core)* ignore date preconditions superseded by an ETag condition
+- *(storage-s3)* never fail a write over the HEAD that picks 201 or 204
+- *(api)* send Last-Modified on a 304 only when there is no ETag
+- *(indexer)* merge short, heading-only and blank chunks
+- *(api)* [**breaking**] answer 428 when a required If-Match is missing
+- *(api-http)* [**breaking**] spell an insert point's byte range as */N with X-Insert-Offset
+- *(webdav)* refuse an unbounded PROPFIND only on a collection
+- *(webdav)* take COPY and MOVE's 201 or 204 from the backend
+- *(webdav)* answer PROPPATCH on a folder URL ending in a slash
+- *(webdav)* [**breaking**] answer PROPPATCH with 207 Multi-Status instead of 405
+- *(webdav)* honour If, If-Match and If-None-Match on COPY and MOVE
+- *(webdav)* [**breaking**] treat a missing Depth as infinity and refuse it with 403
+- *(mcp)* read an insert point's offset from X-Insert-Offset
+
+### Other
+
+- *(core)* stop calling conditional headers forwarded verbatim
+- Merge pull request #310 from NotedThat/fix/stale-lockfile-283
+- *(deps)* refresh Cargo.lock and raise the MSRV to 1.94.1
+- Merge pull request #273 from NotedThat/fix/rfc-conformance-244
+- *(indexer)* state what D72's chunk merging guarantees
+- document the RFC 9110, 6585, 4918 and 9728 conformance changes
+- *(server)* expect 204 when the Authelia e2e overwrites a seeded file
+
 ## [0.12.3](https://github.com/NotedThat/NotedThat/compare/v0.12.2...v0.12.3) - 2026-09-28
 
 ### Added
