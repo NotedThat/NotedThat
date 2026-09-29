@@ -129,12 +129,8 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         .await
     {
         Ok(meta) => meta,
-        // RFC 9110 §13.1.1: If-Match fails on a missing resource.
-        Err(StorageError::NotFound { .. } | StorageError::BucketNotFound { .. })
-            if conditionals.if_match.is_some() =>
-        {
-            return StatusCode::PRECONDITION_FAILED.into_response();
-        }
+        // Without its preconditions this request would be a 404, so they are ignored
+        // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
         Err(StorageError::NotFound { .. } | StorageError::BucketNotFound { .. }) => {
             return StatusCode::NOT_FOUND.into_response();
         }
@@ -151,14 +147,14 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     if evaluate_write_preconditions(Some(source_state), &conditionals).is_err() {
         return StatusCode::PRECONDITION_FAILED.into_response();
     }
-    // The destination is looked up when the MOVE may overwrite it, or when a tagged
-    // `If` list names it and so needs its ETag.
+    // The destination is looked up only when a tagged `If` list names it and so needs
+    // its ETag. Whether the copy created it comes from the backend (`outcome.created`).
     let names_destination = if_header.as_ref().is_some_and(|header| {
         header
             .resources()
             .any(|resource| same_object(resource, &state, &dst_kb, &dst_obj))
     });
-    let dst_etag = if overwrite || names_destination {
+    let dst_etag = if names_destination {
         state
             .storage
             .head_object(&dst_kb, &dst_obj, ConditionalHeaders::default())
@@ -168,7 +164,6 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     } else {
         None
     };
-    let dst_exists = overwrite && dst_etag.is_some();
     if let Some(header) = &if_header {
         let holds = header.evaluate(|resource| match resource {
             None => Some(source_etag.as_str()),
@@ -256,10 +251,10 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         }
     }
     response_with_optional_etag(
-        if dst_exists {
-            StatusCode::NO_CONTENT
-        } else {
+        if outcome.created {
             StatusCode::CREATED
+        } else {
+            StatusCode::NO_CONTENT
         },
         outcome.etag,
     )

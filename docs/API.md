@@ -1800,6 +1800,8 @@ failure answers `412` (RFC 9110 §13.2.1). So is the WebDAV `If` header (RFC 491
 - There are no locks (D17), so a lock token never holds. A list asserting one fails with `412`, and
   `(Not <token>)` holds.
 - A malformed `If` header answers `400`.
+- A missing source (or PROPPATCH target) answers `404` whatever the preconditions say: a request
+  that would be `404` without them ignores them (RFC 9110 §13.2.1).
 
 The `ETag` checked is the one the copy and the MOVE's delete are pinned to, so a write that lands
 after the check still ends in `412`.

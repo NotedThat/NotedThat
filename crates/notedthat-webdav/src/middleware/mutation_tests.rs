@@ -246,6 +246,54 @@ async fn copy_overwrite_false_existing_destination_returns_412() {
 }
 
 #[tokio::test]
+async fn copy_status_follows_the_backend_when_the_destination_appears_mid_request() {
+    // The destination is written between the request's arrival and the copy; the
+    // copy replaces it, so the answer is 204 (RFC 4918 §9.8.5), not 201.
+    let storage = Arc::new(MockStorage::default());
+    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
+    storage.race_destination_before_copy();
+    let resp = app(storage.clone())
+        .oneshot(
+            HttpRequest::builder()
+                .method("COPY")
+                .uri("/webdav/notes/src.md")
+                .header("destination", "/webdav/notes/dst.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        Bytes::from_static(b"source")
+    );
+}
+
+#[tokio::test]
+async fn copy_or_move_of_a_missing_source_is_404_despite_if_match() {
+    // Without its preconditions the request is a 404, so they are ignored
+    // (RFC 9110 §13.2.1).
+    for method in ["COPY", "MOVE"] {
+        let storage = Arc::new(MockStorage::default());
+        let resp = app(storage.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .method(method)
+                    .uri("/webdav/notes/missing.md")
+                    .header("destination", "/webdav/notes/dst.md")
+                    .header("if-match", "*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method}");
+        assert!(!storage.calls().contains(&"copy_object"), "{method}");
+    }
+}
+
+#[tokio::test]
 async fn copy_overwrite_false_protects_destination_creation_race() {
     let storage = Arc::new(MockStorage::default());
     storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
@@ -466,24 +514,6 @@ async fn move_with_matching_if_none_match_returns_412() {
     let (status, storage) = copy_or_move_with("MOVE", &[("if-none-match", "*")]).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
     assert!(storage.get_stored("notes", "src.md").is_some());
-}
-
-#[tokio::test]
-async fn copy_of_a_missing_source_with_if_match_returns_412() {
-    let storage = Arc::new(MockStorage::default());
-    let resp = app(storage)
-        .oneshot(
-            HttpRequest::builder()
-                .method("COPY")
-                .uri("/webdav/notes/absent.md")
-                .header("destination", "/webdav/notes/dst.md")
-                .header("if-match", "*")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
 }
 
 /// RFC 4918 §10.4: an untagged `If` list applies to the source.

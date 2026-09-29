@@ -1496,7 +1496,7 @@ mod intercept_write_methods {
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(
                 storage.calls(),
-                vec!["head_object", "head_object", "copy_object", "delete_object"]
+                vec!["head_object", "copy_object", "delete_object"]
             );
             assert!(storage.get_stored("notes", "source.md").is_none());
             assert!(storage.get_stored("notes", "dest.md").is_some());
@@ -1524,10 +1524,7 @@ mod intercept_write_methods {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(resp.headers().get("etag").unwrap(), "\"source\"");
-            assert_eq!(
-                storage.calls(),
-                vec!["head_object", "head_object", "copy_object"]
-            );
+            assert_eq!(storage.calls(), vec!["head_object", "copy_object"]);
             assert!(storage.get_stored("notes", "source.md").is_some());
             assert!(storage.get_stored("notes", "copy.md").is_some());
             assert!(!storage.calls().contains(&"get_object"));
