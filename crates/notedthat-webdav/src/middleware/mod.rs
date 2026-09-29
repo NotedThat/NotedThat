@@ -863,7 +863,7 @@ mod intercept_write_methods {
                 let mut next_etag = self.next_etag.lock().expect("mutex not poisoned");
                 *next_etag += 1;
                 let etag = format!("\"etag-{next_etag}\"");
-                objects.insert(
+                let replaced = objects.insert(
                     key,
                     StoredObject {
                         bytes,
@@ -871,7 +871,10 @@ mod intercept_write_methods {
                         etag: etag.clone(),
                     },
                 );
-                Ok(PutOutcome { etag: Some(etag) })
+                Ok(PutOutcome {
+                    etag: Some(etag),
+                    created: replaced.is_none(),
+                })
             }
 
             async fn put_staged_object(
@@ -985,7 +988,7 @@ mod intercept_write_methods {
                 let mut copied = source_object;
                 copied.content_type = options.content_type;
                 let etag = copied.etag.clone();
-                objects.insert(destination_key, copied);
+                let created = objects.insert(destination_key, copied).is_none();
                 if *self
                     .change_source_after_copy
                     .lock()
@@ -994,7 +997,10 @@ mod intercept_write_methods {
                 {
                     source.etag = "\"changed\"".to_string();
                 }
-                Ok(PutOutcome { etag: Some(etag) })
+                Ok(PutOutcome {
+                    etag: Some(etag),
+                    created,
+                })
             }
 
             async fn delete_object(
@@ -1138,7 +1144,8 @@ mod intercept_write_methods {
 
             assert_eq!(resp.status(), StatusCode::CREATED);
             assert_eq!(resp.headers().get("etag").unwrap(), "\"etag-1\"");
-            assert_eq!(storage.calls(), vec!["head_object", "put_object"]);
+            // No pre-write HEAD: the write itself reports that it created the object.
+            assert_eq!(storage.calls(), vec!["put_object"]);
         }
 
         #[tokio::test]

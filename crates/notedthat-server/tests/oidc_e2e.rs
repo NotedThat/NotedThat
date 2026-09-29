@@ -295,7 +295,7 @@ async fn a_group_scoped_manifest_binds_an_oidc_caller_on_the_api() {
             .body("edited")
             .send()
     };
-    assert_eq!(put(&alice).await.expect("put").status(), 201);
+    assert_eq!(put(&alice).await.expect("put").status(), 204);
     assert_eq!(put(&bob).await.expect("put").status(), 403);
     let todo = "/api/v1/knowledgebases/notes/personal%2Falice%2Ftodo.md";
     assert_eq!(

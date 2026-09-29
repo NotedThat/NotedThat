@@ -60,6 +60,43 @@ impl S3Storage {
         derive_bucket_name(&self.tenant, kb)
     }
 
+    /// Whether a write to `key` will replace an existing object, for
+    /// [`PutOutcome::created`].
+    ///
+    /// S3's `PutObject` and `CopyObject` responses do not say. A precondition that the
+    /// write must satisfy settles it for free — `If-Match` holds only for an existing
+    /// object and `If-None-Match: *` only for a missing one — and otherwise a `HEAD`
+    /// taken just before the write answers it. That `HEAD` can race a concurrent
+    /// writer; the worst outcome is a `201` where a `204` was due, or the reverse.
+    async fn key_exists_before_write(
+        &self,
+        bucket: &str,
+        key: &str,
+        if_match: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> Result<bool, StorageError> {
+        if if_none_match.is_some_and(|value| value.trim() == "*") {
+            return Ok(false);
+        }
+        if if_match.is_some() {
+            return Ok(true);
+        }
+        match self
+            .client
+            .head_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) => match map_head_error(&error, bucket, key) {
+                StorageError::NotFound { .. } => Ok(false),
+                other => Err(other),
+            },
+        }
+    }
+
     /// Find out whether `kb`'s bucket enforces the preconditions `NotedThat` forwards on a
     /// conditional `PUT` (D70).
     ///
@@ -794,6 +831,14 @@ impl Storage for S3Storage {
     ) -> Result<PutOutcome, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                key,
+                conditionals.if_match.as_deref(),
+                conditionals.if_none_match.as_deref(),
+            )
+            .await?;
 
         let mut req = self
             .client
@@ -823,6 +868,7 @@ impl Storage for S3Storage {
         info!(bucket = %bucket, key = %key, "object stored");
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
+            created: !existed,
         })
     }
 
@@ -848,6 +894,14 @@ impl Storage for S3Storage {
                 })?,
             _ => return Err(storage_other("invalid staged body storage".into())),
         };
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                key,
+                conditionals.if_match.as_deref(),
+                conditionals.if_none_match.as_deref(),
+            )
+            .await?;
         let mut req = self
             .client
             .put_object()
@@ -869,6 +923,7 @@ impl Storage for S3Storage {
             .map_err(|error| map_put_error(&error, &bucket))?;
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
+            created: !existed,
         })
     }
 
@@ -887,6 +942,14 @@ impl Storage for S3Storage {
             .collect::<Vec<_>>()
             .join("/");
         let copy_source = format!("{bucket}/{encoded_source}");
+        let existed = self
+            .key_exists_before_write(
+                &bucket,
+                destination.as_str(),
+                None,
+                options.destination_if_none_match.as_deref(),
+            )
+            .await?;
         let mut req = self
             .client
             .copy_object()
@@ -913,6 +976,7 @@ impl Storage for S3Storage {
                 .copy_object_result()
                 .and_then(|result| result.e_tag())
                 .map(normalize_etag),
+            created: !existed,
         })
     }
 

@@ -111,7 +111,15 @@ impl PatchServer {
             .send()
             .await
             .expect("PUT object failed");
-        assert_eq!(response.status(), StatusCode::CREATED);
+        // 201 for a new object, 204 when it replaces one (RFC 9110 §9.3.4).
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::CREATED | StatusCode::NO_CONTENT
+            ),
+            "PUT answered {}",
+            response.status()
+        );
         etag(&response)
     }
 

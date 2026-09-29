@@ -102,9 +102,7 @@ impl Storage for MockStorage {
         _content_type: Option<&str>,
         _conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".to_string()),
-        })
+        Ok(PutOutcome::created(Some("\"test-etag\"".to_string())))
     }
 
     async fn put_staged_object(
@@ -132,9 +130,7 @@ impl Storage for MockStorage {
         _destination: &ObjectPath,
         _options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError> {
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".into()),
-        })
+        Ok(PutOutcome::created(Some("\"test-etag\"".into())))
     }
 
     async fn delete_object(

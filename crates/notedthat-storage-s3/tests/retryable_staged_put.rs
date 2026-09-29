@@ -65,7 +65,15 @@ async fn file_backed_put_replays_identical_body_after_retry() {
         .await
         .expect("retried upload succeeds");
 
-    let requests = server.received_requests().await.expect("recorded requests");
+    // The unanswered HEAD ahead of the upload is how the adapter learns the PUT
+    // creates rather than replaces (`PutOutcome::created`); only the PUTs replay.
+    let requests: Vec<_> = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .filter(|request| request.method.as_str() == "PUT")
+        .collect();
     assert_eq!(requests.len(), 2);
     let expected_length = payload_len.to_string();
     for request in &requests {
@@ -79,6 +87,10 @@ async fn file_backed_put_replays_identical_body_after_retry() {
     }
     assert_eq!(requests[0].body.len(), requests[1].body.len());
     assert_eq!(outcome.etag.as_deref(), Some("\"stored\""));
+    assert!(
+        outcome.created,
+        "HEAD answered 404, so the PUT created the object"
+    );
     assert_eq!(
         std::fs::read_dir(directory.path())
             .expect("read staging directory")

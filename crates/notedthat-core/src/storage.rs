@@ -75,11 +75,36 @@ pub struct ListResponse {
     pub next_cursor: Option<String>,
 }
 
-/// Return value from [`Storage::put_object`]. Carries the `ETag` of the stored object.
+/// Return value from [`Storage::put_object`] and the other writes. Carries the `ETag`
+/// of the stored object and whether the write created it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PutOutcome {
     /// `ETag` from the backend (opaque, quoted per RFC 7232 §2.3), or `None` if not returned.
     pub etag: Option<String>,
+    /// `true` when no object existed at the key before this write, `false` when it
+    /// replaced one. HTTP answers `201 Created` for the first and `204 No Content` for
+    /// the second (RFC 9110 §9.3.4).
+    pub created: bool,
+}
+
+impl PutOutcome {
+    /// A write that created a new object.
+    #[must_use]
+    pub fn created(etag: Option<String>) -> Self {
+        Self {
+            etag,
+            created: true,
+        }
+    }
+
+    /// A write that replaced an existing object.
+    #[must_use]
+    pub fn replaced(etag: Option<String>) -> Self {
+        Self {
+            etag,
+            created: false,
+        }
+    }
 }
 
 /// The storage abstraction shared by all `NotedThat` components.

@@ -876,7 +876,8 @@ async fn put_if_match_correct_returns_new_etag() {
         .await
         .unwrap();
 
-    assert_eq!(second.status(), StatusCode::CREATED);
+    assert_eq!(second.status(), StatusCode::NO_CONTENT);
+    assert!(second.headers().get("location").is_none());
     let second_etag = second.headers().get("etag").unwrap().to_str().unwrap();
     assert!(
         !second_etag.is_empty(),
@@ -997,9 +998,10 @@ async fn put_overwrites_existing_object() {
         put_text(a.clone(), KB, "same.md", "first").await,
         StatusCode::CREATED
     );
+    // RFC 9110 §9.3.4: replacing an object is 204, not 201.
     assert_eq!(
         put_text(a.clone(), KB, "same.md", "second").await,
-        StatusCode::CREATED
+        StatusCode::NO_CONTENT
     );
 
     let resp = a
@@ -2404,7 +2406,7 @@ async fn m3_round_trip() {
         )
         .await
         .unwrap();
-    assert_eq!(second_put_resp.status(), StatusCode::CREATED);
+    assert_eq!(second_put_resp.status(), StatusCode::NO_CONTENT);
     let e2 = second_put_resp
         .headers()
         .get("etag")
@@ -2563,7 +2565,7 @@ async fn m3_multi_etag_if_match() {
         .unwrap();
     assert_eq!(
         resp_ok.status(),
-        StatusCode::CREATED,
+        StatusCode::NO_CONTENT,
         "If-Match list containing the current ETag must succeed"
     );
 }

@@ -347,12 +347,13 @@ impl Storage for MockStorage {
         content_type: Option<&str>,
         _conditionals: ConditionalHeaders,
     ) -> Result<PutOutcome, StorageError> {
-        self.objects.lock().unwrap().insert(
+        let replaced = self.objects.lock().unwrap().insert(
             (kb.as_str().to_string(), path.as_str().to_string()),
             (bytes, content_type.map(str::to_string)),
         );
         Ok(PutOutcome {
             etag: Some("\"test-etag\"".to_string()),
+            created: replaced.is_none(),
         })
     }
 
@@ -405,11 +406,14 @@ impl Storage for MockStorage {
             return Err(StorageError::PreconditionFailed);
         }
         let etag = Self::etag_for(&bytes);
-        objects.insert(
+        let replaced = objects.insert(
             destination_key,
             (bytes, options.content_type.or(source_type)),
         );
-        Ok(PutOutcome { etag: Some(etag) })
+        Ok(PutOutcome {
+            etag: Some(etag),
+            created: replaced.is_none(),
+        })
     }
 
     async fn delete_object(

@@ -132,7 +132,7 @@ impl Storage for TestStorage {
         }
         drop(script);
         let etag = "etag2".to_string();
-        objects.insert(
+        let replaced = objects.insert(
             key,
             StoredObject {
                 body: bytes,
@@ -140,7 +140,10 @@ impl Storage for TestStorage {
                 content_type: content_type.map(str::to_string),
             },
         );
-        Ok(PutOutcome { etag: Some(etag) })
+        Ok(PutOutcome {
+            etag: Some(etag),
+            created: replaced.is_none(),
+        })
     }
 
     async fn put_staged_object(

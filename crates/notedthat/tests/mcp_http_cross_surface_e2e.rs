@@ -1392,7 +1392,7 @@ async fn anonymous_mcp_is_bound_by_the_anyone_rules() {
         .send()
         .await
         .expect("PUT");
-    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
     let notified = notifications.next(Duration::from_secs(5)).await;
     assert_eq!(notified["method"], "notifications/resources/updated");
     assert_eq!(notified["params"]["uri"], "notedthat://public/note.md");
