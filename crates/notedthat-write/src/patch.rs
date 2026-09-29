@@ -200,12 +200,15 @@ fn validate_caller_if_match(
 }
 
 /// Shared If-Match presence + shape validation for PATCH and POST /replace.
+///
+/// A missing `If-Match` is [`WriteError::PreconditionRequired`] (428, RFC 6585 §3); one
+/// that is present but not a single strong tag is a malformed request (400).
 pub(crate) fn require_strong_if_match(
     caller_conditionals: &ConditionalHeaders,
 ) -> Result<(), WriteError> {
     let Some(etag) = &caller_conditionals.if_match else {
-        return Err(WriteError::PatchInvalidRange {
-            message: "If-Match required on PATCH (bytes/lines mode)".into(),
+        return Err(WriteError::PreconditionRequired {
+            message: "If-Match is required on PATCH (bytes/lines mode) and replace".into(),
         });
     };
     if etag == "*" || etag.contains(',') {

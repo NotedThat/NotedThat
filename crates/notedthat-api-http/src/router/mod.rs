@@ -559,7 +559,7 @@ mod patch_route {
     }
 
     #[tokio::test]
-    async fn bytes_content_range_without_if_match_returns_invalid_request() {
+    async fn bytes_content_range_without_if_match_returns_precondition_required() {
         let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
 
         let response = patch_request(
@@ -571,7 +571,12 @@ mod patch_route {
         )
         .await;
 
-        assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+        assert_error_code(
+            response,
+            StatusCode::PRECONDITION_REQUIRED,
+            "precondition_required",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -759,7 +764,7 @@ mod patch_route {
         }
 
         #[tokio::test]
-        async fn missing_if_match_for_bytes_mode_returns_invalid_request() {
+        async fn missing_if_match_for_bytes_mode_returns_precondition_required() {
             let (router, _etag) = router_with_object(b"0123456789", MAX_BODY_BYTES).await;
 
             let response = patch_request(
@@ -771,7 +776,12 @@ mod patch_route {
             )
             .await;
 
-            assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+            assert_error_code(
+                response,
+                StatusCode::PRECONDITION_REQUIRED,
+                "precondition_required",
+            )
+            .await;
         }
 
         #[tokio::test]

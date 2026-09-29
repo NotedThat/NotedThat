@@ -235,7 +235,7 @@ async fn patch_rejects_result_larger_than_max_patchable_size_after_splice() {
 }
 
 #[tokio::test]
-async fn bytes_patch_without_if_match_returns_invalid_request() {
+async fn bytes_patch_without_if_match_returns_precondition_required() {
     // Given: an existing object.
     let server = PatchServer::start(NORMAL_MAX_PATCHABLE_SIZE).await;
     server.put_text("missing-if-match.md", "0123456789").await;
@@ -245,8 +245,13 @@ async fn bytes_patch_without_if_match_returns_invalid_request() {
         .patch_content_range("missing-if-match.md", "bytes 0-1/*", None, "AB")
         .await;
 
-    // Then: the request is rejected before mutation.
-    assert_error_code(response, StatusCode::BAD_REQUEST, "invalid_request").await;
+    // Then: the request is rejected before mutation, as 428 (RFC 6585 §3).
+    assert_error_code(
+        response,
+        StatusCode::PRECONDITION_REQUIRED,
+        "precondition_required",
+    )
+    .await;
 }
 
 #[tokio::test]

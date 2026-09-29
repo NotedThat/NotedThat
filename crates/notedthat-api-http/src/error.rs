@@ -88,6 +88,14 @@ pub enum ApiError {
         /// Total object size in bytes.
         complete_length: u64,
     },
+    /// A write that must be conditional arrived without `If-Match`.
+    ///
+    /// Maps to HTTP 428 Precondition Required (RFC 6585 §3).
+    #[error("precondition required: {message}")]
+    PreconditionRequired {
+        /// Human-readable reason.
+        message: String,
+    },
     /// The backend returned 304 Not Modified for a conditional GET/HEAD.
     ///
     /// Maps to HTTP 304 with no body, as required by RFC 7232 §4.1, carrying the
@@ -209,6 +217,9 @@ impl From<notedthat_write::WriteError> for ApiError {
                 line_total: total_lines,
                 byte_total: total_bytes,
             },
+            notedthat_write::WriteError::PreconditionRequired { message } => {
+                Self::PreconditionRequired { message }
+            }
             notedthat_write::WriteError::PatchInvalidRange { message }
             | notedthat_write::WriteError::InvalidManifest { message } => {
                 Self::Core(CoreError::InvalidInput { message })
@@ -327,6 +338,9 @@ impl ApiError {
             }
             Self::Core(CoreError::NotModified(_)) | Self::NotModified(_) => {
                 (StatusCode::NOT_MODIFIED, "not_modified")
+            }
+            Self::PreconditionRequired { .. } => {
+                (StatusCode::PRECONDITION_REQUIRED, "precondition_required")
             }
             Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
@@ -903,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_missing_if_match_returns_400_invalid_request() {
+    async fn replace_missing_if_match_returns_428_precondition_required() {
         let response = router()
             .oneshot(
                 Request::builder()
@@ -919,7 +933,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_invalid_request_response(response).await;
+        // RFC 6585 §3: the precondition is missing, not malformed.
+        assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "precondition_required");
     }
 
     #[tokio::test]
