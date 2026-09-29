@@ -159,6 +159,11 @@ pub fn build_bounded_router(state: AppState, bounds: &RequestBounds) -> Router {
             "/.well-known/oauth-protected-resource",
             get(protected_resource_metadata),
         )
+        // RFC 9728 §3.1: a resource with a path is described at suffix + path.
+        .route(
+            "/.well-known/oauth-protected-resource/{*path}",
+            get(protected_resource_metadata),
+        )
         .route(BROWSE_PREFIX, get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/"), get(browse_root))
         .route(&format!("{BROWSE_PREFIX}/{{*path}}"), get(browse_path))
@@ -260,6 +265,7 @@ mod bounded_routes {
             (Method::PUT, "/api/v1/knowledgebases/notes/a.md"),
             (Method::GET, "/llms.txt"),
             (Method::GET, "/.well-known/oauth-protected-resource"),
+            (Method::GET, "/.well-known/oauth-protected-resource/mcp"),
             (Method::GET, "/browse"),
             (Method::GET, "/browse/notes/"),
         ] {

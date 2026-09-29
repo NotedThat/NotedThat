@@ -417,11 +417,11 @@ async fn build_authenticator(
             .context("failed to reach NOTEDTHAT_OIDC_ISSUER (--oidc-issuer)")?;
         authenticator = authenticator.with_token_verifier(Arc::new(verifier));
         if let Some(resource) = &oidc.resource {
-            authenticator = authenticator.with_protected_resource(ProtectedResource {
-                resource: resource.clone(),
-                authorization_servers: vec![oidc.issuer.clone()],
-                metadata_url: format!("{resource}/.well-known/oauth-protected-resource"),
-            });
+            // RFC 9728 §3.1 places the metadata between the host and the path.
+            authenticator = authenticator.with_protected_resource(ProtectedResource::new(
+                resource.clone(),
+                vec![oidc.issuer.clone()],
+            ));
         }
     } else {
         for (slug, policy) in access_policies {

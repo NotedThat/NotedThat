@@ -4,18 +4,33 @@
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use notedthat_core::PROTECTED_RESOURCE_WELL_KNOWN;
 
-/// `GET /.well-known/oauth-protected-resource`.
+/// `GET /.well-known/oauth-protected-resource[/{path}]`.
+///
+/// RFC 9728 §3.1 puts the metadata of a resource with a path at the well-known
+/// suffix followed by that path, so `https://h/mcp` is described at
+/// `/.well-known/oauth-protected-resource/mcp`. That is served, and so is the bare
+/// suffix, which deployments configured before the path was honoured point at.
+/// Any other path is `404`.
 ///
 /// Answers `404` when the deployment publishes no metadata, which is every
 /// deployment without `NOTEDTHAT_OIDC_RESOURCE`: an empty document would
 /// invite a client to try a flow that cannot succeed.
-pub(super) async fn protected_resource_metadata(State(state): State<AppState>) -> Response {
+pub(super) async fn protected_resource_metadata(
+    State(state): State<AppState>,
+    uri: Uri,
+) -> Response {
     match state.authenticator.protected_resource() {
-        Some(resource) => Json(resource.document()).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        Some(resource)
+            if uri.path() == PROTECTED_RESOURCE_WELL_KNOWN
+                || uri.path() == resource.metadata_path() =>
+        {
+            Json(resource.document()).into_response()
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -51,14 +66,45 @@ mod tests {
     }
 
     async fn fetch(app: axum::Router) -> axum::response::Response {
+        fetch_at(app, "/.well-known/oauth-protected-resource").await
+    }
+
+    async fn fetch_at(app: axum::Router, uri: &str) -> axum::response::Response {
         app.oneshot(
             Request::builder()
-                .uri("/.well-known/oauth-protected-resource")
+                .uri(uri)
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
         .expect("response")
+    }
+
+    /// RFC 9728 §3.1: a resource with a path is described under the suffix + path.
+    #[tokio::test]
+    async fn a_resource_with_a_path_is_described_after_the_well_known_suffix() {
+        let app = app(
+            Authenticator::new("token").with_protected_resource(ProtectedResource::new(
+                "https://notes.example.com/mcp".into(),
+                vec!["https://auth.example.com".into()],
+            )),
+        );
+
+        let response = fetch_at(app.clone(), "/.well-known/oauth-protected-resource/mcp").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["resource"], "https://notes.example.com/mcp");
+
+        assert_eq!(fetch(app.clone()).await.status(), StatusCode::OK);
+        assert_eq!(
+            fetch_at(app, "/.well-known/oauth-protected-resource/other")
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
