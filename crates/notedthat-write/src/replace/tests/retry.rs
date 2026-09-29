@@ -10,7 +10,7 @@ use super::support::{
 
 #[tokio::test]
 async fn stale_caller_if_match_returns_precondition_failed_no_retry() {
-    let storage = TestStorage::with_body(b"hello world");
+    let storage = TestStorage::with_body(b"hello world").await;
     let err = expect_replace_err(
         run_replace_with(
             &storage,
@@ -30,7 +30,7 @@ async fn stale_caller_if_match_returns_precondition_failed_no_retry() {
     assert_eq!(calls.head, 1);
     assert_eq!(calls.get, 0);
     assert_eq!(calls.put, 0);
-    assert_eq!(storage.body(), Bytes::from_static(b"hello world"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"hello world"));
 }
 
 #[tokio::test]
@@ -42,13 +42,14 @@ async fn window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_
                 get_failures_remaining: failures,
                 ..Script::default()
             },
-        );
+        )
+        .await;
 
         run_replace(&storage, ReplaceArgs::one("world", "planet"))
             .await
             .expect("GET precondition window is absorbed before max attempts");
 
-        assert_eq!(storage.body(), Bytes::from_static(b"hello planet"));
+        assert_eq!(storage.body().await, Bytes::from_static(b"hello planet"));
     }
 
     let storage = TestStorage::with_script(
@@ -57,7 +58,8 @@ async fn window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_
             get_failures_remaining: 3,
             ..Script::default()
         },
-    );
+    )
+    .await;
     let err = expect_replace_err(run_replace(&storage, ReplaceArgs::one("world", "planet")).await);
 
     assert!(matches!(
@@ -78,13 +80,14 @@ async fn window_412_from_put_absorbed_by_two_retries() {
             put_failures_remaining: 2,
             ..Script::default()
         },
-    );
+    )
+    .await;
 
     run_replace(&storage, ReplaceArgs::one("world", "planet"))
         .await
         .expect("PUT precondition window is absorbed before max attempts");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"hello planet"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"hello planet"));
     let calls = storage.calls();
     assert_eq!(calls.head, 3);
     assert_eq!(calls.get, 3);
@@ -93,7 +96,7 @@ async fn window_412_from_put_absorbed_by_two_retries() {
 
 #[tokio::test]
 async fn indexer_channel_full_returns_backpressure_upsert_after_successful_put() {
-    let storage = TestStorage::with_body(b"hello world");
+    let storage = TestStorage::with_body(b"hello world").await;
     let (indexer_tx, _rx) = mpsc::channel(1);
     indexer_tx
         .try_send(IndexEvent::Upsert {

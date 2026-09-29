@@ -6,39 +6,39 @@ use super::support::{
 
 #[tokio::test]
 async fn replace_all_true_with_zero_matches_returns_no_match() {
-    let storage = TestStorage::with_body(b"foo");
+    let storage = TestStorage::with_body(b"foo").await;
     let err = expect_replace_err(run_replace(&storage, ReplaceArgs::all("bar", "baz")).await);
 
     assert!(matches!(err, crate::WriteError::ReplaceNoMatch));
-    assert_eq!(storage.body(), Bytes::from_static(b"foo"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"foo"));
 }
 
 #[tokio::test]
 async fn ambiguous_match_fires_at_exactly_two_matches() {
-    let storage = TestStorage::with_body(b"aa");
+    let storage = TestStorage::with_body(b"aa").await;
     let err = expect_replace_err(run_replace(&storage, ReplaceArgs::one("a", "Z")).await);
 
     assert!(matches!(
         err,
         crate::WriteError::ReplaceAmbiguous { count: 2 }
     ));
-    assert_eq!(storage.body(), Bytes::from_static(b"aa"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"aa"));
 }
 
 #[tokio::test]
 async fn nul_byte_in_old_string_matches_correctly() {
-    let storage = TestStorage::with_body(b"a\0b");
+    let storage = TestStorage::with_body(b"a\0b").await;
     let outcome = run_replace(&storage, ReplaceArgs::one("\0", "X"))
         .await
         .expect("NUL byte old_string matches");
 
     assert_eq!(outcome.match_count, 1);
-    assert_eq!(storage.body(), Bytes::from_static(b"aXb"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"aXb"));
 }
 
 #[tokio::test]
 async fn content_type_preserved_from_get_response() {
-    let storage = TestStorage::with_body_and_content_type(b"hello world", "text/markdown");
+    let storage = TestStorage::with_body_and_content_type(b"hello world", "text/markdown").await;
     run_replace(&storage, ReplaceArgs::one("world", "planet"))
         .await
         .expect("replace preserves GET content type when caller omits one");
@@ -54,7 +54,7 @@ async fn single_pass_splice_o_n_scaling() {
     for index in 0..1000 {
         body[index * 1024] = b'x';
     }
-    let storage = TestStorage::with_bytes(Bytes::from(body), Some("text/plain"));
+    let storage = TestStorage::with_bytes(Bytes::from(body), Some("text/plain")).await;
 
     let outcome = run_replace_with(
         &storage,
@@ -66,7 +66,7 @@ async fn single_pass_splice_o_n_scaling() {
     .await
     .expect("large replace_all completes in one pass");
 
-    let after = storage.body();
+    let after = storage.body().await;
     assert_eq!(outcome.match_count, 1000);
     assert!(!after.contains(&b'x'));
     let replacement_count = after
