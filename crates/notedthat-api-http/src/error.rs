@@ -232,20 +232,140 @@ impl From<notedthat_write::WriteError> for ApiError {
     }
 }
 
+/// The machine-readable `error` of the JSON envelope (D43, §6.12).
+///
+/// One type for every code the server writes, so the `OpenAPI` document's enum
+/// of codes is this enum and cannot miss one a handler starts sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(
+    as = ErrorCode,
+    description = "Machine-readable error code. Clients branch on this, never on `message`."
+)]
+pub enum ErrorCode {
+    /// The request is malformed: a bad path, body, header or parameter.
+    InvalidRequest,
+    /// The `Range` header could not be parsed.
+    MalformedRange,
+    /// No credential, or one that did not verify.
+    Unauthorized,
+    /// The credential is valid and the access policy says no.
+    Forbidden,
+    /// No such knowledge base, object or action — or one the caller may not see.
+    NotFound,
+    /// The request conflicts with work in progress.
+    Conflict,
+    /// The events requested are no longer retained.
+    Gone,
+    /// The body exceeds the route's limit.
+    PayloadTooLarge,
+    /// A conditional request's precondition did not hold.
+    PreconditionFailed,
+    /// A replace found no occurrence of `old_string`.
+    NoMatch,
+    /// A replace found more than one occurrence of `old_string`.
+    AmbiguousMatch,
+    /// A write that must be conditional arrived without `If-Match`.
+    PreconditionRequired,
+    /// The server failed.
+    InternalError,
+    /// A backend or queue is unavailable or full; retry after `Retry-After`.
+    BackendUnavailable,
+    /// The request body stalled, or the request exceeded the server's timeout.
+    RequestTimeout,
+    /// Internal only: a `416` is answered with an empty body, so this code is
+    /// never written. Skipped so the published enum lists only what is sent.
+    #[serde(skip)]
+    RangeNotSatisfiable,
+    /// Internal only: a `304` has no body, so this code is never written.
+    #[serde(skip)]
+    NotModified,
+}
+
+impl ErrorCode {
+    /// Every code, the internal ones included.
+    pub const ALL: [Self; 17] = [
+        Self::InvalidRequest,
+        Self::MalformedRange,
+        Self::Unauthorized,
+        Self::Forbidden,
+        Self::NotFound,
+        Self::Conflict,
+        Self::Gone,
+        Self::PayloadTooLarge,
+        Self::PreconditionFailed,
+        Self::NoMatch,
+        Self::AmbiguousMatch,
+        Self::PreconditionRequired,
+        Self::InternalError,
+        Self::BackendUnavailable,
+        Self::RequestTimeout,
+        Self::RangeNotSatisfiable,
+        Self::NotModified,
+    ];
+
+    /// The spelling, for the internal codes as well as the ones on the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::MalformedRange => "malformed_range",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::Gone => "gone",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::PreconditionFailed => "precondition_failed",
+            Self::NoMatch => "no_match",
+            Self::AmbiguousMatch => "ambiguous_match",
+            Self::PreconditionRequired => "precondition_required",
+            Self::InternalError => "internal_error",
+            Self::BackendUnavailable => "backend_unavailable",
+            Self::RequestTimeout => "request_timeout",
+            Self::RangeNotSatisfiable => "range_not_satisfiable",
+            Self::NotModified => "not_modified",
+        }
+    }
+
+    /// Whether the code is ever written into a body.
+    #[must_use]
+    pub fn is_sent(self) -> bool {
+        !matches!(self, Self::RangeNotSatisfiable | Self::NotModified)
+    }
+}
+
+impl PartialEq<&str> for ErrorCode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 /// JSON error response body shape: `{ "error": "code", "message": "...", "request_id": "..." }`.
-#[derive(Serialize)]
-struct ErrorBody<'a> {
-    error: &'a str,
+#[derive(Serialize, utoipa::ToSchema)]
+#[schema(as = Error, description = "The error envelope every JSON error response carries.")]
+pub(crate) struct ErrorBody {
+    /// Machine-readable code.
+    error: ErrorCode,
+    /// Human-readable explanation. Its wording is not part of the contract.
     message: String,
+    /// The request's id, the same value as the `x-request-id` response header.
     request_id: String,
 }
 
 /// A refusal made by a layer that may run before its surface assigns a
 /// request id, so the id is carried when there is one and omitted when not.
-#[derive(Serialize)]
-struct RefusalBody<'a> {
-    error: &'a str,
+#[derive(Serialize, utoipa::ToSchema)]
+#[schema(
+    as = Refusal,
+    description = "The error envelope of a request the server refused before handling it: at its limit of requests in flight, or out of time."
+)]
+pub(crate) struct RefusalBody {
+    /// `backend_unavailable` or `request_timeout`.
+    error: ErrorCode,
+    /// Human-readable explanation. Its wording is not part of the contract.
     message: String,
+    /// The request's id, when one had been assigned.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
 }
@@ -258,7 +378,7 @@ struct RefusalBody<'a> {
 /// does, since a request that timed out will not get faster by being repeated.
 pub(crate) fn refusal(
     status: StatusCode,
-    error: &str,
+    error: ErrorCode,
     message: String,
     request_id: Option<String>,
 ) -> Response {
@@ -274,11 +394,19 @@ pub(crate) fn refusal(
     }
 }
 
-#[derive(Serialize)]
-struct ReplaceAmbiguousBody<'a> {
-    error: &'a str,
+#[derive(Serialize, utoipa::ToSchema)]
+#[schema(
+    as = AmbiguousMatchError,
+    description = "The error envelope of a replace whose `old_string` occurs more than once."
+)]
+pub(crate) struct ReplaceAmbiguousBody {
+    /// Always `ambiguous_match`.
+    error: ErrorCode,
+    /// Human-readable explanation. Its wording is not part of the contract.
     message: String,
+    /// The request's id, the same value as the `x-request-id` response header.
     request_id: String,
+    /// How many times `old_string` occurs.
     match_count: u64,
 }
 
@@ -307,69 +435,80 @@ impl ApiError {
         self.status_and_code().0
     }
 
-    fn status_and_code(&self) -> (StatusCode, &'static str) {
+    fn status_and_code(&self) -> (StatusCode, ErrorCode) {
         match self {
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized),
+            Self::Forbidden => (StatusCode::FORBIDDEN, ErrorCode::Forbidden),
             Self::IndexerBackpressureUpsert
             | Self::IndexerBackpressureTombstone
             | Self::EventPublishFailed { .. }
-            | Self::EventsUnavailable { .. } => {
-                (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
-            }
-            Self::EventsGone { .. } => (StatusCode::GONE, "gone"),
-            Self::ReconcileInProgress => (StatusCode::CONFLICT, "conflict"),
+            | Self::EventsUnavailable { .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::BackendUnavailable,
+            ),
+            Self::EventsGone { .. } => (StatusCode::GONE, ErrorCode::Gone),
+            Self::ReconcileInProgress => (StatusCode::CONFLICT, ErrorCode::Conflict),
             Self::Core(CoreError::InvalidInput { .. }) => {
-                (StatusCode::BAD_REQUEST, "invalid_request")
+                (StatusCode::BAD_REQUEST, ErrorCode::InvalidRequest)
             }
             Self::ReconcileUnsupported | Self::Core(CoreError::NotFound { .. }) => {
-                (StatusCode::NOT_FOUND, "not_found")
+                (StatusCode::NOT_FOUND, ErrorCode::NotFound)
             }
             Self::Core(CoreError::PayloadTooLarge { .. }) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+                (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
             Self::Core(CoreError::MalformedRange(_)) | Self::MalformedRange(_) => {
-                (StatusCode::BAD_REQUEST, "malformed_range")
+                (StatusCode::BAD_REQUEST, ErrorCode::MalformedRange)
             }
             Self::LineRangeNotSatisfiable { .. }
             | Self::Core(CoreError::RangeNotSatisfiable { .. })
-            | Self::RangeNotSatisfiable { .. } => {
-                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
-            }
+            | Self::RangeNotSatisfiable { .. } => (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                ErrorCode::RangeNotSatisfiable,
+            ),
             Self::Core(CoreError::NotModified(_)) | Self::NotModified(_) => {
-                (StatusCode::NOT_MODIFIED, "not_modified")
+                (StatusCode::NOT_MODIFIED, ErrorCode::NotModified)
             }
-            Self::PreconditionRequired { .. } => {
-                (StatusCode::PRECONDITION_REQUIRED, "precondition_required")
+            Self::PreconditionRequired { .. } => (
+                StatusCode::PRECONDITION_REQUIRED,
+                ErrorCode::PreconditionRequired,
+            ),
+            Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => (
+                StatusCode::PRECONDITION_FAILED,
+                ErrorCode::PreconditionFailed,
+            ),
+            Self::ReplaceNoMatch => (StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::NoMatch),
+            Self::ReplaceAmbiguous { .. } => {
+                (StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::AmbiguousMatch)
             }
-            Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => {
-                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
-            }
-            Self::ReplaceNoMatch => (StatusCode::UNPROCESSABLE_ENTITY, "no_match"),
-            Self::ReplaceAmbiguous { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "ambiguous_match"),
             Self::Core(CoreError::BucketNameTooLong { .. } | CoreError::Config { .. }) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+                (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::InternalError)
             }
             Self::Core(CoreError::Storage(e)) | Self::Storage(e) => Self::storage_status(e),
         }
     }
 
-    fn storage_status(e: &StorageError) -> (StatusCode, &'static str) {
+    fn storage_status(e: &StorageError) -> (StatusCode, ErrorCode) {
         match e {
             StorageError::NotFound { .. } | StorageError::BucketNotFound { .. } => {
-                (StatusCode::NOT_FOUND, "not_found")
+                (StatusCode::NOT_FOUND, ErrorCode::NotFound)
             }
-            StorageError::BackendUnavailable { .. } => {
-                (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
+            StorageError::BackendUnavailable { .. } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::BackendUnavailable,
+            ),
+            StorageError::NotModified(_) => (StatusCode::NOT_MODIFIED, ErrorCode::NotModified),
+            StorageError::PreconditionFailed => (
+                StatusCode::PRECONDITION_FAILED,
+                ErrorCode::PreconditionFailed,
+            ),
+            StorageError::RangeNotSatisfiable { .. } => (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                ErrorCode::RangeNotSatisfiable,
+            ),
+            StorageError::Other { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::InternalError)
             }
-            StorageError::NotModified(_) => (StatusCode::NOT_MODIFIED, "not_modified"),
-            StorageError::PreconditionFailed => {
-                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
-            }
-            StorageError::RangeNotSatisfiable { .. } => {
-                (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
-            }
-            StorageError::Other { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         }
     }
 
@@ -402,7 +541,7 @@ impl ApiErrorResponse {
     /// and the idempotent request should simply be repeated.
     fn retry_later(request_id: String, message: String) -> Response {
         let body = ErrorBody {
-            error: "backend_unavailable",
+            error: ErrorCode::BackendUnavailable,
             message,
             request_id,
         };
@@ -467,7 +606,7 @@ impl IntoResponse for ApiErrorResponse {
         match &self.error {
             ApiError::Unauthorized => {
                 let body = ErrorBody {
-                    error: "unauthorized",
+                    error: ErrorCode::Unauthorized,
                     message: "provide a valid Bearer token in the Authorization header".to_string(),
                     request_id: self.request_id,
                 };
@@ -504,7 +643,7 @@ impl IntoResponse for ApiErrorResponse {
             }
             ApiError::ReplaceAmbiguous { count } => {
                 let body = ReplaceAmbiguousBody {
-                    error: "ambiguous_match",
+                    error: ErrorCode::AmbiguousMatch,
                     message: self.error.to_string(),
                     request_id: self.request_id,
                     match_count: *count,
@@ -548,6 +687,23 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::util::ServiceExt;
+
+    /// `as_str` and the serialized form are one spelling, for every code that
+    /// is sent; the two that are not must not serialize at all.
+    #[test]
+    fn every_code_serializes_as_its_spelling() {
+        for code in ErrorCode::ALL {
+            let wire = serde_json::to_value(code);
+            if code.is_sent() {
+                assert_eq!(wire.expect("serializes"), code.as_str());
+            } else {
+                assert!(
+                    wire.is_err(),
+                    "{code:?} is internal and must not be written"
+                );
+            }
+        }
+    }
 
     const KB: &str = "notes";
     const TOKEN: &str = "test-token-abc";

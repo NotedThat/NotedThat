@@ -18,6 +18,10 @@ path = "src/lib.rs"
 # logic it used to own now lives in `preconditions`/`etag`, unconditionally, because
 # the filesystem adapter needs it in a production build.
 test-support = []
+# `utoipa::ToSchema` on the wire types, for the HTTP API's OpenAPI document
+# (D75). Off by default so a consumer of the domain types does not build a
+# schema generator it never calls.
+openapi = ["dep:utoipa"]
 
 [dependencies]
 async-trait.workspace = true
@@ -30,6 +34,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 subtle.workspace = true
 tracing.workspace = true
+utoipa = { workspace = true, optional = true }
 
 hex.workspace = true
 httpdate.workspace = true

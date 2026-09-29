@@ -7,6 +7,14 @@ use std::fmt;
 /// A knowledge-base slug: `[a-z0-9-]{1,40}` (ASCII only, no leading/trailing hyphen).
 /// See SPECIFICATIONS.md §6.8 and decision D24.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        description = "A knowledge base slug: 1 to 40 of `a-z`, `0-9` and `-`, not starting or ending with `-`.",
+        pattern = "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+    )
+)]
 pub struct KbSlug(String);
 
 impl KbSlug {

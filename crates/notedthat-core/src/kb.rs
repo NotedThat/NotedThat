@@ -196,6 +196,7 @@ fn validate_manifest_text(field: &str, value: &str, max_chars: usize) -> Result<
 
 /// Metadata about a single stored object, returned by HEAD and LIST responses.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ObjectMeta {
     /// The object's key (path within the KB bucket, without leading slash).
     pub key: String,
@@ -204,12 +205,12 @@ pub struct ObjectMeta {
     /// Last-modified Unix timestamp (seconds), if the backend provides one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<i64>,
-    /// Content-Type as stored in S3 (echoed from the original PUT).
+    /// Content-Type as stored (echoed from the original PUT).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     /// Opaque `ETag` from the backend, wrapped in quotes per RFC 7232 §2.3
     /// (e.g., `"\"abc123\""`). Emitted verbatim in HTTP responses.
-    /// Never generated locally except by the `InMemoryStorage` mock.
+    // Never generated locally except by the `InMemoryStorage` mock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
 }

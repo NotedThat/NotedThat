@@ -7,8 +7,14 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
 use axum::response::IntoResponse;
-use notedthat_core::{KbDetails, KbSlug, KeyFilter, ListResponse, Storage, StorageError, Verb};
+use notedthat_core::{
+    KbDetails, KbSlug, KeyFilter, ListResponse, ObjectMeta, Storage, StorageError, Verb,
+};
 use serde::{Deserialize, Serialize};
+
+use super::openapi::{
+    BackendUnavailable, BadRequest, Forbidden, InternalError, KbPath, NotFound, Unauthorized,
+};
 
 /// Backend rows examined per storage call while refilling a filtered page.
 ///
@@ -23,20 +29,28 @@ const LIST_SCAN_PAGE: u32 = 1000;
 /// page comes back short with a cursor, and the client pages again.
 const LIST_SCAN_MAX_CALLS: usize = 20;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
+    /// Only keys starting with this prefix.
     prefix: Option<String>,
+    /// Page size. `0` or absent is `100`; larger than `1000` is `1000`.
+    #[param(maximum = 1000)]
     limit: Option<u32>,
+    /// The `next_cursor` of the previous page.
     cursor: Option<String>,
 }
 
-/// One entry of `GET /api/v1/knowledgebases`: the slug the routes take, and
-/// the manifest's display name and description so an agent can choose where
-/// to search before it searches (#98).
-#[derive(Serialize)]
+/// One knowledge base: the slug the routes take, and the manifest's display
+/// name and description, so an agent can choose where to search before it
+/// searches.
+#[derive(Serialize, utoipa::ToSchema)]
 struct KbListEntry {
+    /// The slug the routes take.
     kb_slug: String,
+    /// The manifest's display name; the slug when it has none.
     display_name: String,
+    /// The manifest's description, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
@@ -51,11 +65,38 @@ impl KbListEntry {
     }
 }
 
-#[derive(Serialize)]
+/// The knowledge bases the caller may see.
+#[derive(Serialize, utoipa::ToSchema)]
 struct KbListResponse {
+    /// In slug order.
     knowledgebases: Vec<KbListEntry>,
 }
 
+/// One page of a knowledge base's objects.
+#[derive(Serialize, utoipa::ToSchema)]
+struct ObjectListResponse {
+    /// The objects on this page.
+    objects: Vec<ObjectMeta>,
+    /// Whether more objects follow; fetch them with `next_cursor`.
+    truncated: bool,
+    /// The `cursor` of the next page; `null` on the last one.
+    next_cursor: Option<String>,
+}
+
+/// List the knowledge bases the caller may see.
+///
+/// Anonymous callers see those whose access policy grants `anyone` something;
+/// an anonymous caller who can see none is answered `401`, not an empty list.
+#[utoipa::path(
+    get,
+    path = "/knowledgebases",
+    tag = "knowledgebases",
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The knowledge bases the caller may see.", body = KbListResponse),
+        (status = 401, response = Unauthorized),
+    ),
+)]
 pub(super) async fn list_kbs(
     State(state): State<AppState>,
     req: Request,
@@ -87,6 +128,26 @@ pub(super) async fn list_kbs(
     Ok(Json(KbListResponse { knowledgebases }))
 }
 
+/// List one page of a knowledge base's objects.
+///
+/// Only the objects the caller's `list` grant spans are returned. A page can
+/// come back short of `limit` with `truncated` set; keep paging.
+#[utoipa::path(
+    get,
+    path = "/knowledgebases/{kb_slug}",
+    tag = "knowledgebases",
+    params(KbPath, ListQuery),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "One page of objects.", body = ObjectListResponse),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(super) async fn list_objects(
     State(state): State<AppState>,
     Path(kb_slug): Path<String>,
@@ -114,11 +175,11 @@ pub(super) async fn list_objects(
     .await
     .map_err(|error| err(ApiError::from(error)))?;
 
-    Ok(Json(serde_json::json!({
-        "objects": result.objects,
-        "truncated": result.truncated,
-        "next_cursor": result.next_cursor,
-    })))
+    Ok(Json(ObjectListResponse {
+        objects: result.objects,
+        truncated: result.truncated,
+        next_cursor: result.next_cursor,
+    }))
 }
 
 /// List objects the principal may see, refilling across backend pages.

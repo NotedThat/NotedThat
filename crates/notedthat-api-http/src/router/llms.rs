@@ -48,7 +48,7 @@ A client that speaks the streamable HTTP transport needs only this configuration
 
 ## Everything else
 
-`/healthz`, `/readyz`, and this `/llms.txt` document are globally public. Read the API documentation for object-write, conditional-request, range-read, pagination, and search formats before using those operations. This document contains no credentials or deployment-specific data.
+`/healthz`, `/readyz`, this `/llms.txt` document and `/api/v1/openapi.json` are globally public. `GET /api/v1/openapi.json` is the OpenAPI 3.1 description of every `/api/v1` route — its parameters, headers, bodies, statuses and error codes; read it, or the API documentation, for object-write, conditional-request, range-read, pagination, and search formats before using those operations. This document contains no credentials or deployment-specific data.
 "#;
 
 pub(super) async fn llms_txt() -> ([(axum::http::HeaderName, &'static str); 1], &'static str) {

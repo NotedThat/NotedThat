@@ -18,51 +18,131 @@ use notedthat_core::{Verb, unix_to_rfc3339};
 use notedthat_indexer::{IndexFailure, IndexState, KbHealthSnapshot, ReconcileSummary};
 use serde::Serialize;
 
-#[derive(Serialize)]
+use super::openapi::{Forbidden, KbPath, NotFound, Unauthorized};
+
+/// One knowledge base's search-index health.
+#[derive(Serialize, utoipa::ToSchema)]
 struct IndexHealthResponse {
+    /// The knowledge base.
     kb_slug: String,
+    /// The worst condition that holds, from `healthy` up to `failed`.
+    #[schema(value_type = IndexStateName)]
     state: &'static str,
+    /// Index jobs queued for this knowledge base and not yet taken by the worker.
     pending: usize,
+    /// The indexing queue, which every knowledge base shares.
     queue: QueueView,
+    /// Whether the indexing worker is running.
+    #[schema(value_type = WorkerState)]
     worker: &'static str,
+    /// When the worker last completed a job for this knowledge base, RFC 3339;
+    /// `null` if never.
     last_indexed_at: Option<String>,
+    /// The most recent indexing failure; `null` if none.
     last_failure: Option<FailureView>,
+    /// The most recent reconciliation pass; `null` if none has run.
     last_reconcile: Option<ReconcileView>,
 }
 
-#[derive(Serialize)]
+/// The index's state, most severe first. `failed`: the most recent outcome was
+/// a failure, or the worker is gone. `stale`: changes may have gone unobserved,
+/// and the pass that repairs that has not completed. `backpressured`: writes
+/// were refused `503` recently, or the queue is full now. `indexing`: work is
+/// queued or in progress. `healthy`: nothing pending, nothing failed since the
+/// last success, nothing lost.
+#[derive(utoipa::ToSchema)]
+#[schema(rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "a schema declaration for the OpenAPI document only"
+)]
+enum IndexStateName {
+    Healthy,
+    Indexing,
+    Backpressured,
+    Stale,
+    Failed,
+}
+
+/// Whether the indexing worker is running.
+#[derive(utoipa::ToSchema)]
+#[schema(rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "a schema declaration for the OpenAPI document only"
+)]
+enum WorkerState {
+    Running,
+    Stopped,
+}
+
+/// The shared indexing queue at this moment.
+#[derive(Serialize, utoipa::ToSchema)]
 struct QueueView {
+    /// Jobs waiting.
     depth: usize,
+    /// Jobs the queue holds; a write finding it full is answered `503`.
     capacity: usize,
 }
 
-#[derive(Serialize)]
+/// The most recent indexing failure.
+#[derive(Serialize, utoipa::ToSchema)]
 struct FailureView {
+    /// When, RFC 3339.
     at: String,
+    /// The object that failed; absent unless the caller may list it.
     #[serde(skip_serializing_if = "Option::is_none")]
     object_key: Option<String>,
+    /// The pipeline's own error, first line; absent unless the caller's `list`
+    /// grant spans the whole knowledge base.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
 }
 
-#[derive(Serialize)]
+/// The most recent reconciliation pass.
+#[derive(Serialize, utoipa::ToSchema)]
 struct ReconcileView {
+    /// When, RFC 3339.
     at: String,
     /// The prefix the pass walked; absent when it walked the whole base.
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    counts: Option<ReconcileCounts>,
+    // The four counts are shown or withheld together, by one visibility check
+    // in `reconcile_view`. Separate fields rather than a flattened
+    // `Option<struct>`, which has no faithful JSON Schema.
+    /// Objects the pass found in storage. Present with the other counts, only
+    /// when the caller may list what the pass walked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objects_on_disk: Option<usize>,
+    /// Objects already indexed from exactly these bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unchanged: Option<usize>,
+    /// Objects new to the index, or indexed from different bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed: Option<usize>,
+    /// Keys the index holds that storage no longer has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    orphaned: Option<usize>,
 }
 
-#[derive(Serialize)]
-struct ReconcileCounts {
-    objects_on_disk: usize,
-    unchanged: usize,
-    changed: usize,
-    orphaned: usize,
-}
-
+/// Report one knowledge base's search-index health.
+///
+/// Answered with `Cache-Control: no-store`. Reachable by whoever would see the
+/// knowledge base listed.
+#[utoipa::path(
+    get,
+    path = "/knowledgebases/{kb_slug}/index",
+    tag = "index",
+    params(KbPath),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The index's health.", body = IndexHealthResponse,
+            headers(("Cache-Control" = String, description = "`no-store`"))),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+    ),
+)]
 pub(super) async fn get_index_health(
     State(state): State<AppState>,
     Path(kb_slug): Path<String>,
@@ -184,22 +264,13 @@ fn reconcile_view(access: &KbAccess, summary: ReconcileSummary) -> ReconcileView
         Some(prefix) => access.allows(Verb::List, prefix),
         None => access.filter(Verb::List).covers_whole_kb(),
     };
-    let (scope, counts) = if visible {
-        (
-            summary.scope,
-            Some(ReconcileCounts {
-                objects_on_disk: summary.objects_on_disk,
-                unchanged: summary.unchanged,
-                changed: summary.changed,
-                orphaned: summary.orphaned,
-            }),
-        )
-    } else {
-        (None, None)
-    };
+    let counted = |count: usize| visible.then_some(count);
     ReconcileView {
         at: unix_to_rfc3339(summary.at),
-        scope,
-        counts,
+        scope: summary.scope.filter(|_| visible),
+        objects_on_disk: counted(summary.objects_on_disk),
+        unchanged: counted(summary.unchanged),
+        changed: counted(summary.changed),
+        orphaned: counted(summary.orphaned),
     }
 }

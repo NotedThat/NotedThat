@@ -26,6 +26,11 @@ pub fn is_internal_path(path: &str) -> bool {
 ///
 /// The stored form has no leading slash and uses `/` as the separator.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(description = "An object's path within the knowledge base, without a leading `/`.")
+)]
 pub struct ObjectPath(String);
 
 impl ObjectPath {

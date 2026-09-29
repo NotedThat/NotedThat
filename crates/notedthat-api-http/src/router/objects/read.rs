@@ -15,6 +15,11 @@ use notedthat_core::{
 };
 use std::borrow::Cow;
 
+use super::super::openapi::{
+    BackendUnavailable, BadRequest, Forbidden, InternalError, NotFound, NotModified,
+    ObjectPathParams, PreconditionFailed, RangeNotSatisfiable, ReadConditions, Unauthorized,
+};
+
 fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     let Ok(media_type) = content_type.parse::<mime::Mime>() else {
         return Cow::Borrowed(content_type);
@@ -39,6 +44,34 @@ fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     }
 }
 
+/// Read an object's metadata.
+///
+/// The headers `GET` would send, without the body. `Range` is ignored.
+#[utoipa::path(
+    head,
+    path = "/knowledgebases/{kb_slug}/{object_path}",
+    tag = "objects",
+    params(ObjectPathParams, ReadConditions),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The object exists.",
+            headers(
+                ("Content-Type" = String, description = "As stored; `application/octet-stream` when none was."),
+                ("Content-Length" = u64, description = "The object's size in bytes."),
+                ("ETag" = String, description = "The object's entity tag."),
+                ("Last-Modified" = String, description = "The object's modification time."),
+                ("Accept-Ranges" = String, description = "`bytes`"),
+            )),
+        (status = 304, response = NotModified),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 412, response = PreconditionFailed),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(in crate::router) async fn head_object(
     State(state): State<AppState>,
     Path((kb_slug, object_path)): Path<(String, String)>,
@@ -89,6 +122,51 @@ pub(in crate::router) async fn head_object(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
 }
 
+/// Read an object, whole or in part.
+///
+/// `Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects
+/// lines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`
+/// and `X-Content-Range-Bytes`. A text content type is served with
+/// `; charset=utf-8`.
+#[utoipa::path(
+    get,
+    path = "/knowledgebases/{kb_slug}/{object_path}",
+    tag = "objects",
+    params(
+        ObjectPathParams,
+        ("Range" = Option<String>, Header,
+            description = "`bytes=<first>-<last>`, `bytes=<first>-`, `bytes=-<suffix>`, or `lines=<first>-<last>`."),
+        ("If-Range" = Option<String>, Header,
+            description = "Serve the range only if this entity tag or date still describes the object; otherwise the whole object, `200`."),
+        ReadConditions,
+    ),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The whole object.", content_type = "*/*",
+            headers(
+                ("Content-Type" = String, description = "As stored; `application/octet-stream` when none was."),
+                ("ETag" = String, description = "The object's entity tag."),
+                ("Last-Modified" = String, description = "The object's modification time."),
+                ("Accept-Ranges" = String, description = "`bytes`"),
+            )),
+        (status = 206, description = "The requested range.", content_type = "*/*",
+            headers(
+                ("Content-Range" = String, description = "`bytes <first>-<last>/<size>`, or `lines <first>-<last>/<line count>`."),
+                ("X-Content-Range-Bytes" = String, description = "On a line range: the bytes it spans, `<first>-<last>/<size>`, or `*/<size>` for an empty insert point."),
+                ("X-Insert-Offset" = u64, description = "On an empty line range: the byte offset where lines would be inserted."),
+                ("ETag" = String, description = "The object's entity tag."),
+            )),
+        (status = 304, response = NotModified),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 412, response = PreconditionFailed),
+        (status = 416, response = RangeNotSatisfiable),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(in crate::router) async fn get_object(
     State(state): State<AppState>,
     Path((kb_slug, object_path)): Path<(String, String)>,

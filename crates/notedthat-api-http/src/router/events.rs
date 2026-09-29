@@ -27,6 +27,9 @@ use serde::Deserialize;
 
 use notedthat_core::metrics::{label as metric_label, name as metric};
 
+use super::openapi::{
+    BackendUnavailable, BadRequest, Forbidden, Gone, KbPath, NotFound, Unauthorized,
+};
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
@@ -42,10 +45,16 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 const LAST_EVENT_ID: &str = "last-event-id";
 
 /// Optional server-side filters, applied after the access filter.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(super) struct EventsQuery {
+    /// Only events for keys starting with this prefix.
     prefix: Option<String>,
+    /// Only this kind: `written`, `deleted`, `indexed` or `index_failed`. An
+    /// `object.` prefix is accepted.
     event: Option<String>,
+    /// Only events carrying this content type, exactly or as `type/*`. A
+    /// deletion carries none, so never matches.
     mime: Option<String>,
 }
 
@@ -196,6 +205,47 @@ where
     })
 }
 
+/// Subscribe to a knowledge base's change events.
+///
+/// A server-sent event stream (`text/event-stream`). The first frame is
+/// `retry: 3000` and the comment `:subscribed`; each event after it is
+///
+/// ```text
+/// id: <position>
+/// event: object.written | object.deleted | object.indexed | object.index_failed
+/// data: <ObjectEvent as JSON>
+/// ```
+///
+/// with a `keep-alive` comment every 15 seconds while idle. Only events for
+/// keys the caller may `list` are sent. Reconnect with `Last-Event-ID` to
+/// resume after the last event received. See the `ObjectEvent` schema for the
+/// `data` payload. A server with events disabled answers `404`.
+#[utoipa::path(
+    get,
+    path = "/knowledgebases/{kb_slug}/events",
+    tag = "events",
+    params(
+        KbPath,
+        EventsQuery,
+        ("Last-Event-ID" = Option<u64>, Header,
+            description = "Resume after this position: the `id` of the last event received."),
+    ),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The event stream. Each `data` line is an `ObjectEvent`.",
+            content_type = "text/event-stream", body = String,
+            headers(
+                ("Cache-Control" = String, description = "`no-cache`"),
+                ("X-Accel-Buffering" = String, description = "`no`"),
+            )),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 410, response = Gone),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(super) async fn subscribe_events(
     State(state): State<AppState>,
     Path(kb_slug): Path<String>,

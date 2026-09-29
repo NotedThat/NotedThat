@@ -31,6 +31,7 @@ use crate::slug::KbSlug;
 ///
 /// Rendered as a decimal on the wire; parsed back from `Last-Event-ID`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct EventId(pub u64);
 
@@ -56,6 +57,16 @@ impl FromStr for EventId {
 /// `Indexer` is the worker reporting the outcome of its own work (D65), never a
 /// change to the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        description = "Which surface made the change, or which part of the server reports it. \
+        Informational: any client can claim `mcp`. `fs-watch` and `reconcile` are changes the \
+        server detected in storage; `indexer` reports the outcome of indexing, never a change to \
+        the bytes."
+    )
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventSource {
     /// The HTTP API.
@@ -99,6 +110,7 @@ impl fmt::Display for EventSource {
 /// Serialised with an `event` tag so the JSON payload is self-describing on
 /// its own, without the SSE `event:` field or the broker subject around it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "event")]
 pub enum ObjectEventKind {
     /// The key was created or its bytes were replaced. Neither the API nor
@@ -133,8 +145,9 @@ pub enum ObjectEventKind {
         /// Points representing the object after this pass.
         chunks: u32,
     },
-    /// The indexer gave up on an upsert or refresh of the key
-    /// (`INDEXING_FAILED`); the index does not hold this version.
+    /// The indexer gave up on an upsert or refresh of the key; the index does
+    /// not hold this version.
+    // Logged as `INDEXING_FAILED`.
     #[serde(rename = "object.index_failed")]
     IndexFailed {
         /// The `ETag` `HEAD` reported; absent when the failure came first.
@@ -145,7 +158,7 @@ pub enum ObjectEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
         /// The pipeline's own error, first line, at most 200 characters — the
-        /// same string the index health view reports (D62). Always set when
+        /// same string the index health view reports. Always set when
         /// published; the HTTP stream withholds it from a subscriber whose
         /// `list` grant does not span the whole knowledge base, so a received
         /// event may lack it.
@@ -189,6 +202,7 @@ impl ObjectEventKind {
 
 /// One change to one object, or the indexer's verdict on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ObjectEvent {
     /// The knowledge base.
     pub kb: KbSlug,

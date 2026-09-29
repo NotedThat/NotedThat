@@ -13,6 +13,7 @@ mod index_reconcile;
 mod kbs;
 mod llms;
 mod objects;
+pub mod openapi;
 mod well_known;
 
 use crate::bounds::{RequestBounds, bound};
@@ -59,11 +60,22 @@ macro_rules! api_routes {
             pub(crate) const $route: &str = $suffix;
             pub(crate) const $matched: &str = concat!("/api/v1", $suffix);
         )+
+        /// Every `ROUTE_*`, for the check that each is in the `OpenAPI` document.
+        #[cfg(test)]
+        pub(crate) const API_ROUTES: &[&str] = &[$($suffix),+];
     };
 }
 
 /// Mount point of the versioned machine API on the unified listener (D44).
 pub const API_V1_PREFIX: &str = "/api/v1";
+
+/// Where the `OpenAPI` document for [`API_V1_PREFIX`] is served (D75).
+///
+/// Registered absolutely beside `/llms.txt` rather than nested under the API:
+/// it is public and describes routes rather than knowledge bases, so it has no
+/// place in `auth_middleware`'s table of anonymously reachable routes, every
+/// one of which a handler authorizes per knowledge base.
+pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
 
 /// Mount point of the human-facing browse surface (D52, #100).
 pub const BROWSE_PREFIX: &str = "/browse";
@@ -155,6 +167,7 @@ pub fn build_bounded_router(state: AppState, bounds: &RequestBounds) -> Router {
 
     let bounded_root = Router::new()
         .route("/llms.txt", get(llms_txt))
+        .route(OPENAPI_PATH, get(openapi::openapi_json))
         .route(
             "/.well-known/oauth-protected-resource",
             get(protected_resource_metadata),

@@ -35,6 +35,9 @@ cargo deny --locked check advisories
 
 # Format in place
 cargo fmt --all
+
+# Regenerate docs/openapi.json after changing an /api/v1 route, parameter or body
+NOTEDTHAT_UPDATE_OPENAPI=1 cargo test -p notedthat-api-http --test openapi
 ```
 
 ## Local service setup
@@ -76,6 +79,12 @@ binary to install. Point the client at `http://localhost:8080/mcp` with the
   fn test_full_index_round_trip() { ... }
   ```
 - **Run ignored tests**: `cargo test --workspace -- --ignored`
+- **The OpenAPI document** (D75): `docs/openapi.json` is generated from the `#[utoipa::path]`
+  on each `/api/v1` handler and the `ToSchema` on each body type, and `cargo test` fails when the
+  committed copy is stale. A new route needs its annotation, its `paths(...)` entry in
+  `crates/notedthat-api-http/src/router/openapi.rs`, and a regenerated file; the tests in that
+  module fail on a route the document misses, a method it invents, or security that disagrees with
+  `auth_middleware`.
 - **Stress scenarios**: prefix the test name with `stress_` on top of `#[ignore]`.
   These generate and hash multi-gibibyte bodies and are meant to be run by hand:
 

@@ -8,6 +8,13 @@ use std::fmt;
 ///
 /// Rules: non-empty, no leading `/`, no NUL bytes, no `..` or `.` path segments.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        description = "An object's key: its path within the knowledge base, without a leading `/`."
+    )
+)]
 pub struct ObjectKey(String);
 
 impl ObjectKey {
