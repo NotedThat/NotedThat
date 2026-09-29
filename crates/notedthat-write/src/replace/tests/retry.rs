@@ -34,28 +34,11 @@ async fn stale_caller_if_match_returns_precondition_failed_no_retry() {
 }
 
 #[tokio::test]
-async fn window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_failed() {
-    for failures in [1, 2] {
-        let storage = TestStorage::with_script(
-            b"hello world",
-            Script {
-                get_failures_remaining: failures,
-                ..Script::default()
-            },
-        )
-        .await;
-
-        run_replace(&storage, ReplaceArgs::one("world", "planet"))
-            .await
-            .expect("GET precondition window is absorbed before max attempts");
-
-        assert_eq!(storage.body().await, Bytes::from_static(b"hello planet"));
-    }
-
+async fn window_412_from_get_surfaces_without_retry() {
     let storage = TestStorage::with_script(
         b"hello world",
         Script {
-            get_failures_remaining: 3,
+            get_failures_remaining: 1,
             ..Script::default()
         },
     )
@@ -67,31 +50,33 @@ async fn window_412_from_get_absorbed_by_two_retries_then_surfaces_precondition_
         crate::WriteError::Storage(StorageError::PreconditionFailed)
     ));
     let calls = storage.calls();
-    assert_eq!(calls.head, 3);
-    assert_eq!(calls.get, 3);
+    assert_eq!(calls.head, 1);
+    assert_eq!(calls.get, 1);
     assert_eq!(calls.put, 0);
+    assert_eq!(storage.body().await, Bytes::from_static(b"hello world"));
 }
 
 #[tokio::test]
-async fn window_412_from_put_absorbed_by_two_retries() {
+async fn window_412_from_put_surfaces_without_retry() {
     let storage = TestStorage::with_script(
         b"hello world",
         Script {
-            put_failures_remaining: 2,
+            put_failures_remaining: 1,
             ..Script::default()
         },
     )
     .await;
+    let err = expect_replace_err(run_replace(&storage, ReplaceArgs::one("world", "planet")).await);
 
-    run_replace(&storage, ReplaceArgs::one("world", "planet"))
-        .await
-        .expect("PUT precondition window is absorbed before max attempts");
-
-    assert_eq!(storage.body().await, Bytes::from_static(b"hello planet"));
+    assert!(matches!(
+        err,
+        crate::WriteError::Storage(StorageError::PreconditionFailed)
+    ));
     let calls = storage.calls();
-    assert_eq!(calls.head, 3);
-    assert_eq!(calls.get, 3);
-    assert_eq!(calls.put, 3);
+    assert_eq!(calls.head, 1);
+    assert_eq!(calls.get, 1);
+    assert_eq!(calls.put, 1);
+    assert_eq!(storage.body().await, Bytes::from_static(b"hello world"));
 }
 
 #[tokio::test]

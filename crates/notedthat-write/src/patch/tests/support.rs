@@ -1,4 +1,5 @@
 use super::super::*;
+use notedthat_core::StorageError;
 use notedthat_core::testing::{ScriptedStorage, StorageOp};
 use notedthat_indexer::IndexEvent;
 use std::sync::Arc;

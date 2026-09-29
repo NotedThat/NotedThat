@@ -1,8 +1,9 @@
 //! Shared exact-substring replacement primitive for object writes.
 
 use bytes::{Bytes, BytesMut};
-use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError};
+use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage};
 
+use crate::commit::{CasRewrite, cas_rewrite};
 use crate::sinks::WriteSinks;
 use crate::{ReplaceOutcome, WriteError};
 
@@ -36,7 +37,6 @@ pub async fn replace(
     sinks: &WriteSinks<'_>,
     request: ReplaceRequest<'_>,
 ) -> Result<ReplaceOutcome, WriteError> {
-    const MAX_ATTEMPTS: u32 = 3;
     let ReplaceRequest {
         kb,
         path,
@@ -55,113 +55,59 @@ pub async fn replace(
     }
     crate::patch::require_strong_if_match(&caller_conditionals)?;
 
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
-
-        let meta = storage
-            .head_object(kb, path, ConditionalHeaders::default())
-            .await?;
-        ensure_caller_etag_matches(&caller_conditionals, meta.etag.as_deref())?;
-        ensure_within_patchable_size(meta.size, max_patchable_size)?;
-
-        let head_etag = meta
-            .etag
-            .clone()
-            .ok_or_else(|| WriteError::PatchInvalidRange {
-                message: "backend did not return ETag on HEAD".into(),
-            })?;
-
-        let get_conditionals = ConditionalHeaders {
-            if_match: Some(head_etag.clone()),
-            ..ConditionalHeaders::default()
-        };
-        let read = match storage.get_object(kb, path, None, get_conditionals).await {
-            Ok(read) => read,
-            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
-                tracing::debug!(target: "notedthat::replace", kb = %kb, path = %path, attempt, stage = "get", "REPLACE_RETRY_PRECONDITION");
-                continue;
-            }
-            Err(error) => return Err(WriteError::Storage(error)),
-        };
-
-        let needle = old_string.as_bytes();
-        let haystack: &[u8] = read.bytes.as_ref();
-        let matches = find_non_overlapping_matches(haystack, needle);
-
-        if matches.is_empty() {
-            return Err(WriteError::ReplaceNoMatch);
-        }
-        if matches.len() >= 2 && !replace_all {
-            let count =
-                u64::try_from(matches.len()).map_err(|_| WriteError::PatchInvalidRange {
-                    message: "replace: match count exceeds u64".into(),
-                })?;
-            return Err(WriteError::ReplaceAmbiguous { count });
-        }
-
-        let match_bound = if replace_all { matches.len() } else { 1 };
-        let new_bytes = splice_replacement(&ReplacementSplice {
-            haystack,
-            needle,
-            replacement: new_string.as_bytes(),
-            matches: &matches,
-            match_bound,
+    let target = CasRewrite {
+        kb,
+        path,
+        caller_if_match: caller_conditionals.if_match.as_deref(),
+        max_size: max_patchable_size,
+        caller_content_type,
+    };
+    let (put_outcome, match_count) = cas_rewrite(storage, sinks, target, |src| {
+        replace_in(
+            src,
+            old_string.as_bytes(),
+            new_string.as_bytes(),
+            replace_all,
             max_patchable_size,
-        })?;
-
-        crate::manifest::check_manifest_bytes(kb, path, &new_bytes)?;
-        let put_conditionals = ConditionalHeaders {
-            if_match: Some(head_etag),
-            ..ConditionalHeaders::default()
-        };
-        let content_type = caller_content_type
-            .or(read.meta.content_type.as_deref())
-            .unwrap_or("application/octet-stream");
-        let new_size =
-            u64::try_from(new_bytes.len()).map_err(|_| WriteError::PatchInvalidRange {
-                message: "replace: body length exceeds u64".into(),
-            })?;
-        let put_outcome = match storage
-            .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
-                tracing::debug!(target: "notedthat::replace", kb = %kb, path = %path, attempt, stage = "put", "REPLACE_RETRY_PRECONDITION");
-                continue;
-            }
-            Err(error) => return Err(WriteError::Storage(error)),
-        };
-
-        crate::commit::after_write(sinks, kb, path, &put_outcome, new_size, content_type).await?;
-
-        let match_count =
-            u64::try_from(match_bound).map_err(|_| WriteError::PatchInvalidRange {
-                message: "replace: match count exceeds u64".into(),
-            })?;
-        return Ok(ReplaceOutcome {
-            put_outcome,
-            match_count,
-        });
-    }
+        )
+    })
+    .await?;
+    Ok(ReplaceOutcome {
+        put_outcome,
+        match_count,
+    })
 }
 
-fn ensure_caller_etag_matches(
-    caller_conditionals: &ConditionalHeaders,
-    current_etag: Option<&str>,
-) -> Result<(), WriteError> {
-    if caller_conditionals.if_match.as_deref() != current_etag {
-        return Err(WriteError::Storage(StorageError::PreconditionFailed));
+/// Replace `needle` in `haystack` — once, or everywhere with `replace_all` — and return the new
+/// bytes with the number of matches replaced.
+fn replace_in(
+    haystack: &[u8],
+    needle: &[u8],
+    replacement: &[u8],
+    replace_all: bool,
+    max_patchable_size: u64,
+) -> Result<(Bytes, u64), WriteError> {
+    let matches = find_non_overlapping_matches(haystack, needle);
+    let count = u64::try_from(matches.len()).map_err(|_| WriteError::PatchInvalidRange {
+        message: "replace: match count exceeds u64".into(),
+    })?;
+    match count {
+        0 => return Err(WriteError::ReplaceNoMatch),
+        2.. if !replace_all => return Err(WriteError::ReplaceAmbiguous { count }),
+        _ => {}
     }
-    Ok(())
-}
 
-fn ensure_within_patchable_size(size: u64, limit: u64) -> Result<(), WriteError> {
-    if size > limit {
-        return Err(WriteError::PatchTooLarge { size, limit });
-    }
-    Ok(())
+    let match_bound = if replace_all { matches.len() } else { 1 };
+    let new_bytes = splice_replacement(&ReplacementSplice {
+        haystack,
+        needle,
+        replacement,
+        matches: &matches,
+        match_bound,
+        max_patchable_size,
+    })?;
+    let match_count = if replace_all { count } else { 1 };
+    Ok((new_bytes, match_count))
 }
 
 fn find_non_overlapping_matches(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
