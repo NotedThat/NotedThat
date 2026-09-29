@@ -134,10 +134,15 @@ fn selector_filter(selector: &PointSelector) -> Filter {
 
 /// Classify a Qdrant transport error, separating "no such collection" from the rest.
 ///
-/// Qdrant reports a missing collection as an ordinary status error, so the only
-/// signal is the message text. That heuristic over-matches — a proxy 404, a DNS
-/// failure, or a point-level "not found" all contain the same substring — so it
-/// is applied ONLY on the two paths whose callers act on the distinction:
+/// Qdrant reports a missing collection as a gRPC `NotFound` status whose message
+/// names the collection ("Collection `kb_notes_v1` doesn't exist!"). The status
+/// code alone is not enough: a missing point, a missing shard, or a missing
+/// payload index under strict mode can also come back as `NotFound`, and those
+/// are backend faults, not an unknown knowledge base. So both the code and the
+/// collection name must match. Anything else keeps Qdrant's message as a
+/// [`VectorStoreError::Backend`].
+///
+/// Applied ONLY on the paths whose callers act on the distinction:
 /// `collection_exists`, `hybrid_search` and the two `indexed_*` reads, where an
 /// unknown KB is a 404 to the client, or a knowledge base that was never
 /// provisioned, rather than an outage.
@@ -148,17 +153,18 @@ fn selector_filter(selector: &PointSelector) -> Filter {
 /// actually went wrong, leaving a silently unindexed document behind a
 /// misleading cause.
 fn classify(kb: &KbSlug, err: &qdrant_client::QdrantError) -> VectorStoreError {
-    let message = err.to_string();
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("not found")
-        || lower.contains("doesn't exist")
-        || lower.contains("does not exist")
-    {
-        VectorStoreError::CollectionNotFound {
-            kb: kb.as_str().to_string(),
+    match err {
+        qdrant_client::QdrantError::ResponseError { status }
+            if status.code() == tonic::Code::NotFound
+                && status.message().contains(&collection_name(kb)) =>
+        {
+            VectorStoreError::CollectionNotFound {
+                kb: kb.as_str().to_string(),
+            }
         }
-    } else {
-        VectorStoreError::Backend { message }
+        _ => VectorStoreError::Backend {
+            message: err.to_string(),
+        },
     }
 }
 
@@ -474,6 +480,51 @@ mod tests {
         };
         let result = QdrantClient::new(&config);
         assert!(result.is_ok());
+    }
+
+    fn classify_status(status: tonic::Status) -> VectorStoreError {
+        let kb = KbSlug::try_new("notes").unwrap();
+        classify(&kb, &qdrant_client::QdrantError::ResponseError { status })
+    }
+
+    #[test]
+    fn classify_maps_not_found_naming_the_collection_to_collection_not_found() {
+        let err = classify_status(tonic::Status::not_found(
+            "Not found: Collection `kb_notes_v1` doesn't exist!",
+        ));
+
+        assert!(matches!(
+            err,
+            VectorStoreError::CollectionNotFound { kb } if kb == "notes"
+        ));
+    }
+
+    #[test]
+    fn classify_keeps_point_level_not_found_as_backend() {
+        let err = classify_status(tonic::Status::not_found("No point with id 7 found"));
+
+        assert!(matches!(err, VectorStoreError::Backend { .. }));
+    }
+
+    #[test]
+    fn classify_keeps_not_found_for_another_collection_as_backend() {
+        let err = classify_status(tonic::Status::not_found(
+            "Not found: Collection `kb_other_v1` doesn't exist!",
+        ));
+
+        assert!(matches!(err, VectorStoreError::Backend { .. }));
+    }
+
+    #[test]
+    fn classify_keeps_missing_index_as_backend() {
+        let err = classify_status(tonic::Status::invalid_argument(
+            "Bad request: Index required but not found for \"etag\" of one of the following types: [keyword]",
+        ));
+
+        assert!(
+            matches!(&err, VectorStoreError::Backend { message } if message.contains("Index required")),
+            "got {err:?}"
+        );
     }
 
     #[test]

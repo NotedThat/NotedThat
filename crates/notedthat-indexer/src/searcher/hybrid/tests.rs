@@ -11,30 +11,9 @@ fn hybrid_searcher_is_send_sync() {
 
 #[test]
 fn search_error_from_store_maps_collection_not_found_to_unknown_kb() {
-    let err = search_error_from_store(
-        "kb_my-notes_v1",
-        VectorStoreError::CollectionNotFound {
-            kb: "my-notes".into(),
-        },
-    );
-
-    assert!(matches!(
-        err,
-        SearchError::UnknownKb { slug } if slug == "my-notes"
-    ));
-}
-
-#[test]
-fn search_error_from_store_classifies_not_found_backend_text_as_unknown_kb() {
-    // A backend that reports a missing collection as a plain transport error
-    // must still surface as UnknownKb rather than an outage; the collection
-    // name is what the slug is recovered from.
-    let err = search_error_from_store(
-        "kb_my-notes_v1",
-        VectorStoreError::Backend {
-            message: "collection not found".into(),
-        },
-    );
+    let err = search_error_from_store(VectorStoreError::CollectionNotFound {
+        kb: "my-notes".into(),
+    });
 
     assert!(matches!(
         err,
@@ -44,14 +23,26 @@ fn search_error_from_store_classifies_not_found_backend_text_as_unknown_kb() {
 
 #[test]
 fn search_error_from_store_classifies_other_errors_as_backend_unavailable() {
-    let err = search_error_from_store(
-        "kb_notes_v1",
-        VectorStoreError::Backend {
-            message: "transport closed".into(),
-        },
-    );
+    let err = search_error_from_store(VectorStoreError::Backend {
+        message: "transport closed".into(),
+    });
 
     assert!(matches!(err, SearchError::BackendUnavailable { .. }));
+}
+
+#[test]
+fn search_error_from_store_keeps_not_found_backend_text_as_backend_unavailable() {
+    // A backend fault whose message happens to say "not found" (here a missing
+    // payload index under Qdrant strict mode) is an outage, not an unknown KB.
+    // Only VectorStoreError::CollectionNotFound means the KB does not exist.
+    let err = search_error_from_store(VectorStoreError::Backend {
+        message: "Index required but not found".into(),
+    });
+
+    assert!(matches!(
+        err,
+        SearchError::BackendUnavailable { message } if message == "Index required but not found"
+    ));
 }
 
 #[test]

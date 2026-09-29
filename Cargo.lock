@@ -2625,6 +2625,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "wiremock",

@@ -3,7 +3,6 @@
 
 use crate::embedder::Embedder;
 use crate::vector_store::{HybridQuery, VectorStore, VectorStoreError};
-use crate::worker::collection_name;
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse, ValidatedRequest};
@@ -113,7 +112,6 @@ impl super::Searcher for HybridSearcher {
         request: ValidatedRequest,
         key_filter: Option<super::KeyPredicate<'_>>,
     ) -> Result<SearchResponse, SearchError> {
-        let collection = collection_name(kb);
         let query_text = request.query.clone();
 
         let mut embeddings = self
@@ -161,7 +159,7 @@ impl super::Searcher for HybridSearcher {
                 },
             )
             .await
-            .map_err(|err| search_error_from_store(&collection, err))?;
+            .map_err(search_error_from_store)?;
 
         let mut hits: Vec<SearchHit> = points
             .into_iter()
@@ -256,28 +254,10 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
     })
 }
 
-pub(crate) fn search_error_from_store(collection: &str, err: VectorStoreError) -> SearchError {
+pub(crate) fn search_error_from_store(err: VectorStoreError) -> SearchError {
     match err {
         VectorStoreError::CollectionNotFound { kb } => SearchError::UnknownKb { slug: kb },
-        VectorStoreError::Backend { message } => {
-            // A backend that reports a missing collection as a plain transport
-            // error still has to be classified as an unknown KB rather than an
-            // outage, so the message is inspected as a fallback.
-            let lower = message.to_ascii_lowercase();
-            if lower.contains("not found")
-                || lower.contains("doesn't exist")
-                || lower.contains("does not exist")
-            {
-                SearchError::UnknownKb {
-                    slug: collection
-                        .trim_start_matches("kb_")
-                        .trim_end_matches("_v1")
-                        .to_string(),
-                }
-            } else {
-                SearchError::BackendUnavailable { message }
-            }
-        }
+        VectorStoreError::Backend { message } => SearchError::BackendUnavailable { message },
     }
 }
 
