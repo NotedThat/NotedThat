@@ -380,6 +380,7 @@ async fn copy_overwrite_true_replaces_destination_and_preserves_mime() {
     let options = storage.copy_options();
     assert_eq!(options[0].source_if_match.as_deref(), Some("\"src\""));
     assert_eq!(options[0].destination_if_none_match, None);
+    assert_eq!(options[0].content_type.as_deref(), Some("text/markdown"));
 }
 
 #[tokio::test]

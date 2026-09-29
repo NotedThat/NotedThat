@@ -164,20 +164,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ScriptedStorage {
-    /// Script calls against `inner`.
-    #[must_use]
-    pub fn new(inner: InMemoryStorage) -> Self {
-        Self {
-            inner,
-            script: Arc::default(),
-            calls: Arc::default(),
-        }
-    }
-
     /// A store with these knowledge bases provisioned, as [`InMemoryStorage::with_kbs`].
     #[must_use]
     pub fn with_kbs<'a>(kbs: impl IntoIterator<Item = &'a KbSlug>) -> Self {
-        Self::new(InMemoryStorage::with_kbs(kbs))
+        Self {
+            inner: InMemoryStorage::with_kbs(kbs),
+            script: Arc::default(),
+            calls: Arc::default(),
+        }
     }
 
     /// The store underneath, for seeding and inspecting without recording a call.
