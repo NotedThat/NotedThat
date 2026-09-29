@@ -177,6 +177,24 @@ pub fn evaluate_read_preconditions(
     Ok(())
 }
 
+/// Whether an `If-Range` validator still describes the object, per RFC 9110 §13.1.5.
+///
+/// `etag` and `last_modified` (Unix seconds) are those of the representation the range
+/// would be cut from. An entity tag must match by the strong comparison, so a weak tag
+/// never matches; an HTTP-date must equal `Last-Modified` exactly. Anything else,
+/// including a value that is neither, is a mismatch, and the caller then ignores `Range`
+/// and serves the whole representation.
+#[must_use]
+pub fn if_range_matches(if_range: &str, etag: Option<&str>, last_modified: Option<i64>) -> bool {
+    let if_range = if_range.trim();
+    if if_range.starts_with('"') || if_range.starts_with("W/") {
+        return !if_range.starts_with("W/")
+            && etag.is_some_and(|current| !current.starts_with("W/") && current == if_range);
+    }
+    httpdate::parse_http_date(if_range)
+        .is_ok_and(|date| last_modified == Some(unix_seconds_i64(date)))
+}
+
 /// Resolve a requested byte range against an object of `total_size` bytes.
 ///
 /// Returns the exclusive byte range together with the `Content-Range` value to report,
@@ -208,8 +226,8 @@ pub fn resolve_range(
 #[cfg(test)]
 mod tests {
     use super::{
-        ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
-        matches_if_none_match, parse_http_date_or_err, resolve_range,
+        ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
+        matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range,
     };
     use crate::conditional::ConditionalHeaders;
     use crate::error::StorageError;
@@ -341,6 +359,24 @@ mod tests {
             Err(StorageError::Other { .. })
         ));
         assert!(parse_http_date_or_err("not-a-date").is_err());
+    }
+
+    #[test]
+    fn if_range_entity_tags_compare_strongly() {
+        assert!(if_range_matches(ETAG, Some(ETAG), None));
+        assert!(!if_range_matches("\"stale\"", Some(ETAG), None));
+        assert!(!if_range_matches("W/\"abc\"", Some(ETAG), None));
+        assert!(!if_range_matches("W/\"abc\"", Some("W/\"abc\""), None));
+        assert!(!if_range_matches(ETAG, None, Some(1_000)));
+    }
+
+    #[test]
+    fn if_range_dates_must_equal_last_modified() {
+        assert!(if_range_matches(&http_date(1_000), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(999), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(1_001), None, Some(1_000)));
+        assert!(!if_range_matches(&http_date(1_000), None, None));
+        assert!(!if_range_matches("not-a-date", Some(ETAG), Some(1_000)));
     }
 
     #[test]

@@ -48,8 +48,9 @@ pub use kb::{KbDetails, KbManifest, ManifestEmbedding, ObjectMeta, slug_kb_detai
 pub use listing::{Rollup, roll_up};
 pub use object_path::{ObjectPath, is_internal_path};
 pub use preconditions::{
-    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, matches_if_match,
-    matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds, unix_seconds_i64,
+    ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
+    matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds,
+    unix_seconds_i64,
 };
 pub use range::{
     ByteRange, LineIndex, LineRange, ParsedRange, RangeParseError, parse_line_range_header,
