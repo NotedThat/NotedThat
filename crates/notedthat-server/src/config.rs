@@ -1505,7 +1505,21 @@ impl EmbedderConfig {
 }
 
 impl EmbedderConfig {
-    /// The endpoint URL without userinfo, query or fragment, when its path is empty or `/`.
+    /// The endpoint URL without userinfo, query or fragment, any of which may carry a
+    /// credential (`?api-key=…`), for the log and the manifest's `endpoint_url_hint`.
+    /// `None` when the URL does not parse.
+    #[must_use]
+    pub fn endpoint_url_redacted(&self) -> Option<String> {
+        let mut url = url::Url::parse(&self.endpoint_url).ok()?;
+        // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        Some(url.as_str().trim_end_matches('/').to_string())
+    }
+
+    /// [`Self::endpoint_url_redacted`], when the URL's path is empty or `/`.
     ///
     /// Releases up to 0.12 appended `/v1/embeddings` themselves, so a value written for
     /// them (`https://api.openai.com`, `http://127.0.0.1:11434`) is a bare origin, and now
@@ -1514,17 +1528,11 @@ impl EmbedderConfig {
     /// `/embeddings` at its root.
     #[must_use]
     pub fn endpoint_url_without_path(&self) -> Option<String> {
-        let mut url = url::Url::parse(&self.endpoint_url).ok()?;
+        let url = url::Url::parse(&self.endpoint_url).ok()?;
         if !matches!(url.path(), "" | "/") {
             return None;
         }
-        // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-        // A query (`?api-key=…`) or fragment may carry a credential too.
-        url.set_query(None);
-        url.set_fragment(None);
-        Some(url.as_str().trim_end_matches('/').to_string())
+        self.endpoint_url_redacted()
     }
 }
 
@@ -2392,6 +2400,27 @@ pub(crate) mod tests {
             timeout_ms: 30_000,
             max_retries: 3,
             max_input_tokens: 8192,
+        }
+    }
+
+    #[test]
+    fn endpoint_url_redacted_drops_every_credential_carrier() {
+        for (raw, expected) in [
+            (
+                "https://api.openai.com/v1",
+                Some("https://api.openai.com/v1"),
+            ),
+            (
+                "https://user:secret@gw.example/openai/v1/?api-key=secret#secret",
+                Some("https://gw.example/openai/v1"),
+            ),
+            ("not a url", None),
+        ] {
+            assert_eq!(
+                embedder_with_url(raw).endpoint_url_redacted().as_deref(),
+                expected,
+                "url {raw}"
+            );
         }
     }
 

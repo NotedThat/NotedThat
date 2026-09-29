@@ -165,7 +165,7 @@ impl Embedder for OpenAiCompatibleEmbedder {
                         let parsed: EmbeddingsResponse = resp
                             .json()
                             .await
-                            .map_err(|e| EmbedderError::Malformed(e.to_string()))?;
+                            .map_err(|e| EmbedderError::Malformed(reqwest_error_text(e)))?;
                         if parsed.data.len() != texts.len() {
                             return Err(EmbedderError::CountMismatch {
                                 sent: texts.len(),
@@ -204,7 +204,16 @@ impl Embedder for OpenAiCompatibleEmbedder {
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
-                    return Err(EmbedderError::Transport(e.to_string()));
+                    // As for `Http`: reqwest's text names the URL, query included, and the
+                    // error's text reaches callers, so the URL goes to the log alone.
+                    let message = reqwest_error_text(e);
+                    tracing::warn!(
+                        target: "notedthat::indexing",
+                        url = %self.url_for_logs,
+                        error = %message,
+                        "EMBEDDER_TRANSPORT_ERROR"
+                    );
+                    return Err(EmbedderError::Transport(message));
                 }
             }
         }
@@ -219,6 +228,20 @@ impl Embedder for OpenAiCompatibleEmbedder {
     fn model_id(&self) -> &str {
         &self.config.model
     }
+}
+
+/// `e`'s text without the request URL, which reqwest appends (`for url (…)`) with its query
+/// intact, followed by its source chain, so the cause (`connection refused`) survives.
+fn reqwest_error_text(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut message = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 /// Exponential backoff with deterministic jitter: 100ms * 2^(attempt-1), capped at 4s.
@@ -658,23 +681,26 @@ mod tests {
         );
     }
 
-    /// An HTTP failure's text, which reaches search callers, `/index` and the event stream,
-    /// names neither the embedder's URL nor a credential in its query.
+    /// A transport failure's text, which reaches search callers, `/index` and the event
+    /// stream, names neither the embedder's URL nor a credential in its query, but keeps
+    /// the cause.
     #[tokio::test]
-    async fn http_error_text_leaves_out_the_url() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        let mut config = make_config(&server.uri());
-        config.endpoint_url = format!("{}/v1?api-key=secret", server.uri());
+    async fn transport_error_text_leaves_out_the_url() {
+        let mut config = make_config("http://127.0.0.1:1");
+        config.endpoint_url = "http://127.0.0.1:1/v1?api-key=secret".to_string();
+        config.max_retries = 1;
         let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
         let err = embedder.embed(&["x".to_string()]).await.unwrap_err();
-        assert!(matches!(err, EmbedderError::Http { status: 404, .. }));
-        let text = err.to_string();
+        let EmbedderError::Transport(text) = &err else {
+            panic!("expected Transport, got {err:?}");
+        };
         assert!(!text.contains("secret"), "{text}");
-        assert!(!text.contains(&server.uri()), "{text}");
+        assert!(!text.contains("127.0.0.1"), "{text}");
+        assert!(text.contains("error sending request"), "{text}");
+        assert!(
+            text.len() > "error sending request".len(),
+            "cause kept: {text}"
+        );
     }
 
     #[test]

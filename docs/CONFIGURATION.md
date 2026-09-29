@@ -975,11 +975,8 @@ Rules then name roles: `{ "who": "group:editor", "may": ["write"] }`.
   just `/`), at `warn`, with the URL minus userinfo, query and fragment. Releases up to 0.12 appended
   `/v1/embeddings` themselves; the URL is now the full API base and only `/embeddings` is
   appended, so a value written for them reaches `/embeddings` at the root and every write fails
-  with `INDEXING_FAILED` (HTTP 404). Add `/v1`, or the provider's own prefix. An embedder
-  request refused with a status it does not retry (a 4xx other than 429) also logs
-  `EMBEDDER_HTTP_ERROR` at `warn` with the status and the URL
-  requested, redacted the same way; the URL stays out of the error text that search callers,
-  `/index` and the event stream see. Not a refusal, because a gateway may serve `/embeddings` at its root. See
+  with `INDEXING_FAILED` (HTTP 404). Add `/v1`, or the provider's own prefix.
+  Not a refusal, because a gateway may serve `/embeddings` at its root. See
   [Embedding](#embedding).
 - `MCP_ANONYMOUS enabled` / `MCP_ANONYMOUS disabled_no_anonymous_grants` /
   `MCP_ANONYMOUS disabled_by_setting` — whether `/mcp` admits a request with no credential, with
@@ -1377,7 +1374,7 @@ NOTEDTHAT_QDRANT_URL=http://127.0.0.1:6334
 
 NotedThat uses an external OpenAI-compatible embedding endpoint to index markdown content (M4+). Indexing is **async best-effort** — see [Indexing behavior](#indexing-behavior) below.
 
-NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible embeddings API works, hosted or local. `EMBEDDING_ENDPOINT_URL` is that API's base URL as the provider documents it, version segment included (usually ending in `/v1`); the server appends `/embeddings`. Releases up to 0.12 appended `/v1/embeddings` themselves, so when upgrading add `/v1` to an existing value (`https://api.openai.com` becomes `https://api.openai.com/v1`); startup logs `EMBEDDING_ENDPOINT_URL_NO_PATH` for a URL with no path. A query on the base URL stays a query: `/embeddings` goes onto the path before it (`…/deployments/<name>?api-version=…` requests `…/deployments/<name>/embeddings?api-version=…`). The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
+NotedThat ships no embedding model: you set one up and point the server at it. The four required values must be set for the server to start, but it does not contact the endpoint until it indexes, so a wrong URL, a stopped provider or a missing model still starts cleanly and shows up as `INDEXING_FAILED` errors in the server log and empty search results (see [Indexing behavior](#indexing-behavior)). Any model behind an OpenAI-compatible embeddings API works, hosted or local. `EMBEDDING_ENDPOINT_URL` is that API's base URL as the provider documents it, version segment included (usually ending in `/v1`); the server appends `/embeddings`. Releases up to 0.12 appended `/v1/embeddings` themselves, so when upgrading add `/v1` to an existing value (`https://api.openai.com` becomes `https://api.openai.com/v1`); startup logs `EMBEDDING_ENDPOINT_URL_NO_PATH` for a URL with no path. A query on the base URL stays a query: `/embeddings` goes onto the path before it (`https://gw.example/v1?tenant=a` requests `https://gw.example/v1/embeddings?tenant=a`). The key is always sent as `Authorization: Bearer`. For Azure OpenAI, use its v1 API, which accepts the key that way: `EMBEDDING_ENDPOINT_URL=https://<resource>.openai.azure.com/openai/v1`, with the deployment name as `EMBEDDING_MODEL`. The classic `/openai/deployments/<name>?api-version=…` form is not supported, because it needs the key in an `api-key` header. The server does not send a `dimensions` parameter, so `EMBEDDING_DIMENSIONS` is the model's native output size.
 
 | Variable | Flag | Required | Default | Description |
 |---|---|---|---|---|
@@ -1466,6 +1463,7 @@ Indexing in NotedThat (M4+) is **async best-effort** per design decision D38:
 - If the queue is full, the object is stored to S3 but the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` and `INDEX_QUEUE_FULL` is logged. The client should retry to re-enqueue the indexing event.
 - **Conditional writes under backpressure: retry semantics interact with 412.** A conditional `PUT`/`DELETE` using `If-Match` or `If-None-Match` can complete the S3 mutation and then return HTTP 503 because the indexer queue is full. A naive retry with the same conditional headers may then return HTTP 412 `precondition_failed` because the object now exists or its ETag changed. Clients that use conditional headers must treat a 503 → 412 sequence as a possible stored-but-not-indexed ghost state and either accept that state or use a stronger consistency mechanism; v1 does not automatically replay or repair it.
 - If Qdrant is unreachable during indexing, `INDEXING_FAILED` is logged and the write still succeeds. The next write of the same object re-enqueues automatically.
+- When the embedding endpoint refuses a request with a status that is not retried (a 4xx other than 429), `EMBEDDER_HTTP_ERROR` is logged at `warn` with the status and the URL requested. When it cannot be reached once the retries are spent, `EMBEDDER_TRANSPORT_ERROR` is logged with the URL and the cause. Both URLs leave out userinfo, query and fragment. The error text that search callers (the 503 body), `/index` and the event stream see does not include the URL, so the URL is found only in these log lines. The resulting `INDEXING_FAILED` follows.
 - On graceful shutdown (SIGTERM), the server drains the queue with a **31-second bounded timeout** after in-flight listener work completes.
 
 No search endpoint or MCP search tool is exposed in M4 — search arrives in M5.

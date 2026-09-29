@@ -309,7 +309,8 @@ async fn build_infrastructure(
         &provisioner,
         &config.embedder.model,
         config.embedder.dimensions,
-        Some(config.embedder.endpoint_url.as_str()),
+        // Recorded in the bucket's manifest, so nothing that may carry a credential.
+        config.embedder.endpoint_url_redacted().as_deref(),
     )
     .await?;
     let access_policies = Arc::new(snapshot.access_policies);
