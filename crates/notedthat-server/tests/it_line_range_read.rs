@@ -100,3 +100,50 @@ async fn mcp_read_line_range_returns_correct_slice() {
         .unwrap_or_else(|| panic!("MCP read response should contain text: {response}"));
     assert_eq!(text, LINES_2_TO_4);
 }
+
+#[tokio::test]
+async fn insert_point_before_line_one_claims_no_byte() {
+    // Given: a server on in-process backends contains a 20-line Markdown note.
+    let server = fixture_server().await;
+
+    // When: the insert point before line 1 is read.
+    let response = server.get_hello_with_range("lines=1-0").await;
+
+    // Then: the byte header names no range and the offset travels on its own.
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_content_range_bytes(&response, &format!("*/{}", TWENTY_LINE_FIXTURE.len()));
+    assert_eq!(response.headers()["x-insert-offset"], "0");
+    let body = response
+        .text()
+        .await
+        .expect("insert point body should read");
+    assert!(
+        body.is_empty(),
+        "insert point body should be empty, got {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn insert_point_at_end_of_file_claims_no_byte() {
+    // Given: a server on in-process backends contains a 20-line Markdown note.
+    let server = fixture_server().await;
+
+    // When: the insert point after the last line is read.
+    let response = server.get_hello_with_range("lines=21-20").await;
+
+    // Then: the offset is the object's length and no byte range is claimed.
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_content_range_bytes(&response, &format!("*/{}", TWENTY_LINE_FIXTURE.len()));
+    assert_eq!(
+        response.headers()["x-insert-offset"],
+        TWENTY_LINE_FIXTURE.len().to_string().as_str()
+    );
+    let body = response
+        .text()
+        .await
+        .expect("insert point body should read");
+    assert!(
+        body.is_empty(),
+        "insert point body should be empty, got {body:?}"
+    );
+}

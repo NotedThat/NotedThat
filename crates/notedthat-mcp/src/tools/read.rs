@@ -80,7 +80,8 @@ impl ReadMeta {
     /// - `200`: `Content-Length` is the object's size; the slice is the object.
     /// - byte `206`: `Content-Range: bytes a-b/N`, `b` inclusive.
     /// - line `206`: `Content-Range: lines a-b/N` plus `X-Content-Range-Bytes: s-e/N`,
-    ///   `e` inclusive — `e = s - 1` for an insert point, an empty slice.
+    ///   `e` inclusive — or, for an insert point (an empty slice), `*/N` plus
+    ///   `X-Insert-Offset: s`.
     ///
     /// A header that is missing or unparseable leaves its fields `null`; it is never
     /// a failure, since the text itself arrived.
@@ -112,11 +113,9 @@ impl ReadMeta {
         }
 
         // For a `206` the header says where the slice starts and how big the
-        // object is; where the slice *ends* is the body's to say. The header's
-        // inclusive end cannot express the empty slice at offset 0 — an insert
-        // point before line 1 arrives as `0-0/N`, byte-identical to a one-byte
-        // slice — and a backend whose header disagreed with its body must not
-        // be believed over the body.
+        // object is; where the slice *ends* is the body's to say: a backend
+        // whose header disagreed with its body must not be believed over the
+        // body.
         let slice = |start: u64, total: u64, meta: &mut Self| {
             meta.byte_start = Some(start);
             meta.byte_end = Some(start.saturating_add(bytes_returned));
@@ -134,10 +133,25 @@ impl ReadMeta {
                     meta.line_end = Some(end);
                     meta.total_lines = Some(total);
                 }
-                if let Some((start, _end_inclusive, total)) =
-                    header("x-content-range-bytes").and_then(parse_range_spec)
-                {
-                    slice(start, total, &mut meta);
+                match header("x-content-range-bytes") {
+                    Some(spec) if spec.trim().starts_with('*') => {
+                        // An insert point: no bytes, so no inclusive range; the
+                        // offset travels in its own header.
+                        if let Some(total) = parse_unsatisfied_total(spec) {
+                            meta.total_bytes = Some(total);
+                            if let Some(start) =
+                                header("x-insert-offset").and_then(|v| v.trim().parse().ok())
+                            {
+                                slice(start, total, &mut meta);
+                            }
+                        }
+                    }
+                    Some(spec) => {
+                        if let Some((start, _end_inclusive, total)) = parse_range_spec(spec) {
+                            slice(start, total, &mut meta);
+                        }
+                    }
+                    None => {}
                 }
             }
             _ => {}
@@ -151,6 +165,11 @@ fn parse_range_spec(spec: &str) -> Option<(u64, u64, u64)> {
     let (range, total) = spec.trim().split_once('/')?;
     let (start, end) = range.split_once('-')?;
     Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
+}
+
+/// `*/N` → `N`. Tolerates nothing: any other shape is `None`.
+fn parse_unsatisfied_total(spec: &str) -> Option<u64> {
+    spec.trim().strip_prefix("*/")?.parse().ok()
 }
 
 pub(super) async fn run(
@@ -381,7 +400,8 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(206)
                     .insert_header("Content-Range", "lines 5-4/20")
-                    .insert_header("X-Content-Range-Bytes", "150-149/400")
+                    .insert_header("X-Content-Range-Bytes", "*/400")
+                    .insert_header("X-Insert-Offset", "150")
                     .set_body_string(""),
             )
             .expect(1)
@@ -443,9 +463,8 @@ mod tests {
         server.verify().await;
     }
 
-    /// An insert point before line 1 arrives as `X-Content-Range-Bytes: 0-0/N`,
-    /// byte-identical to a one-byte slice at offset 0. The body says which it
-    /// is: empty, so `byte_end == byte_start`.
+    /// An insert point before line 1 arrives as `X-Content-Range-Bytes: */N`
+    /// with `X-Insert-Offset: 0`: an empty slice at offset 0, not a one-byte one.
     #[tokio::test]
     async fn an_insert_point_before_line_one_is_the_empty_slice_at_zero() {
         let server = MockServer::start().await;
@@ -455,7 +474,8 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(206)
                     .insert_header("Content-Range", "lines 1-0/20")
-                    .insert_header("X-Content-Range-Bytes", "0-0/400")
+                    .insert_header("X-Content-Range-Bytes", "*/400")
+                    .insert_header("X-Insert-Offset", "0")
                     .set_body_string(""),
             )
             .expect(1)
@@ -472,6 +492,36 @@ mod tests {
         assert_eq!((meta.byte_start, meta.byte_end), (Some(0), Some(0)));
         assert_eq!((meta.line_start, meta.line_end), (Some(1), Some(0)));
         assert_eq!(meta.total_bytes, Some(400));
+        server.verify().await;
+    }
+
+    /// An insert point whose offset header is missing still knows the object's
+    /// size; where the empty slice sits is not invented.
+    #[tokio::test]
+    async fn an_insert_point_without_an_offset_leaves_the_slice_null() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/file.md"))
+            .and(header("range", "lines=5-4"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("Content-Range", "lines 5-4/20")
+                    .insert_header("X-Content-Range-Bytes", "*/400")
+                    .set_body_string(""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let args = ReadArgs {
+            line_start: Some(5),
+            line_end: Some(4),
+            ..file_args()
+        };
+        let result = run(&client(&server.uri()), args).await.unwrap();
+        let meta = meta_of(&result);
+        assert_eq!(meta.total_bytes, Some(400));
+        assert_eq!((meta.byte_start, meta.byte_end), (None, None));
+        assert_eq!((meta.line_start, meta.line_end), (Some(5), Some(4)));
         server.verify().await;
     }
 
