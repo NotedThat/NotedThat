@@ -882,7 +882,7 @@ mod tests {
         else {
             panic!("If-None-Match should return NotModified");
         };
-        assert!(matches!(err, StorageError::NotModified));
+        assert!(matches!(err, StorageError::NotModified(_)));
     }
 
     #[tokio::test]

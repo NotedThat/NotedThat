@@ -451,7 +451,7 @@ pub async fn get_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
             &path(key),
             None,
             ConditionalHeaders {
-                if_none_match: Some(etag),
+                if_none_match: Some(etag.clone()),
                 ..ConditionalHeaders::default()
             },
         )
@@ -460,7 +460,12 @@ pub async fn get_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
         panic!("matching If-None-Match should return NotModified");
     };
 
-    assert!(matches!(error, StorageError::NotModified));
+    // RFC 9110 §15.4.5: the 304 repeats the validators a 200 would carry.
+    let StorageError::NotModified(validators) = error else {
+        panic!("expected NotModified, got {error:?}");
+    };
+    assert_eq!(validators.etag, Some(etag));
+    assert!(validators.last_modified.is_some());
 }
 
 pub async fn get_range_unsatisfiable(store: &dyn Storage, kb: &KbSlug) {
@@ -612,7 +617,7 @@ pub async fn head_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
             kb,
             &path(key),
             ConditionalHeaders {
-                if_none_match: Some(etag),
+                if_none_match: Some(etag.clone()),
                 ..ConditionalHeaders::default()
             },
         )
@@ -621,7 +626,12 @@ pub async fn head_if_none_match_not_modified(store: &dyn Storage, kb: &KbSlug) {
         panic!("matching If-None-Match on HEAD should return NotModified");
     };
 
-    assert!(matches!(error, StorageError::NotModified));
+    // RFC 9110 §15.4.5: the 304 repeats the validators a 200 would carry.
+    let StorageError::NotModified(validators) = error else {
+        panic!("expected NotModified, got {error:?}");
+    };
+    assert_eq!(validators.etag, Some(etag));
+    assert!(validators.last_modified.is_some());
 }
 
 pub async fn put_if_match_correct_succeeds(store: &dyn Storage, kb: &KbSlug) {

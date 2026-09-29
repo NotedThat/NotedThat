@@ -448,7 +448,7 @@ pub(crate) fn storage_error_to_fs(err: &StorageError) -> FsError {
         StorageError::BackendUnavailable { .. } | StorageError::Other { .. } => {
             FsError::GeneralFailure
         }
-        StorageError::NotModified => FsError::GeneralFailure,
+        StorageError::NotModified(_) => FsError::GeneralFailure,
     }
 }
 

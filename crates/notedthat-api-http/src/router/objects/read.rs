@@ -3,6 +3,7 @@ use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
+use crate::validators::with_validators;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
@@ -12,7 +13,6 @@ use notedthat_core::{
     parse_line_range_header, parse_range_header,
 };
 use std::borrow::Cow;
-use std::time::{Duration, UNIX_EPOCH};
 
 fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     let Ok(media_type) = content_type.parse::<mime::Mime>() else {
@@ -78,16 +78,7 @@ pub(in crate::router) async fn head_object(
         let content_type = normalize_content_type(ct);
         builder = builder.header("content-type", content_type.as_ref());
     }
-    if let Some(etag) = &meta.etag {
-        builder = builder.header("etag", etag.as_str());
-    }
-    if let Some(last_modified) = meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header("last-modified", httpdate::fmt_http_date(last_modified));
-    }
+    builder = with_validators(builder, meta.etag.as_deref(), meta.last_modified);
     // Content-Length from metadata size, not body length (HEAD has no body).
     builder = builder.header("content-length", meta.size.to_string());
 
@@ -167,20 +158,7 @@ pub(in crate::router) async fn get_object(
         .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
         .header(axum::http::header::CONTENT_LENGTH, read.bytes.len());
 
-    if let Some(etag) = &read.meta.etag {
-        builder = builder.header(axum::http::header::ETAG, etag.as_str());
-    }
-    if let Some(last_modified) = read
-        .meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header(
-            axum::http::header::LAST_MODIFIED,
-            httpdate::fmt_http_date(last_modified),
-        );
-    }
+    builder = with_validators(builder, read.meta.etag.as_deref(), read.meta.last_modified);
     if let Some(content_range) = &read.content_range {
         builder = builder.header(axum::http::header::CONTENT_RANGE, content_range.as_str());
     }
@@ -248,20 +226,7 @@ async fn serve_line_range_read(
         .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
         .header(axum::http::header::CONTENT_LENGTH, sliced.len());
 
-    if let Some(etag) = &read.meta.etag {
-        builder = builder.header(axum::http::header::ETAG, etag.as_str());
-    }
-    if let Some(last_modified) = read
-        .meta
-        .last_modified
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    {
-        builder = builder.header(
-            axum::http::header::LAST_MODIFIED,
-            httpdate::fmt_http_date(last_modified),
-        );
-    }
+    builder = with_validators(builder, read.meta.etag.as_deref(), read.meta.last_modified);
 
     let content_range_value = idx.content_range_string(&line_range);
     builder = builder.header("Content-Range", content_range_value);

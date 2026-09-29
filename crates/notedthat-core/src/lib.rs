@@ -38,7 +38,7 @@ pub use bucket_name::{
     BUCKET_NAME_MAX, BUCKET_NAME_PREFIX, derive_bucket_name, validate_bucket_name,
 };
 pub use conditional::ConditionalHeaders;
-pub use error::{Error, StorageError};
+pub use error::{Error, StorageError, Validators};
 pub use etag::{EtagHasher, compute_etag};
 pub use events::{
     EventId, EventPublisher, EventSource, EventStream, ObjectEvent, ObjectEventKind, PublishError,

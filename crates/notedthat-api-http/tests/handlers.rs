@@ -1536,6 +1536,7 @@ async fn get_if_none_match_304() {
         .await
         .unwrap();
     let etag = first_get.headers().get("etag").unwrap().to_str().unwrap();
+    let last_modified = first_get.headers()["last-modified"].clone();
 
     let resp = a
         .oneshot(
@@ -1550,6 +1551,9 @@ async fn get_if_none_match_304() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    // RFC 9110 §15.4.5: the 304 repeats the validators the 200 carried.
+    assert_eq!(resp.headers()["etag"], etag);
+    assert_eq!(resp.headers()["last-modified"], last_modified);
     let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
     assert!(response_body.is_empty());
 }
@@ -2291,6 +2295,8 @@ async fn head_if_none_match_304() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(resp.headers()["etag"], etag.as_str());
+    assert!(resp.headers().contains_key("last-modified"));
     let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
     assert!(body_bytes.is_empty(), "304 must return empty body");
 }

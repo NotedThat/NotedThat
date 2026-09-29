@@ -93,7 +93,7 @@ fn error_kind(error: &StorageError) -> String {
         StorageError::BucketNotFound { .. } => "BucketNotFound".to_string(),
         StorageError::BackendUnavailable { .. } => "BackendUnavailable".to_string(),
         StorageError::Other { .. } => "Other".to_string(),
-        StorageError::NotModified => "NotModified".to_string(),
+        StorageError::NotModified(_) => "NotModified".to_string(),
         StorageError::PreconditionFailed => "PreconditionFailed".to_string(),
         // Kept: this becomes `Content-Range: bytes */N`, a number both must agree on.
         StorageError::RangeNotSatisfiable { complete_length } => {

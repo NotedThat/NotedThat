@@ -1,10 +1,11 @@
 //! HTTP API error types and JSON envelope.
 
+use crate::validators::with_validators;
 use axum::Json;
 use axum::http::header::{CONTENT_RANGE, RETRY_AFTER};
 use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{Error as CoreError, StorageError};
+use notedthat_core::{Error as CoreError, StorageError, Validators};
 use serde::Serialize;
 
 /// HTTP-layer error — maps domain and storage errors to HTTP status codes.
@@ -89,9 +90,10 @@ pub enum ApiError {
     },
     /// The backend returned 304 Not Modified for a conditional GET/HEAD.
     ///
-    /// Maps to HTTP 304 with no body, as required by RFC 7232 §4.1.
+    /// Maps to HTTP 304 with no body, as required by RFC 7232 §4.1, carrying the
+    /// validators a 200 would have (RFC 9110 §15.4.5).
     #[error("not modified")]
-    NotModified,
+    NotModified(Validators),
     /// The `Range:` header value could not be parsed per RFC 7233.
     ///
     /// Maps to HTTP 400 Bad Request.
@@ -135,7 +137,7 @@ impl From<CoreError> for ApiError {
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         match e {
-            StorageError::NotModified => Self::NotModified,
+            StorageError::NotModified(validators) => Self::NotModified(validators),
             StorageError::PreconditionFailed => Self::PreconditionFailed,
             StorageError::RangeNotSatisfiable { complete_length } => {
                 Self::RangeNotSatisfiable { complete_length }
@@ -323,7 +325,7 @@ impl ApiError {
             | Self::RangeNotSatisfiable { .. } => {
                 (StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable")
             }
-            Self::Core(CoreError::NotModified) | Self::NotModified => {
+            Self::Core(CoreError::NotModified(_)) | Self::NotModified(_) => {
                 (StatusCode::NOT_MODIFIED, "not_modified")
             }
             Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => {
@@ -346,7 +348,7 @@ impl ApiError {
             StorageError::BackendUnavailable { .. } => {
                 (StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
             }
-            StorageError::NotModified => (StatusCode::NOT_MODIFIED, "not_modified"),
+            StorageError::NotModified(_) => (StatusCode::NOT_MODIFIED, "not_modified"),
             StorageError::PreconditionFailed => {
                 (StatusCode::PRECONDITION_FAILED, "precondition_failed")
             }
@@ -370,14 +372,14 @@ impl ApiError {
         }
     }
 
-    /// Return `true` for all variants that map to HTTP 304 (empty body required).
-    fn is_not_modified(&self) -> bool {
-        matches!(
-            self,
-            Self::NotModified
-                | Self::Storage(StorageError::NotModified)
-                | Self::Core(CoreError::NotModified)
-        )
+    /// The validators of every variant that maps to HTTP 304 (empty body required).
+    fn not_modified_validators(&self) -> Option<&Validators> {
+        match self {
+            Self::NotModified(validators)
+            | Self::Storage(StorageError::NotModified(validators))
+            | Self::Core(CoreError::NotModified(validators)) => Some(validators),
+            _ => None,
+        }
     }
 }
 
@@ -431,9 +433,16 @@ impl IntoResponse for ApiErrorResponse {
                 .into_response();
         }
 
-        // 304 Not Modified: RFC 7232 §4.1 forbids a message body.
-        if self.error.is_not_modified() {
-            return StatusCode::NOT_MODIFIED.into_response();
+        // 304 Not Modified: RFC 7232 §4.1 forbids a message body, and RFC 9110
+        // §15.4.5 requires the validators a 200 would have carried.
+        if let Some(validators) = self.error.not_modified_validators() {
+            return with_validators(
+                Response::builder().status(StatusCode::NOT_MODIFIED),
+                validators.etag.as_deref(),
+                validators.last_modified,
+            )
+            .body(axum::body::Body::empty())
+            .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response());
         }
 
         match &self.error {
@@ -1198,10 +1207,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_not_modified_304_empty_body() {
-        let resp = ApiError::NotModified.into_response();
+        let resp = ApiError::NotModified(Validators::default()).into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert!(body.is_empty(), "304 must have an empty body");
+    }
+
+    /// RFC 9110 §15.4.5: a 304 carries the `ETag` and `Last-Modified` a 200 would.
+    #[tokio::test]
+    async fn test_not_modified_304_carries_validators() {
+        let resp = ApiError::NotModified(Validators {
+            etag: Some("\"v1\"".into()),
+            last_modified: Some(784_111_777),
+        })
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers()["etag"], "\"v1\"");
+        assert_eq!(
+            resp.headers()["last-modified"],
+            "Sun, 06 Nov 1994 08:49:37 GMT"
+        );
     }
 
     #[tokio::test]
@@ -1246,8 +1271,14 @@ mod tests {
     /// 304 from a wrapped `StorageError::NotModified` (explicit wrapping in router.rs).
     #[tokio::test]
     async fn test_storage_not_modified_304_empty_body() {
-        let resp = ApiError::Storage(StorageError::NotModified).into_response();
+        let resp = ApiError::Storage(StorageError::NotModified(Validators {
+            etag: Some("\"v2\"".into()),
+            last_modified: None,
+        }))
+        .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers()["etag"], "\"v2\"");
+        assert!(resp.headers().get("last-modified").is_none());
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert!(body.is_empty(), "304 must have an empty body");
     }
@@ -1255,8 +1286,8 @@ mod tests {
     /// `From<StorageError>` promotes `NotModified` to `ApiError::NotModified`.
     #[test]
     fn test_from_storage_error_not_modified() {
-        let api_err = ApiError::from(StorageError::NotModified);
-        assert!(matches!(api_err, ApiError::NotModified));
+        let api_err = ApiError::from(StorageError::NotModified(Validators::default()));
+        assert!(matches!(api_err, ApiError::NotModified(_)));
     }
 
     /// `From<StorageError>` promotes `PreconditionFailed` to `ApiError::PreconditionFailed`.

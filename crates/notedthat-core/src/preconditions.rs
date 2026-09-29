@@ -18,7 +18,7 @@ use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::conditional::ConditionalHeaders;
-use crate::error::StorageError;
+use crate::error::{StorageError, Validators};
 use crate::range::ByteRange;
 
 /// The two facts about a stored object that every precondition check needs.
@@ -28,6 +28,16 @@ pub struct ObjectState<'a> {
     pub etag: &'a str,
     /// The object's last modification time.
     pub last_modified: SystemTime,
+}
+
+impl ObjectState<'_> {
+    /// The 304 this object answers, carrying its validators (RFC 9110 §15.4.5).
+    fn not_modified(self) -> StorageError {
+        StorageError::NotModified(Validators {
+            etag: Some(self.etag.to_string()),
+            last_modified: Some(unix_seconds_i64(self.last_modified)),
+        })
+    }
 }
 
 /// Whole seconds since the Unix epoch, saturating at zero for pre-epoch times.
@@ -154,13 +164,13 @@ pub fn evaluate_read_preconditions(
     if let Some(if_none_match) = &conditionals.if_none_match
         && matches_if_none_match(Some(state.etag), if_none_match)
     {
-        return Err(StorageError::NotModified);
+        return Err(state.not_modified());
     }
 
     if let Some(if_modified_since) = &conditionals.if_modified_since {
         let threshold = parse_http_date_or_err(if_modified_since)?;
         if unix_seconds(state.last_modified) <= unix_seconds(threshold) {
-            return Err(StorageError::NotModified);
+            return Err(state.not_modified());
         }
     }
 
@@ -279,10 +289,13 @@ mod tests {
             if_modified_since: Some(http_date(1_000)),
             ..ConditionalHeaders::default()
         };
-        assert!(matches!(
-            evaluate_read_preconditions(state(), &conditionals),
-            Err(StorageError::NotModified)
-        ));
+        let Err(StorageError::NotModified(validators)) =
+            evaluate_read_preconditions(state(), &conditionals)
+        else {
+            panic!("expected NotModified");
+        };
+        assert_eq!(validators.etag.as_deref(), Some(ETAG));
+        assert_eq!(validators.last_modified, Some(1_000));
     }
 
     #[test]

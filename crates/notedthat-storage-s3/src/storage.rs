@@ -11,7 +11,7 @@ use bytes::Bytes;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
     ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
-    TenantSlug, derive_bucket_name,
+    TenantSlug, Validators, derive_bucket_name,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::{debug, info, warn};
@@ -366,6 +366,17 @@ fn extract_complete_length_from_content_range(raw: &HttpResponse) -> Option<u64>
     after_slash.trim().parse::<u64>().ok()
 }
 
+/// The validators S3 sent on a 304, which the API repeats (RFC 9110 §15.4.5).
+fn not_modified_from(raw: &HttpResponse) -> StorageError {
+    let header = |name: &str| raw.headers().get(name).map(str::to_string);
+    StorageError::NotModified(Validators {
+        etag: header("etag"),
+        last_modified: header("last-modified")
+            .and_then(|value| httpdate::parse_http_date(&value).ok())
+            .map(notedthat_core::unix_seconds_i64),
+    })
+}
+
 fn map_get_error(
     err: &SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
     bucket: &str,
@@ -374,7 +385,7 @@ fn map_get_error(
     if let SdkError::ServiceError(inner) = err {
         let raw = inner.raw();
         match raw.status().as_u16() {
-            304 => return StorageError::NotModified,
+            304 => return not_modified_from(raw),
             412 => return StorageError::PreconditionFailed,
             416 => {
                 let complete_length = extract_complete_length_from_content_range(raw).unwrap_or(0);
@@ -406,7 +417,7 @@ fn map_head_error(
 ) -> StorageError {
     if let SdkError::ServiceError(inner) = err {
         match inner.raw().status().as_u16() {
-            304 => return StorageError::NotModified,
+            304 => return not_modified_from(inner.raw()),
             412 => return StorageError::PreconditionFailed,
             _ => {}
         }
