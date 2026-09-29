@@ -79,7 +79,7 @@ fn allows(state: &WebDavState, target: &DavTarget, principal: &Principal, verb: 
     }
 }
 
-fn extract_request_id(req: &Request) -> String {
+pub(super) fn extract_request_id(req: &Request) -> String {
     req.extensions()
         .get::<RequestId>()
         .and_then(|id| id.header_value().to_str().ok())
