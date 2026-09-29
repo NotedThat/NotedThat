@@ -152,9 +152,12 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
 
 #[tokio::test]
 async fn replacing_okf_with_fewer_chunks_and_metadata_only_removes_stale_search_hits() {
-    // Given: an indexed OKF concept spanning several headings.
+    // Given: an indexed OKF concept spanning several headings, each long
+    // enough to stay its own chunk rather than merge with the next.
     let server = PatchServer::start(1_048_576).await;
-    server.put_text(PATH, &format!("{FRONTMATTER}# First\nRevenue one.\n# Second\nRevenue two.\n# Third\nRevenue three.\n")).await;
+    let section = |heading: &str| format!("# {heading}\nRevenue {}\n", "grows. ".repeat(100));
+    let body: String = ["First", "Second", "Third"].map(section).concat();
+    server.put_text(PATH, &format!("{FRONTMATTER}{body}")).await;
     let filter = json!({"object_key_prefix": "metrics/revenue.md"});
     wait_for_hits(&server, filter.clone(), |hits| hits.len() == 3).await;
 
