@@ -29,6 +29,10 @@ pub struct OpenAiCompatibleConfig {
 pub struct OpenAiCompatibleEmbedder {
     client: reqwest::Client,
     config: OpenAiCompatibleConfig,
+    /// The embeddings URL every request is sent to.
+    url: reqwest::Url,
+    /// `url` without credentials, for error messages.
+    url_for_errors: String,
 }
 
 impl OpenAiCompatibleEmbedder {
@@ -36,15 +40,44 @@ impl OpenAiCompatibleEmbedder {
     ///
     /// # Errors
     ///
-    /// Returns [`EmbedderError::Transport`] when the HTTP client cannot be built, for
-    /// example when TLS is unavailable.
+    /// Returns [`EmbedderError::Transport`] if `endpoint_url` is not an absolute URL that
+    /// can carry a path, or if the HTTP client cannot be built, for example when TLS is
+    /// unavailable.
     pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, EmbedderError> {
+        let url = embeddings_url(&config.endpoint_url)?;
+        let mut redacted = url.clone();
+        // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
+        let _ = redacted.set_username("");
+        let _ = redacted.set_password(None);
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
             .map_err(|e| EmbedderError::Transport(e.to_string()))?;
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            url,
+            url_for_errors: redacted.to_string(),
+        })
     }
+}
+
+/// The embeddings URL for base URL `base`: one `embeddings` segment appended to its path.
+///
+/// Appending a path segment rather than a string keeps any query where it belongs
+/// (`…/deployments/d?api-version=x` → `…/deployments/d/embeddings?api-version=x`), and a
+/// trailing slash on `base` does not double up.
+fn embeddings_url(base: &str) -> Result<reqwest::Url, EmbedderError> {
+    let mut url = reqwest::Url::parse(base).map_err(|e| {
+        EmbedderError::Transport(format!("embedding endpoint URL is not absolute: {e}"))
+    })?;
+    url.path_segments_mut()
+        .map_err(|()| {
+            EmbedderError::Transport("embedding endpoint URL cannot carry a path".to_string())
+        })?
+        .pop_if_empty()
+        .push("embeddings");
+    Ok(url)
 }
 
 #[derive(Serialize)]
@@ -106,10 +139,6 @@ impl Embedder for OpenAiCompatibleEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let url = format!(
-            "{}/embeddings",
-            self.config.endpoint_url.trim_end_matches('/')
-        );
         let body = EmbeddingsRequest {
             model: &self.config.model,
             input: texts,
@@ -120,7 +149,7 @@ impl Embedder for OpenAiCompatibleEmbedder {
             attempts = attempts.saturating_add(1);
             let result = self
                 .client
-                .post(&url)
+                .post(self.url.clone())
                 .bearer_auth(&self.config.api_key)
                 .json(&body)
                 .send()
@@ -154,6 +183,7 @@ impl Embedder for OpenAiCompatibleEmbedder {
                     }
                     return Err(EmbedderError::Http {
                         status: status.as_u16(),
+                        url: self.url_for_errors.clone(),
                         body: body_text,
                     });
                 }
@@ -190,7 +220,7 @@ fn compute_backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Config for a mock server at `server_uri`, with the conventional `/v1` base path.
@@ -527,6 +557,98 @@ mod tests {
         let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
         let result = embedder.embed(&["x".to_string()]).await.unwrap();
         assert_eq!(result, vec![vec![1.0_f32, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn embeddings_url_appends_one_segment() {
+        for (base, expected) in [
+            (
+                "https://api.openai.com/v1",
+                "https://api.openai.com/v1/embeddings",
+            ),
+            (
+                "https://api.openai.com/v1/",
+                "https://api.openai.com/v1/embeddings",
+            ),
+            (
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "https://generativelanguage.googleapis.com/v1beta/openai/embeddings",
+            ),
+            (
+                "https://r.openai.azure.com/openai/deployments/d?api-version=2024-02-01",
+                "https://r.openai.azure.com/openai/deployments/d/embeddings?api-version=2024-02-01",
+            ),
+            (
+                "http://127.0.0.1:11434",
+                "http://127.0.0.1:11434/embeddings",
+            ),
+        ] {
+            assert_eq!(
+                embeddings_url(base).unwrap().as_str(),
+                expected,
+                "base {base}"
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_endpoint_url_is_refused_at_construction() {
+        for base in ["not a url", "mailto:someone@example.com"] {
+            let mut config = make_config("http://unused");
+            config.endpoint_url = base.to_string();
+            assert!(
+                matches!(
+                    OpenAiCompatibleEmbedder::new(config),
+                    Err(EmbedderError::Transport(_))
+                ),
+                "base {base}"
+            );
+        }
+    }
+
+    /// A base URL with a query (classic Azure `?api-version=…`) keeps the query after the
+    /// appended segment rather than having `/embeddings` glued onto its value.
+    #[tokio::test]
+    async fn query_on_base_url_is_kept() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/d/embeddings"))
+            .and(query_param("api-version", "2024-02-01"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(make_response(vec![vec![1.0, 0.0, 0.0]])),
+            )
+            .mount(&server)
+            .await;
+        let mut config = make_config(&server.uri());
+        config.endpoint_url = format!(
+            "{}/openai/deployments/d?api-version=2024-02-01",
+            server.uri()
+        );
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
+        let result = embedder.embed(&["x".to_string()]).await.unwrap();
+        assert_eq!(result, vec![vec![1.0_f32, 0.0, 0.0]]);
+    }
+
+    /// A 404 names the URL it came from, without the credentials a base URL may carry,
+    /// so a base URL missing its version segment is diagnosable from the log.
+    #[tokio::test]
+    async fn http_error_names_the_url_without_credentials() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let mut config = make_config(&server.uri());
+        let authority = server.uri().trim_start_matches("http://").to_string();
+        config.endpoint_url = format!("http://user:secret@{authority}");
+        let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
+        let err = embedder.embed(&["x".to_string()]).await.unwrap_err();
+        let EmbedderError::Http { status, url, .. } = &err else {
+            panic!("expected Http, got {err:?}");
+        };
+        assert_eq!(*status, 404);
+        assert_eq!(url, &format!("http://{authority}/embeddings"));
+        assert!(!err.to_string().contains("secret"));
     }
 
     #[test]
