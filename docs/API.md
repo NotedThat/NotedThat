@@ -1828,7 +1828,7 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `OPTIONS` | 204 | `DAV: 1` (Class 1 only). `Allow` header lists all supported methods. |
 | `HEAD` | 200 | Returns metadata without body. |
 | `GET` | 200, 206 | Supports `Range` header for partial content. |
-| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` on a collection (see below); a file answers them as `Depth: 0`. |
+| `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` on a collection (see below); a file answers them as `Depth: 0`. A `Depth: 1` listing the backend cannot complete answers **503** rather than a `207` showing the collection empty; one past the object cap answers `507` (see below). |
 | `PUT` | 201 (create), 204 (overwrite) | Returns `ETag`. Supports `If-Match` / `If-None-Match`. MIME sniff applies. |
 | `PROPPATCH` | 207 | Stores nothing: every property is refused with `403` and `<D:cannot-modify-protected-property/>`, except the Windows `Win32*` timestamps (`urn:schemas-microsoft-com:`), which answer `200` so Explorer's copies succeed — or `424` alongside a refused property, since PROPPATCH is atomic (RFC 4918 §9.2). `404` for a missing target, `400` for a body that is not a `propertyupdate`. |
 | `DELETE` | 204 | Idempotent — deleting a non-existent object returns 204. |
@@ -1875,7 +1875,7 @@ Current custom conditions:
 | `nt:destination-different-server` | 502 | MOVE/COPY Destination header points to a different server |
 | `nt:cannot-modify-source` | 403 | MOVE/COPY would modify the source KB, which is read-only |
 | `nt:no-collection-move` | 403 | MOVE of a collection (directory) is not supported |
-| `nt:propfind-too-large` | 507 | PROPFIND enumeration would exceed the 10 000-object v1 cap |
+| `nt:propfind-too-large` | 507 | PROPFIND enumeration would exceed the 10 000-object v1 cap, counted over every object under the listed collection |
 
 ### v1 quirks
 
@@ -1950,7 +1950,8 @@ Characters after `?` in the URL are query parameters and are never part of the o
 `<D:propfind-finite-depth/>` precondition in the body, which tells a client to walk the tree with
 `Depth: 1` instead. A `PROPFIND` without a `Depth` header is an infinite one (RFC 4918 §9.1) and is
 refused the same way. An infinite walk of a knowledge base would enumerate every object in one
-response, past the 10 000-object cap that a `Depth: 1` listing enforces.
+response, past the 10 000-object cap that a `Depth: 1` listing enforces on everything beneath
+the listed collection.
 
 The refusal applies to collections only: the root, a knowledge base and a folder. A file has no
 members, so its `Depth` is ignored (RFC 4918 §10.2) and a `PROPFIND` on it without `Depth`, or with

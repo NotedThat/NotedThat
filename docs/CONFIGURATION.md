@@ -1038,9 +1038,9 @@ WebDAV `PROPFIND` on large knowledge bases walks the storage cursor server-side,
 - **Traefik:** `readTimeout = "120s"` in the service configuration
 - **Caddy:** `read_timeout 120s` in the reverse proxy directive
 
-**v1 safety cap (`PROPFIND_MAX_ENTRIES = 10 000`):** To avoid memory exhaustion and proxy timeouts on very large knowledge bases, PROPFIND is capped at 10 000 objects per response. This is a hardcoded v1 operational hedge — it is not a correctness guarantee for knowledge bases larger than 10 000 objects.
+**v1 safety cap (`PROPFIND_MAX_ENTRIES = 10 000`):** To avoid memory exhaustion and proxy timeouts on very large knowledge bases, PROPFIND is capped at 10 000 objects under the listed collection. The cap counts every object beneath it, not just its direct children, so a knowledge base root holding one folder of 10 001 files answers `507` at `Depth: 1` even though the response would list a single entry. This is a hardcoded v1 operational hedge — it is not a correctness guarantee for knowledge bases larger than 10 000 objects.
 
-When a PROPFIND would return more than 10 000 objects, the server instead returns:
+When more than 10 000 objects lie under the listed collection, the server instead returns:
 
 ```
 HTTP 507 Insufficient Storage
