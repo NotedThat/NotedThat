@@ -4,7 +4,7 @@ use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
     Storage, StorageError,
 };
-use notedthat_indexer::{IndexEvent, IndexQueueSender};
+use notedthat_indexer::{IndexEvent, IndexHealth, IndexQueueSender};
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::WriteError;
@@ -129,27 +129,36 @@ pub async fn commit_copy(
 /// health view and the error this cannot produce — is untouched. What it
 /// covers is the future being dropped between the storage change and the
 /// enqueue.
-struct EnqueueOnDrop {
+struct EnqueueOnDrop<'a> {
     indexer_tx: IndexQueueSender,
+    /// Told of an event this queues, as the normal path tells it, so the
+    /// worker's completion of it has a matching enqueue and `pending` does not
+    /// drift below the truth (D62).
+    index_health: Option<&'a IndexHealth>,
     event: Option<IndexEvent>,
 }
 
-impl EnqueueOnDrop {
+impl EnqueueOnDrop<'_> {
     /// Take the event for the normal enqueue; nothing happens on drop after.
     fn disarm(&mut self) -> IndexEvent {
         self.event.take().expect("disarmed once")
     }
 }
 
-impl Drop for EnqueueOnDrop {
+impl Drop for EnqueueOnDrop<'_> {
     fn drop(&mut self) {
         let Some(event) = self.event.take() else {
             return;
         };
+        let kb = event.kb().clone();
         // Best effort by construction: there is no caller left to return an
         // error to, and a full queue here means the same as it does anywhere
         // else — the reconciliation pass is the backstop.
-        if self.indexer_tx.try_send(event).is_err() {
+        if self.indexer_tx.try_send(event).is_ok() {
+            if let Some(health) = self.index_health {
+                health.enqueued(kb.as_str());
+            }
+        } else {
             tracing::warn!(
                 target: "notedthat::indexing",
                 "INDEX_ENQUEUE_LOST_ON_CANCEL: a write or delete was cancelled after storage \
@@ -198,6 +207,7 @@ pub(crate) async fn after_write(
     // reason.
     let mut enqueue = EnqueueOnDrop {
         indexer_tx: sinks.indexer_tx.clone(),
+        index_health: sinks.index_health,
         event: Some(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: path.clone(),
@@ -272,6 +282,7 @@ pub async fn commit_delete(
     // otherwise leave the object deleted and its points searchable.
     let mut enqueue = EnqueueOnDrop {
         indexer_tx: sinks.indexer_tx.clone(),
+        index_health: sinks.index_health,
         event: Some(IndexEvent::Tombstone {
             kb: kb.clone(),
             object_key: path.clone(),
@@ -554,10 +565,11 @@ mod tests {
         let path = path_named("cancelled.md");
         let (indexer_tx, mut rx) = mpsc::channel(4);
         let events = NeverAnswers;
+        let health = notedthat_indexer::IndexHealth::new();
         let sinks = WriteSinks {
             indexer_tx: (&indexer_tx).into(),
             events: Some(&events),
-            index_health: None,
+            index_health: Some(&health),
             source: EventSource::Http,
         };
 
@@ -591,6 +603,9 @@ mod tests {
             IndexEvent::Upsert { object_key, .. } => assert_eq!(object_key, path),
             other => panic!("expected an Upsert, got {other:?}"),
         }
+        // … and counted as enqueued, so the worker's completion of it cannot
+        // leave `pending` one short for the rest of the process (D62).
+        assert_eq!(health.snapshot(kb.as_str()).pending, 1);
     }
 
     /// A delete cancelled between removing the object and enqueuing the
@@ -614,10 +629,11 @@ mod tests {
             .expect("prepopulate object");
         let (indexer_tx, mut rx) = mpsc::channel(4);
         let events = NeverAnswers;
+        let health = notedthat_indexer::IndexHealth::new();
         let sinks = WriteSinks {
             indexer_tx: (&indexer_tx).into(),
             events: Some(&events),
-            index_health: None,
+            index_health: Some(&health),
             source: EventSource::Http,
         };
 
@@ -645,6 +661,9 @@ mod tests {
             IndexEvent::Tombstone { object_key, .. } => assert_eq!(object_key, path),
             other => panic!("expected a Tombstone, got {other:?}"),
         }
+        // … and counted as enqueued, so the worker's completion of it cannot
+        // leave `pending` one short for the rest of the process (D62).
+        assert_eq!(health.snapshot(kb.as_str()).pending, 1);
     }
 
     #[tokio::test]
