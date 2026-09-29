@@ -317,11 +317,12 @@ Clients can request a partial object body by including a `Range` header:
 | `Range: bytes=500-` | Returns from byte 500 to end |
 | `Range: bytes=-500` | Returns last 500 bytes |
 | `Range: bytes=0-499,1000-1499` | Rejected: **400** `malformed_range` (one range per request) |
+| `Range: bytes=500-100` | Rejected: **400** `malformed_range` (last precedes first; RFC 9110 §14.1.1 calls this invalid, not unsatisfiable) |
 
 **Responses:**
 - **206 Partial Content** — successful partial read; includes `Content-Range: bytes start-end/total`
 - **416 Range Not Satisfiable** — requested range is out of bounds; response includes `Content-Range: bytes */total`
-- **400 Bad Request** `malformed_range` — unparseable `Range` header, or more than one `bytes=` range. A `206` for several ranges would have to be `multipart/byteranges` (RFC 7233 §4.1), which NotedThat does not produce; serving only the first range would be a silent short read, so the request is refused instead.
+- **400 Bad Request** `malformed_range` — unparseable `Range` header, a reversed range such as `bytes=500-100`, or more than one `bytes=` range. A `206` for several ranges would have to be `multipart/byteranges` (RFC 7233 §4.1), which NotedThat does not produce; serving only the first range would be a silent short read, so the request is refused instead.
 - **200 OK** — unknown range unit (e.g., `items=0-10`) is silently ignored per RFC 7233 §2.1; full object returned
 
 Range units are case-insensitive (RFC 9110 §14.1): `Bytes=0-499` and `LINES=1-10` read the same as their lowercase forms.
@@ -363,7 +364,7 @@ Request a slice of an object by line number rather than byte offset. Line number
 - For an insert point (`lines=<N>-<N-1>`, an empty body) an inclusive end cannot name the slice, so the response instead carries `X-Content-Range-Bytes: */<total_bytes>` and `X-Insert-Offset: <byte_offset>`, the byte offset the insert point sits at (`0` before line 1, `<total_bytes>` after the last line). The `206` status tells this apart from the `416` below, which uses the same `*/<total_bytes>` form
 
 **Error responses:**
-- **400** `malformed_range` — unparseable `lines=` spec, including a reversed range such as `lines=5-1` (`last` may be at most one below `first`, which is the insert-point form)
+- **400** `malformed_range` — unparseable `lines=` spec, including a reversed range such as `lines=5-1` (`last` may be at most one below `first`, which is the insert-point form) and line `0` in any form (`lines=0-10`, `lines=0-`), since lines are 1-based
 - **416** — out-of-range request; response includes:
   - `Content-Range: lines */<total_lines>`
   - `X-Content-Range-Bytes: */<total_bytes>`
@@ -1133,7 +1134,7 @@ Partial write — replaces a byte range, a line range, or appends to the end of 
 | Status | Condition | Response headers |
 |--------|-----------|-----------------|
 | `200 OK` | Splice succeeded | `ETag`, `Location` |
-| `400 invalid_request` | Malformed `Content-Range`, `If-Match: *`, multi-value `If-Match`, or `NT-Patch-Mode: append` combined with `Content-Range` | JSON error body |
+| `400 invalid_request` | Malformed `Content-Range` (including a reversed range such as `bytes 5-3/*` or `lines 5-1/*`; `lines <N>-<N-1>/*` is the insert form, not a reversal), `If-Match: *`, multi-value `If-Match`, or `NT-Patch-Mode: append` combined with `Content-Range` | JSON error body |
 | `404 not_found` | Object does not exist | JSON error body |
 | `412 precondition_failed` | `If-Match` does not match the current ETag (caller's OCC assertion failed, or retry budget exhausted) | JSON error body |
 | `428 precondition_required` | `If-Match` missing in bytes/lines mode (RFC 6585 §3) | JSON error body |
