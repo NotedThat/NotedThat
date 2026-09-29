@@ -499,6 +499,65 @@ pub fn unroutable_storage_placeholder() -> StorageConfig {
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl Config {
+    /// A complete config for tests that inject their own [`crate::run::Backends`].
+    ///
+    /// Storage, Qdrant and the embedder all point at unroutable addresses, so a
+    /// test that reaches for a real backend fails loudly. A fixture overrides
+    /// `listen_addr`, `kbs` and whatever else it actually varies, and takes the
+    /// rest with `..Config::for_tests()`, so a new field is added here once.
+    #[must_use]
+    pub fn for_tests() -> Self {
+        Self {
+            api_token: "e2e-test-token".to_string(),
+            kbs: BTreeMap::from([(
+                "notes".to_string(),
+                KbSlug::try_new("notes").expect("valid KB slug"),
+            )]),
+            tenant_slug: TenantSlug::default(),
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            storage: unroutable_storage_placeholder(),
+            events: EventsConfig::None,
+            log_format: LogFormat::Pretty,
+            qdrant: ServerQdrantConfig {
+                url: "http://127.0.0.1:1".to_string(),
+                api_key: None,
+                timeout_ms: 30_000,
+                connect_timeout_ms: 10_000,
+            },
+            embedder: EmbedderConfig {
+                endpoint_url: "http://127.0.0.1:1".to_string(),
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+                dimensions: 4,
+                batch_size: 32,
+                timeout_ms: 30_000,
+                max_retries: 3,
+                max_input_tokens: 8192,
+            },
+            index_concurrency: DEFAULT_INDEX_CONCURRENCY,
+            webdav_username: "e2e-webdav-user".to_string(),
+            webdav_password: "e2e-webdav-pass".to_string(),
+            mcp_http_allowed_origins: vec!["null".to_string()],
+            mcp_http_allowed_hosts: vec![
+                "127.0.0.1".to_string(),
+                "localhost".to_string(),
+                "::1".to_string(),
+            ],
+            mcp_anonymous: McpAnonymous::default(),
+            max_patchable_size: 10 * 1024 * 1024,
+            mcp_max_read_bytes: notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+            mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
+            ready_probe_interval_ms: 5_000,
+            metrics_listen_addr: None,
+            request_bounds: RequestBoundsConfig::default(),
+            staging: StagingConfig::default(),
+            oidc: None,
+        }
+    }
+}
+
 /// Files indexed at once when `NOTEDTHAT_INDEX_CONCURRENCY` is unset or blank.
 pub const DEFAULT_INDEX_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
