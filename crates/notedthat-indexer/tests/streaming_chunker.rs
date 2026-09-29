@@ -349,3 +349,78 @@ fn finds_html_terminators_anywhere_in_long_lines() {
             .is_some_and(|heading| heading == "Real")
     }));
 }
+
+fn paragraph() -> String {
+    ["word"; 16].join(" ")
+}
+
+#[test]
+fn crlf_and_lf_split_at_the_same_paragraph_breaks() {
+    // Given
+    let lf = vec![paragraph(); 4].join("\n\n");
+    let crlf = lf.replace('\n', "\r\n");
+
+    // When
+    let lf_chunks = collect(&lf, 100, 0);
+    let crlf_chunks = collect(&crlf, 100, 0);
+
+    // Then
+    assert_eq!(lf_chunks.len(), 4);
+    assert_eq!(
+        crlf_chunks
+            .iter()
+            .map(|chunk| chunk.text.replace("\r\n", "\n"))
+            .collect::<Vec<_>>(),
+        lf_chunks
+            .iter()
+            .map(|chunk| chunk.text.clone())
+            .collect::<Vec<_>>()
+    );
+    for (raw, chunks) in [(&lf, &lf_chunks), (&crlf, &crlf_chunks)] {
+        for chunk in &chunks[..chunks.len() - 1] {
+            assert!(chunk.text.ends_with("\n\n") || chunk.text.ends_with("\r\n\r\n"));
+        }
+        for chunk in chunks {
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+        }
+    }
+}
+
+#[test]
+fn blank_lines_with_whitespace_or_mixed_endings_are_paragraph_breaks() {
+    for separator in ["\n  \n", "\n\t\r\n", "\n\r\n", "\r\r", "\r\n \r\n"] {
+        // Given
+        let raw = format!("{}{separator}{}", paragraph(), paragraph());
+
+        // When
+        let chunks = collect(&raw, 100, 0);
+
+        // Then
+        assert_eq!(
+            chunks[0].text,
+            format!("{}{separator}", paragraph()),
+            "separator {separator:?}"
+        );
+        for chunk in &chunks {
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+        }
+    }
+}
+
+#[test]
+fn never_splits_inside_a_crlf_pair() {
+    // Given
+    let raw = "abcdefghi\r\n".repeat(40);
+
+    for max_chars in 12..=60 {
+        // When
+        let chunks = collect(&raw, max_chars, 0);
+
+        // Then
+        for chunk in &chunks {
+            assert!(!chunk.text.starts_with('\n'), "max_chars {max_chars}");
+            assert!(!chunk.text.ends_with('\r'), "max_chars {max_chars}");
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+        }
+    }
+}
