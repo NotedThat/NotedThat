@@ -2726,7 +2726,7 @@ dependencies = [
  "percent-encoding",
  "temp-env",
  "testcontainers",
- "thiserror 2.0.18",
+ "thiserror",
  "tokio",
  "tracing",
  "url",
