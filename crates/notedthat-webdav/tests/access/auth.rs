@@ -8,12 +8,12 @@ use notedthat_webdav::router::build_router;
 use tower::ServiceExt;
 
 use super::fixture::{policy, request, response_body, state_with_policies};
-use super::storage::MemoryStorage;
+use super::storage::memory_storage;
 
 #[tokio::test]
 async fn supplied_invalid_basic_never_falls_back_to_content_access() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
@@ -45,7 +45,7 @@ async fn supplied_invalid_basic_never_falls_back_to_content_access() {
 #[tokio::test]
 async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
@@ -90,7 +90,7 @@ async fn invalid_basic_response_gives_safe_public_read_guidance_without_secrets(
 #[tokio::test]
 async fn duplicate_authorization_headers_are_rejected_even_when_first_is_valid() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
@@ -117,7 +117,7 @@ async fn duplicate_authorization_headers_are_rejected_even_when_first_is_valid()
 #[tokio::test]
 async fn malformed_path_is_rejected_but_malformed_basic_takes_precedence() {
     // Given
-    let storage = Arc::new(MemoryStorage::default());
+    let storage = Arc::new(memory_storage([]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([(
@@ -164,7 +164,7 @@ async fn bearer_get(app: axum::Router, uri: &str, token: &str) -> axum::response
 #[tokio::test]
 async fn a_bearer_service_token_is_accepted_on_webdav() {
     // Given — a private base only the credential holder may read.
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([("private".to_string(), policy(Who::SignedIn, &[Verb::Read]))]),
@@ -182,7 +182,7 @@ async fn a_bearer_service_token_is_accepted_on_webdav() {
 #[tokio::test]
 async fn a_bearer_identity_token_is_bound_by_group_rules_on_webdav() {
     // Given — editors may read; everyone else signed in may only list.
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let policy: notedthat_core::AccessPolicy = [
         notedthat_core::AccessRule::new(Who::SignedIn, [Verb::List]),
         notedthat_core::AccessRule::new(Who::Group("editors".into()), [Verb::Read]),

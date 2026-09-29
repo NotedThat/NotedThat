@@ -1,3 +1,4 @@
+use notedthat_core::testing::StorageOp;
 use notedthat_core::{Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,12 +9,12 @@ use notedthat_webdav::router::build_router;
 use tower::ServiceExt;
 
 use super::fixture::{PROPFIND_BODY, policy, request, response_body, state_with_policies};
-use super::storage::MemoryStorage;
+use super::storage::memory_storage;
 
 #[tokio::test]
 async fn anonymous_mutations_are_challenged_before_storage() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([("discoverable", "public.md")]));
+    let storage = Arc::new(memory_storage([("discoverable", "public.md")]).await);
     let app = build_router(state_with_policies(
         Arc::clone(&storage),
         BTreeMap::from([(
@@ -51,16 +52,19 @@ async fn anonymous_mutations_are_challenged_before_storage() {
         .await
         .expect("malformed write response");
     assert_eq!(malformed_path.status(), StatusCode::UNAUTHORIZED);
-    assert!(storage.calls().is_empty(), "calls: {:?}", storage.calls());
+    assert!(storage.ops().is_empty(), "calls: {:?}", storage.ops());
 }
 
 #[tokio::test]
 async fn real_router_manual_read_qa_scenario() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([
-        ("discoverable", ".notedthat/manifest.json"),
-        ("discoverable", "public.md"),
-    ]));
+    let storage = Arc::new(
+        memory_storage([
+            ("discoverable", ".notedthat/manifest.json"),
+            ("discoverable", "public.md"),
+        ])
+        .await,
+    );
     let app = build_router(state_with_policies(
         Arc::clone(&storage),
         BTreeMap::from([(
@@ -118,10 +122,13 @@ async fn real_router_manual_read_qa_scenario() {
 #[tokio::test]
 async fn real_router_manual_denial_qa_scenario() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([
-        ("discoverable", ".notedthat/manifest.json"),
-        ("discoverable", "public.md"),
-    ]));
+    let storage = Arc::new(
+        memory_storage([
+            ("discoverable", ".notedthat/manifest.json"),
+            ("discoverable", "public.md"),
+        ])
+        .await,
+    );
     let app = build_router(state_with_policies(
         Arc::clone(&storage),
         BTreeMap::from([(
@@ -171,10 +178,13 @@ async fn real_router_manual_denial_qa_scenario() {
     assert!(bad_basic_body.contains("valid credentials are required"));
     assert_eq!(internal.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(malformed_destination.status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        !storage
-            .calls()
-            .iter()
-            .any(|call| { matches!(call.as_str(), "put" | "put_staged" | "delete" | "copy") })
-    );
+    assert!(!storage.ops().iter().any(|op| {
+        matches!(
+            op,
+            StorageOp::PutObject
+                | StorageOp::PutStagedObject
+                | StorageOp::DeleteObject
+                | StorageOp::CopyObject
+        )
+    }));
 }
