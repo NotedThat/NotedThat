@@ -16,6 +16,10 @@ use crate::sinks::WriteSinks;
 pub const MAX_UPLOAD_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// Validate an upload size against a byte limit.
+///
+/// # Errors
+///
+/// Returns [`WriteError::TooLarge`] when `size` exceeds `limit`.
 pub fn check_size(size: u64, limit: u64) -> Result<(), WriteError> {
     if size > limit {
         Err(WriteError::TooLarge { size, limit })
@@ -26,6 +30,15 @@ pub fn check_size(size: u64, limit: u64) -> Result<(), WriteError> {
 
 /// Store an object, enqueue a best-effort index upsert event and publish the
 /// change.
+///
+/// # Errors
+///
+/// Returns [`WriteError::TooLarge`] above [`MAX_UPLOAD_BYTES`];
+/// [`WriteError::InvalidManifest`] when `path` is the manifest key and the body is not a
+/// valid manifest; [`WriteError::Storage`] when the body cannot be read back or storage
+/// refuses the write; [`WriteError::EventPublishFailed`] when the event log refuses the
+/// change after storage took it; and [`WriteError::IndexerBackpressureUpsert`] when the
+/// indexer queue is full.
 pub async fn commit<B: Into<StagedBody>>(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,
@@ -50,6 +63,11 @@ pub async fn commit<B: Into<StagedBody>>(
 
 /// Copy an object natively, enqueue its destination for indexing and publish
 /// the change.
+///
+/// # Errors
+///
+/// As [`commit`], with the source's storage errors, and [`WriteError::InvalidManifest`]
+/// when the destination is the manifest key and the source is not a valid manifest.
 pub async fn commit_copy(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,
@@ -251,6 +269,13 @@ pub(crate) async fn after_write(
 /// Delete an object idempotently, publish the change and enqueue a
 /// best-effort tombstone event — in that order, the one rule `after_write`
 /// follows (D65).
+///
+/// # Errors
+///
+/// Returns [`WriteError::Storage`] when storage refuses the delete (an already missing
+/// object is not an error); [`WriteError::EventPublishFailed`] when the event log refuses
+/// the change; and [`WriteError::IndexerBackpressureTombstone`] when the indexer queue is
+/// full.
 pub async fn commit_delete(
     storage: &dyn Storage,
     sinks: &WriteSinks<'_>,
