@@ -290,8 +290,9 @@ pub async fn assert_error_code(response: Response, status: StatusCode, code: &st
 ///
 /// # Panics
 ///
-/// If `resp` is not `200`, has no valid `ETag` header, or its JSON body
-/// disagrees with the expected count or the header's `ETag`.
+/// If `resp` is not `200`, has no valid `ETag` header, or its body is not
+/// JSON; or if that body's `match_count` is not `expected_match_count`, its
+/// `total_bytes` is not a number, or its `etag` differs from the header's.
 pub async fn assert_replace_success(resp: Response, expected_match_count: u64) -> String {
     assert_eq!(resp.status(), StatusCode::OK, "replace should return 200");
     let etag_header = resp
