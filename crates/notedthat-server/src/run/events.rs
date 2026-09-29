@@ -40,13 +40,18 @@ pub(super) async fn connect(
             Arc::new(MemoryPublisher::new(memory.capacity))
         }
         EventsConfig::Nats(nats) => {
-            let publisher = notedthat_events::NatsPublisher::connect(nats)
+            let client = notedthat_nats::connect(&nats.connect, "notedthat-server")
                 .await
                 .context("failed to reach NOTEDTHAT_NATS_URL (--nats-url)")?;
+            let publisher = notedthat_events::NatsPublisher::open(client, nats)
+                .await
+                .context("failed to open the events stream (NOTEDTHAT_NATS_STREAM)")?;
             info!(
                 backend = "nats",
                 stream = %nats.stream,
                 max_age_secs = nats.max_age.as_secs(),
+                replicas = nats.connect.streams.replicas,
+                storage = %nats.connect.streams.storage,
                 "events backend selected"
             );
             Arc::new(publisher)

@@ -216,7 +216,7 @@ async fn events_replay_across_replicas_and_a_retained_out_position_is_gone() {
     let broker = start_broker().await;
     let kb = unique("evt");
     let nats = NatsConfig {
-        url: broker.url.clone(),
+        connect: notedthat_nats::NatsConnectConfig::plain(broker.url.clone()),
         stream: unique("nt-e2e-"),
         max_age: Duration::from_secs(3600),
     };
@@ -322,7 +322,7 @@ async fn losing_the_broker_fails_readiness_and_writes_answer_503_with_retry_afte
     let broker = start_broker().await;
     let kb = unique("evt");
     let nats = NatsConfig {
-        url: broker.url.clone(),
+        connect: notedthat_nats::NatsConnectConfig::plain(broker.url.clone()),
         stream: unique("nt-e2e-"),
         max_age: Duration::from_secs(3600),
     };

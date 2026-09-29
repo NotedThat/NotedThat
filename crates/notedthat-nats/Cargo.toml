@@ -1,0 +1,31 @@
+[package]
+name = "notedthat-nats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared NATS connection, authentication, TLS and JetStream stream settings for NotedThat"
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
+async-nats.workspace = true
+metrics.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+
+[dev-dependencies]
+async-nats.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+temp-env = "0.3"
+# A token-protected broker for tests/connect_nats.rs, under --ignored like every NATS suite.
+testcontainers = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

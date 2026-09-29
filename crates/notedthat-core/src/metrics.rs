@@ -83,6 +83,13 @@ pub mod name {
     pub const EVENTS_SUBSCRIBERS: &str = "notedthat_events_subscribers";
     /// Subscribers turned away because their position is no longer retained.
     pub const EVENTS_REPLAY_GONE: &str = "notedthat_events_replay_gone_total";
+    /// Event publishes the broker recognised as a repeat of one it already holds.
+    pub const EVENTS_PUBLISH_DEDUPLICATED: &str = "notedthat_events_publish_deduplicated_total";
+
+    /// Whether the NATS connection is up right now (D75).
+    pub const NATS_CONNECTED: &str = "notedthat_nats_connected";
+    /// Times the NATS connection was re-established after a loss.
+    pub const NATS_RECONNECTS: &str = "notedthat_nats_reconnects_total";
 
     /// Filesystem watches lost at runtime (D50).
     pub const FS_WATCH_LOST: &str = "notedthat_fs_watch_lost_total";
@@ -402,6 +409,9 @@ mod tests {
         name::EVENTS_PUBLISH_FAILED,
         name::EVENTS_SUBSCRIBERS,
         name::EVENTS_REPLAY_GONE,
+        name::EVENTS_PUBLISH_DEDUPLICATED,
+        name::NATS_CONNECTED,
+        name::NATS_RECONNECTS,
         name::FS_WATCH_LOST,
         name::RECONCILE_PASSES,
         name::RECONCILE_DURATION,

@@ -2650,13 +2650,16 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
+ "metrics",
  "notedthat-core",
+ "notedthat-nats",
  "serde_json",
  "temp-env",
  "testcontainers",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2713,6 +2716,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notedthat-nats"
+version = "0.12.3"
+dependencies = [
+ "async-nats",
+ "metrics",
+ "notedthat-core",
+ "temp-env",
+ "testcontainers",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "notedthat-server"
 version = "0.12.3"
 dependencies = [
@@ -2736,6 +2753,7 @@ dependencies = [
  "notedthat-events",
  "notedthat-indexer",
  "notedthat-mcp",
+ "notedthat-nats",
  "notedthat-server",
  "notedthat-storage-fs",
  "notedthat-storage-s3",

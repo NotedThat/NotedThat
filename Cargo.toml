@@ -9,6 +9,7 @@ members = [
   "crates/notedthat-storage-fs",
   "crates/notedthat-indexer",
   "crates/notedthat-write",
+  "crates/notedthat-nats",
   "crates/notedthat-events",
   "crates/notedthat-api-http",
   "crates/notedthat-webdav",

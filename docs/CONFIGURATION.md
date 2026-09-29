@@ -201,8 +201,8 @@ strictly, with the unselected backends' variables refused rather than ignored.
 |----------|------|----------|---------|-------------|
 | `NOTEDTHAT_EVENTS_BACKEND` | `--events-backend` | No | `none` | `none`, `memory` or `nats`. Any other value is a startup error. With `none`, nothing is published and the events route answers `404`. |
 | `NOTEDTHAT_EVENTS_MEMORY_CAPACITY` | `--events-memory-capacity` | No | `10000` | With `memory`: how many events the ring keeps for replay. A `Last-Event-ID` older than the oldest retained event answers `410`. |
-| `NOTEDTHAT_NATS_URL` | `--nats-url` | Yes, when `nats` | — | NATS server URL, `nats://[user:pass@]host:4222`. Credentials travel in the URL, so `--help` hides this value. |
-| `NOTEDTHAT_NATS_STREAM` | `--nats-stream` | No | `notedthat-events` | The JetStream stream holding the log. Created on startup if absent; a stream by this name that captures other subjects refuses startup. Letters, digits, `_` and `-`. |
+| `NOTEDTHAT_NATS_URL` | `--nats-url` | Yes, when `nats` | — | NATS server URL, `nats://[user:pass@]host:4222` or `tls://host:4222`. Credentials may travel in the URL, so `--help` hides this value. Authentication, TLS and stream settings: [NATS connection](#nats-connection). |
+| `NOTEDTHAT_NATS_STREAM` | `--nats-stream` | No | `notedthat-events` | The JetStream stream holding the log. Created on startup if absent; a stream by this name that captures other subjects, or whose storage type or retention policy differs, refuses startup. Letters, digits, `_` and `-`. |
 | `NOTEDTHAT_NATS_MAX_AGE_SECS` | `--nats-max-age-secs` | No | `604800` (7 days) | How long the stream retains an event. Changing it updates the existing stream on the next start. A subscriber resuming from a position that has aged out answers `410`. |
 
 **`memory`** is a process-local ring: replay survives a subscriber's reconnect but not a server
@@ -216,8 +216,11 @@ would otherwise miss.
 **`nats`** is one JetStream stream shared by every replica: ids are the stream sequence, so they
 are strictly increasing across replicas and a client reconnecting to any replica with
 `Last-Event-ID` receives exactly what it missed. The server publishes to
-`notedthat.events.<kb>.<written|deleted>` and needs a JetStream-enabled server (`nats-server
--js`). At startup an unreachable broker refuses to start; at runtime a lost connection turns
+`notedthat.events.<kb>.<written|deleted|indexed|index_failed>`, each message with a
+`Nats-Msg-Id` and a `NotedThat-Schema: object-event/1` header, and needs a JetStream-enabled
+server (`nats-server -js`). Applications may consume that stream directly with their own
+durable consumers; the subjects, headers and payload are a versioned contract, described in
+[NATS.md](NATS.md). At startup an unreachable broker refuses to start; at runtime a lost connection turns
 `/readyz` into `503` and each write into `503 backend_unavailable` with `Retry-After: 5` after
 the bytes are stored, so the client's retry publishes the event. The Compose overlay
 `docker-compose.events.yml` runs a broker beside the server.
@@ -238,6 +241,48 @@ none backend is selected, but these settings belong to the nats backend and woul
 NOTEDTHAT_NATS_URL (--nats-url). Unset them or set NOTEDTHAT_EVENTS_BACKEND=nats to start the
 server.
 ```
+
+## NATS connection
+
+Whatever selects NATS — today `NOTEDTHAT_EVENTS_BACKEND=nats` — shares one connection per process
+and these settings. Every one is optional beyond the URL, and every one is refused, like the
+events backend's own settings, when nothing selects NATS.
+
+| Variable | Flag | Default | Description |
+|----------|------|---------|-------------|
+| `NOTEDTHAT_NATS_CREDS_FILE` | `--nats-creds-file` | — | A decentralised-auth `.creds` file (user JWT and `NKey` seed). |
+| `NOTEDTHAT_NATS_NKEY_SEED_FILE` | `--nats-nkey-seed-file` | — | A file holding an `NKey` seed (`SU…`); surrounding whitespace is ignored. |
+| `NOTEDTHAT_NATS_TOKEN` | `--nats-token` | — | A server token. `--help` hides the value; prefer the variable to the flag, which `ps` shows. |
+| `NOTEDTHAT_NATS_TLS_CA_FILE` | `--nats-tls-ca-file` | — | Extra root certificates (PEM) for a broker signed by a private CA. |
+| `NOTEDTHAT_NATS_TLS_CERT_FILE` | `--nats-tls-cert-file` | — | Client certificate (PEM) for mutual TLS. Requires `NOTEDTHAT_NATS_TLS_KEY_FILE`. |
+| `NOTEDTHAT_NATS_TLS_KEY_FILE` | `--nats-tls-key-file` | — | The client certificate's key (PEM). Requires `NOTEDTHAT_NATS_TLS_CERT_FILE`. |
+| `NOTEDTHAT_NATS_TLS_REQUIRED` | `--nats-tls-required` | `false` | `true` refuses a plaintext connection even when the URL does not say `tls://`. `true` or `false` exactly. |
+| `NOTEDTHAT_NATS_REPLICAS` | `--nats-replicas` | `1` | Replicas of every NotedThat-owned stream, 1 to 5. Needs a clustered broker above 1. |
+| `NOTEDTHAT_NATS_STORAGE` | `--nats-storage` | `file` | `file` or `memory`: where JetStream keeps NotedThat's streams. `memory` loses them when the broker restarts. |
+| `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` | `--nats-duplicate-window-secs` | `120` | How long the broker remembers a `Nats-Msg-Id` and drops a repeated publish. |
+
+**At most one authentication method.** A creds file, a seed file and a token are mutually
+exclusive; supplying two refuses startup naming both. Credentials in the URL
+(`nats://user:pass@host`) still work and combine with none of them.
+
+**Stream settings follow the configuration.** On every start the server compares each stream it
+owns with the configuration and updates, in place, what JetStream can change: retention age,
+message limit, replicas and duplicate window. What JetStream cannot change — the storage type and
+the retention policy — refuses startup when it differs, naming the stream and both values, rather
+than running on a stream that does not match. Delete the stream or restore the setting. Anything
+else on an existing stream (placement, limits NotedThat does not set) is the operator's and is
+kept as found.
+
+**Deduplication is per publish, never per content.** Each event is published under a fresh
+`Nats-Msg-Id`; the same id is reused only for the server's own retry after an acknowledgement
+that timed out, so a broker that stored the first attempt drops the second. A rewrite of
+identical bytes is still announced, and a client's retried write is still a new publish — the
+at-least-once contract is unchanged. `notedthat_events_publish_deduplicated_total` counts the
+retries the broker dropped.
+
+**Connection state** is exported as `notedthat_nats_connected` (1 or 0) and
+`notedthat_nats_reconnects_total`; the client reconnects on its own, and while it is down
+`/readyz` answers `503` as described above.
 
 ## Metrics
 
@@ -1143,6 +1188,8 @@ Error: configuration error: NOTEDTHAT_FS_ROOT (--fs-root) must be an absolute pa
 Error: configuration error: NOTEDTHAT_EVENTS_BACKEND (--events-backend) is invalid: expected "none", "memory" or "nats", got "kafka"
 Error: configuration error: NOTEDTHAT_NATS_URL (--nats-url) is required
 Error: configuration error: NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs) is invalid: expected a positive number of seconds, got "7d"
+Error: configuration error: only one NATS authentication method may be set, got NOTEDTHAT_NATS_CREDS_FILE (--nats-creds-file) and NOTEDTHAT_NATS_TOKEN (--nats-token)
+Error: configuration error: NOTEDTHAT_NATS_TLS_CERT_FILE (--nats-tls-cert-file) and NOTEDTHAT_NATS_TLS_KEY_FILE (--nats-tls-key-file) must be set together
 Error: configuration error: NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT (--max-requests-in-flight) must be > 0
 ```
 
@@ -1193,7 +1240,8 @@ stream is created or checked:
 
 ```
 Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url): could not connect to NATS: failed to connect to NATS server
-Error: failed to reach NOTEDTHAT_NATS_URL (--nats-url): JetStream stream notedthat-events exists with subjects ["orders.>"], not ["notedthat.events.>"]; point NOTEDTHAT_NATS_STREAM at a stream NotedThat owns
+Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM): JetStream stream notedthat-events exists with subjects ["orders.>"], not ["notedthat.events.>"]; point NOTEDTHAT_NATS_STREAM (--nats-stream) at a stream NotedThat owns
+Error: failed to open the events stream (NOTEDTHAT_NATS_STREAM): JetStream stream notedthat-events has storage file, but the configuration asks for memory; JetStream cannot change it in place — delete the stream or restore the setting
 ```
 
 ### Removed variables

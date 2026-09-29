@@ -10,7 +10,7 @@ env:
 
 jobs:
   # `toolchain` is a matrix because Cargo.toml declares a workspace
-  # `rust-version`, and that number is baked into all 11 published manifests.
+  # `rust-version`, and that number is baked into all 12 published manifests.
   # A declared MSRV that nothing compiles against is a claim, not a fact; this
   # leg is what makes it true. When a dependency raises its own floor, this
   # fails with "package X requires rustc N" instead of the project shipping a

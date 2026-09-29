@@ -9,24 +9,22 @@ description = "Object change event log adapters for NotedThat: in-process ring a
 homepage.workspace = true
 authors.workspace = true
 
-[features]
-# Both adapters compile by default so the published binary can select either at
-# runtime. Test suites that only need the ring switch the broker client off.
-default = ["nats"]
-nats = ["dep:async-nats"]
-
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
-async-nats = { workspace = true, optional = true }
+notedthat-nats = { path = "../notedthat-nats", version = "0.12.3" }
+async-nats.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
+metrics.workspace = true
 futures.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["v7", "std"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 temp-env = "0.3"
 # One NATS container, for tests/events_integration_nats.rs only: the same scenario

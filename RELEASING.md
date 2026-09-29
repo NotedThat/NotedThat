@@ -2,11 +2,11 @@
 
 ## Overview
 
-NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 11 crates share a single version from `[workspace.package].version`. The `notedthat` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`. It is the distribution crate users install, and because it depends on every other crate it publishes last, so the tag appears only once the whole workspace is on crates.io.
+NotedThat uses [release-plz](https://release-plz.dev/) with an ecosystem-level versioning model: all 12 crates share a single version from `[workspace.package].version`. The `notedthat` crate is the release facade — it owns the workspace git tag, the GitHub Release, and the root `CHANGELOG.md`. It is the distribution crate users install, and because it depends on every other crate it publishes last, so the tag appears only once the whole workspace is on crates.io.
 
 ## Versioning Policy
 
-All 11 crates share a single ecosystem-level version:
+All 12 crates share a single ecosystem-level version:
 
 - **Major bump**: any breaking change in any crate
 - **Minor bump**: new capabilities added in any crate
@@ -44,7 +44,7 @@ Trusted Publishing cannot create new crates on crates.io. Use the bootstrap work
 1. Actions → **Publish crate (initial)** → Run workflow
 2. Enter the crate name (e.g. `notedthat-core`)
 3. Leave `register_trusted_publishers` checked (best-effort TP registration)
-4. Repeat for all 11 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer`, `notedthat-write`, `notedthat-events`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat`
+4. Repeat for all 12 crates: `notedthat-core`, `notedthat-storage-s3`, `notedthat-storage-fs`, `notedthat-indexer`, `notedthat-write`, `notedthat-nats`, `notedthat-events`, `notedthat-api-http`, `notedthat-webdav`, `notedthat-mcp`, `notedthat-server`, `notedthat`
 
 Bootstrap in dependency order, `notedthat` last: `cargo publish` strips the `path` from a
 `path` + `version` dependency and verifies the build against crates.io, so a crate cannot
@@ -140,7 +140,7 @@ This uses OIDC Trusted Publishing (no long-lived secret required after bootstrap
 
 Every `vX.Y.Z` tag produces:
 
-1. **crates.io publish** for all 11 crates (via OIDC Trusted Publishing in `ci.yml` release-plz-release).
+1. **crates.io publish** for all 12 crates (via OIDC Trusted Publishing in `ci.yml` release-plz-release).
 2. **GitHub Release** created by release-plz with the aggregated CHANGELOG body.
 3. **Container image** at `ghcr.io/notedthat/server:X.Y.Z` (+ `latest` for non-prerelease), signed with cosign keyless and carrying a SLSA L2 build provenance attestation. Built by `.github/workflows/release.yml` via the reusable `docker.yml`.
 4. **Static binary archives** — one `notedthat-<target>.tar.xz` per target across 6 targets (linux glibc/musl x86_64 + aarch64, macOS x86_64 + aarch64), each carrying `notedthat-server`, with a `.bundle` cosign signature and a per-artifact SLSA provenance attestation. Uploaded as GitHub Release assets by `.github/workflows/release.yml`. `notedthat` is the workspace's only cargo-dist app, so there is one archive per target rather than one per binary.

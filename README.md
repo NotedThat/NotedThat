@@ -36,8 +36,9 @@ sync folder cannot do is the rest:
   filters, from any client.
 - **Changes are a stream.** `GET …/events` streams every object change with replay, so a workflow
   can react to a note a colleague or an agent just created — and the indexer's verdict follows
-  on the same stream, so it knows the moment the note is searchable.
-  [Events →](docs/API.md#get-apiv1knowledgebaseskb_slugevents)
+  on the same stream, so it knows the moment the note is searchable. With the NATS backend, a
+  service can attach its own durable JetStream consumer and share the work across instances.
+  [Events →](docs/API.md#get-apiv1knowledgebaseskb_slugevents) · [From NATS →](docs/NATS.md)
 
 Identity comes from your own OpenID Connect provider — Authentik, Authelia and Zitadel are
 documented — and MCP clients that support OAuth sign in through it, so an assistant acts as the
@@ -83,6 +84,7 @@ Every mount option, including Windows and the `LOCK` caveat: [docs/WEBDAV.md](do
 - [Mounting a knowledge base](docs/WEBDAV.md) — WebDAV on Linux, macOS, Windows; rclone; Obsidian
 - [API reference](docs/API.md) — HTTP, WebDAV, MCP, events, and anonymous-read behavior
 - [Configuration](docs/CONFIGURATION.md) — environment, manifest access rules, OIDC, storage and events backends, Prometheus metrics
+- [Consuming events from NATS](docs/NATS.md) — the JetStream subjects, headers and payload contract, durable consumers, access restrictions
 - [Running in production](docs/OPERATIONS.md) — reverse proxy and TLS, backpressure, backup and restore, capacity, upgrades, security posture
 - [SPECIFICATIONS.md](SPECIFICATIONS.md) — full product and architecture specification
 - [Open Knowledge Format](docs/OKF.md) — concept metadata, search filters, and example bundle
@@ -401,7 +403,7 @@ Full API documentation: [`docs/API.md`](docs/API.md)
 | `notedthat-server` | `crates/notedthat-server` | Server library — HTTP API + WebDAV + remote MCP in one process. Published to `ghcr.io/notedthat/server` per tagged release. |
 | `notedthat` | `crates/notedthat` | Distribution crate and release facade — owns the published `notedthat-server` binary, the workspace git tag, and the root CHANGELOG. `cargo install notedthat` installs it. |
 
-All 11 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
+All 12 crates share a single version via ecosystem-level Semantic Versioning. See [RELEASING.md](RELEASING.md) for the versioning policy.
 
 ## Contributing
 

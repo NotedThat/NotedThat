@@ -9,7 +9,6 @@
 
 pub mod config;
 pub mod memory;
-#[cfg(feature = "nats")]
 pub mod nats;
 
 pub use config::{
@@ -17,5 +16,4 @@ pub use config::{
     MemoryConfig, MemorySettings, NATS_ENV_VARS, NatsConfig, NatsSettings,
 };
 pub use memory::MemoryPublisher;
-#[cfg(feature = "nats")]
-pub use nats::{NatsError, NatsPublisher, SUBJECT_ROOT};
+pub use nats::{EVENT_SCHEMA, NatsError, NatsPublisher, SUBJECT_ROOT};
