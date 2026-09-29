@@ -117,11 +117,18 @@ authorization {
                              "$JS.API.CONSUMER.INFO.notedthat-events.transcriber",
                              "$JS.API.STREAM.INFO.notedthat-events",
                              "$JS.ACK.notedthat-events.transcriber.>"] }
-        subscribe: { allow: ["_INBOX.>"] }
+        subscribe: { allow: ["_INBOX_transcriber.>"] }
     } }
   ]
 }
 ```
+
+The application must connect with that inbox prefix: `nats --inbox-prefix _INBOX_transcriber`,
+`ConnectOptions::custom_inbox_prefix("_INBOX_transcriber")` in async-nats (the example worker's
+`INBOX_PREFIX`), or your client's equivalent. **Never grant `_INBOX.>`**: users in one
+`authorization` block share an account, NotedThat's own connection uses the default `_INBOX`
+prefix, and JetStream delivers the messages it fetches for every SSE subscriber, in every
+knowledge base, to `_INBOX.…` subjects. An application allowed to subscribe there reads them all.
 
 Create the consumer as an administrator (the command above), not as the application. That way
 the application cannot widen its own filter. In a decentralised-auth deployment, express the

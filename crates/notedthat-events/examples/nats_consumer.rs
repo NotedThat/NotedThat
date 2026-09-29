@@ -11,7 +11,10 @@
 //! ```
 //!
 //! Settings: `NATS_URL`, `STREAM` (default `notedthat-events`), `CONSUMER`
-//! (default `example-worker`) and `FILTER` (default `notedthat.events.>`).
+//! (default `example-worker`), `FILTER` (default `notedthat.events.>`) and
+//! `INBOX_PREFIX` (default `_INBOX`). A worker restricted as `docs/NATS.md`
+//! describes sets `INBOX_PREFIX` to the one its NATS user may subscribe to,
+//! e.g. `_INBOX_transcriber`.
 //!
 //! Delivery is at least once, so `handle` must be idempotent — here it only
 //! prints. A real worker compares the event's `etag` with what it last
@@ -57,8 +60,14 @@ async fn main() -> Result<(), async_nats::Error> {
     let stream_name = env("STREAM", "notedthat-events");
     let consumer_name = env("CONSUMER", "example-worker");
     let filter = env("FILTER", "notedthat.events.>");
+    let inbox_prefix = env("INBOX_PREFIX", "_INBOX");
 
-    let client = async_nats::connect(&url).await?;
+    // Replies to this worker's pull requests arrive under its own prefix, so
+    // its NATS user needs no subscribe permission on anyone else's inbox.
+    let client = async_nats::ConnectOptions::new()
+        .custom_inbox_prefix(inbox_prefix)
+        .connect(&url)
+        .await?;
     let js = jetstream::new(client);
     // The stream is NotedThat's; only the consumer is ours. In production an
     // administrator creates it and the worker's NATS user may only read from it.
