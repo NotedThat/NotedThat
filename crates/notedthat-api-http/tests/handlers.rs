@@ -2786,7 +2786,8 @@ async fn m3_suffix_range_clamped_206() {
     );
 }
 
-/// Range where start > end → 416 (semantically unsatisfiable even if parseable).
+/// Range where start > end → 400 `malformed_range`: RFC 9110 §14.1.1 calls a
+/// reversed byte-range-spec invalid, not unsatisfiable, and `lines=` agrees.
 #[tokio::test]
 async fn m3_range_start_gt_end() {
     let a = app();
@@ -2810,10 +2811,15 @@ async fn m3_range_start_gt_end() {
         .unwrap();
     assert_eq!(
         resp.status(),
-        StatusCode::RANGE_NOT_SATISFIABLE,
-        "bytes=50-10 (start > end) must return 416"
+        StatusCode::BAD_REQUEST,
+        "bytes=50-10 (start > end) must return 400"
     );
-    assert_eq!(resp.headers().get("content-range").unwrap(), "bytes */100");
+    assert!(resp.headers().get("content-range").is_none());
+    let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "malformed_range");
+    let message = json["message"].as_str().unwrap();
+    assert!(message.contains("invalid range spec: 50-10"), "{message}");
 }
 
 /// PUT `ETag` is consistent across GET and HEAD responses.

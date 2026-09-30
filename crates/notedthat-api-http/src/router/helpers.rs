@@ -149,6 +149,12 @@ fn parse_patch_content_range(content_range: &str, body: Bytes) -> Result<PatchMo
             let last = end
                 .parse::<u64>()
                 .map_err(|_| format!("invalid byte range end: {end}"))?;
+            // Reversed is a syntax error, as on `Range: bytes=` and `lines`; bytes have no insert form.
+            if last < first {
+                return Err(format!(
+                    "malformed Content-Range bytes range: {range_str}: last precedes first"
+                ));
+            }
             Ok(PatchMode::Bytes {
                 range: ByteRange::FromStart { first, last },
                 body,
@@ -156,7 +162,7 @@ fn parse_patch_content_range(content_range: &str, body: Bytes) -> Result<PatchMo
         }
         "lines" => {
             let line_range = parse_line_range_header(&format!("lines={range_str}"))
-                .map_err(|_| format!("malformed Content-Range lines range: {range_str}"))?;
+                .map_err(|e| format!("malformed Content-Range lines range: {range_str}: {e}"))?;
             Ok(PatchMode::Lines {
                 range: line_range,
                 body,

@@ -598,7 +598,8 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - One range per request: a comma-separated range set returns `400 malformed_range`. No `multipart/byteranges` in v1 (D57).
 - Successful partial reads return `206` + `Content-Range`.
 - Full reads return `200`.
-- Malformed ranges return `400 malformed_range`; unsatisfiable ranges return `416`.
+- Malformed ranges return `400 malformed_range`; unsatisfiable ranges return `416`. A reversed range (`bytes=<first>-<last>` with `last < first`) is malformed, not unsatisfiable (RFC 9110 §14.1.1), so it is a 400.
+- Range units are matched case-insensitively (RFC 9110 §14.1), for `bytes=` and `lines=` alike.
 - MCP `read(kb, path, byte_start?, byte_end?)` uses zero-based byte offsets with `byte_end` exclusive, matching internal chunk offsets. The MCP wrapper converts to HTTP's inclusive `Range` header when calling the API.
 
 #### Line ranges
@@ -606,6 +607,7 @@ The concrete HTTP API route surface (D44) lives in §6.13.
 - HTTP `Range: lines=<first>-<last>` returns 206 with `Content-Range: lines <first>-<last>/<total_lines>` and `X-Content-Range-Bytes: <byte_start>-<byte_end>/<total_bytes>` (inclusive byte_end); an insert point returns `X-Content-Range-Bytes: */<total_bytes>` and `X-Insert-Offset: <byte_offset>` instead (D74).
 - Line numbers are 1-based inclusive. `last` past EOF is clamped; `first` past EOF is 416.
 - `Range: lines=<N>-<N-1>` (Insert form) returns 206 with empty body — valid for validating an insert offset.
+- A reversed range (`last < first - 1`, i.e. not the insert form) or line `0` in any form (`lines=0-10`, `lines=0-`) is `400 malformed_range`. The same spec in PATCH `Content-Range: lines …` is `400 invalid_request`, as is a reversed `Content-Range: bytes …`.
 - 416 response includes both `Content-Range: lines */<total_lines>` and `X-Content-Range-Bytes: */<total_bytes>`.
 - Line index is recomputed per request (no persistent sidecar in v1).
 

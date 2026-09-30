@@ -314,7 +314,7 @@ async fn serve_line_range_read(
     };
 
     let line_range = parse_line_range_header(raw_range)
-        .map_err(|_| err(ApiError::MalformedRange(raw_range.to_owned())))?;
+        .map_err(|e| err(ApiError::MalformedRange(format!("{raw_range}: {e}"))))?;
     let read = state
         .storage
         .get_object(kb, path, None, conditionals)

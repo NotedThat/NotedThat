@@ -258,10 +258,10 @@ impl LineIndex {
     }
 }
 
-/// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
+/// Parsed `Range:` header. The unit is kept, normalised to lowercase, so callers can ignore non-`bytes` units per RFC 7233 §2.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedRange {
-    /// Range unit token, such as `bytes`.
+    /// Range unit token, lowercased, such as `bytes`.
     pub unit: String,
     /// The requested byte range. `None` when `unit` is not `bytes`.
     pub range: Option<ByteRange>,
@@ -289,7 +289,8 @@ pub fn parse_range_header(value: &str) -> Result<ParsedRange, RangeParseError> {
         return Err(RangeParseError::NoRanges);
     }
 
-    let unit = unit.to_string();
+    // Range units are case-insensitive (RFC 9110 §14.1).
+    let unit = unit.to_ascii_lowercase();
     if unit != "bytes" {
         return Ok(ParsedRange { unit, range: None });
     }
@@ -326,6 +327,7 @@ pub fn parse_line_range_header(value: &str) -> Result<LineRange, RangeParseError
     if range_set.is_empty() {
         return Err(RangeParseError::NoRanges);
     }
+    let range_set = range_set.trim();
     if range_set.contains(',') {
         return Err(RangeParseError::InvalidSpec(
             "multi-range lines= not supported".into(),
@@ -346,12 +348,17 @@ pub fn parse_line_range_header(value: &str) -> Result<LineRange, RangeParseError
     }
 
     let first = parse_u64(start, range_set)?;
+    // Lines are 1-based, so line 0 is a syntax error on every form.
+    if first == 0 {
+        return Err(RangeParseError::InvalidSpec(range_set.to_string()));
+    }
     if end.is_empty() {
         return Ok(LineRange::FromStartOpen { first });
     }
 
     let last = parse_u64(end, range_set)?;
-    if first == 0 {
+    // `last` may sit one below `first` (an insert point), never further.
+    if last < first - 1 {
         return Err(RangeParseError::InvalidSpec(range_set.to_string()));
     }
     if last == first - 1 {
@@ -380,6 +387,11 @@ fn parse_byte_range_spec(spec: &str) -> Result<ByteRange, RangeParseError> {
         Ok(ByteRange::FromStartOpen { first })
     } else {
         let last = parse_u64(end, spec)?;
+        // A byte-range-spec whose last-pos precedes its first-pos is invalid,
+        // not unsatisfiable (RFC 9110 §14.1.1). Bytes have no insert form.
+        if last < first {
+            return Err(RangeParseError::InvalidSpec(spec.to_string()));
+        }
         Ok(ByteRange::FromStart { first, last })
     }
 }
@@ -637,6 +649,38 @@ mod tests {
         }
 
         #[test]
+        fn zero_start_open_ended_is_invalid_spec() {
+            assert_eq!(
+                parse_line_range_header("lines=0-"),
+                Err(RangeParseError::InvalidSpec("0-".into()))
+            );
+        }
+
+        #[test]
+        fn reversed_range_is_invalid_spec() {
+            assert_eq!(
+                parse_line_range_header("lines=5-1"),
+                Err(RangeParseError::InvalidSpec("5-1".into()))
+            );
+        }
+
+        #[test]
+        fn insert_before_line_one_parses_as_insert() {
+            assert_eq!(
+                parse_line_range_header("lines=1-0"),
+                Ok(LineRange::Insert { before: 1 })
+            );
+        }
+
+        #[test]
+        fn whitespace_around_spec_is_trimmed_like_bytes() {
+            assert_eq!(
+                parse_line_range_header("lines= 1-2"),
+                Ok(LineRange::FromStart { first: 1, last: 2 })
+            );
+        }
+
+        #[test]
         fn multi_range_is_invalid_spec() {
             assert_eq!(
                 parse_line_range_header("lines=1-10,20-30"),
@@ -709,16 +753,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_start_greater_than_end() {
+    fn parse_start_greater_than_end_is_invalid_spec() {
         assert_eq!(
             parse_range_header("bytes=100-50"),
-            Ok(ParsedRange {
-                unit: "bytes".into(),
-                range: Some(ByteRange::FromStart {
-                    first: 100,
-                    last: 50,
-                }),
-            })
+            Err(RangeParseError::InvalidSpec("100-50".into()))
+        );
+        assert_eq!(
+            parse_range_header("bytes=5-4"),
+            Err(RangeParseError::InvalidSpec("5-4".into()))
         );
     }
 
@@ -728,6 +770,27 @@ mod tests {
             parse_range_header("items=0-10"),
             Ok(ParsedRange {
                 unit: "items".into(),
+                range: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_unit_is_case_insensitive() {
+        for value in ["Bytes=0-1", "BYTES=0-1", "bytes= 0-1"] {
+            assert_eq!(
+                parse_range_header(value),
+                Ok(ParsedRange {
+                    unit: "bytes".into(),
+                    range: Some(ByteRange::FromStart { first: 0, last: 1 }),
+                }),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            parse_range_header("LINES=1-2"),
+            Ok(ParsedRange {
+                unit: "lines".into(),
                 range: None,
             })
         );
