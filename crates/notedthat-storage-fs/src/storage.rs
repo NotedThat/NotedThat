@@ -102,8 +102,8 @@ impl FsStorage {
             let mut walk = OrderedWalk::new(inner.layout.bucket_dir(&bucket));
             let mut found = Vec::new();
             while let Some(entry) = walk.next_match(None, prefix.as_deref()) {
-                match inner.resolve(&bucket, &entry.key) {
-                    Ok((_, _, attrs)) => found.push((entry.key, attrs.etag)),
+                match inner.describe(&bucket, &entry.key) {
+                    Ok((_, attrs)) => found.push((entry.key, attrs.etag)),
                     // Vanished between the walk and the stat, or unreadable. Skipping it
                     // means the pass reports nothing about that key, which leaves the index
                     // as it was — the safe direction, and the next event covers it.
@@ -171,12 +171,26 @@ impl Inner {
         }
     }
 
-    /// Open an object, treating anything that is not a regular file as absent.
+    /// Stat an object, treating anything that is not a regular file as absent.
     ///
     /// A directory is not an object. `WebDAV` depends on this: it distinguishes a resource
     /// from a collection by a `head_object` that reports `NotFound`, then a prefix list.
+    /// Nor is a symlink, so this is an `lstat`.
+    fn stat(path: &Path, key: &str) -> Result<Metadata, StorageError> {
+        let metadata =
+            std::fs::symlink_metadata(path).map_err(|error| errors::object(key, error))?;
+        if !metadata.is_file() {
+            return Err(StorageError::NotFound {
+                key: key.to_string(),
+            });
+        }
+        Ok(metadata)
+    }
+
+    /// Open an object, treating anything that is not a regular file as absent, by the
+    /// same rules as [`Self::stat`].
     ///
-    /// Nor is a symlink, and `open` follows one, so the path is `lstat`ed first and the
+    /// A symlink is not an object, and `open` follows one, so the path is `lstat`ed first and the
     /// handle's own `stat` must name the same file. When it does not, the path was
     /// swapped between the two — an editor's save, or a symlink put in its place — and
     /// the path is looked at again. The `lstat` also keeps a FIFO from blocking `open`.
@@ -222,6 +236,24 @@ impl Inner {
         Ok((file, metadata, attrs))
     }
 
+    /// An object's metadata, for callers that serve none of its bytes: `head_object`,
+    /// write preconditions and `walk_etags`.
+    ///
+    /// Only a stale or missing record opens the file, through [`Self::resolve`], so the
+    /// repaired stamp and `ETag` still come from one handle. A fresh record needs just
+    /// the `lstat`, so an object the process may not read (`chmod 000`) can still be
+    /// described, replaced and deleted, as a rename or unlink needs no read permission.
+    /// With no bytes returned, #294's mislabel cannot happen here.
+    fn describe(&self, bucket: &str, key: &str) -> Result<(Metadata, ObjectAttrs), StorageError> {
+        let path = self.layout.object_path(bucket, key)?;
+        let metadata = Self::stat(&path, key)?;
+        if let Some(attrs) = self.meta.fresh(&self.layout, bucket, key, &metadata) {
+            return Ok((metadata, attrs));
+        }
+        let (_, metadata, attrs) = self.resolve(bucket, key)?;
+        Ok((metadata, attrs))
+    }
+
     fn object_meta(key: &str, size: u64, metadata: &Metadata, attrs: &ObjectAttrs) -> ObjectMeta {
         ObjectMeta {
             key: key.to_string(),
@@ -247,8 +279,8 @@ impl Inner {
         bucket: &str,
         key: &str,
     ) -> Result<Option<(Metadata, ObjectAttrs)>, StorageError> {
-        match self.resolve(bucket, key) {
-            Ok((_, metadata, attrs)) => Ok(Some((metadata, attrs))),
+        match self.describe(bucket, key) {
+            Ok(found) => Ok(Some(found)),
             // Only the object's own absence: a missing bucket must never read as
             // "nothing there, go ahead and write".
             Err(StorageError::NotFound { .. }) => Ok(None),
@@ -431,7 +463,7 @@ impl Storage for FsStorage {
         let key = key_of(path).to_string();
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
-            let (_, metadata, attrs) = inner.resolve(&bucket, &key)?;
+            let (metadata, attrs) = inner.describe(&bucket, &key)?;
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
             Ok(Inner::object_meta(&key, metadata.len(), &metadata, &attrs))
         })
@@ -935,5 +967,70 @@ mod tests {
             matches!(stream, Err(StorageError::NotFound { .. })),
             "stream should be NotFound"
         );
+    }
+
+    /// Only the paths that serve bytes need to read the object. With a fresh record,
+    /// `HEAD`, the `ETag` walk, an unconditional `PUT` and a `DELETE` need no more than
+    /// the `lstat`, as before #294, so a `chmod 000` object can still be replaced and
+    /// removed. A `GET` still needs to read it, and says the store is unavailable.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_object_with_a_fresh_record_can_be_replaced_and_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let env = env().await;
+        put(&env, "a.md", "first").await;
+        put(&env, "b.md", "other").await;
+        let bucket = env.storage.bucket(&env.kb);
+        let layout = &env.storage.inner.layout;
+        let closed = std::fs::Permissions::from_mode(0o000);
+        for key in ["a.md", "b.md"] {
+            let object = layout.object_path(&bucket, key).expect("path");
+            std::fs::set_permissions(&object, closed.clone()).expect("chmod 000");
+        }
+        if std::fs::File::open(layout.object_path(&bucket, "a.md").expect("path")).is_ok() {
+            eprintln!("skipped: this process ignores permission bits (root)");
+            return;
+        }
+
+        let head = env
+            .storage
+            .head_object(&env.kb, &path("a.md"), ConditionalHeaders::default())
+            .await
+            .expect("head needs no read");
+        assert_eq!(head.etag, Some(compute_etag(b"first")));
+        let walked = env.storage.walk_etags(&env.kb, None).await.expect("walk");
+        assert!(
+            walked.contains(&("a.md".to_string(), compute_etag(b"first"))),
+            "{walked:?}"
+        );
+        let get = env
+            .storage
+            .get_object(&env.kb, &path("a.md"), None, ConditionalHeaders::default())
+            .await;
+        assert!(
+            matches!(get, Err(StorageError::BackendUnavailable { .. })),
+            "get must read the object"
+        );
+
+        let outcome = env
+            .storage
+            .put_object(
+                &env.kb,
+                &path("a.md"),
+                Bytes::from_static(b"second"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("an unconditional put renames over the object");
+        assert!(!outcome.created);
+        assert_eq!(outcome.etag, Some(compute_etag(b"second")));
+
+        env.storage
+            .delete_object(&env.kb, &path("b.md"), ConditionalHeaders::default())
+            .await
+            .expect("delete unlinks the object");
+        assert!(!layout.object_path(&bucket, "b.md").expect("path").exists());
     }
 }
