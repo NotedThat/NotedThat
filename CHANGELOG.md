@@ -10,6 +10,115 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/NotedThat/NotedThat/compare/v0.12.3...v0.13.0) - 2026-09-30
+
+### Added
+
+- *(api)* generate an OpenAPI 3.1 document for /api/v1
+- *(nats)* [**breaking**] shared connection with auth, TLS and stream settings; public event contract
+
+### Fixed
+
+- *(indexer)* [**breaking**] enforce a positive index concurrency and cover the scheduler
+- *(api)* [**breaking**] answer 204 when PUT replaces an object
+- *(api)* pin the OpenAPI info.version to the API version and renumber to D77
+- *(server)* place OAuth metadata between host and path per RFC 9728
+- *(api)* honour If-Range and advertise Accept-Ranges
+- *(api)* send ETag and Last-Modified on 304 Not Modified
+- *(core)* ignore date preconditions superseded by an ETag condition
+- *(storage-s3)* never fail a write over the HEAD that picks 201 or 204
+- *(api)* send Last-Modified on a 304 only when there is no ETag
+- *(api-http)* match the events mime filter on the media-type essence
+- *(indexer)* merge short, heading-only and blank chunks
+- *(api)* [**breaking**] answer 428 when a required If-Match is missing
+- *(nats)* enforce TLS with a pinned CA, install a rustls provider, and floor the duplicate window
+- *(nats)* send URL credentials and leave unconfigured stream settings alone
+- *(core)* [**breaking**] reserve only root object keys, not folders of the same name
+- *(events)* skip an undecodable NATS event instead of ending the stream
+- *(api)* send application/octet-stream on HEAD for an untyped object
+- *(api-http)* declare the OpenAPI parameter sets as crate-private markers
+- *(api-http)* declare the OpenAPI-only types without dead_code suppressions
+- *(api-http)* build the OpenAPI fixtures from AppState::for_tests and regenerate the document
+- *(api-http)* [**breaking**] spell an insert point's byte range as */N with X-Insert-Offset
+- *(webdav)* refuse an unbounded PROPFIND only on a collection
+- *(mcp)* keep reserved keys out of resources/list; document WebDAV DELETE
+- *(core)* [**breaking**] reserve the root object keys that API routes shadow
+- *(webdav)* answer 500 for a non-transient PROPFIND listing failure and log its cause
+- *(webdav)* answer 5xx instead of an empty 207 when a PROPFIND listing fails
+- *(webdav)* take COPY and MOVE's 201 or 204 from the backend
+- *(webdav)* answer PROPPATCH on a folder URL ending in a slash
+- *(webdav)* [**breaking**] answer PROPPATCH with 207 Multi-Status instead of 405
+- *(webdav)* honour If, If-Match and If-None-Match on COPY and MOVE
+- *(webdav)* [**breaking**] treat a missing Depth as infinity and refuse it with 403
+- *(api-http)* end an event stream when its credential expires
+- *(mcp)* read an insert point's offset from X-Insert-Offset
+- *(core)* have the stub token verifier refuse from valid_until
+- *(server)* end an event stream when jsonwebtoken first refuses its token
+
+### Other
+
+- Merge pull request #324 from NotedThat/fix/startup-error-once-301
+- restructure shared test support so nothing is dead
+- keep the credentials fixtures send explicit
+- build every fixture Config from Config::for_tests
+- Merge pull request #375 from NotedThat/fix/reserved-root-keys-279
+- Merge pull request #374 from NotedThat/fix/events-stream-expiry-355
+- Merge pull request #323 from NotedThat/fix/range-parsing-edge-cases-288
+- Merge pull request #327 from NotedThat/fix/untyped-attachments-278
+- *(events)* say index_failed omits mime when no type is named
+- *(events)* say an outcome's mime falls back to the key's suffix type
+- Merge pull request #356 from NotedThat/fix/metis-comments-306
+- Merge pull request #328 from NotedThat/test/scripted-storage-298
+- Merge pull request #318 from NotedThat/fix/mime-filter-essence-286
+- *(core)* stop calling conditional headers forwarded verbatim
+- *(storage-s3)* document S3Config::from_env errors
+- *(deps)* drop six unused dependencies
+- Merge pull request #358 from NotedThat/fix/fs-read-one-handle-294
+- Merge pull request #377 from NotedThat/refactor/indexer-worker-fifo-panic-254-255-257
+- Merge pull request #329 from NotedThat/fix/embedding-endpoint-v1-271
+- Merge pull request #314 from NotedThat/fix/placeholder-lint-allows-300
+- Merge pull request #326 from NotedThat/fix/collection-not-found-287
+- *(indexer)* assert the D72 character bound on the adversarial corpus
+- *(indexer)* [**breaking**] remove the unused reference chunker and text-splitter
+- Merge pull request #349 from NotedThat/fix/mixed-etag-reindex-276
+- Merge pull request #311 from NotedThat/fix/304-forbid-dead-code
+- Merge pull request #251 from NotedThat/fix/crlf-paragraph-breaks
+- Merge pull request #319 from NotedThat/docs/stale-worker-comments-305
+- *(indexer)* name IndexerWorker::handle as where terminal failures are logged
+- Merge pull request #310 from NotedThat/fix/stale-lockfile-283
+- *(deps)* refresh Cargo.lock and raise the MSRV to 1.94.1
+- Merge pull request #273 from NotedThat/fix/rfc-conformance-244
+- *(indexer)* state what D72's chunk merging guarantees
+- Merge pull request #359 from NotedThat/refactor/cas-rewrite-295
+- Merge pull request #339 from NotedThat/fix/delete-cancel-tombstone-277
+- correct four # Errors and # Panics sections from review
+- *(write)* document errors on the commit paths
+- *(write)* stop reading a discarded 512-byte prefix on every staged upload
+- *(nats)* spell a 15-minute retention with Duration::from_mins
+- *(nats)* finish the new-crate checklist
+- *(events)* unset every inventoried variable in the from_env test
+- Merge pull request #312 from NotedThat/fix/unused-deps-302
+- *(nats)* give a restricted consumer its own inbox prefix
+- Merge pull request #376 from NotedThat/fix/events-mime-essence-370
+- Merge pull request #372 from NotedThat/fix/head-content-type-354
+- Merge pull request #322 from NotedThat/fix/redact-5xx-bodies-282
+- Merge pull request #317 from NotedThat/refactor/app-state-for-tests-297
+- document the RFC 9110, 6585, 4918 and 9728 conformance changes
+- Merge pull request #332 from NotedThat/fix/propfind-list-errors-274
+- *(webdav)* assert the member a served PROPFIND listing must show
+- *(deps)* drop async-trait from notedthat-webdav
+- Merge pull request #361 from NotedThat/refactor/range-span-299
+- Merge pull request #353 from NotedThat/fix/subscriptions-token-refresh-291
+- Merge pull request #362 from NotedThat/fix/fs-watch-startup-race-341
+- Merge pull request #352 from NotedThat/fix/stalled-upload-status-line-340
+- Merge pull request #338 from NotedThat/fix/jsonwebtoken-nbf-280
+- Merge pull request #321 from NotedThat/fix/config-tests-env-leak-285
+- Merge pull request #360 from NotedThat/fix/drain-timeout-single-source-293
+- Merge pull request #313 from NotedThat/test/296-config-for-tests
+- *(server)* say when Config::for_tests panics
+- *(server)* add Config::for_tests baseline
+- *(server)* expect 204 when the Authelia e2e overwrites a seeded file
+
 ## [0.12.3](https://github.com/NotedThat/NotedThat/compare/v0.12.2...v0.12.3) - 2026-09-28
 
 ### Added
