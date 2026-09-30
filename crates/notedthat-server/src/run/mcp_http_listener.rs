@@ -1,9 +1,7 @@
 use super::mcp_http::{build_router, internal_http_api_url, tool_call_client};
-use crate::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
+use crate::config::Config;
 use anyhow::Context as _;
 use axum::{Router, routing::get};
-use notedthat_core::{KbSlug, TenantSlug};
-use notedthat_storage_s3::S3Config;
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -15,61 +13,9 @@ use tokio_util::sync::CancellationToken;
 const SHUTDOWN_BOUND: Duration = Duration::from_secs(15);
 
 fn test_config() -> Config {
-    let mut kbs = BTreeMap::new();
-    kbs.insert(
-        "notes".to_string(),
-        KbSlug::try_new("notes").expect("test KB slug is valid"),
-    );
     Config {
-        index_concurrency: crate::config::DEFAULT_INDEX_CONCURRENCY,
         api_token: "test-token".to_string(),
-        kbs,
-        tenant_slug: TenantSlug::default(),
-        listen_addr: "127.0.0.1:0".parse().expect("test HTTP addr is valid"),
-        metrics_listen_addr: None,
-        storage: crate::config::StorageConfig::S3(S3Config {
-            endpoint_url: Some("http://127.0.0.1:8333".to_string()),
-            region: "us-east-1".to_string(),
-            access_key_id: "any".to_string(),
-            secret_access_key: "any".to_string(),
-            force_path_style: true,
-            reconcile_on_startup: true,
-            allow_unenforced_conditional_writes: false,
-        }),
-        events: crate::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:6334".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
-        embedder: EmbedderConfig {
-            endpoint_url: "http://127.0.0.1:9999".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
-            dimensions: 3,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
-        },
-        webdav_username: "webdav-user".to_string(),
-        webdav_password: "webdav-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: crate::config::McpAnonymous::Auto,
-        max_patchable_size: 100 * 1024 * 1024,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: crate::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        ..Config::for_tests()
     }
 }
 

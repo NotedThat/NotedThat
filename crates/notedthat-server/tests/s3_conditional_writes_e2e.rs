@@ -17,10 +17,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use notedthat_core::{KbSlug, TenantSlug};
-use notedthat_server::config::{
-    Config, EmbedderConfig, LogFormat, ServerQdrantConfig, StorageConfig,
-};
+use notedthat_core::KbSlug;
+use notedthat_server::config::{Config, EmbedderConfig, ServerQdrantConfig, StorageConfig};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -42,53 +40,29 @@ async fn backend_ignoring_preconditions() -> MockServer {
 }
 
 fn config(endpoint: &str, allow_unenforced: bool) -> Config {
-    let mut kbs = BTreeMap::new();
-    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
-    let StorageConfig::S3(mut s3) = notedthat_server::config::unroutable_storage_placeholder()
-    else {
-        panic!("the placeholder selects s3")
+    let base = Config::for_tests();
+    let StorageConfig::S3(mut s3) = base.storage else {
+        panic!("the test config selects s3")
     };
     s3.endpoint_url = Some(endpoint.to_string());
     s3.reconcile_on_startup = false;
     s3.allow_unenforced_conditional_writes = allow_unenforced;
     Config {
-        api_token: "conditional-writes-token".to_string(),
-        kbs,
-        tenant_slug: TenantSlug::default(),
+        kbs: BTreeMap::from([(KB.to_string(), KbSlug::try_new(KB).unwrap())]),
         listen_addr: notedthat_api_http::testing::reserve_addr(),
-        metrics_listen_addr: None,
         storage: StorageConfig::S3(s3),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
+        // Startup must give up on the unroutable Qdrant and embedder quickly.
         qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
             timeout_ms: 2_000,
             connect_timeout_ms: 1_000,
+            ..base.qdrant
         },
         embedder: EmbedderConfig {
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
-            dimensions: 3,
-            batch_size: 32,
             timeout_ms: 2_000,
             max_retries: 0,
-            max_input_tokens: 8192,
+            ..base.embedder
         },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "conditional-writes-user".to_string(),
-        webdav_password: "conditional-writes-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 10 * 1024 * 1024,
-        ready_probe_interval_ms: 5_000,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        ..base
     }
 }
 

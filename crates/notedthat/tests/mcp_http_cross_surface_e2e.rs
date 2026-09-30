@@ -11,6 +11,8 @@ use notedthat_mcp::testing::McpSession;
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const API_TOKEN: &str = "e2e-test-token";
+const WEBDAV_USER: &str = "e2e-webdav-user";
+const WEBDAV_PASS: &str = "e2e-webdav-pass";
 const EXPECTED_M7_TOOLS: &str =
     "list_knowledgebases,search,read,write,list,delete,move,append,edit,replace,index_status";
 
@@ -37,114 +39,31 @@ fn in_memory_backends() -> notedthat_server::run::Backends {
 fn test_config_with_mcp_http(
     listen_addr: std::net::SocketAddr,
 ) -> notedthat_server::config::Config {
-    use notedthat_core::{KbSlug, TenantSlug};
-    use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
-    use std::collections::BTreeMap;
-
-    let mut kbs = BTreeMap::new();
-    kbs.insert("notes".to_string(), KbSlug::try_new("notes").unwrap());
-
-    Config {
-        api_token: API_TOKEN.to_string(),
-        kbs,
-        tenant_slug: TenantSlug::default(),
-        listen_addr,
-        metrics_listen_addr: None,
-        storage: notedthat_server::config::unroutable_storage_placeholder(),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
-        embedder: EmbedderConfig {
-            // OpenAiCompatibleEmbedder appends /v1/embeddings itself — pass base URL only.
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
-            dimensions: EMBEDDING_DIM,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
-        },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "e2e-webdav-user".to_string(),
-        webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 10 * 1024 * 1024,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
-    }
+    test_config_with_kbs_and_mcp_http(&["notes"], listen_addr)
 }
 
 fn test_config_with_kbs_and_mcp_http(
     kbs: &[&str],
     listen_addr: std::net::SocketAddr,
 ) -> notedthat_server::config::Config {
-    use notedthat_core::{KbSlug, TenantSlug};
-    use notedthat_server::config::{Config, EmbedderConfig, LogFormat, ServerQdrantConfig};
-    use std::collections::BTreeMap;
+    use notedthat_core::KbSlug;
+    use notedthat_server::config::{Config, EmbedderConfig};
 
-    let mut kb_map = BTreeMap::new();
-    for kb in kbs {
-        kb_map.insert((*kb).to_string(), KbSlug::try_new(*kb).unwrap());
-    }
-
+    let base = Config::for_tests();
     Config {
         api_token: API_TOKEN.to_string(),
-        kbs: kb_map,
-        tenant_slug: TenantSlug::default(),
+        kbs: kbs
+            .iter()
+            .map(|kb| ((*kb).to_string(), KbSlug::try_new(*kb).unwrap()))
+            .collect(),
         listen_addr,
-        metrics_listen_addr: None,
-        storage: notedthat_server::config::unroutable_storage_placeholder(),
-        events: notedthat_server::config::EventsConfig::None,
-        log_format: LogFormat::Pretty,
-        qdrant: ServerQdrantConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: None,
-            timeout_ms: 30_000,
-            connect_timeout_ms: 10_000,
-        },
+        webdav_username: WEBDAV_USER.to_string(),
+        webdav_password: WEBDAV_PASS.to_string(),
         embedder: EmbedderConfig {
-            endpoint_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
             dimensions: EMBEDDING_DIM,
-            batch_size: 32,
-            timeout_ms: 30_000,
-            max_retries: 3,
-            max_input_tokens: 8192,
+            ..base.embedder
         },
-        index_concurrency: notedthat_server::config::DEFAULT_INDEX_CONCURRENCY,
-        webdav_username: "e2e-webdav-user".to_string(),
-        webdav_password: "e2e-webdav-pass".to_string(),
-        mcp_http_allowed_origins: vec!["null".to_string()],
-        mcp_http_allowed_hosts: vec![
-            "127.0.0.1".to_string(),
-            "localhost".to_string(),
-            "::1".to_string(),
-        ],
-        mcp_anonymous: notedthat_server::config::McpAnonymous::Auto,
-        max_patchable_size: 10 * 1024 * 1024,
-        mcp_max_read_bytes: 16 * 1024 * 1024,
-        mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-        request_bounds: notedthat_server::config::RequestBoundsConfig::default(),
-        ready_probe_interval_ms: 5_000,
-        staging: notedthat_core::StagingConfig::default(),
-        oidc: None,
+        ..base
     }
 }
 
@@ -586,7 +505,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .get(&api_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .send()
         .await
         .expect("GET API with Basic credentials failed");
@@ -598,7 +517,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .post(&mcp_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .header("Content-Type", "application/json")
         .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
         .send()
@@ -627,7 +546,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
 
     let resp = client
         .request(reqwest::Method::OPTIONS, &webdav_url)
-        .basic_auth("e2e-webdav-user", Some("e2e-webdav-pass"))
+        .basic_auth(WEBDAV_USER, Some(WEBDAV_PASS))
         .send()
         .await
         .expect("OPTIONS WebDAV with Basic credentials failed");
