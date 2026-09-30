@@ -151,6 +151,7 @@ async fn start_over(
     });
 
     wait_for_health(addr).await;
+    wait_for_startup_pass(addr, &kb).await;
     Server {
         addr,
         handle,
@@ -178,6 +179,39 @@ async fn wait_for_health(addr: std::net::SocketAddr) {
             "server did not answer /healthz within 30s"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Wait until the startup comparison over `kb` has completed.
+///
+/// The pass runs on the watcher's bridge task, alongside the listener rather than before
+/// it, so `/healthz` can answer while it is still walking the tree. A file written in that
+/// window is found by the pass and announced as `reconcile`, and the watcher's own report
+/// of it then finds nothing left to do (#341). A test about the watcher has to start after
+/// the pass, which `GET …/index` makes observable: `stale` until it completes, and
+/// `last_reconcile` once it has.
+async fn wait_for_startup_pass(addr: std::net::SocketAddr, kb: &str) {
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/knowledgebases/{kb}/index");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let health: serde_json::Value = client
+            .get(&url)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .expect("index")
+            .json()
+            .await
+            .expect("json");
+        if health["state"] != "stale" && !health["last_reconcile"].is_null() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the startup pass did not complete within 30s; /index is {health}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -796,8 +830,8 @@ async fn a_file_seeded_before_startup_is_announced_by_reconcile() {
     })
     .await;
 
-    // The startup pass runs before the listener answers, so the event is already
-    // in the log; replay it from the start.
+    // `start_seeded` waits for the startup pass, so the change is already queued and
+    // its event may already be in the log; replay from the start to see it either way.
     let response = reqwest::Client::new()
         .get(server.url(&format!("/api/v1/knowledgebases/{}/events", server.kb)))
         .bearer_auth(TOKEN)
