@@ -349,6 +349,18 @@ fn counter(exposition: &str, series: &str) -> f64 {
         })
 }
 
+/// The status code on a raw HTTP/1.1 response's status line, or `None` when
+/// the response doesn't start with an `HTTP/1.1` status line carrying a
+/// three-digit code. The line need not be complete: a response cut off after
+/// the code still yields it, since a code that arrived is one the server sent.
+/// Only the first line is read, so a header or body that happens to contain
+/// `201` or `408` (a request id, say) cannot change the answer.
+fn status_code(response: &str) -> Option<StatusCode> {
+    let line = response.lines().next()?;
+    let code = line.strip_prefix("HTTP/1.1 ")?.split(' ').next()?;
+    StatusCode::from_bytes(code.as_bytes()).ok()
+}
+
 /// A client that opens a connection and never finishes its request head is
 /// closed, instead of holding a task for as long as it likes.
 #[tokio::test]
@@ -464,18 +476,57 @@ async fn an_upload_that_stalls_mid_body_is_refused() {
     // Then: the server gives up on the body rather than waiting on it. It
     // answers 408 and closes, or closes outright; either is the bound firing,
     // and neither is the 30 s request timeout, which this returns far inside.
+    // A reset ends the read as well as a clean close does, so its result is
+    // not the question; what was written before it is.
     let mut buffer = Vec::new();
-    let read = tokio::time::timeout(WAIT, socket.read_to_end(&mut buffer))
+    let _ = tokio::time::timeout(WAIT, socket.read_to_end(&mut buffer))
         .await
         .expect("the server should not wait on a body that stopped arriving");
     let answer = String::from_utf8_lossy(&buffer);
-    assert!(
-        read.is_err() || buffer.is_empty() || answer.contains("408"),
-        "expected a 408 or a close, got: {answer}"
+    // Only the status line: the 408 carries a random request id in a header
+    // and in its body, and that id may contain `201` or `408` (#340).
+    let status = status_code(&answer);
+    assert_ne!(
+        status,
+        Some(StatusCode::CREATED),
+        "a body that never finished must not be stored: {answer}"
     );
     assert!(
-        !answer.contains("201"),
-        "a body that never finished must not be stored: {answer}"
+        buffer.is_empty() || status == Some(StatusCode::REQUEST_TIMEOUT),
+        "expected a 408 or a close, got: {answer}"
+    );
+
+    // And nothing was stored, whatever the socket saw.
+    let read = bearer(server.client.get(format!(
+        "{}/api/v1/knowledgebases/{}/stalled.md",
+        server.base_url, server.kb
+    )))
+    .send()
+    .await
+    .expect("read back");
+    assert_eq!(read.status(), StatusCode::NOT_FOUND);
+}
+
+/// `status_code` reads the status line and nothing after it, so a request id
+/// that happens to contain `201` or `408` cannot change what the stalled-upload
+/// test sees — the id below is the one that failed CI in #340.
+#[test]
+fn a_request_id_cannot_change_the_status_code() {
+    let timed_out = "HTTP/1.1 408 Request Timeout\r\n\
+                     x-request-id: 01a0ee14-3fd9-7fc3-a6d7-0326201339ea\r\n\
+                     \r\n\
+                     {\"error\":\"request_timeout\",\"request_id\":\"01a0ee14-3fd9-7fc3-a6d7-0326201339ea\"}";
+    assert_eq!(status_code(timed_out), Some(StatusCode::REQUEST_TIMEOUT));
+
+    let stored = "HTTP/1.1 201 Created\r\n\
+                  x-request-id: 01a0ee14-3fd9-7fc3-a6d7-0326408339ea\r\n\r\n";
+    assert_eq!(status_code(stored), Some(StatusCode::CREATED));
+
+    assert_eq!(status_code(""), None);
+    assert_eq!(status_code("HTTP/1.1 4"), None);
+    assert_eq!(
+        status_code("HTTP/1.1 408"),
+        Some(StatusCode::REQUEST_TIMEOUT)
     );
 }
 
