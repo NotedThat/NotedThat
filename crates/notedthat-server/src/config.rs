@@ -575,7 +575,9 @@ impl Config {
                 connect_timeout_ms: 10_000,
             },
             embedder: EmbedderConfig {
-                endpoint_url: "http://127.0.0.1:1".to_string(),
+                // The embedder appends only /embeddings, so this is the
+                // versioned API base URL.
+                endpoint_url: "http://127.0.0.1:1/v1".to_string(),
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
                 dimensions: 4,
@@ -1443,7 +1445,8 @@ struct EmbedderParts {
 /// Embedder configuration.
 #[derive(Debug, Clone)]
 pub struct EmbedderConfig {
-    /// OpenAI-compatible embedding endpoint URL (`EMBEDDING_ENDPOINT_URL`; required).
+    /// OpenAI-compatible API base URL including its version segment, e.g.
+    /// `https://api.openai.com/v1` (`EMBEDDING_ENDPOINT_URL`; required).
     pub endpoint_url: String,
     /// Embedding model name (`EMBEDDING_MODEL`; required).
     pub model: String,
@@ -1466,11 +1469,26 @@ impl EmbedderConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required setting is missing or invalid.
+    /// Returns `Err(Error::Config { .. })` if any required setting is missing or invalid,
+    /// including an `EMBEDDING_ENDPOINT_URL` that is not an absolute http(s) URL.
     fn from_parts(parts: EmbedderParts) -> Result<Self, Error> {
         let endpoint_url = parts.endpoint_url.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_ENDPOINT_URL")),
         })?;
+        // The embedder appends `/embeddings` to this URL's path and reqwest sends only http(s),
+        // so a value it cannot parse (`api.openai.com`, no scheme) or with another scheme
+        // (`htps://…`, `file:///v1`) could never index anything. Refuse it here, naming the
+        // setting, rather than per write. The value is not echoed: its query or userinfo may
+        // carry a credential.
+        if !url::Url::parse(&endpoint_url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        {
+            return Err(Error::Config {
+                message: format!(
+                    "{} must be an absolute http(s) URL, e.g. https://api.openai.com/v1",
+                    setting("EMBEDDING_ENDPOINT_URL")
+                ),
+            });
+        }
         let model = parts.model.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_MODEL")),
         })?;
@@ -1498,6 +1516,38 @@ impl EmbedderConfig {
             )?
             .unwrap_or(8192),
         })
+    }
+}
+
+impl EmbedderConfig {
+    /// The endpoint URL without userinfo, query or fragment, any of which may carry a
+    /// credential (`?api-key=…`), for the log and the manifest's `endpoint_url_hint`.
+    /// `None` when the URL does not parse.
+    #[must_use]
+    pub fn endpoint_url_redacted(&self) -> Option<String> {
+        let mut url = url::Url::parse(&self.endpoint_url).ok()?;
+        // Both setters only fail on a URL that cannot carry credentials, which has none to strip.
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        Some(url.as_str().trim_end_matches('/').to_string())
+    }
+
+    /// [`Self::endpoint_url_redacted`], when the URL's path is empty or `/`.
+    ///
+    /// Releases up to 0.12 appended `/v1/embeddings` themselves, so a value written for
+    /// them (`https://api.openai.com`, `http://127.0.0.1:11434`) is a bare origin, and now
+    /// reaches `/embeddings` at the root and gets a 404 on every write. Startup warns
+    /// (`EMBEDDING_ENDPOINT_URL_NO_PATH`) instead of refusing, because a gateway may serve
+    /// `/embeddings` at its root.
+    #[must_use]
+    pub fn endpoint_url_without_path(&self) -> Option<String> {
+        let url = url::Url::parse(&self.endpoint_url).ok()?;
+        if !matches!(url.path(), "" | "/") {
+            return None;
+        }
+        self.endpoint_url_redacted()
     }
 }
 
@@ -1632,7 +1682,7 @@ pub(crate) mod tests {
         ("NOTEDTHAT_QDRANT_URL", "http://localhost:6334"),
         ("NOTEDTHAT_WEBDAV_USERNAME", "webdav-user"),
         ("NOTEDTHAT_WEBDAV_PASSWORD", "webdav-pass"),
-        ("EMBEDDING_ENDPOINT_URL", "https://api.openai.com"),
+        ("EMBEDDING_ENDPOINT_URL", "https://api.openai.com/v1"),
         ("EMBEDDING_MODEL", "text-embedding-3-small"),
         ("EMBEDDING_API_KEY", "sk-test"),
         ("EMBEDDING_DIMENSIONS", "1536"),
@@ -2225,6 +2275,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn embedding_endpoint_url_that_is_not_an_absolute_url_is_refused() {
+        for raw in [
+            "api.openai.com",
+            "api.openai.com/v1?api-key=secret",
+            "/v1",
+            "mailto:ops@example.com",
+            "htps://api.openai.com/v1",
+            "ftp://api.openai.com/v1",
+            "file:///v1",
+        ] {
+            let msg = run_with_env(&[("EMBEDDING_ENDPOINT_URL", Some(raw))], Config::from_env)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("EMBEDDING_ENDPOINT_URL") && msg.contains("absolute http(s) URL"),
+                "url {raw}: {msg}"
+            );
+            assert!(!msg.contains("secret"), "url {raw} echoed: {msg}");
+        }
+    }
+
+    #[test]
     fn embedding_model_missing() {
         let result = run_with_env(&[("EMBEDDING_MODEL", None)], Config::from_env);
         assert!(result.is_err());
@@ -2355,10 +2427,73 @@ pub(crate) mod tests {
         assert_eq!(cfg.embedder.max_input_tokens, 8192);
     }
 
+    fn embedder_with_url(endpoint_url: &str) -> EmbedderConfig {
+        EmbedderConfig {
+            endpoint_url: endpoint_url.to_string(),
+            model: "m".to_string(),
+            api_key: "k".to_string(),
+            dimensions: 3,
+            batch_size: 32,
+            timeout_ms: 30_000,
+            max_retries: 3,
+            max_input_tokens: 8192,
+        }
+    }
+
+    #[test]
+    fn endpoint_url_redacted_drops_every_credential_carrier() {
+        for (raw, expected) in [
+            (
+                "https://api.openai.com/v1",
+                Some("https://api.openai.com/v1"),
+            ),
+            (
+                "https://user:secret@gw.example/openai/v1/?api-key=secret#secret",
+                Some("https://gw.example/openai/v1"),
+            ),
+            ("not a url", None),
+        ] {
+            assert_eq!(
+                embedder_with_url(raw).endpoint_url_redacted().as_deref(),
+                expected,
+                "url {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_url_without_path_flags_bare_origins_only() {
+        for (raw, expected) in [
+            ("https://api.openai.com", Some("https://api.openai.com")),
+            ("http://127.0.0.1:11434/", Some("http://127.0.0.1:11434")),
+            ("https://user:secret@gw.example", Some("https://gw.example")),
+            (
+                "https://gw.example/?api-key=secret#secret",
+                Some("https://gw.example"),
+            ),
+            ("https://gw.example?key=secret", Some("https://gw.example")),
+            ("https://api.openai.com/v1", None),
+            ("https://api.openai.com/v1/", None),
+            (
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                None,
+            ),
+            ("not a url", None),
+        ] {
+            assert_eq!(
+                embedder_with_url(raw)
+                    .endpoint_url_without_path()
+                    .as_deref(),
+                expected,
+                "url {raw}"
+            );
+        }
+    }
+
     #[test]
     fn embedder_fields_propagated_to_config() {
         let cfg = run_with_env(&[], Config::from_env).unwrap();
-        assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com");
+        assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com/v1");
         assert_eq!(cfg.embedder.model, "text-embedding-3-small");
         assert_eq!(cfg.embedder.api_key, "sk-test");
         assert_eq!(cfg.embedder.dimensions, 1536);

@@ -169,7 +169,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
 
     let embedder: Arc<dyn Embedder> = Arc::new(
         OpenAiCompatibleEmbedder::new(OpenAiCompatibleConfig {
-            endpoint_url: mock_server.uri(),
+            endpoint_url: format!("{}/v1", mock_server.uri()),
             model: "test-model".to_string(),
             api_key: "test-key".to_string(),
             dim: 4,

@@ -259,7 +259,7 @@ provider, and nothing else:
 docker compose up -d qdrant
 set -a; . ./.env; set +a
 # If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
-# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434/v1
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_STORAGE_BACKEND=fs
 export NOTEDTHAT_FS_ROOT="$PWD/.notedthat-data"
@@ -294,7 +294,7 @@ server natively. Reuse your local embedding values from `.env` without committin
 docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d seaweedfs qdrant
 set -a; . ./.env; set +a
 # If .env points at Ollama through host.docker.internal (the Compose value), use loopback.
-# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434
+# export EMBEDDING_ENDPOINT_URL=http://127.0.0.1:11434/v1
 export NOTEDTHAT_LISTEN_ADDR=127.0.0.1:8080
 export NOTEDTHAT_S3_ENDPOINT_URL=http://127.0.0.1:8333
 export NOTEDTHAT_S3_FORCE_PATH_STYLE=true

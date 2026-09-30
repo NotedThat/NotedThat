@@ -131,6 +131,17 @@ fn backends_from_config(
     let store: Arc<dyn VectorStore> =
         Arc::new(QdrantClient::new(&qdrant_config).context("failed to build Qdrant client")?);
 
+    if let Some(url) = config.embedder.endpoint_url_without_path() {
+        // Not a refusal: a gateway may serve `/embeddings` at its root. But a value
+        // written for 0.12 or earlier looks exactly like this and 404s on every write.
+        tracing::warn!(
+            url = %url,
+            "EMBEDDING_ENDPOINT_URL_NO_PATH: EMBEDDING_ENDPOINT_URL has no path. Since this \
+             release it is the full API base and only /embeddings is appended (0.12 and earlier \
+             appended /v1/embeddings), so include /v1 or the provider's own prefix, e.g. \
+             {url}/v1"
+        );
+    }
     let embedder_config = OpenAiCompatibleConfig {
         endpoint_url: config.embedder.endpoint_url.clone(),
         model: config.embedder.model.clone(),
@@ -298,7 +309,8 @@ async fn build_infrastructure(
         &provisioner,
         &config.embedder.model,
         config.embedder.dimensions,
-        Some(config.embedder.endpoint_url.as_str()),
+        // Recorded in the bucket's manifest, so nothing that may carry a credential.
+        config.embedder.endpoint_url_redacted().as_deref(),
     )
     .await?;
     let access_policies = Arc::new(snapshot.access_policies);

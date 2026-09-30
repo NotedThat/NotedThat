@@ -234,7 +234,7 @@ raw markdown bytes
 [Chunk { text, byte_start, byte_end, heading_path }]   byte offsets are absolute offsets in the original raw file
      │
      ▼
-[external embedder]  ── POST /v1/embeddings → dense vec<f32>
+[external embedder]  ── POST {base}/embeddings → dense vec<f32>
      │
      ▼
 Qdrant upsert  (dense vector + Document{text, "qdrant/bm25"} sparse + payload)
@@ -250,13 +250,13 @@ Wiki-links `[[note]]` — `[POST-v1]` (candidate: `turbovault-parser` v1.5).
 
 External endpoints only. OpenAI-compatible HTTP:
 ```
-POST {EMBEDDING_ENDPOINT_URL}/v1/embeddings
+POST {EMBEDDING_ENDPOINT_URL}/embeddings
 Authorization: Bearer {EMBEDDING_API_KEY}
 { "model": "{EMBEDDING_MODEL}", "input": ["chunk1", ...] }
 ```
 
 Env vars:
-- `EMBEDDING_ENDPOINT_URL` — e.g. `https://api.openai.com`, `https://api.voyageai.com`, `http://tei:8080`
+- `EMBEDDING_ENDPOINT_URL` — the API base URL including its version segment, as the provider documents it; only `/embeddings` is appended. E.g. `https://api.openai.com/v1`, `https://api.voyageai.com/v1`, `http://tei:8080/v1`, `https://generativelanguage.googleapis.com/v1beta/openai`
 - `EMBEDDING_MODEL` — e.g. `text-embedding-3-small`, `voyage-3`, `BAAI/bge-m3`
 - `EMBEDDING_API_KEY`
 - `EMBEDDING_DIMENSIONS` — must match Qdrant `dense` vector size at KB-create
@@ -357,7 +357,7 @@ nt-{tenant_slug}-{kb_slug}
   "description": "Design notes, ADRs and meeting minutes of the platform team.",
   "created_at": 1782993600,
   "embedding": {
-    "endpoint_url_hint": "https://api.openai.com",
+    "endpoint_url_hint": "https://api.openai.com/v1",
     "model": "text-embedding-3-small",
     "dimensions": 1536
   },
