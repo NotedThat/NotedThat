@@ -11,7 +11,8 @@ use notedthat_api_http::{
 };
 use notedthat_core::{Authenticator, ProtectedResource};
 use notedthat_indexer::{
-    IndexQueueSender, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner, VectorStore,
+    DRAIN_TIMEOUT, IndexQueueSender, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner,
+    VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
 };
 use notedthat_storage_fs::{FsStorage, RootLock};
@@ -708,17 +709,24 @@ async fn complete_shutdown(
     info!("shutdown complete");
 }
 
+/// How long shutdown waits for the indexer task: its own drain budget plus a second for the
+/// worker to observe its timeout and return.
+const INDEXER_JOIN_TIMEOUT: Duration = DRAIN_TIMEOUT.saturating_add(Duration::from_secs(1));
+
 async fn drain_indexer(
     indexer_shutdown: CancellationToken,
     worker_handle: tokio::task::JoinHandle<()>,
 ) {
     tracing::info!("shutdown signal received; draining indexer queue");
     indexer_shutdown.cancel();
-    let join_result = tokio::time::timeout(Duration::from_secs(31), worker_handle).await;
+    let join_result = tokio::time::timeout(INDEXER_JOIN_TIMEOUT, worker_handle).await;
     match join_result {
         Ok(Ok(())) => tracing::info!("indexer worker drained cleanly"),
         Ok(Err(e)) => tracing::error!(error = %e, "indexer worker panicked"),
-        Err(_) => tracing::warn!("indexer worker did not drain within 31s; abandoning"),
+        Err(_) => tracing::warn!(
+            "indexer worker did not drain within {}s; abandoning",
+            INDEXER_JOIN_TIMEOUT.as_secs()
+        ),
     }
 }
 
