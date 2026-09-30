@@ -25,8 +25,11 @@ pub struct EditArgs {
     pub if_match: String,
 }
 
-// The tool's arguments as a client sends them.
+// The tool's arguments as a client sends them. Named `EditArgs` in the
+// schema, so the published input schema keeps the title it had before the
+// raw twin existed.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "EditArgs")]
 pub struct RawEditArgs {
     /// Knowledge base slug.
     pub kb: String,
@@ -335,6 +338,7 @@ mod tests {
             assert!(properties.contains_key(field), "{field} missing: {schema}");
         }
         assert!(!properties.contains_key("span"), "{schema}");
+        assert_eq!(schema["title"], "EditArgs", "{schema}");
         assert!(schema.get("description").is_none(), "{schema}");
         for combinator in ["anyOf", "oneOf", "allOf"] {
             assert!(schema.get(combinator).is_none(), "{combinator}: {schema}");

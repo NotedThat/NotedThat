@@ -52,6 +52,13 @@ pub enum EditSpan {
 
 impl EditSpan {
     /// An `edit` names exactly one complete pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rule the arguments break, as the text the caller sees: no
+    /// pair, a pair missing its start or end, both pairs, a line range that
+    /// starts at 0 or runs backwards past the insert point, or a byte range
+    /// whose start is not strictly below its end.
     pub fn parse(args: RangeArgs) -> Result<Self, String> {
         match args.pairs() {
             ((Some(start), Some(end)), (None, None)) => {
@@ -79,10 +86,15 @@ impl EditSpan {
     }
 
     /// The PATCH `Content-Range`; the byte form's end is inclusive.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a byte span whose `end` is 0, which has no inclusive end.
+    /// [`EditSpan::parse`] never builds one: its byte `end` exceeds `start`.
     pub fn content_range(self) -> String {
         match self {
             Self::Lines { start, end } => format!("lines {start}-{end}/*"),
-            Self::Bytes { start, end } => format!("bytes {start}-{}/*", end - 1),
+            Self::Bytes { start, end } => format!("bytes {start}-{}/*", inclusive_end(end)),
         }
     }
 }
@@ -101,6 +113,13 @@ pub enum ReadSpan {
 
 impl ReadSpan {
     /// A `read` names at most one pair, whose end may be omitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rule the arguments break, as the text the caller sees: an
+    /// end without its start, both pairs, a line range that starts at 0 or
+    /// runs backwards past the insert point, or a byte range whose start is
+    /// not strictly below its end.
     pub fn parse(args: RangeArgs) -> Result<Self, String> {
         match args.pairs() {
             ((None, None), (None, None)) => Ok(Self::Whole),
@@ -124,6 +143,12 @@ impl ReadSpan {
 
     /// The GET `Range` header, `None` for the whole object; the byte form's
     /// end is inclusive.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a byte span whose `end` is `Some(0)`, which has no inclusive
+    /// end. [`ReadSpan::parse`] never builds one: its byte `end` exceeds
+    /// `start`.
     pub fn range_header(self) -> Option<String> {
         match self {
             Self::Whole => None,
@@ -136,9 +161,17 @@ impl ReadSpan {
             Self::Bytes {
                 start,
                 end: Some(end),
-            } => Some(format!("bytes={start}-{}", end - 1)),
+            } => Some(format!("bytes={start}-{}", inclusive_end(end))),
         }
     }
+}
+
+/// The inclusive last byte of a range ending at `end` exclusive. Panics, in
+/// every build, on `end == 0`: an empty range starting at 0 has no last byte,
+/// and wrapping would name byte `u64::MAX`.
+fn inclusive_end(end: u64) -> u64 {
+    end.checked_sub(1)
+        .expect("a byte span's exclusive end is above its start, so above 0")
 }
 
 fn check_line_start(start: u64) -> Result<(), String> {
@@ -324,6 +357,22 @@ mod tests {
             EditSpan::Lines { start: 5, end: 4 }.content_range(),
             "lines 5-4/*"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "a byte span's exclusive end is above its start")]
+    fn edit_content_range_panics_on_a_hand_built_empty_byte_span() {
+        let _ = EditSpan::Bytes { start: 0, end: 0 }.content_range();
+    }
+
+    #[test]
+    #[should_panic(expected = "a byte span's exclusive end is above its start")]
+    fn read_range_header_panics_on_a_hand_built_empty_byte_span() {
+        let _ = ReadSpan::Bytes {
+            start: 0,
+            end: Some(0),
+        }
+        .range_header();
     }
 
     #[test]
