@@ -1621,75 +1621,38 @@ pub(crate) mod tests {
             && message.contains(complaint)
     }
 
-    fn run_with_env<F: FnOnce() -> R, R>(overrides: &[(&str, Option<&str>)], f: F) -> R {
-        let mut vars: Vec<(&str, Option<&str>)> = vec![
-            ("NOTEDTHAT_API_TOKEN", Some("test-token")),
-            ("NOTEDTHAT_KBS", Some("notes,docs")),
-            ("NOTEDTHAT_STORAGE_BACKEND", None),
-            ("NOTEDTHAT_FS_ROOT", None),
-            ("NOTEDTHAT_FS_METADATA", None),
-            ("NOTEDTHAT_FS_FILE_MODE", None),
-            ("NOTEDTHAT_FS_DIR_MODE", None),
-            ("NOTEDTHAT_FS_ALLOW_LOSSY_NAMES", None),
-            ("NOTEDTHAT_S3_REGION", Some("us-east-1")),
-            ("NOTEDTHAT_S3_ACCESS_KEY_ID", Some("key")),
-            ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", Some("secret")),
-            ("NOTEDTHAT_LISTEN_ADDR", None),
-            ("NOTEDTHAT_METRICS_ENABLED", None),
-            ("NOTEDTHAT_METRICS_LISTEN_ADDR", None),
-            ("NOTEDTHAT_LOG_FORMAT", None),
-            ("NOTEDTHAT_S3_ENDPOINT_URL", None),
-            ("NOTEDTHAT_S3_FORCE_PATH_STYLE", None),
-            ("NOTEDTHAT_S3_RECONCILE", None),
-            ("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES", None),
-            ("NOTEDTHAT_EVENTS_BACKEND", None),
-            ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", None),
-            ("NOTEDTHAT_NATS_URL", None),
-            ("NOTEDTHAT_NATS_STREAM", None),
-            ("NOTEDTHAT_NATS_MAX_AGE_SECS", None),
-            ("NOTEDTHAT_QDRANT_URL", Some("http://localhost:6334")),
-            ("NOTEDTHAT_QDRANT_API_KEY", None),
-            ("NOTEDTHAT_QDRANT_TIMEOUT_MS", None),
-            ("NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", None),
-            ("NOTEDTHAT_WEBDAV_USERNAME", Some("webdav-user")),
-            ("NOTEDTHAT_WEBDAV_PASSWORD", Some("webdav-pass")),
-            ("NOTEDTHAT_WEBDAV_LISTEN_ADDR", None),
-            ("NOTEDTHAT_MCP_HTTP_BIND", None),
-            ("NOTEDTHAT_MCP_HTTP_ENABLED", None),
-            ("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", None),
-            ("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", None),
-            ("NOTEDTHAT_MCP_ANONYMOUS", None),
-            ("NOTEDTHAT_MCP_MAX_READ_BYTES", None),
-            ("NOTEDTHAT_MCP_MAX_SESSIONS", None),
-            ("NOTEDTHAT_MAX_PATCHABLE_SIZE", None),
-            ("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None),
-            ("NOTEDTHAT_REQUEST_TIMEOUT_MS", None),
-            ("NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", None),
-            ("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", None),
-            ("NOTEDTHAT_HEADER_READ_TIMEOUT_MS", None),
-            ("NOTEDTHAT_UPLOAD_TMP_DIR", None),
-            ("NOTEDTHAT_OIDC_ISSUER", None),
-            ("NOTEDTHAT_OIDC_AUDIENCE", None),
-            ("NOTEDTHAT_OIDC_USERNAME_CLAIM", None),
-            ("NOTEDTHAT_OIDC_GROUPS_CLAIM", None),
-            ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", None),
-            ("NOTEDTHAT_OIDC_RESOURCE", None),
-            ("NOTEDTHAT_OIDC_CA_CERT", None),
-            ("EMBEDDING_ENDPOINT_URL", Some("https://api.openai.com")),
-            ("EMBEDDING_MODEL", Some("text-embedding-3-small")),
-            ("EMBEDDING_API_KEY", Some("sk-test")),
-            ("EMBEDDING_DIMENSIONS", Some("1536")),
-            ("EMBEDDING_BATCH_SIZE", None),
-            ("EMBEDDING_TIMEOUT_MS", None),
-            ("EMBEDDING_MAX_RETRIES", None),
-            ("EMBEDDING_MAX_INPUT_TOKENS", None),
-            ("NOTEDTHAT_INDEX_CONCURRENCY", None),
-        ];
+    /// What every test starts from: enough for `Config::from_env` to succeed.
+    /// Everything else in `ALL_ENV_KEYS` is unset.
+    const DEFAULT_ENV: [(&str, &str); 12] = [
+        ("NOTEDTHAT_API_TOKEN", "test-token"),
+        ("NOTEDTHAT_KBS", "notes,docs"),
+        ("NOTEDTHAT_S3_REGION", "us-east-1"),
+        ("NOTEDTHAT_S3_ACCESS_KEY_ID", "key"),
+        ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", "secret"),
+        ("NOTEDTHAT_QDRANT_URL", "http://localhost:6334"),
+        ("NOTEDTHAT_WEBDAV_USERNAME", "webdav-user"),
+        ("NOTEDTHAT_WEBDAV_PASSWORD", "webdav-pass"),
+        ("EMBEDDING_ENDPOINT_URL", "https://api.openai.com"),
+        ("EMBEDDING_MODEL", "text-embedding-3-small"),
+        ("EMBEDDING_API_KEY", "sk-test"),
+        ("EMBEDDING_DIMENSIONS", "1536"),
+    ];
 
-        for (key, value) in overrides {
-            if let Some((_, slot)) = vars.iter_mut().find(|(existing, _)| existing == key) {
-                *slot = *value;
-            }
+    /// Run `f` with every variable in `ALL_ENV_KEYS` controlled: `DEFAULT_ENV`,
+    /// then `overrides`, and all others unset. `temp_env` leaves unlisted
+    /// variables alone, so anything missing here would leak in from the
+    /// developer's shell.
+    fn run_with_env<F: FnOnce() -> R, R>(overrides: &[(&str, Option<&str>)], f: F) -> R {
+        let mut vars: Vec<(&str, Option<&str>)> =
+            ALL_ENV_KEYS.iter().map(|key| (*key, None)).collect();
+
+        let defaults = DEFAULT_ENV.iter().map(|(key, value)| (*key, Some(*value)));
+        for (key, value) in defaults.chain(overrides.iter().copied()) {
+            let (_, slot) = vars
+                .iter_mut()
+                .find(|(existing, _)| *existing == key)
+                .unwrap_or_else(|| panic!("{key} is not in ALL_ENV_KEYS"));
+            *slot = value;
         }
 
         temp_env::with_vars(vars, f)
@@ -1876,14 +1839,6 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(cfg.webdav_username, "myuser");
         assert_eq!(cfg.webdav_password, "mypass");
-    }
-
-    /// The inventory is what `cli::tests::every_setting_has_both_a_flag_and_a_variable`
-    /// checks the parser against, so a setting missing from here is a setting that
-    /// can silently lose its flag.
-    #[test]
-    fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 73);
     }
 
     #[test]
