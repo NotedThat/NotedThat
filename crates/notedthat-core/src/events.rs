@@ -140,7 +140,9 @@ pub enum ObjectEventKind {
         /// The `ETag` the indexer read with `HEAD` and verified on the stream
         /// it staged — the version that is in the index.
         etag: String,
-        /// Content type as `HEAD` reported it.
+        /// Content type as `HEAD` reported it or, when `HEAD` reported none
+        /// or one naming no media type (such as `;charset=utf-8`), the type
+        /// the key's suffix names.
         mime: String,
         /// Points representing the object after this pass.
         chunks: u32,
@@ -153,8 +155,10 @@ pub enum ObjectEventKind {
         /// The `ETag` `HEAD` reported; absent when the failure came first.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         etag: Option<String>,
-        /// Content type as `HEAD` reported it; absent when the failure came
-        /// first.
+        /// Content type as `HEAD` reported it or, when `HEAD` reported none
+        /// or one naming no media type (such as `;charset=utf-8`), the type
+        /// the key's suffix names; absent when the failure came first, or
+        /// when neither `HEAD` nor the key names a type.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
         /// The pipeline's own error, first line, at most 200 characters — the

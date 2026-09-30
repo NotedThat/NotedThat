@@ -441,11 +441,28 @@ pub(crate) fn collection_name(kb: &KbSlug) -> String {
 }
 
 /// Check if the content type is indexable (markdown or plain text).
+///
+/// An empty type is not: an object that declares none is judged by its key
+/// instead, through [`content_type_from_key`].
 pub fn is_indexable(mime: &str) -> bool {
     matches!(
         crate::mime::essence(mime).as_str(),
-        "text/markdown" | "text/plain" | ""
+        "text/markdown" | "text/plain"
     )
+}
+
+/// The indexable type a key's extension names, for an object stored without one.
+///
+/// Only the text suffixes count; anything else — an image, a PDF, a key with no
+/// extension — is not something the index can read. Case-insensitive, like
+/// `sniff_content_type` in `notedthat-write`.
+pub(crate) fn content_type_from_key(key: &str) -> Option<&'static str> {
+    let (_, extension) = key.rsplit_once('.')?;
+    match extension.to_ascii_lowercase().as_str() {
+        "md" | "markdown" => Some("text/markdown"),
+        "txt" => Some("text/plain"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -474,8 +491,27 @@ mod tests {
     }
 
     #[test]
-    fn indexable_empty_mime() {
-        assert!(is_indexable(""));
+    fn not_indexable_empty_mime() {
+        assert!(!is_indexable(""));
+    }
+
+    #[test]
+    fn key_suffix_names_markdown() {
+        assert_eq!(content_type_from_key("notes/a.md"), Some("text/markdown"));
+        assert_eq!(content_type_from_key("README.MD"), Some("text/markdown"));
+        assert_eq!(content_type_from_key("a.Markdown"), Some("text/markdown"));
+    }
+
+    #[test]
+    fn key_suffix_names_plain_text() {
+        assert_eq!(content_type_from_key("notes.txt"), Some("text/plain"));
+    }
+
+    #[test]
+    fn key_suffix_names_nothing_for_other_files() {
+        assert_eq!(content_type_from_key("photo.png"), None);
+        assert_eq!(content_type_from_key("data.json"), None);
+        assert_eq!(content_type_from_key("README"), None);
     }
 
     #[test]

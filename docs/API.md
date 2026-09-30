@@ -1371,6 +1371,30 @@ curl -sSf -X POST \
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
+#### Upgrade notes (untyped objects, #278)
+
+> An object stored with no content type — a PUT with an empty `Content-Type:` header or one naming
+> no media type, such as `;charset=utf-8`, or a file the `fs` backend could not guess a type for —
+> used to be indexed as Markdown whatever its key,
+> with an empty `mime` on its chunks. It is now judged by its key: `.md`/`.markdown` are indexed as
+> `text/markdown` and `.txt` as `text/plain`, and both the chunks and `object.indexed` carry that
+> type. Anything else is removed from the index. Chunks indexed before this release keep `mime: ""`
+> until their object is indexed again, so `mime: "text/markdown"` does not find them yet. Likewise,
+> an untyped key with no text suffix that was indexed before (a `README`, say) stays searchable
+> until it is written or deleted. `POST …/index/reconcile` only refreshes objects whose bytes
+> changed, so PUT affected documents again with their type:
+>
+> ```bash
+> curl -sSf -X PUT -H "Authorization: Bearer $TOKEN" \
+>   -H 'Content-Type: text/plain' --data-binary @todo.txt \
+>   http://localhost:8080/api/v1/knowledgebases/notes/todo.txt
+> ```
+>
+> Use `text/markdown` for `.md` and `.markdown` keys and `text/plain` for `.txt`. Leaving the header
+> out stores a `.txt` key as `application/octet-stream`, and `curl --data-binary` without `-H` sends
+> `application/x-www-form-urlencoded`. Both types are non-indexable, so either PUT removes the
+> document from search instead of refreshing it.
+
 #### Upgrade notes (strict search body)
 
 > The search body used to ignore keys it did not know, at the top level and inside `filter`. It
@@ -1428,7 +1452,7 @@ granted nothing answers `403`; an anonymous caller granted nothing is concealed 
 |-----------|-------------|
 | `prefix` | Only keys starting with this string, e.g. `prefix=inbox/` |
 | `event` | `written`, `deleted`, `indexed` or `index_failed` (the `object.` prefix is accepted, so `event=object.indexed` works too); anything else is `400` |
-| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported. Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
+| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported (or, when it reported none or one naming no media type, such as `;charset=utf-8`, the type the key's suffix names). Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
 
 **Request headers:**
 
@@ -1482,7 +1506,7 @@ own.
 | `object_key` | all | The key, without a leading slash |
 | `etag` | `object.written`, `object.indexed`; `object.index_failed` when known | The `ETag` of the version the event is about, quoted as in `HEAD`. On `object.indexed` it is the version now in the index — the one the indexer read and verified on the bytes it embedded — so it matches the `object.written` for that write |
 | `size` | `object.written` | Size in bytes |
-| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome |
+| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome — or, when `HEAD` reported none or one naming no media type, such as `;charset=utf-8`, the type the key's suffix names (`.md`/`.markdown` → `text/markdown`, `.txt` → `text/plain`), which is also the `mime` the object's chunks carry in search |
 | `mtime` | `object.written` | Last-modified Unix timestamp, seconds |
 | `chunks` | `object.indexed` | How many points now represent the object in the index |
 | `summary` | `object.index_failed` | The pipeline's own error, first line, at most 200 characters — the same string [`GET …/index`](#get-apiv1knowledgebaseskb_slugindex) reports as `last_failure.summary`. Present only for a subscriber whose `list` grant covers the whole knowledge base; everyone else receives the frame without it |
