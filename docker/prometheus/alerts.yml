@@ -1,0 +1,203 @@
+# Prometheus alerting rules for NotedThat (#186).
+#
+# Loaded by prometheus.yml's `rule_files`. Every alert carries a `severity`
+# (`critical`: the instance cannot serve or cannot index; `warning`: it can,
+# but something is degraded or falling behind) and a `runbook_url` into
+# docs/OPERATIONS.md, whose `## Monitoring` section has one heading per alert.
+#
+# A counter series is created by its first increment, so it usually reaches
+# Prometheus already at 1, and `increase()` has no earlier sample to see that
+# step against. The server exports a few series at 0 from startup (see
+# `register_alerted_counters` in notedthat-server's run/metrics.rs):
+#   notedthat_index_events_completed_total{kb, outcome="failed"}   every declared kb
+#   notedthat_reconcile_passes_total{kb, cause, outcome="incomplete"}
+#       every declared kb, for each cause its backend can produce
+#       (s3: requested, plus startup when reconcile_on_startup is on;
+#        fs with watching on: startup, subtree changed, rescan)
+#   notedthat_fs_watch_lost_total{reason}                           fs with watching on
+# That does not help an event before the first scrape (a startup pass that is
+# skipped usually is one). So the three alerts that must fire on a single
+# occurrence (IndexingFailures, FsWatchLost, ReconcileIncomplete) have a second
+# arm, `x unless x offset <window>`, which catches a series that had no sample
+# a window ago and is above 0 now. A series exported at 0 stays quiet.
+#
+# Trade-off: "no sample a window ago" also holds when Prometheus did not scrape
+# then. After a Prometheus restart or outage, a scrape gap longer than the 5m
+# lookback, a fresh TSDB or a newly added scrape job, those three alerts can
+# fire once, for up to their window, on counts from before the gap. Their
+# annotations therefore claim no count. BucketMissing has no such arm, so a
+# critical alert cannot page on an old count. The readiness probe checks only
+# the witness bucket (the first knowledge base by slug) and repeats every few
+# seconds while it is gone, so `increase()` sees it from the second scrape on.
+# Any other knowledge base's bucket shows up only through request traffic. The
+# series has no `kb` label and never expires, so it pages only once the same op
+# fails again after Prometheus has scraped an earlier failure, whenever that
+# is; a knowledge base nobody uses stays silent.
+#
+# Nothing uses `absent()`: a healthy server may not export a series at all.
+#
+# Checked in CI by `promtool check rules` and `promtool test rules`
+# (alerts.test.yml); a metric renamed in `notedthat_core::metrics` fails
+# `notedthat-core`'s tests until this file follows it.
+groups:
+  - name: notedthat
+    rules:
+      - alert: NotedThatDown
+        expr: up{job="notedthat"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NotedThat's metrics listener has not answered a scrape for 2 minutes"
+          description: "Prometheus cannot scrape {{ $labels.instance }}. The server is down, or its metrics listener is off or unreachable."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatdown
+
+      - alert: NotedThatStorageUnavailable
+        expr: sum by (instance, backend, op) (rate(notedthat_storage_operations_total{outcome="unavailable"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The {{ $labels.backend }} storage backend is unreachable"
+          description: "{{ $labels.backend }} `{{ $labels.op }}` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
+
+      - alert: NotedThatBucketMissing
+        # No new-series arm (see the header): reliable for the witness bucket, which the
+        # readiness probe repeats; other buckets need a repeated failing request.
+        expr: sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A knowledge base's bucket is gone"
+          description: "The {{ $labels.backend }} backend answered, but a bucket NotedThat was configured with does not exist. /readyz reports storage degraded."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatbucketmissing
+
+      - alert: NotedThatVectorStoreUnavailable
+        expr: sum by (instance, op) (rate(notedthat_vector_store_operations_total{outcome="unavailable"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Qdrant is unreachable"
+          description: "Vector-store `{{ $labels.op }}` calls have been failing for 5 minutes. Search fails and indexing stalls; /readyz answers 503 while the probe fails."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatvectorstoreunavailable
+
+      - alert: NotedThatEmbedderFailing
+        expr: |
+          sum by (instance, phase) (rate(notedthat_embedding_requests_total{outcome="error"}[10m]))
+            / sum by (instance, phase) (rate(notedthat_embedding_requests_total[10m]))
+            > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10% of embedding calls fail ({{ $labels.phase }})"
+          description: "{{ $value | humanizePercentage }} of `{{ $labels.phase }}` embedding calls failed over the last 10 minutes. The embedder is not part of /readyz, so this is the only signal."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatembedderfailing
+
+      - alert: NotedThatEventsDisconnected
+        expr: notedthat_nats_connected == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NotedThat has lost its NATS connection"
+          description: "The events backend has been disconnected for 2 minutes. Writes that must publish an event answer 503 until it reconnects."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthateventsdisconnected
+
+      - alert: NotedThatConditionalWritesNotEnforced
+        expr: min by (instance) (notedthat_storage_conditional_writes_enforced) == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A bucket does not enforce conditional writes"
+          description: "At startup a knowledge base's S3 bucket stored a PUT whose precondition did not hold. Concurrent edits to one object can silently overwrite each other."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatconditionalwritesnotenforced
+
+      - alert: NotedThatIndexQueueRefusing
+        expr: sum by (instance, kb) (increase(notedthat_index_events_refused_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Writes to {{ $labels.kb }} are being refused with INDEX_QUEUE_FULL"
+          description: "The indexing queue has been full on and off for 10 minutes, so writes answer 503 with Retry-After. The indexer is not keeping up."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuerefusing
+
+      - alert: NotedThatIndexQueueNearlyFull
+        expr: notedthat_index_queue_depth / notedthat_index_queue_capacity > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The indexing queue has been over 80% full for 10 minutes"
+          description: "{{ $value | humanizePercentage }} of the indexing queue is in use. Once it is full, writes answer 503 INDEX_QUEUE_FULL."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuenearlyfull
+
+      - alert: NotedThatIndexingFailures
+        expr: |
+          sum by (instance, kb) (increase(notedthat_index_events_completed_total{outcome="failed"}[15m])) > 0
+            or sum by (instance, kb) (
+              notedthat_index_events_completed_total{outcome="failed"}
+                unless notedthat_index_events_completed_total{outcome="failed"} offset 15m
+            ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Objects in {{ $labels.kb }} are failing to index"
+          description: "Indexing events for {{ $labels.kb }} failed recently (INDEXING_FAILED). Those objects are stored but not searchable; GET /api/v1/knowledgebases/{{ $labels.kb }}/index names the last failure."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexingfailures
+
+      - alert: NotedThatIndexWorkerStopped
+        # `0` during a graceful shutdown too; `for` rides that out.
+        expr: notedthat_index_worker_alive == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The indexer worker has stopped"
+          description: "Writes still succeed, but nothing they store is indexed (INDEX_QUEUE_CLOSED) until the process restarts."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexworkerstopped
+
+      - alert: NotedThatFsWatchLost
+        expr: |
+          sum by (instance, reason) (increase(notedthat_fs_watch_lost_total[10m])) > 0
+            or sum by (instance, reason) (notedthat_fs_watch_lost_total unless notedthat_fs_watch_lost_total offset 10m) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A filesystem watch was lost ({{ $labels.reason }})"
+          description: "FS_WATCH_LOST: changes made outside NotedThat below new directories may go unnoticed until the next comparison."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatfswatchlost
+
+      - alert: NotedThatReconcileIncomplete
+        expr: |
+          sum by (instance, kb, cause) (increase(notedthat_reconcile_passes_total{outcome="incomplete"}[1h])) > 0
+            or sum by (instance, kb, cause) (
+              notedthat_reconcile_passes_total{outcome="incomplete"}
+                unless notedthat_reconcile_passes_total{outcome="incomplete"} offset 1h
+            ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A {{ $labels.cause }} reconciliation pass over {{ $labels.kb }} did not complete"
+          description: "The index may be missing changes made outside NotedThat. Skipped and incomplete passes both land here; the log code says which."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatreconcileincomplete
+
+      - alert: NotedThatMcpSessionsRefused
+        # A 503 on /mcp is either the session cap (NOTEDTHAT_MCP_MAX_SESSIONS)
+        # or the in-flight cap; the second is counted on its own, so the
+        # difference is the session cap. No gauge of open sessions exists yet.
+        expr: |
+          (
+            sum by (instance) (increase(notedthat_http_requests_total{route="/mcp",status="503"}[5m]))
+              - (sum by (instance) (increase(notedthat_http_requests_refused_total{route="/mcp",reason="in_flight"}[5m])) or on (instance) (0 * sum by (instance) (increase(notedthat_http_requests_total{route="/mcp",status="503"}[5m]))))
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MCP clients are being refused a session"
+          description: "/mcp has answered 503 outside the in-flight cap for 5 minutes, most likely because NOTEDTHAT_MCP_MAX_SESSIONS is reached."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsrefused

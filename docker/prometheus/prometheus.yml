@@ -4,6 +4,12 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# The alerting rules (#186), mounted beside this file by
+# docker-compose.metrics.yml. No `alerting:` block ships: routing alerts to an
+# Alertmanager is the operator's to wire (docs/OPERATIONS.md#monitoring).
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: notedthat
     # The server's metrics listener, on the Compose network. Deliberately not
