@@ -419,6 +419,12 @@ the same change. A new alert needs three things: the rule with `severity`, `summ
 `description` and a `runbook_url`; a firing and a quiet case in `alerts.test.yml`; and a heading
 in `docs/OPERATIONS.md`'s Monitoring section whose anchor is the `runbook_url`'s.
 
+Write test input the way the exporter produces it: a counter series is absent (`_`) until its
+first increment and appears at 1 or more, not at a leading 0. Only the series
+`register_alerted_counters` (in `crates/notedthat-server/src/run/metrics.rs`) exports at 0 from
+startup may start at 0, and an alert that must fire on a single occurrence needs a case with the
+`_`-prefixed input.
+
 ## Unused dependencies
 
 The `machete` job in `ci.yml` fails when a crate declares a dependency its sources never name.

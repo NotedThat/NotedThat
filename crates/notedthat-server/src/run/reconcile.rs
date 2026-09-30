@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use notedthat_api_http::state::{ReconcileBusy, ReconcileTrigger};
+use notedthat_core::metrics::reconcile_cause;
 use notedthat_core::reconcile::{IndexedEtag, compare, walk_etags};
 use notedthat_core::{KbSlug, Storage};
 use notedthat_indexer::{
@@ -122,7 +123,7 @@ impl Reconciler {
                 tokio::select! {
                     biased;
                     () = inner.cancel.cancelled() => break,
-                    () = run_pass(&inner, &kb, "startup") => {}
+                    () = run_pass(&inner, &kb, reconcile_cause::STARTUP) => {}
                 }
             }
         });
@@ -166,7 +167,7 @@ impl ReconcileTrigger for Reconciler {
             tokio::select! {
                 biased;
                 () = inner.cancel.cancelled() => {}
-                () = run_pass(&inner, &kb, "requested") => {}
+                () = run_pass(&inner, &kb, reconcile_cause::REQUESTED) => {}
             }
         });
         Ok(())

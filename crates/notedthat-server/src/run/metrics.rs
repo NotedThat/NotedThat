@@ -43,7 +43,10 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use notedthat_core::KbSlug;
-use notedthat_core::metrics::{HISTOGRAM_BUCKETS, label, name};
+use notedthat_core::metrics::{
+    HISTOGRAM_BUCKETS, index_outcome, label, name, reconcile_cause, reconcile_outcome,
+    watch_lost_reason,
+};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -318,19 +321,19 @@ impl PassMetric {
             kb: kb.as_str().to_string(),
             cause: cause.to_string(),
             started: Instant::now(),
-            outcome: "incomplete",
+            outcome: reconcile_outcome::INCOMPLETE,
         }
     }
 
     /// The pass ran to completion and its report was recorded.
     pub(crate) fn completed(&mut self) {
-        self.outcome = "completed";
+        self.outcome = reconcile_outcome::COMPLETED;
     }
 
     /// The consumer stopped listening part-way through, so most of the
     /// comparison never reached the queue.
     pub(crate) fn abandoned(&mut self) {
-        self.outcome = "abandoned";
+        self.outcome = reconcile_outcome::ABANDONED;
     }
 }
 
@@ -378,7 +381,76 @@ pub(crate) fn install(config: &Config) -> anyhow::Result<()> {
     }
     shared_handle()?;
     record_build_info(config);
+    register_alerted_counters(config);
     Ok(())
+}
+
+/// Export at `0` the counter series the shipped alerts watch for a single
+/// increment, before anything can increment them (#186).
+///
+/// A counter the facade creates on its first increment reaches Prometheus
+/// already at `1`, and `increase()` has no earlier sample to see that step
+/// against, so an alert on "any increase" would miss the one-off event it
+/// exists for. Only label sets that are closed and known here are
+/// registered — every declared knowledge base, the pass causes this run's
+/// backend can produce, and the watch-loss reasons when a watcher runs:
+///
+/// - `notedthat_index_events_completed_total{kb, outcome="failed"}`
+/// - `notedthat_reconcile_passes_total{kb, cause, outcome="incomplete"}`
+/// - `notedthat_fs_watch_lost_total{reason}`
+///
+/// It does not cover an event before the first scrape — a startup pass that
+/// is skipped usually is one — which is why `alerts.yml` also catches a series
+/// that is new within the window. `increment(0)` rather than `absolute(0)`: a
+/// second server in the same process shares the registry, and must not reset
+/// the first one's counts.
+fn register_alerted_counters(config: &Config) {
+    let (causes, watching): (&[&'static str], bool) = match &config.storage {
+        StorageConfig::S3(_) => (
+            &[reconcile_cause::STARTUP, reconcile_cause::REQUESTED],
+            false,
+        ),
+        StorageConfig::Fs(fs) if fs.watch => (
+            &[
+                reconcile_cause::STARTUP,
+                reconcile_cause::SUBTREE_CHANGED,
+                reconcile_cause::RESCAN,
+            ],
+            true,
+        ),
+        StorageConfig::Fs(_) => (&[], false),
+    };
+    zero_alerted_counters(config.kbs.values(), causes, watching);
+}
+
+/// The registration behind [`register_alerted_counters`], apart from `Config`.
+fn zero_alerted_counters<'a>(
+    kbs: impl IntoIterator<Item = &'a KbSlug>,
+    causes: &[&'static str],
+    watching: bool,
+) {
+    for kb in kbs {
+        metrics::counter!(
+            name::INDEX_EVENTS_COMPLETED,
+            label::KB => kb.as_str().to_string(),
+            label::OUTCOME => index_outcome::FAILED,
+        )
+        .increment(0);
+        for cause in causes {
+            metrics::counter!(
+                name::RECONCILE_PASSES,
+                label::KB => kb.as_str().to_string(),
+                label::CAUSE => *cause,
+                label::OUTCOME => reconcile_outcome::INCOMPLETE,
+            )
+            .increment(0);
+        }
+    }
+    if watching {
+        for reason in [watch_lost_reason::MAX_FILES_WATCH, watch_lost_reason::ERROR] {
+            metrics::counter!(name::FS_WATCH_LOST, label::REASON => reason).increment(0);
+        }
+    }
 }
 
 /// Bind and serve the metrics listener, if this run configured one.
@@ -448,7 +520,7 @@ async fn render(State(handle): State<PrometheusHandle>) -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXPOSITION_CONTENT_TYPE, router, shared_handle};
+    use super::{EXPOSITION_CONTENT_TYPE, router, shared_handle, zero_alerted_counters};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::util::ServiceExt;
@@ -496,6 +568,32 @@ mod tests {
                 .expect("the exposition names its content type"),
             EXPOSITION_CONTENT_TYPE
         );
+    }
+
+    /// The series the alerts watch for one increment are scraped at `0`
+    /// before anything happens, so the first increment is a step `increase()`
+    /// can see (#186).
+    #[test]
+    fn the_alerted_counters_are_exported_at_zero() {
+        let handle = shared_handle().expect("a recorder is available");
+        // A slug no other test uses, so the rendering below is this test's.
+        let kb = notedthat_core::KbSlug::try_from("zero-registered").expect("a valid slug");
+        zero_alerted_counters([&kb], &["startup", "rescan"], true);
+        let rendered = handle.render();
+        for series in [
+            r#"notedthat_index_events_completed_total{kb="zero-registered",outcome="failed"} 0"#,
+            r#"notedthat_reconcile_passes_total{kb="zero-registered",cause="startup",outcome="incomplete"} 0"#,
+            r#"notedthat_reconcile_passes_total{kb="zero-registered",cause="rescan",outcome="incomplete"} 0"#,
+        ] {
+            assert!(
+                rendered.lines().any(|line| line == series),
+                "{series} is not exported:\n{rendered}"
+            );
+        }
+        for reason in ["max_files_watch", "error"] {
+            let series = format!(r#"notedthat_fs_watch_lost_total{{reason="{reason}"}}"#);
+            assert!(rendered.contains(&series), "{series} is not exported");
+        }
     }
 
     /// The operator socket is not a second product surface.

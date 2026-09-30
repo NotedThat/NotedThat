@@ -257,6 +257,29 @@ pub mod watch_lost_reason {
     pub const ERROR: &str = "error";
 }
 
+/// Values for the `cause` label on a reconciliation pass (D50, D67).
+pub mod reconcile_cause {
+    /// The comparison every knowledge base gets once when the server starts.
+    pub const STARTUP: &str = "startup";
+    /// An operator asked for it (`s3`: `POST …/index/reconcile`).
+    pub const REQUESTED: &str = "requested";
+    /// The `fs` watcher saw a directory appear or vanish and compares below it.
+    pub const SUBTREE_CHANGED: &str = "subtree changed";
+    /// The `fs` watcher lost events and compares the whole knowledge base.
+    pub const RESCAN: &str = "rescan";
+}
+
+/// Values for the `outcome` label on a reconciliation pass.
+pub mod reconcile_outcome {
+    /// The pass ran to completion and its report was recorded.
+    pub const COMPLETED: &str = "completed";
+    /// The pass ended early: a missing collection, an unreadable index or
+    /// bucket, a worker that has gone.
+    pub const INCOMPLETE: &str = "incomplete";
+    /// The consumer stopped listening part-way through.
+    pub const ABANDONED: &str = "abandoned";
+}
+
 /// Every histogram in the catalogue, with the buckets it is rendered in.
 ///
 /// The exporter renders a histogram as a *summary* with per-process quantiles

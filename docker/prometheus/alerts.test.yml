@@ -1,12 +1,270 @@
 # Unit tests for alerts.yml: `promtool test rules alerts.test.yml`.
 #
-# Each alert tested here has a case that fires and one that must stay quiet.
+# Every alert has a case that fires and one that must stay quiet.
+#
+# Counter input is written the way the exporter produces it. A series that
+# nothing registers early is absent (`_`) until its first increment and then
+# appears already at 1 or more, never at a leading 0. Only the series
+# `register_alerted_counters` exports at 0 from startup (listed in the header
+# of alerts.yml) may start at 0.
 rule_files:
   - alerts.yml
 
 evaluation_interval: 1m
 
 tests:
+  # One missed scrape is a blip; two minutes of them pages.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="notedthat",instance="a"}'
+        values: '1 0 0 0 0 0 0'
+      - series: 'up{job="notedthat",instance="b"}'
+        values: '1 1 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: NotedThatDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: NotedThatDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: notedthat
+              instance: a
+            exp_annotations:
+              summary: "NotedThat's metrics listener has not answered a scrape for 2 minutes"
+              description: "Prometheus cannot scrape a. The server is down, or its metrics listener is off or unreachable."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatdown
+
+  # Storage unreachable pages only once it has lasted five minutes; an `error`
+  # outcome (a caller's mistake) never does.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="probe",outcome="unavailable"}'
+        values: '1+1x15'
+      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="get_object",outcome="error"}'
+        values: '5+5x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NotedThatStorageUnavailable
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: NotedThatStorageUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: a
+              backend: s3
+              op: probe
+            exp_annotations:
+              summary: "The s3 storage backend is unreachable"
+              description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
+
+  # A missing bucket fires on the first failed call, whose series is born at 1,
+  # and clears once that call has left the window. Other storage errors are
+  # someone else's alert.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_storage_errors_total{instance="a",backend="s3",op="probe",error_kind="bucket_not_found"}'
+        values: '_ _ 1 1 1 1 1 1 1 1 1 1'
+      - series: 'notedthat_storage_errors_total{instance="b",backend="s3",op="probe",error_kind="backend_unavailable"}'
+        values: '1+1x11'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: NotedThatBucketMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: NotedThatBucketMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: a
+              backend: s3
+            exp_annotations:
+              summary: "A knowledge base's bucket is gone"
+              description: "The s3 backend answered, but a bucket NotedThat was configured with does not exist. /readyz reports storage degraded."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatbucketmissing
+      - eval_time: 8m
+        alertname: NotedThatBucketMissing
+        exp_alerts: []
+
+  # Qdrant unreachable pages after five minutes; calls that succeed never do.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_vector_store_operations_total{instance="a",op="search",outcome="unavailable"}'
+        values: '1+1x15'
+      - series: 'notedthat_vector_store_operations_total{instance="a",op="upsert",outcome="ok"}'
+        values: '1+1x15'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NotedThatVectorStoreUnavailable
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: NotedThatVectorStoreUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: a
+              op: search
+            exp_annotations:
+              summary: "Qdrant is unreachable"
+              description: "Vector-store `search` calls have been failing for 5 minutes. Search fails and indexing stalls; /readyz answers 503 while the probe fails."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatvectorstoreunavailable
+
+  # Half the index-phase calls fail, which pages; one query-phase call in 21
+  # fails, which is under the 10% line and stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_embedding_requests_total{instance="a",phase="index",outcome="error"}'
+        values: '1+1x30'
+      - series: 'notedthat_embedding_requests_total{instance="a",phase="index",outcome="ok"}'
+        values: '1+1x30'
+      - series: 'notedthat_embedding_requests_total{instance="a",phase="query",outcome="error"}'
+        values: '1+1x30'
+      - series: 'notedthat_embedding_requests_total{instance="a",phase="query",outcome="ok"}'
+        values: '20+20x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NotedThatEmbedderFailing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NotedThatEmbedderFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+              phase: index
+            exp_annotations:
+              summary: "More than 10% of embedding calls fail (index)"
+              description: "50% of `index` embedding calls failed over the last 10 minutes. The embedder is not part of /readyz, so this is the only signal."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatembedderfailing
+
+  # A NATS reconnect within the minute is quiet; two minutes down pages.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_nats_connected{instance="a"}'
+        values: '1 0 0 0 0 0'
+      - series: 'notedthat_nats_connected{instance="b"}'
+        values: '1 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: NotedThatEventsDisconnected
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: NotedThatEventsDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: a
+            exp_annotations:
+              summary: "NotedThat has lost its NATS connection"
+              description: "The events backend has been disconnected for 2 minutes. Writes that must publish an event answer 503 until it reconnects."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthateventsdisconnected
+
+  # One bucket that does not enforce conditional writes is enough; an instance
+  # whose buckets all do stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_storage_conditional_writes_enforced{instance="a",kb="notes"}'
+        values: '1x5'
+      - series: 'notedthat_storage_conditional_writes_enforced{instance="a",kb="drafts"}'
+        values: '0x5'
+      - series: 'notedthat_storage_conditional_writes_enforced{instance="b",kb="notes"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: NotedThatConditionalWritesNotEnforced
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+            exp_annotations:
+              summary: "A bucket does not enforce conditional writes"
+              description: "At startup a knowledge base's S3 bucket stored a PUT whose precondition did not hold. Concurrent edits to one object can silently overwrite each other."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatconditionalwritesnotenforced
+
+  # A single burst of refusals is backpressure doing its job; refusals that
+  # keep coming for ten minutes are an indexer that cannot keep up.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_index_events_refused_total{instance="a",kb="burst"}'
+        values: '_ 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3'
+      - series: 'notedthat_index_events_refused_total{instance="a",kb="behind"}'
+        values: '2+2x23'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NotedThatIndexQueueRefusing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NotedThatIndexQueueRefusing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+              kb: behind
+            exp_annotations:
+              summary: "Writes to behind are being refused with INDEX_QUEUE_FULL"
+              description: "The indexing queue has been full on and off for 10 minutes, so writes answer 503 with Retry-After. The indexer is not keeping up."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuerefusing
+
+  # A queue at 90% for ten minutes warns; one at 50% does not.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_index_queue_depth{instance="a"}'
+        values: '90x20'
+      - series: 'notedthat_index_queue_capacity{instance="a"}'
+        values: '100x20'
+      - series: 'notedthat_index_queue_depth{instance="b"}'
+        values: '50x20'
+      - series: 'notedthat_index_queue_capacity{instance="b"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NotedThatIndexQueueNearlyFull
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: NotedThatIndexQueueNearlyFull
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+            exp_annotations:
+              summary: "The indexing queue has been over 80% full for 10 minutes"
+              description: "90% of the indexing queue is in use. Once it is full, writes answer 503 INDEX_QUEUE_FULL."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuenearlyfull
+
+  # One failed object fires, although its series is born at 1 when the
+  # scrape before it came too early to see the 0, and clears once it has left
+  # the window. A knowledge base whose `failed` series is registered at 0 and
+  # stays there is quiet, and so are successes.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_index_events_completed_total{instance="a",kb="notes",outcome="failed"}'
+        values: '_ _ 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'notedthat_index_events_completed_total{instance="a",kb="notes",outcome="succeeded"}'
+        values: '1+1x20'
+      - series: 'notedthat_index_events_completed_total{instance="a",kb="drafts",outcome="failed"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: NotedThatIndexingFailures
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: NotedThatIndexingFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+              kb: notes
+            exp_annotations:
+              summary: "Objects in notes are failing to index"
+              description: "1 indexing events failed in the last 15 minutes (INDEXING_FAILED). Those objects are stored but not searchable."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexingfailures
+      - eval_time: 18m
+        alertname: NotedThatIndexingFailures
+        exp_alerts: []
+
   # The worker's gauge drops to 0 for a moment during a graceful shutdown; only
   # a worker that stays down pages.
   - interval: 30s
@@ -30,12 +288,17 @@ tests:
               description: "Writes still succeed, but nothing they store is indexed (INDEX_QUEUE_CLOSED) until the process restarts."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexworkerstopped
 
-  # A watch lost once fires at once; a server that never lost one exports no
-  # series and stays quiet.
+  # A watch lost once fires at once, both on a series first scraped at 1 (the
+  # watcher is off, or lost it before the first scrape) and on one registered
+  # at 0 from startup. A server that never lost one is quiet.
   - interval: 1m
     input_series:
       - series: 'notedthat_fs_watch_lost_total{instance="a",reason="max_files_watch"}'
+        values: '_ _ 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'notedthat_fs_watch_lost_total{instance="b",reason="error"}'
         values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'notedthat_fs_watch_lost_total{instance="c",reason="max_files_watch"}'
+        values: '0x19'
     alert_rule_test:
       - eval_time: 1m
         alertname: NotedThatFsWatchLost
@@ -51,64 +314,58 @@ tests:
               summary: "A filesystem watch was lost (max_files_watch)"
               description: "FS_WATCH_LOST: changes made outside NotedThat below new directories may go unnoticed until the next comparison."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatfswatchlost
+          - exp_labels:
+              severity: warning
+              instance: b
+              reason: error
+            exp_annotations:
+              summary: "A filesystem watch was lost (error)"
+              description: "FS_WATCH_LOST: changes made outside NotedThat below new directories may go unnoticed until the next comparison."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatfswatchlost
       # Ten minutes after the last loss the window no longer holds it.
       - eval_time: 19m
         alertname: NotedThatFsWatchLost
         exp_alerts: []
 
-  # Storage unreachable pages only once it has lasted five minutes; an `error`
-  # outcome (a caller's mistake) never does.
-  - interval: 1m
+  # A startup pass that is skipped happens once per process, before the first
+  # scrape, so its series is first seen at 1; it must still fire, and clear an
+  # hour later. Completed passes and an `incomplete` series registered at 0
+  # are quiet.
+  - interval: 5m
     input_series:
-      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="probe",outcome="unavailable"}'
-        values: '0+1x15'
-      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="get_object",outcome="error"}'
-        values: '0+5x15'
+      - series: 'notedthat_reconcile_passes_total{instance="a",kb="notes",cause="startup",outcome="incomplete"}'
+        values: '_ 1x15'
+      - series: 'notedthat_reconcile_passes_total{instance="a",kb="notes",cause="requested",outcome="incomplete"}'
+        values: '0x16'
+      - series: 'notedthat_reconcile_passes_total{instance="a",kb="drafts",cause="startup",outcome="completed"}'
+        values: '_ 1x15'
     alert_rule_test:
-      - eval_time: 4m
-        alertname: NotedThatStorageUnavailable
+      - eval_time: 0m
+        alertname: NotedThatReconcileIncomplete
         exp_alerts: []
-      - eval_time: 12m
-        alertname: NotedThatStorageUnavailable
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              instance: a
-              backend: s3
-              op: probe
-            exp_annotations:
-              summary: "The s3 storage backend is unreachable"
-              description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
-              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
-
-  # A single burst of refusals is backpressure doing its job; refusals that
-  # keep coming for ten minutes are an indexer that cannot keep up.
-  - interval: 1m
-    input_series:
-      - series: 'notedthat_index_events_refused_total{instance="a",kb="burst"}'
-        values: '0 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3'
-      - series: 'notedthat_index_events_refused_total{instance="a",kb="behind"}'
-        values: '0+2x23'
-    alert_rule_test:
-      - eval_time: 20m
-        alertname: NotedThatIndexQueueRefusing
+      - eval_time: 5m
+        alertname: NotedThatReconcileIncomplete
         exp_alerts:
           - exp_labels:
               severity: warning
               instance: a
-              kb: behind
+              kb: notes
+              cause: startup
             exp_annotations:
-              summary: "Writes to behind are being refused with INDEX_QUEUE_FULL"
-              description: "The indexing queue has been full on and off for 10 minutes, so writes answer 503 with Retry-After. The indexer is not keeping up."
-              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuerefusing
+              summary: "A startup reconciliation pass over notes did not complete"
+              description: "The index may be missing changes made outside NotedThat. Skipped and incomplete passes both land here; the log code says which."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatreconcileincomplete
+      - eval_time: 70m
+        alertname: NotedThatReconcileIncomplete
+        exp_alerts: []
 
   # Every 503 on /mcp here is the in-flight cap, so no session was refused.
   - interval: 1m
     input_series:
       - series: 'notedthat_http_requests_total{instance="a",surface="mcp",route="/mcp",method="POST",status="503"}'
-        values: '0+4x15'
+        values: '4+4x15'
       - series: 'notedthat_http_requests_refused_total{instance="a",surface="mcp",route="/mcp",reason="in_flight"}'
-        values: '0+4x15'
+        values: '4+4x15'
     alert_rule_test:
       - eval_time: 15m
         alertname: NotedThatMcpSessionsRefused
@@ -119,11 +376,11 @@ tests:
   - interval: 1m
     input_series:
       - series: 'notedthat_http_requests_total{instance="a",surface="mcp",route="/mcp",method="POST",status="503"}'
-        values: '0+4x15'
+        values: '4+4x15'
       - series: 'notedthat_http_requests_total{instance="b",surface="mcp",route="/mcp",method="POST",status="503"}'
-        values: '0+4x15'
+        values: '4+4x15'
       - series: 'notedthat_http_requests_refused_total{instance="b",surface="mcp",route="/mcp",reason="in_flight"}'
-        values: '0+1x15'
+        values: '1+1x15'
     alert_rule_test:
       - eval_time: 15m
         alertname: NotedThatMcpSessionsRefused

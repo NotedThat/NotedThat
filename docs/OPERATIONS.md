@@ -557,9 +557,15 @@ and [`docs/CONFIGURATION.md`](CONFIGURATION.md) call worth acting on. Each alert
     message.
 
 The rules are checked by `promtool` in CI, with unit tests in `docker/prometheus/alerts.test.yml`
-([DEVELOPMENT.md](../DEVELOPMENT.md#alerting-rules)). A series only exists once something has
-incremented it, so a healthy server exports no `notedthat_fs_watch_lost_total` at all; the rules
-are written so that an absent series is quiet, not firing.
+([DEVELOPMENT.md](../DEVELOPMENT.md#alerting-rules)). Most counter series only exist once something
+has incremented them, so they reach Prometheus already at 1 and `increase()` cannot see that first
+step. The server therefore exports, at 0 from startup, the series the one-off alerts watch:
+`notedthat_index_events_completed_total{outcome="failed"}` for every declared knowledge base,
+`notedthat_reconcile_passes_total{outcome="incomplete"}` for every knowledge base and each pass
+cause its backend can produce, and `notedthat_fs_watch_lost_total` for both reasons when the `fs`
+watcher runs. An event before the first scrape still arrives at 1, so those rules, and
+[NotedThatBucketMissing](#notedthatbucketmissing), also fire on a series that is new within their
+window. An absent series, or one at 0, is quiet, not firing.
 
 ### NotedThatDown
 

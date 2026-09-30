@@ -5,9 +5,21 @@
 # but something is degraded or falling behind) and a `runbook_url` into
 # docs/OPERATIONS.md, whose `## Monitoring` section has one heading per alert.
 #
-# A series only exists once it has been incremented, so a healthy server does
-# not export `notedthat_fs_watch_lost_total` at all. Rules therefore test with
-# `increase()` / `rate()` and never with `absent()`.
+# A counter series is created by its first increment, so it usually reaches
+# Prometheus already at 1, and `increase()` has no earlier sample to see that
+# step against. The server exports a few series at 0 from startup (see
+# `register_alerted_counters` in notedthat-server's run/metrics.rs):
+#   notedthat_index_events_completed_total{kb, outcome="failed"}   every declared kb
+#   notedthat_reconcile_passes_total{kb, cause, outcome="incomplete"}
+#       every declared kb, for each cause its backend can produce
+#       (s3: startup, requested; fs with watching on: startup, subtree changed, rescan)
+#   notedthat_fs_watch_lost_total{reason}                           fs with watching on
+# That does not help an event before the first scrape (a startup pass that is
+# skipped usually is one), nor any other series. So every alert that must fire
+# on a single occurrence has a second arm, `x unless x offset <window>`, which
+# catches a series that did not exist a window ago and is above 0 now. A series
+# exported at 0 stays quiet. Nothing uses `absent()`: a healthy server may not
+# export a series at all.
 #
 # Checked in CI by `promtool check rules` and `promtool test rules`
 # (alerts.test.yml); a metric renamed in `notedthat_core::metrics` fails
@@ -36,7 +48,12 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
       - alert: NotedThatBucketMissing
-        expr: sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
+        expr: |
+          sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
+            or sum by (instance, backend) (
+              notedthat_storage_errors_total{error_kind="bucket_not_found"}
+                unless notedthat_storage_errors_total{error_kind="bucket_not_found"} offset 5m
+            ) > 0
         labels:
           severity: critical
         annotations:
@@ -107,7 +124,12 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuenearlyfull
 
       - alert: NotedThatIndexingFailures
-        expr: sum by (instance, kb) (increase(notedthat_index_events_completed_total{outcome="failed"}[15m])) > 0
+        expr: |
+          sum by (instance, kb) (increase(notedthat_index_events_completed_total{outcome="failed"}[15m])) > 0
+            or sum by (instance, kb) (
+              notedthat_index_events_completed_total{outcome="failed"}
+                unless notedthat_index_events_completed_total{outcome="failed"} offset 15m
+            ) > 0
         labels:
           severity: warning
         annotations:
@@ -127,7 +149,9 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexworkerstopped
 
       - alert: NotedThatFsWatchLost
-        expr: sum by (instance, reason) (increase(notedthat_fs_watch_lost_total[10m])) > 0
+        expr: |
+          sum by (instance, reason) (increase(notedthat_fs_watch_lost_total[10m])) > 0
+            or sum by (instance, reason) (notedthat_fs_watch_lost_total unless notedthat_fs_watch_lost_total offset 10m) > 0
         labels:
           severity: warning
         annotations:
@@ -136,7 +160,12 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatfswatchlost
 
       - alert: NotedThatReconcileIncomplete
-        expr: sum by (instance, kb, cause) (increase(notedthat_reconcile_passes_total{outcome="incomplete"}[1h])) > 0
+        expr: |
+          sum by (instance, kb, cause) (increase(notedthat_reconcile_passes_total{outcome="incomplete"}[1h])) > 0
+            or sum by (instance, kb, cause) (
+              notedthat_reconcile_passes_total{outcome="incomplete"}
+                unless notedthat_reconcile_passes_total{outcome="incomplete"} offset 1h
+            ) > 0
         labels:
           severity: warning
         annotations:
