@@ -61,10 +61,11 @@ tests:
               description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
-  # A missing bucket fails every readiness probe, so its counter keeps
+  # A missing witness bucket fails every readiness probe, so its counter keeps
   # climbing; the alert fires from the second scrape that sees it, and clears
-  # five minutes after the bucket is back. A single failed call that is never
-  # repeated is not a missing bucket and stays quiet, as do other storage
+  # five minutes after the bucket is back. Another knowledge base's bucket is
+  # seen only through requests: a single failed call that is never repeated
+  # stays quiet (a documented limit, not a guarantee), as do other storage
   # errors.
   - interval: 1m
     input_series:

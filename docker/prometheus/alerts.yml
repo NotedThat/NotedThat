@@ -12,7 +12,8 @@
 #   notedthat_index_events_completed_total{kb, outcome="failed"}   every declared kb
 #   notedthat_reconcile_passes_total{kb, cause, outcome="incomplete"}
 #       every declared kb, for each cause its backend can produce
-#       (s3: startup, requested; fs with watching on: startup, subtree changed, rescan)
+#       (s3: requested, plus startup when reconcile_on_startup is on;
+#        fs with watching on: startup, subtree changed, rescan)
 #   notedthat_fs_watch_lost_total{reason}                           fs with watching on
 # That does not help an event before the first scrape (a startup pass that is
 # skipped usually is one). So the three alerts that must fire on a single
@@ -24,10 +25,12 @@
 # then. After a Prometheus restart or outage, a scrape gap longer than the 5m
 # lookback, a fresh TSDB or a newly added scrape job, those three alerts can
 # fire once, for up to their window, on counts from before the gap. Their
-# annotations therefore claim no count. BucketMissing has no such arm: the
-# readiness probe repeats every few seconds while a bucket is gone, so
-# `increase()` sees it from the second probe on, and a critical alert must not
-# page on an old count.
+# annotations therefore claim no count. BucketMissing has no such arm, so a
+# critical alert cannot page on an old count. The readiness probe checks only
+# the witness bucket (the first knowledge base by slug) and repeats every few
+# seconds while it is gone, so `increase()` sees it from the second scrape on.
+# Any other knowledge base's bucket shows up only through request traffic, and
+# pages only once the same call fails again within 5 minutes.
 #
 # Nothing uses `absent()`: a healthy server may not export a series at all.
 #
@@ -58,7 +61,8 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
       - alert: NotedThatBucketMissing
-        # No new-series arm (see the header): the probe repeats while the bucket is gone.
+        # No new-series arm (see the header): reliable for the witness bucket, which the
+        # readiness probe repeats; other buckets need a repeated failing request.
         expr: sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
         labels:
           severity: critical
