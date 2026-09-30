@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 /// this exact field set in its input schema and forwards it verbatim; a test
 /// there keeps the two in step.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        description = "Filters applied to a search. Every field is optional; they are AND-composed. Unknown keys are rejected with `400`."
+    )
+)]
 #[serde(deny_unknown_fields)]
 pub struct SearchFilter {
     /// Only return hits whose `object_key` starts with this prefix (client-side post-filter).

@@ -31,7 +31,7 @@
 //! answered at once, with the same `503` and `Retry-After` every other capacity
 //! refusal on this server gives (D38).
 
-use crate::error::refusal;
+use crate::error::{ErrorCode, refusal};
 use crate::metrics::route_and_surface;
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -167,7 +167,7 @@ pub async fn bound(State(bounds): State<RequestBounds>, req: Request, next: Next
         count_refusal(&req, refused_reason::IN_FLIGHT);
         return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
-            "backend_unavailable",
+            ErrorCode::BackendUnavailable,
             "the server is at its limit of requests in flight; retry shortly".to_string(),
             request_id(&req),
         );
@@ -205,7 +205,7 @@ pub async fn bound(State(bounds): State<RequestBounds>, req: Request, next: Next
                     refused.count(refused_reason::TIMEOUT);
                     return refusal(
                         StatusCode::REQUEST_TIMEOUT,
-                        "request_timeout",
+                        ErrorCode::RequestTimeout,
                         format!(
                             "the request body stopped arriving for more than {} ms",
                             bounds.client_idle.as_millis()
@@ -230,7 +230,7 @@ pub async fn bound(State(bounds): State<RequestBounds>, req: Request, next: Next
                     refused.count(refused_reason::TIMEOUT);
                     return refusal(
                         StatusCode::REQUEST_TIMEOUT,
-                        "request_timeout",
+                        ErrorCode::RequestTimeout,
                         format!(
                             "the request body stopped arriving for more than {} ms",
                             bounds.client_idle.as_millis()
@@ -249,7 +249,7 @@ pub async fn bound(State(bounds): State<RequestBounds>, req: Request, next: Next
         refused.count(refused_reason::TIMEOUT);
         refusal(
             StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
+            ErrorCode::RequestTimeout,
             format!(
                 "the request did not complete within {} ms",
                 bounds.timeout.as_millis()

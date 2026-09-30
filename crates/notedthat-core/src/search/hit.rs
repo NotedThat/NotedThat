@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 /// that delimit this chunk. Use them with a `Range: bytes=<byte_start>-<byte_end-1>`
 /// header against `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the exact bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SearchHit {
-    /// The S3 object key (relative path within the knowledge base).
+    /// The object's key (its path within the knowledge base).
     pub object_key: ObjectKey,
     /// Byte offset of the start of this chunk in the original object.
     pub byte_start: u64,
@@ -19,7 +20,7 @@ pub struct SearchHit {
     /// Heading hierarchy at the location of this chunk (may be empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heading_path: Vec<String>,
-    /// RRF fusion rank score. Higher is better. Not a probability.
+    /// Reciprocal-rank-fusion score. Higher is better. Not a probability.
     pub score: f32,
     /// Preview text — a UTF-8-safe truncation of the chunk to at most 500 characters.
     pub preview: String,

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Metadata identifying the OKF concept containing a search chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ConceptMetadata {
     /// Bundle-relative document path without the `.md` extension.
     pub concept_id: String,

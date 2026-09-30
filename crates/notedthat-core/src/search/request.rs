@@ -27,6 +27,13 @@ pub const MIN_LIMIT: u32 = 1;
 /// by (#125). A newer client against an older server now hears which key the
 /// server does not know instead of silently getting more than it asked for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        description = "A hybrid (dense + keyword) search over one knowledge base. Unknown keys are rejected with `400`."
+    )
+)]
 #[serde(deny_unknown_fields)]
 pub struct SearchRequest {
     /// The natural-language query string (required).
@@ -38,6 +45,7 @@ pub struct SearchRequest {
 
     /// Maximum number of hits to return. Clamped to `[1, 50]`. Defaults to `10`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub limit: Option<u32>,
 }
 

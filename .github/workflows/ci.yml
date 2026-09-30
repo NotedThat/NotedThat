@@ -65,6 +65,11 @@ jobs:
           # rust-cache already folds `rustc -vV` into its key, so the two legs
           # cannot collide. This is for legibility in the cache listing.
           key: ${{ matrix.toolchain }}
+      # This is also the staleness check for docs/openapi.json (D77):
+      # `notedthat-api-http`'s `openapi` test compares the committed document
+      # with the one the handlers generate, so a contract change that was not
+      # regenerated fails here, and — since this job gates release — cannot
+      # ship. A separate diff step would check the same bytes a second time.
       - run: cargo test --workspace --locked
 
   clippy:

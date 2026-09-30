@@ -7,13 +7,15 @@ responses and plain bytes for object bodies.
 
 ## Base URL and versioning
 
-All API data-plane routes are prefixed with `/api/v1/`. WebDAV is mounted at `/webdav`, and
+All API data-plane routes are prefixed with `/api/v1/`, and their machine-readable description is
+served at [`/api/v1/openapi.json`](#openapi-document). WebDAV is mounted at `/webdav`, and
 streamable MCP is mounted at `/mcp`. Health probes (`/healthz`, `/readyz`) and the LLM
 navigation document (`/llms.txt`) sit at the root with no version prefix.
 `/browse/...` serves human-facing HTML directory listings — see [Browse surface](#browse-surface).
 
 ```
 http://HOST:PORT/api/v1/knowledgebases/...
+http://HOST:PORT/api/v1/openapi.json
 http://HOST:PORT/healthz
 http://HOST:PORT/llms.txt
 ```
@@ -29,6 +31,24 @@ client block, and the WebDAV share with its schemes. It contains generic guidanc
 includes credentials, hostnames, configured knowledge-base names, or deployment-specific details.
 
 Point an LLM at `http://HOST:PORT/llms.txt` before asking it to work with a NotedThat deployment.
+
+## OpenAPI document
+
+`GET /api/v1/openapi.json` returns an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) document
+describing every `/api/v1` route: its parameters and headers, its request and response schemas,
+every status it can answer, the error envelope, and which routes an anonymous caller may reach. It
+is public, like `/llms.txt`: it describes routes and carries no data, so no credential is needed,
+and a credential that does not verify is not refused. The same document is committed as
+[`docs/openapi.json`](openapi.json), so a client can be written without a running server.
+
+The document is generated from the server's handlers and types, and CI fails when the committed
+copy differs from what the code generates. **It is authoritative for paths, parameters, schemas and
+status codes.** This page explains behaviour — what a status means, why a rule exists, how the
+surfaces relate — and where the two disagree, this page is wrong.
+
+Two things the document cannot say in schema terms are stated in its descriptions instead: the
+server-sent event framing of the events stream, and that the object routes' `{object_path}` is an
+object key percent-encoded as one segment (`/` as `%2F`), with an unencoded `/` accepted too.
 
 ## Browse surface
 
@@ -107,8 +127,8 @@ authorization server a client can obtain a token from. Per RFC 9728 §3.1 the me
 `https://notes.example.com/.well-known/oauth-protected-resource`, and one of
 `https://notes.example.com/mcp` at `https://notes.example.com/.well-known/oauth-protected-resource/mcp`.
 
-Health probes (`/healthz`, `/readyz`) and the LLM navigation document (`/llms.txt`) are globally
-public. An installation may additionally grant verbs to `anyone` through a knowledge base's
+Health probes (`/healthz`, `/readyz`), the LLM navigation document (`/llms.txt`) and the
+[OpenAPI document](#openapi-document) (`/api/v1/openapi.json`) are globally public. An installation may additionally grant verbs to `anyone` through a knowledge base's
 manifest, and such a grant is honoured on every surface — the HTTP API, WebDAV, the browse pages
 and, since D59, MCP. A client must omit `Authorization` only when it knows the requested verb is
 granted: a supplied malformed or invalid credential always returns `401 unauthorized` and never
@@ -213,7 +233,7 @@ diagnosing; that is where the distinction was moved to, not removed.
 ```json
 {
   "error": "unauthorized",
-  "message": "missing or invalid Authorization header",
+  "message": "provide a valid Bearer token in the Authorization header",
   "request_id": "0193f6c5-1234-7890-abcd-1234567890ab"
 }
 ```
@@ -251,11 +271,15 @@ All error responses use the same JSON envelope:
 | 400 | `invalid_request` | Malformed path, invalid KB slug, or other bad input |
 | 400 | `malformed_range` | Unparseable `Range` header, or a `bytes=` range set naming more than one range |
 | 401 | `unauthorized` | Missing `Authorization` header on a route that always requires one, or an invalid one on any route |
+| 403 | `forbidden` | The credential is valid and the knowledge base's access rules do not grant this operation on this key; or `POST …/index/reconcile` with a credential other than the service token |
 | 404 | `not_found` | KB slug not declared, object does not exist, the KB's bucket or directory no longer exists in storage, or an anonymous caller the access rules do not grant |
 | 412 | `precondition_failed` | `If-Match` mismatch or `If-None-Match`/`If-Unmodified-Since` condition not met |
 | 428 | `precondition_required` | `PATCH` (bytes or lines mode) or `POST …/replace` sent without the `If-Match` it requires (RFC 6585 §3) |
+| 409 | `conflict` | `POST …/index/reconcile` while a pass for that knowledge base is already running |
 | 413 | `payload_too_large` | PUT body exceeds 16 MiB |
-| 416 | `range_not_satisfiable` | Requested byte range is out of bounds |
+| 416 | — | Requested range is out of bounds. **No body**: the answer is the status and `Content-Range: bytes */<size>` (or `lines */<lines>` with `X-Content-Range-Bytes: */<size>`) |
+| 422 | `no_match` | `POST …/replace` found no occurrence of `old_string` |
+| 422 | `ambiguous_match` | `POST …/replace` found more than one occurrence and `replace_all` is false; the body adds `match_count` |
 | 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
 | 500 | `internal_error` | Unexpected server error |
 | 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write); or the server is at its limit of requests in flight (`Retry-After: 5`, nothing was done — retry) |
@@ -332,7 +356,7 @@ Request a slice of an object by line number rather than byte offset. Line number
 
 **Error responses:**
 - **400** `malformed_range` — unparseable `lines=` spec
-- **416** `range_not_satisfiable` — out-of-range request; response includes:
+- **416** — out-of-range request; response includes:
   - `Content-Range: lines */<total_lines>`
   - `X-Content-Range-Bytes: */<total_bytes>`
   - Empty body
@@ -879,7 +903,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | 400 Bad Request | `{"error": "malformed_range", ...}` — unparseable `Range` header, or more than one `bytes=` range |
 | 404 Not Found | `{"error": "not_found", ...}` |
 | 412 Precondition Failed | `{"error": "precondition_failed", ...}` |
-| 416 Range Not Satisfiable | `{"error": "range_not_satisfiable", ...}` |
+| 416 Range Not Satisfiable | No body; `Content-Range: bytes */<size>` |
 
 **Example:**
 
@@ -1106,7 +1130,7 @@ Partial write — replaces a byte range, a line range, or appends to the end of 
 | `412 precondition_failed` | `If-Match` does not match the current ETag (caller's OCC assertion failed, or retry budget exhausted) | JSON error body |
 | `428 precondition_required` | `If-Match` missing in bytes/lines mode (RFC 6585 §3) | JSON error body |
 | `413 payload_too_large` | Request body OR resulting object exceeds `NOTEDTHAT_MAX_PATCHABLE_SIZE` | JSON error body |
-| `416 range_not_satisfiable` | Line range beyond EOF | `Content-Range: lines */<total>`, `X-Content-Range-Bytes: */<total_bytes>`, empty body |
+| `416` | Line range beyond EOF | `Content-Range: lines */<total>`, `X-Content-Range-Bytes: */<total_bytes>`, empty body |
 | `503 backend_unavailable` | Indexer queue full (object IS stored; retry to re-enqueue index) | `Retry-After: 5`, JSON body |
 
 #### curl examples
@@ -1697,6 +1721,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | GET | `/readyz` | No | Readiness probe |
 | GET | `/metrics` | — | **Not on this listener.** The Prometheus exposition is served on a separate, unauthenticated listener, off by default (D69); `GET /metrics` here is `404` with or without a credential. See [Metrics](CONFIGURATION.md#metrics) |
 | GET | `/llms.txt` | No | Plain-text navigation instructions for LLM clients: access rules, API, MCP, WebDAV |
+| GET | `/api/v1/openapi.json` | No | The [OpenAPI 3.1 document](#openapi-document) for `/api/v1`, authoritative for its routes, parameters, schemas and statuses |
 | GET | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/{resource-path}` | No | RFC 9728 protected-resource metadata; `404` unless `NOTEDTHAT_OIDC_RESOURCE` is set. A resource with a path is described at the suffix followed by that path (RFC 9728 §3.1) |
 | GET, HEAD | `/browse/`, `/browse/{path}` | Anonymous or Bearer | Server-rendered HTML directory listings |
 | GET | `/api/v1/knowledgebases` | Yes | List declared KBs |

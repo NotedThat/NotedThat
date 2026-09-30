@@ -10,6 +10,44 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
 
+use super::super::openapi::{
+    BackendUnavailable, BadRequest, Forbidden, InternalError, NotFound, ObjectPathParams,
+    PayloadTooLarge, PreconditionFailed, Unauthorized, WriteConditions,
+};
+
+/// Create or replace an object.
+///
+/// The body is stored as is, with its `Content-Type`. Writing
+/// `.notedthat/manifest.json` is validated as a manifest first.
+#[utoipa::path(
+    put,
+    path = "/knowledgebases/{kb_slug}/{object_path}",
+    tag = "objects",
+    params(ObjectPathParams, WriteConditions,
+        ("X-NotedThat-Source" = Option<String>, Header,
+            description = "`mcp` attributes the change events to the MCP server. Informational."),
+    ),
+    request_body(description = "The object's bytes; at most the server's body limit (16 MiB by default).",
+        content_type = "*/*"),
+    security(("bearer" = [])),
+    responses(
+        (status = 201, description = "Created.",
+            headers(
+                ("Location" = String, description = "The object's URL."),
+                ("ETag" = String, description = "The new entity tag."),
+            )),
+        (status = 204, description = "Replaced.",
+            headers(("ETag" = String, description = "The new entity tag."))),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 412, response = PreconditionFailed),
+        (status = 413, response = PayloadTooLarge),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(in crate::router) async fn put_object(
     State(state): State<AppState>,
     Path((kb_slug, object_path)): Path<(String, String)>,
@@ -100,6 +138,27 @@ pub(in crate::router) async fn put_object(
     Ok(resp)
 }
 
+/// Delete an object.
+#[utoipa::path(
+    delete,
+    path = "/knowledgebases/{kb_slug}/{object_path}",
+    tag = "objects",
+    params(ObjectPathParams, WriteConditions,
+        ("X-NotedThat-Source" = Option<String>, Header,
+            description = "`mcp` attributes the change events to the MCP server. Informational."),
+    ),
+    security(("bearer" = [])),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 412, response = PreconditionFailed),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub(in crate::router) async fn delete_object(
     State(state): State<AppState>,
     Path((kb_slug, object_path)): Path<(String, String)>,

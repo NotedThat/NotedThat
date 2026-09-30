@@ -1,0 +1,2404 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "NotedThat HTTP API",
+    "description": "The versioned machine API of a NotedThat server. Paths are relative to the server URL, `/api/v1`.\n\nThis document is generated from the server's code and is authoritative for paths, parameters, schemas and status codes. `docs/API.md` explains behaviour; where the two disagree, `docs/API.md` is wrong.\n\nEvery response carries `x-request-id`, echoing the request's when it sent one.",
+    "contact": {
+      "name": "NotedThat Contributors"
+    },
+    "license": {
+      "name": "MPL-2.0",
+      "identifier": "MPL-2.0"
+    },
+    "version": "1"
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "paths": {
+    "/knowledgebases": {
+      "get": {
+        "tags": [
+          "knowledgebases"
+        ],
+        "summary": "List the knowledge bases the caller may see.",
+        "description": "Anonymous callers see those whose access policy grants `anyone` something;\nan anonymous caller who can see none is answered `401`, not an empty list.",
+        "operationId": "list_kbs",
+        "responses": {
+          "200": {
+            "description": "The knowledge bases the caller may see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KbListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}": {
+      "get": {
+        "tags": [
+          "knowledgebases"
+        ],
+        "summary": "List one page of a knowledge base's objects.",
+        "description": "Only the objects the caller's `list` grant spans are returned. A page can\ncome back short of `limit` with `truncated` set; keep paging.",
+        "operationId": "list_objects",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only keys starting with this prefix.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size. `0` or absent is `100`; a value larger than `1000` is\naccepted and clamped to `1000`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of objects.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search one knowledge base.",
+        "description": "Hybrid: dense embeddings and keyword matching, fused by rank. Hits are\nlimited to keys the caller's `search` grant spans. The body is at most\n64 KiB.",
+        "operationId": "search_kb",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The ranked hits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/index": {
+      "get": {
+        "tags": [
+          "index"
+        ],
+        "summary": "Report one knowledge base's search-index health.",
+        "description": "Answered with `Cache-Control: no-store`. Reachable by whoever would see the\nknowledge base listed.",
+        "operationId": "get_index_health",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The index's health.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`no-store`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexHealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/index/reconcile": {
+      "post": {
+        "tags": [
+          "index"
+        ],
+        "summary": "Start a reconciliation pass over one knowledge base.",
+        "description": "Compares storage against the search index and re-indexes what differs, in\nthe background; the result appears as `last_reconcile` in\n`GET /knowledgebases/{kb_slug}/index`. Only the deployment's service token\nmay ask: any other credential is `403`. Available on the `s3` backend only;\nelsewhere `404`.",
+        "operationId": "post_index_reconcile",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The pass has started.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`no-store`"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileStarted"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Subscribe to a knowledge base's change events.",
+        "description": "A server-sent event stream (`text/event-stream`). The first frame is\n`retry: 3000` and the comment `:subscribed`; each event after it is\n\n```text\nid: <position>\nevent: object.written | object.deleted | object.indexed | object.index_failed\ndata: <ObjectEvent as JSON>\n```\n\nwith a `keep-alive` comment every 15 seconds while idle. Only events for\nkeys the caller may `list` are sent. Reconnect with `Last-Event-ID` to\nresume after the last event received. See the `ObjectEvent` schema for the\n`data` payload. A server with events disabled answers `404`.",
+        "operationId": "subscribe_events",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only events for keys starting with this prefix.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event",
+            "in": "query",
+            "description": "Only this kind: `written`, `deleted`, `indexed` or `index_failed`. An\n`object.` prefix is accepted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mime",
+            "in": "query",
+            "description": "Only events carrying this content type, exactly or as `type/*`. A\ndeletion carries none, so never matches.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "Resume after this position: the `id` of the last event received.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The event stream. Each `data` line is an `ObjectEvent`.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`no-cache`"
+              },
+              "X-Accel-Buffering": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`no`"
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/{object_path}": {
+      "get": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Read an object, whole or in part.",
+        "description": "`Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects\nlines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`\nand `X-Content-Range-Bytes`. A text content type is served with\n`; charset=utf-8`.",
+        "operationId": "get_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "`bytes=<first>-<last>`, `bytes=<first>-`, `bytes=-<suffix>`, or `lines=<first>-<last>`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "description": "Serve the range only if this entity tag or date still describes the object; otherwise the whole object, `200`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Answer `412` unless the object's entity tag is one of these, or `*`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "Answer `304` if the object's entity tag is one of these, or `*`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Modified-Since",
+            "in": "header",
+            "description": "Answer `304` unless the object changed after this HTTP date.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Unmodified-Since",
+            "in": "header",
+            "description": "Answer `412` if the object changed after this HTTP date.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole object.",
+            "headers": {
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`bytes`"
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "As stored; `application/octet-stream` when none was."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's entity tag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's modification time."
+              }
+            },
+            "content": {
+              "*/*": {}
+            }
+          },
+          "206": {
+            "description": "The requested range.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`bytes <first>-<last>/<size>`, or `lines <first>-<last>/<line count>`."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's entity tag."
+              },
+              "X-Content-Range-Bytes": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "On a line range: the bytes it spans, `<first>-<last>/<size>`, or `*/<size>` for an empty insert point."
+              },
+              "X-Insert-Offset": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "On an empty line range: the byte offset where lines would be inserted."
+              }
+            },
+            "content": {
+              "*/*": {}
+            }
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "416": {
+            "$ref": "#/components/responses/RangeNotSatisfiable"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      },
+      "put": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Create or replace an object.",
+        "description": "The body is stored as is, with its `Content-Type`. Writing\n`.notedthat/manifest.json` is validated as a manifest first.",
+        "operationId": "put_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Proceed only if the object's current entity tag is one of these, or `*` for any\nexisting object; otherwise `412`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*`: proceed only if the object does not exist; otherwise `412`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-NotedThat-Source",
+            "in": "header",
+            "description": "`mcp` attributes the change events to the MCP server. Informational.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The object's bytes; at most the server's body limit (16 MiB by default).",
+          "content": {
+            "*/*": {}
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The new entity tag."
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's URL."
+              }
+            }
+          },
+          "204": {
+            "description": "Replaced.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The new entity tag."
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Delete an object.",
+        "operationId": "delete_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Proceed only if the object's current entity tag is one of these, or `*` for any\nexisting object; otherwise `412`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "`*`: proceed only if the object does not exist; otherwise `412`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-NotedThat-Source",
+            "in": "header",
+            "description": "`mcp` attributes the change events to the MCP server. Informational.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "head": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Read an object's metadata.",
+        "description": "The headers `GET` would send, without the body, except `Content-Type`:\n`HEAD` sends it only when one was stored, where `GET` falls back to\n`application/octet-stream`. `Range` is ignored.",
+        "operationId": "head_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Answer `412` unless the object's entity tag is one of these, or `*`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "Answer `304` if the object's entity tag is one of these, or `*`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Modified-Since",
+            "in": "header",
+            "description": "Answer `304` unless the object changed after this HTTP date.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Unmodified-Since",
+            "in": "header",
+            "description": "Answer `412` if the object changed after this HTTP date.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The object exists.",
+            "headers": {
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`bytes`"
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "The object's size in bytes."
+              },
+              "Content-Type": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "As stored; absent when none was stored."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's entity tag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's modification time."
+              }
+            }
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {}
+        ]
+      },
+      "patch": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Change part of an object.",
+        "description": "Either `Content-Range` names the bytes or lines the body replaces, and\n`If-Match` is required; or `NT-Patch-Mode: append` appends the body, and\n`If-Match` is optional. The two are mutually exclusive. `If-Match` must be a\nsingle entity tag. The object must be no larger than the server's patchable\nsize limit.",
+        "operationId": "patch_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "`bytes <first>-<last>/*` or `lines <first>-<last>/*`: the span the body replaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "NT-Patch-Mode",
+            "in": "header",
+            "description": "`append`: append the body.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The object's current entity tag. Required with `Content-Range`; `*` and lists are refused `400`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-NotedThat-Source",
+            "in": "header",
+            "description": "`mcp` attributes the change events to the MCP server. Informational.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The replacement or appended bytes.",
+          "content": {
+            "*/*": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Patched. No body.",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The new entity tag."
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's URL."
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "416": {
+            "$ref": "#/components/responses/RangeNotSatisfiable"
+          },
+          "428": {
+            "$ref": "#/components/responses/PreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/knowledgebases/{kb_slug}/replace/{object_path}": {
+      "post": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Replace text within an object.",
+        "description": "Finds `old_string` in the object at `object_path` and replaces it with `new_string`, atomically against `If-Match`, which is required and must be a single entity tag. The object must be no larger than the server's patchable size limit.",
+        "operationId": "replace_object",
+        "parameters": [
+          {
+            "name": "kb_slug",
+            "in": "path",
+            "description": "The knowledge base.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KbSlug"
+            }
+          },
+          {
+            "name": "object_path",
+            "in": "path",
+            "description": "The object's path within the knowledge base, percent-encoded as one segment:\n`docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\nits `/` unencoded, which is how it writes `Location`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The object's current entity tag. `*` and lists are refused `400`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-NotedThat-Source",
+            "in": "header",
+            "description": "`mcp` attributes the change events to the MCP server. Informational.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Replaced.",
+            "headers": {
+              "Content-Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The object's URL."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The new entity tag."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplaceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableReplace"
+          },
+          "428": {
+            "$ref": "#/components/responses/PreconditionRequired"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "`GET /api/v1/openapi.json`: this document.",
+        "description": "Public, like `/llms.txt`: it describes the routes and carries no data.",
+        "operationId": "get_openapi",
+        "responses": {
+          "200": {
+            "description": "This document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "503": {
+            "$ref": "#/components/responses/BackendUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AmbiguousMatchError": {
+        "type": "object",
+        "description": "The error envelope of a replace whose `old_string` occurs more than once.",
+        "required": [
+          "error",
+          "message",
+          "request_id",
+          "match_count"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "Always `ambiguous_match`."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Its wording is not part of the contract."
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request's id, the same value as the `x-request-id` response header."
+          },
+          "match_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many times `old_string` occurs.",
+            "minimum": 0
+          }
+        }
+      },
+      "ConceptMetadata": {
+        "type": "object",
+        "description": "Metadata identifying the OKF concept containing a search chunk.",
+        "required": [
+          "concept_id",
+          "type"
+        ],
+        "properties": {
+          "concept_id": {
+            "type": "string",
+            "description": "Bundle-relative document path without the `.md` extension."
+          },
+          "type": {
+            "type": "string",
+            "description": "OKF concept type, including custom types."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable concept title."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short concept description."
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resource identifier associated with the concept."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags used to discover the concept."
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "description": "The error envelope every JSON error response carries.",
+        "required": [
+          "error",
+          "message",
+          "request_id"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "Machine-readable code."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Its wording is not part of the contract."
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request's id, the same value as the `x-request-id` response header."
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "Machine-readable error code. Clients branch on this, never on `message`.",
+        "enum": [
+          "invalid_request",
+          "malformed_range",
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "conflict",
+          "gone",
+          "payload_too_large",
+          "precondition_failed",
+          "no_match",
+          "ambiguous_match",
+          "precondition_required",
+          "internal_error",
+          "backend_unavailable",
+          "request_timeout"
+        ]
+      },
+      "EventSource": {
+        "type": "string",
+        "description": "Which surface made the change, or which part of the server reports it. Informational: any client can claim `mcp`. `fs-watch` and `reconcile` are changes the server detected in storage; `indexer` reports the outcome of indexing, never a change to the bytes.",
+        "enum": [
+          "http",
+          "webdav",
+          "mcp",
+          "fs-watch",
+          "reconcile",
+          "indexer"
+        ]
+      },
+      "FailureView": {
+        "type": "object",
+        "description": "The most recent indexing failure.",
+        "required": [
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "When, RFC 3339."
+          },
+          "object_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The object that failed; absent unless the caller may list it."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pipeline's own error, first line; absent unless the caller's `list`\ngrant spans the whole knowledge base."
+          }
+        }
+      },
+      "IndexHealthResponse": {
+        "type": "object",
+        "description": "One knowledge base's search-index health.",
+        "required": [
+          "kb_slug",
+          "state",
+          "pending",
+          "queue",
+          "worker"
+        ],
+        "properties": {
+          "kb_slug": {
+            "type": "string",
+            "description": "The knowledge base."
+          },
+          "state": {
+            "$ref": "#/components/schemas/IndexStateName",
+            "description": "The worst condition that holds, from `healthy` up to `failed`."
+          },
+          "pending": {
+            "type": "integer",
+            "description": "Index jobs queued for this knowledge base and not yet taken by the worker.",
+            "minimum": 0
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueView",
+            "description": "The indexing queue, which every knowledge base shares."
+          },
+          "worker": {
+            "$ref": "#/components/schemas/WorkerState",
+            "description": "Whether the indexing worker is running."
+          },
+          "last_indexed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the worker last completed a job for this knowledge base, RFC 3339;\n`null` if never."
+          },
+          "last_failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FailureView",
+                "description": "The most recent indexing failure; `null` if none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_reconcile": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReconcileView",
+                "description": "The most recent reconciliation pass; `null` if none has run."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "IndexStateName": {
+        "type": "string",
+        "description": "The index's state, most severe first. `failed`: the most recent outcome was\na failure, or the worker is gone. `stale`: changes may have gone unobserved,\nand the pass that repairs that has not completed. `backpressured`: writes\nwere refused `503` recently, or the queue is full now. `indexing`: work is\nqueued or in progress. `healthy`: nothing pending, nothing failed since the\nlast success, nothing lost.",
+        "enum": [
+          "healthy",
+          "indexing",
+          "backpressured",
+          "stale",
+          "failed"
+        ]
+      },
+      "KbListEntry": {
+        "type": "object",
+        "description": "One knowledge base: the slug the routes take, and the manifest's display\nname and description, so an agent can choose where to search before it\nsearches.",
+        "required": [
+          "kb_slug",
+          "display_name"
+        ],
+        "properties": {
+          "kb_slug": {
+            "type": "string",
+            "description": "The slug the routes take."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "The manifest's display name; the slug when it has none."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The manifest's description, when it has one."
+          }
+        }
+      },
+      "KbListResponse": {
+        "type": "object",
+        "description": "The knowledge bases the caller may see.",
+        "required": [
+          "knowledgebases"
+        ],
+        "properties": {
+          "knowledgebases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KbListEntry"
+            },
+            "description": "In slug order."
+          }
+        }
+      },
+      "KbSlug": {
+        "type": "string",
+        "description": "A knowledge base slug: 1 to 40 of `a-z`, `0-9` and `-`, not starting or ending with `-`.",
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+      },
+      "ObjectEvent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ObjectEventKind",
+            "description": "What happened, with the stamp of the bytes it concerns."
+          },
+          {
+            "type": "object",
+            "required": [
+              "kb",
+              "object_key",
+              "source",
+              "occurred_at"
+            ],
+            "properties": {
+              "kb": {
+                "$ref": "#/components/schemas/KbSlug",
+                "description": "The knowledge base."
+              },
+              "object_key": {
+                "$ref": "#/components/schemas/ObjectPath",
+                "description": "The key within it."
+              },
+              "source": {
+                "$ref": "#/components/schemas/EventSource",
+                "description": "Which surface made or detected the change, or reports the outcome."
+              },
+              "occurred_at": {
+                "type": "string",
+                "description": "When the server published it, RFC 3339 in UTC."
+              }
+            }
+          }
+        ],
+        "description": "One change to one object, or the indexer's verdict on it."
+      },
+      "ObjectEventKind": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The key was created or its bytes were replaced. Neither the API nor\nstorage distinguish the two, so neither does the event.",
+            "required": [
+              "etag",
+              "size",
+              "mime",
+              "mtime",
+              "event"
+            ],
+            "properties": {
+              "etag": {
+                "type": "string",
+                "description": "The `ETag` of the bytes the event describes, quoted per RFC 7232."
+              },
+              "size": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Size in bytes.",
+                "minimum": 0
+              },
+              "mime": {
+                "type": "string",
+                "description": "Content type as stored."
+              },
+              "mtime": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Last-modified Unix timestamp in seconds."
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "object.written"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The key no longer exists.",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "object.deleted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The indexer finished an upsert or refresh of the key: `chunks` points\nnow represent the bytes stamped `etag`, and a search may find them.\n\nThe size and mtime are not repeated: the `object.written` carrying the\nsame `etag` already said what the bytes look like, and a subscriber\ncorrelates the two by that stamp.",
+            "required": [
+              "etag",
+              "mime",
+              "chunks",
+              "event"
+            ],
+            "properties": {
+              "etag": {
+                "type": "string",
+                "description": "The `ETag` the indexer read with `HEAD` and verified on the stream\nit staged — the version that is in the index."
+              },
+              "mime": {
+                "type": "string",
+                "description": "Content type as `HEAD` reported it."
+              },
+              "chunks": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Points representing the object after this pass.",
+                "minimum": 0
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "object.indexed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The indexer gave up on an upsert or refresh of the key; the index does\nnot hold this version.",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "etag": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The `ETag` `HEAD` reported; absent when the failure came first."
+              },
+              "mime": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Content type as `HEAD` reported it; absent when the failure came\nfirst."
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The pipeline's own error, first line, at most 200 characters — the\nsame string the index health view reports. Always set when\npublished; the HTTP stream withholds it from a subscriber whose\n`list` grant does not span the whole knowledge base, so a received\nevent may lack it."
+              },
+              "event": {
+                "type": "string",
+                "enum": [
+                  "object.index_failed"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What happened to the key.\n\nSerialised with an `event` tag so the JSON payload is self-describing on\nits own, without the SSE `event:` field or the broker subject around it."
+      },
+      "ObjectKey": {
+        "type": "string",
+        "description": "An object's key: its path within the knowledge base, without a leading `/`."
+      },
+      "ObjectListResponse": {
+        "type": "object",
+        "description": "One page of a knowledge base's objects.",
+        "required": [
+          "objects",
+          "truncated"
+        ],
+        "properties": {
+          "objects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObjectMeta"
+            },
+            "description": "The objects on this page."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more objects follow; fetch them with `next_cursor`."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `cursor` of the next page; `null` on the last one."
+          }
+        }
+      },
+      "ObjectMeta": {
+        "type": "object",
+        "description": "Metadata about a single stored object, returned by HEAD and LIST responses.",
+        "required": [
+          "key",
+          "size"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The object's key (path within the KB bucket, without leading slash)."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size in bytes.",
+            "minimum": 0
+          },
+          "last_modified": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Last-modified Unix timestamp (seconds), if the backend provides one."
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content-Type as stored (echoed from the original PUT)."
+          },
+          "etag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque `ETag` from the backend, wrapped in quotes per RFC 7232 §2.3\n(e.g., `\"\\\"abc123\\\"\"`). Emitted verbatim in HTTP responses."
+          }
+        }
+      },
+      "ObjectPath": {
+        "type": "string",
+        "description": "An object's path within the knowledge base, without a leading `/`."
+      },
+      "QueueView": {
+        "type": "object",
+        "description": "The shared indexing queue at this moment.",
+        "required": [
+          "depth",
+          "capacity"
+        ],
+        "properties": {
+          "depth": {
+            "type": "integer",
+            "description": "Jobs waiting.",
+            "minimum": 0
+          },
+          "capacity": {
+            "type": "integer",
+            "description": "Jobs the queue holds; a write finding it full is answered `503`.",
+            "minimum": 0
+          }
+        }
+      },
+      "ReconcileStarted": {
+        "type": "object",
+        "description": "The `202` body: which knowledge base, and that the pass has started.",
+        "required": [
+          "kb_slug",
+          "status"
+        ],
+        "properties": {
+          "kb_slug": {
+            "type": "string",
+            "description": "The knowledge base."
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `started`.",
+            "example": "started"
+          }
+        }
+      },
+      "ReconcileView": {
+        "type": "object",
+        "description": "The most recent reconciliation pass.",
+        "required": [
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "When, RFC 3339."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The prefix the pass walked; absent when it walked the whole base."
+          },
+          "objects_on_disk": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Objects the pass found in storage. Present with the other counts, only\nwhen the caller may list what the pass walked.",
+            "minimum": 0
+          },
+          "unchanged": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Objects already indexed from exactly these bytes.",
+            "minimum": 0
+          },
+          "changed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Objects new to the index, or indexed from different bytes.",
+            "minimum": 0
+          },
+          "orphaned": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Keys the index holds that storage no longer has.",
+            "minimum": 0
+          }
+        }
+      },
+      "Refusal": {
+        "type": "object",
+        "description": "The error envelope of a request the server refused before handling it: at its limit of requests in flight, or out of time.",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "`backend_unavailable` or `request_timeout`."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Its wording is not part of the contract."
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The request's id, when one had been assigned."
+          }
+        }
+      },
+      "ReplaceBody": {
+        "type": "object",
+        "description": "A text replacement within one object.",
+        "required": [
+          "old_string",
+          "new_string"
+        ],
+        "properties": {
+          "old_string": {
+            "type": "string",
+            "description": "The text to find. Must not be empty."
+          },
+          "new_string": {
+            "type": "string",
+            "description": "The text to put in its place."
+          },
+          "replace_all": {
+            "type": "boolean",
+            "description": "Replace every occurrence. Otherwise exactly one must exist."
+          }
+        }
+      },
+      "ReplaceResponse": {
+        "type": "object",
+        "description": "The outcome of a replace.",
+        "required": [
+          "etag",
+          "match_count",
+          "total_bytes"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "description": "The object's new entity tag."
+          },
+          "match_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many occurrences were replaced.",
+            "minimum": 0
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The object's new size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "SearchFilter": {
+        "type": "object",
+        "description": "Filters applied to a search. Every field is optional; they are AND-composed. Unknown keys are rejected with `400`.",
+        "properties": {
+          "object_key_prefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only return hits whose `object_key` starts with this prefix (client-side post-filter)."
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only return hits with exactly this MIME type (e.g. `\"text/markdown\"`)."
+          },
+          "concept_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only return hits with exactly this OKF concept type."
+          },
+          "heading_path_prefix": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only return hits whose `heading_path` array starts with these segments (prefix match)."
+          },
+          "updated_after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only return hits with `mtime >= updated_after` (unix seconds)."
+          },
+          "updated_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only return hits with `mtime <= updated_before` (unix seconds)."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only return hits tagged with at least one of these tags."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SearchHit": {
+        "type": "object",
+        "description": "One hit in a search result set.\n\n`byte_start` and `byte_end` are the byte offsets in the original object\nthat delimit this chunk. Use them with a `Range: bytes=<byte_start>-<byte_end-1>`\nheader against `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the exact bytes.",
+        "required": [
+          "object_key",
+          "byte_start",
+          "byte_end",
+          "score",
+          "preview"
+        ],
+        "properties": {
+          "object_key": {
+            "$ref": "#/components/schemas/ObjectKey",
+            "description": "The object's key (its path within the knowledge base)."
+          },
+          "byte_start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte offset of the start of this chunk in the original object.",
+            "minimum": 0
+          },
+          "byte_end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Byte offset of the end (exclusive) of this chunk in the original object.",
+            "minimum": 0
+          },
+          "heading_path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Heading hierarchy at the location of this chunk (may be empty)."
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "description": "Reciprocal-rank-fusion score. Higher is better. Not a probability."
+          },
+          "preview": {
+            "type": "string",
+            "description": "Preview text — a UTF-8-safe truncation of the chunk to at most 500 characters."
+          },
+          "okf": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConceptMetadata",
+                "description": "OKF concept metadata, absent for ordinary Markdown documents."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "description": "A hybrid (dense + keyword) search over one knowledge base. Unknown keys are rejected with `400`.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The natural-language query string (required)."
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SearchFilter",
+                "description": "Optional filter conditions (AND-composed)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum number of hits to return. Clamped to `[1, 50]`. Defaults to `10`.",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "SearchResponse": {
+        "type": "object",
+        "description": "The ranked hits of a search.",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
+            "description": "The ranked list of search hits (may be empty)."
+          }
+        }
+      },
+      "WorkerState": {
+        "type": "string",
+        "description": "Whether the indexing worker is running.",
+        "enum": [
+          "running",
+          "stopped"
+        ]
+      }
+    },
+    "responses": {
+      "BackendUnavailable": {
+        "description": "`backend_unavailable`: a backend or queue is unavailable or full, or the server is at its limit of requests in flight. Retry after `Retry-After`. A write answered this way may already be stored; repeat it.",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "Seconds to wait: `5`."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Error"
+                },
+                {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The request is malformed: `invalid_request` or `malformed_range`. A query string the server cannot parse at all is answered `400` with a plain-text body instead.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "`conflict`: the request conflicts with work in progress.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "`forbidden`: the credential is valid and the knowledge base's access policy does not grant this operation. An anonymous caller is answered `404` instead.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "GatewayTimeout": {
+        "description": "`request_timeout`: the request did not complete within the server's timeout.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Refusal"
+            }
+          }
+        }
+      },
+      "Gone": {
+        "description": "`gone`: the events after `Last-Event-ID` are no longer retained. Resubscribe without it.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "`internal_error`: the server failed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "`not_found`: no such knowledge base or object — or one an anonymous caller may not see, which reads identically.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotModified": {
+        "description": "The object has not changed. No body.",
+        "headers": {
+          "ETag": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The object's current entity tag."
+          },
+          "Last-Modified": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The object's modification time, when it has no entity tag."
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "`payload_too_large`: the body exceeds the route's limit.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "PreconditionFailed": {
+        "description": "`precondition_failed`: a conditional header's precondition did not hold.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "PreconditionRequired": {
+        "description": "`precondition_required`: this write must be conditional; send `If-Match`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "RangeNotSatisfiable": {
+        "description": "The range lies outside the object. No body.",
+        "headers": {
+          "Content-Range": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "`bytes */<size>`, or `lines */<line count>` for a line range."
+          },
+          "X-Content-Range-Bytes": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "`*/<size in bytes>`, on a line range only."
+          }
+        }
+      },
+      "RequestTimeout": {
+        "description": "`request_timeout`: the request body stopped arriving for longer than the server's idle limit.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Refusal"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "`unauthorized`: no credential where one is required, or one that did not verify.",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "`Bearer resource_metadata=\"…\"`, when the deployment publishes OAuth protected resource metadata."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "UnprocessableReplace": {
+        "description": "`no_match`: `old_string` does not occur; or `ambiguous_match`: it occurs more than once and `replace_all` is false.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Error"
+                },
+                {
+                  "$ref": "#/components/schemas/AmbiguousMatchError"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "service token or OIDC access token (JWT)",
+        "description": "`Authorization: Bearer <token>`: the deployment's service token, or an access token from the configured OIDC issuer. A malformed or unverified credential is always `401`, never treated as anonymous."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "knowledgebases",
+      "description": "Which knowledge bases exist and what they hold."
+    },
+    {
+      "name": "objects",
+      "description": "Read and write one object's bytes."
+    },
+    {
+      "name": "search",
+      "description": "Hybrid search over a knowledge base."
+    },
+    {
+      "name": "index",
+      "description": "The search index's health, and on-demand reconciliation."
+    },
+    {
+      "name": "events",
+      "description": "A live stream of changes to a knowledge base."
+    },
+    {
+      "name": "meta",
+      "description": "This document."
+    }
+  ]
+}

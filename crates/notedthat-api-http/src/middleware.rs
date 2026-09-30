@@ -27,7 +27,7 @@ use tower_http::request_id::RequestId;
 /// Every route listed **must** have a handler that calls
 /// [`crate::authz::KbAccess::require`] or `require_any`; `route_backstop.rs`
 /// asserts the two stay in step.
-const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
+pub(crate) const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
     (&Method::GET, MATCHED_KBS),
     (&Method::HEAD, MATCHED_KBS),
     (&Method::GET, MATCHED_KB),

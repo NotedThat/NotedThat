@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 /// must use the provided constructors (`new` / `empty`) rather than struct literals.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(description = "The ranked hits of a search.")
+)]
 pub struct SearchResponse {
     /// The ranked list of search hits (may be empty).
     #[serde(default)]

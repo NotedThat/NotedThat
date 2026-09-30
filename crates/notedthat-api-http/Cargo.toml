@@ -13,7 +13,7 @@ authors.workspace = true
 test-support = ["notedthat-core/test-support"]
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
+notedthat-core = { path = "../notedthat-core", version = "0.12.3", features = ["openapi"] }
 notedthat-indexer = { path = "../notedthat-indexer", version = "0.12.3" }
 notedthat-write = { workspace = true }
 async-trait.workspace = true
@@ -32,6 +32,7 @@ tower-http = { workspace = true, features = ["request-id", "trace"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 thiserror.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 # `test-support` carries InMemoryVectorStore, which backs search_e2e.rs in place

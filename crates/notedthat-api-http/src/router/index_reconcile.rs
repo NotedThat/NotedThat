@@ -17,13 +17,40 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use super::openapi::{Conflict, Forbidden, KbPath, NotFound, Unauthorized};
+
 /// The `202` body: which knowledge base, and that the pass has started.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct ReconcileStarted<'a> {
+    /// The knowledge base.
     kb_slug: &'a str,
+    /// Always `started`.
+    #[schema(value_type = String, example = "started")]
     status: &'static str,
 }
 
+/// Start a reconciliation pass over one knowledge base.
+///
+/// Compares storage against the search index and re-indexes what differs, in
+/// the background; the result appears as `last_reconcile` in
+/// `GET /knowledgebases/{kb_slug}/index`. Only the deployment's service token
+/// may ask: any other credential is `403`. Available on the `s3` backend only;
+/// elsewhere `404`.
+#[utoipa::path(
+    post,
+    path = "/knowledgebases/{kb_slug}/index/reconcile",
+    tag = "index",
+    params(KbPath),
+    security(("bearer" = [])),
+    responses(
+        (status = 202, description = "The pass has started.", body = ReconcileStarted,
+            headers(("Cache-Control" = String, description = "`no-store`"))),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 409, response = Conflict),
+    ),
+)]
 pub(super) async fn post_index_reconcile(
     State(state): State<AppState>,
     Path(kb_slug): Path<String>,

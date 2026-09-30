@@ -17,6 +17,10 @@ use std::time::Instant;
 
 use crate::{
     error::{ApiError, ApiErrorResponse},
+    router::openapi::{
+        BackendUnavailable, BadRequest, Forbidden, InternalError, KbPath, NotFound,
+        PayloadTooLarge, Unauthorized,
+    },
     state::AppState,
 };
 
@@ -71,7 +75,29 @@ impl Drop for SearchCall {
     }
 }
 
-/// Handle `POST /api/v1/knowledgebases/{kb_slug}/search`.
+/// Search one knowledge base.
+///
+/// Hybrid: dense embeddings and keyword matching, fused by rank. Hits are
+/// limited to keys the caller's `search` grant spans. The body is at most
+/// 64 KiB.
+#[utoipa::path(
+    post,
+    path = "/knowledgebases/{kb_slug}/search",
+    tag = "search",
+    params(KbPath),
+    request_body(content = SearchRequest, content_type = "application/json"),
+    security(("bearer" = []), ()),
+    responses(
+        (status = 200, description = "The ranked hits.", body = SearchResponse),
+        (status = 400, response = BadRequest),
+        (status = 401, response = Unauthorized),
+        (status = 403, response = Forbidden),
+        (status = 404, response = NotFound),
+        (status = 413, response = PayloadTooLarge),
+        (status = 500, response = InternalError),
+        (status = 503, response = BackendUnavailable),
+    ),
+)]
 pub async fn search_kb(
     State(state): State<AppState>,
     Path(kb_slug_raw): Path<String>,
