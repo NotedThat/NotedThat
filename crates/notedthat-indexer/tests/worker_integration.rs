@@ -24,9 +24,9 @@ use notedthat_indexer::vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
 use notedthat_indexer::{
-    Embedder, EmbedderError, IndexEvent, IndexHealth, IndexState, IndexerWorker,
-    OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner, RefreshOrigin,
-    index_queue,
+    Embedder, EmbedderError, IndexEvent, IndexHealth, IndexQueueReceiver, IndexState,
+    IndexerWorker, OpenAiCompatibleConfig, OpenAiCompatibleEmbedder, QdrantProvisioner,
+    RefreshOrigin, index_queue,
 };
 use qdrant_client::qdrant::{
     RetrievedPoint, VectorsOutput, point_id::PointIdOptions, value::Kind,
@@ -43,10 +43,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    io::AsyncReadExt,
-    sync::{Semaphore, mpsc},
-};
+use tokio::{io::AsyncReadExt, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -184,6 +181,8 @@ struct BlockingEmbedder {
     /// Embed calls currently inside `embed`, and the most there ever were.
     running: AtomicUsize,
     peak: AtomicUsize,
+    /// The first text of every embed call, in the order the calls began.
+    began_with: Mutex<Vec<String>>,
 }
 
 impl BlockingEmbedder {
@@ -193,6 +192,7 @@ impl BlockingEmbedder {
             release: Arc::new(Semaphore::new(0)),
             running: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            began_with: Mutex::new(Vec::new()),
         }
     }
 
@@ -230,6 +230,10 @@ impl Embedder for BlockingEmbedder {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
+        self.began_with
+            .lock()
+            .unwrap()
+            .push(texts.first().cloned().unwrap_or_default());
         self.started.add_permits(1);
         // Consumed, not returned: each release permit lets exactly one call
         // through, so a test can open one slot at a time.
@@ -499,6 +503,33 @@ impl Storage for MockStorage {
     }
 }
 
+/// Embeds like any test embedder, except that it panics on a text containing
+/// `boom`, as a bug deep in a pipeline would.
+struct PanickingEmbedder;
+
+#[async_trait]
+impl Embedder for PanickingEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedderError> {
+        assert!(
+            !texts.iter().any(|text| text.contains("boom")),
+            "embedder bug triggered by boom"
+        );
+        Ok(vec![vec![1.0; 4]; texts.len()])
+    }
+
+    fn dim(&self) -> usize {
+        4
+    }
+
+    fn max_input_tokens(&self) -> usize {
+        40
+    }
+
+    fn model_id(&self) -> &'static str {
+        "panicking-test"
+    }
+}
+
 fn embedding_response(dim: usize, count: usize) -> serde_json::Value {
     let data: Vec<serde_json::Value> = (0..count)
         .map(|i| {
@@ -539,7 +570,7 @@ fn make_worker(
     storage: Arc<MockStorage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
-    rx: mpsc::Receiver<IndexEvent>,
+    rx: IndexQueueReceiver,
     shutdown: CancellationToken,
 ) -> IndexerWorker {
     make_worker_with_batch(storage, embedder, store, rx, shutdown, 32)
@@ -549,7 +580,7 @@ fn make_worker_with_batch(
     storage: Arc<MockStorage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
-    rx: mpsc::Receiver<IndexEvent>,
+    rx: IndexQueueReceiver,
     shutdown: CancellationToken,
     batch_size: usize,
 ) -> IndexerWorker {
@@ -560,6 +591,7 @@ fn make_worker_with_batch(
         rx,
         shutdown,
         batch_size,
+        NonZeroUsize::MIN,
     )
 }
 
@@ -574,7 +606,7 @@ fn make_queue_worker(
     concurrency: usize,
 ) -> (notedthat_indexer::IndexQueueSender, IndexerWorker) {
     let (tx, rx) = index_queue(capacity);
-    let worker = IndexerWorker::new_queue(
+    let worker = IndexerWorker::new(
         storage as Arc<dyn Storage>,
         embedder,
         store,
@@ -603,7 +635,7 @@ async fn index_once(
     key: &str,
     batch_size: usize,
 ) {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = index_queue(1);
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath(key),
@@ -633,7 +665,7 @@ async fn refresh_once(
     kb: &KbSlug,
     key: &str,
 ) {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = index_queue(1);
     tx.send(IndexEvent::Refresh {
         kb: kb.clone(),
         object_key: opath(key),
@@ -755,7 +787,7 @@ async fn happy_path_upsert_creates_qdrant_point() {
         "text/markdown",
     );
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -827,7 +859,7 @@ async fn tombstone_removes_points() {
         "text/markdown",
     );
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -873,7 +905,7 @@ async fn not_found_on_reread_implicit_tombstone() {
     let mock_server = MockServer::start().await;
     let storage = Arc::new(MockStorage::new());
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -988,7 +1020,7 @@ async fn non_markdown_content_type_skipped() {
         "text/markdown",
     );
 
-    let (seed_tx, seed_rx) = mpsc::channel(1);
+    let (seed_tx, seed_rx) = index_queue(1);
     seed_tx
         .send(IndexEvent::Upsert {
             kb: kb.clone(),
@@ -1012,7 +1044,7 @@ async fn non_markdown_content_type_skipped() {
 
     storage.insert("test-kb", "image.png", "not markdown", "image/png");
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -1076,7 +1108,7 @@ async fn shrinking_replacement_removes_stale_okf_points() {
             .await;
         let raw = format!("---\ntype: Metric\ntags: [{tag}]\n---\n{body}");
         storage.insert("test-kb", "metric.md", &raw, "text/markdown");
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = index_queue(1);
         tx.send(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath("metric.md"),
@@ -1124,7 +1156,7 @@ async fn shrinking_replacement_removes_stale_okf_points() {
 
     storage.insert("test-kb", "metric.md", "", "text/markdown");
     let empty_mock = MockServer::start().await;
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = index_queue(1);
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("metric.md"),
@@ -1168,7 +1200,7 @@ async fn oversized_chunk_is_split_without_dropping_content() {
     let storage = Arc::new(MockStorage::new());
     storage.insert("test-kb", "large.md", source, "text/markdown");
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -1220,7 +1252,7 @@ async fn oversized_chunk_is_split_without_dropping_content() {
 
 #[tokio::test]
 async fn queue_full_logs_index_queue_full() {
-    let (tx, _rx) = mpsc::channel::<IndexEvent>(4);
+    let (tx, _rx) = index_queue(4);
     let kb = kb();
 
     for i in 0..4_u32 {
@@ -1354,6 +1386,138 @@ async fn concurrency_of_eight_indexes_eight_files_at_once() {
 /// same file behind it and an upsert of `b.md` beside it, then let everything
 /// finish. The delete must wait for the upsert, or the upsert's chunks would
 /// land after it and outlive the file; the unrelated file must not wait.
+#[tokio::test]
+async fn files_start_in_the_order_they_became_ready() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    let others: Vec<String> = (0..8).map(|i| format!("file{i}.md")).collect();
+    for key in others.iter().map(String::as_str).chain(["first.md"]) {
+        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+    }
+    let embedder = Arc::new(BlockingEmbedder::new());
+    let (tx, worker) = make_queue_worker(
+        storage,
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        Arc::new(store),
+        CancellationToken::new(),
+        64,
+        1,
+    );
+    let handle = tokio::spawn(worker.run());
+
+    tx.send(upsert(&kb, "first.md")).await.unwrap();
+    embedder.wait_started(1).await;
+    // While `first.md` runs, every other file queues behind it, and then
+    // `first.md` again: its lane empties when it starts, so its second event
+    // becomes ready last.
+    for key in &others {
+        tx.send(upsert(&kb, key)).await.unwrap();
+    }
+    tx.send(upsert(&kb, "first.md")).await.unwrap();
+    assert!(
+        !embedder.another_starts().await,
+        "one file at a time, and the worker has taken in every event"
+    );
+
+    embedder.release_all();
+    drop(tx);
+    handle.await.unwrap();
+
+    let expected: Vec<&str> = ["first.md"]
+        .into_iter()
+        .chain(others.iter().map(String::as_str))
+        .chain(["first.md"])
+        .collect();
+    let began_with = embedder.began_with.lock().unwrap().clone();
+    let started: Vec<&str> = began_with
+        .iter()
+        .map(|text| {
+            expected
+                .iter()
+                .copied()
+                .find(|key| text.contains(key))
+                .unwrap_or_else(|| panic!("an embed call for no known file: {text}"))
+        })
+        .collect();
+    assert_eq!(started, expected, "files start first come, first served");
+}
+
+#[tokio::test]
+async fn a_panicking_file_does_not_stop_the_worker() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    for (key, body) in [
+        ("boom.md", "# boom"),
+        ("good1.md", "# Good one"),
+        ("good2.md", "# Good two"),
+        ("later.md", "# Later"),
+    ] {
+        storage.insert("test-kb", key, body, "text/markdown");
+    }
+    let health = Arc::new(IndexHealth::new());
+    let (tx, worker) = make_queue_worker(
+        storage,
+        Arc::new(PanickingEmbedder),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        64,
+        2,
+    );
+    let handle = tokio::spawn(worker.with_health(Arc::clone(&health)).run());
+    let settle = async |tx: &notedthat_indexer::IndexQueueSender| {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while tx.depth() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("every accepted event is handled and its permit returned");
+    };
+
+    for key in ["boom.md", "good1.md", "good2.md"] {
+        tx.send(upsert(&kb, key)).await.unwrap();
+        health.enqueued("test-kb");
+    }
+    settle(&tx).await;
+
+    let snapshot = health.snapshot("test-kb");
+    assert!(
+        snapshot.worker_alive,
+        "one bad file does not stop the worker"
+    );
+    assert_eq!(
+        snapshot.pending, 0,
+        "the panic counts as that file's outcome"
+    );
+    let failure = snapshot.last_failure.expect("the panic is on record");
+    assert_eq!(failure.object_key, "boom.md");
+    assert!(
+        failure.summary.contains("panicked") && failure.summary.contains("boom"),
+        "the summary says what happened: {}",
+        failure.summary
+    );
+    assert!(!handle.is_finished(), "the worker is still running");
+
+    tx.send(upsert(&kb, "later.md")).await.unwrap();
+    settle(&tx).await;
+    drop(tx);
+    handle
+        .await
+        .expect("the worker ends cleanly when its queue closes");
+
+    for key in ["good1.md", "good2.md", "later.md"] {
+        assert!(
+            count_points(&store, &kb, key).await > 0,
+            "{key} was indexed"
+        );
+    }
+    assert_eq!(count_points(&store, &kb, "boom.md").await, 0);
+}
+
 async fn assert_delete_waits_for_update(delete: IndexEvent, remove_object: bool) {
     let kb = kb();
     let (store, provisioner) = make_store();
@@ -1540,7 +1704,7 @@ async fn graceful_shutdown_drains_queue() {
         );
     }
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -1600,7 +1764,7 @@ async fn vector_store_failure_logs_indexing_failed() {
     let storage = Arc::new(MockStorage::new());
     storage.insert("test-kb", "down.md", "# Down\n\nContent.", "text/markdown");
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -1653,7 +1817,7 @@ async fn embedder_retry_on_429_succeeds() {
         "text/markdown",
     );
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -1700,7 +1864,7 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
     let storage = Arc::new(MockStorage::new());
     storage.insert("test-kb", "fail.md", "# Fail\n\nContent.", "text/markdown");
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
@@ -2281,7 +2445,7 @@ mod announcing {
         health: Arc<IndexHealth>,
         events: Vec<IndexEvent>,
     ) {
-        let (tx, rx) = mpsc::channel(events.len().max(1));
+        let (tx, rx) = index_queue(events.len().max(1));
         for event in events {
             tx.send(event).await.unwrap();
         }
@@ -2817,7 +2981,7 @@ mod announcing {
         let storage = Arc::new(MockStorage::new());
         storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
         storage.insert(kb().as_str(), "other.md", "more", "text/markdown");
-        let (tx, rx) = mpsc::channel(2);
+        let (tx, rx) = index_queue(2);
         // One announcement and two outcomes refused; neither path may fail
         // the indexing itself.
         tx.send(refresh("note.md", RefreshOrigin::Watch))
@@ -2854,7 +3018,7 @@ async fn run_one_with_health(
     event: IndexEvent,
     health: Arc<IndexHealth>,
 ) {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = index_queue(1);
     tx.send(event).await.unwrap();
     health.enqueued("test-kb");
     drop(tx);

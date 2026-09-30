@@ -1,7 +1,8 @@
 //! `IndexerWorker` — keyed concurrent async task draining `IndexEvent`s into Qdrant.
 //!
-//! Behavior: up to `index_concurrency` files at once, events for one (kb, key)
-//! strictly in order, batched embedding, drain on shutdown.
+//! Behavior: up to `index_concurrency` files at once, started in the order they
+//! became ready; events for one (kb, key) strictly in order; batched embedding;
+//! a panicking file handler recorded as that file's failure; drain on shutdown.
 
 mod chunks;
 mod last_seen;
@@ -9,21 +10,23 @@ mod pipeline;
 mod points;
 mod snapshot;
 
+use crate::queue::QueuedEvent;
 use crate::{
     embedder::Embedder,
     event::IndexEvent,
     health::{IndexHealth, bound_summary},
     vector_store::{PointSelector, VectorStore},
 };
-use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
+use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use last_seen::LastSeen;
 use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
 use pipeline::{PipelineFailure, PipelineOutcome};
+use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Maximum time to continue draining already queued events after cancellation.
@@ -88,49 +91,10 @@ pub struct IndexerWorker {
 }
 
 impl IndexerWorker {
-    /// Build a worker around shared dependencies and an event receiver.
-    pub fn new(
-        storage: Arc<dyn Storage>,
-        embedder: Arc<dyn Embedder>,
-        store: Arc<dyn VectorStore>,
-        rx: mpsc::Receiver<IndexEvent>,
-        shutdown: CancellationToken,
-        batch_size: usize,
-    ) -> Self {
-        Self::with_receiver(
-            storage,
-            embedder,
-            store,
-            crate::IndexQueueReceiver::from_mpsc(rx),
-            shutdown,
-            batch_size,
-            NonZeroUsize::MIN,
-        )
-    }
-
-    /// Build a worker over bounded ingress.
+    /// Build a worker over the bounded ingress from [`crate::index_queue`],
+    /// running up to `index_concurrency` files at once.
     #[must_use]
-    pub fn new_queue(
-        storage: Arc<dyn Storage>,
-        embedder: Arc<dyn Embedder>,
-        store: Arc<dyn VectorStore>,
-        rx: crate::IndexQueueReceiver,
-        shutdown: CancellationToken,
-        batch_size: usize,
-        index_concurrency: NonZeroUsize,
-    ) -> Self {
-        Self::with_receiver(
-            storage,
-            embedder,
-            store,
-            rx,
-            shutdown,
-            batch_size,
-            index_concurrency,
-        )
-    }
-
-    fn with_receiver(
+    pub fn new(
         storage: Arc<dyn Storage>,
         embedder: Arc<dyn Embedder>,
         store: Arc<dyn VectorStore>,
@@ -187,79 +151,106 @@ impl IndexerWorker {
     }
 
     async fn run_loop(&mut self) {
-        type Key = (KbSlug, ObjectPath);
-        let mut lanes: HashMap<Key, VecDeque<crate::queue::QueuedEvent>> = HashMap::new();
-        let mut active = HashSet::new();
+        let mut lanes = Lanes::default();
         let mut running: FuturesUnordered<BoxFuture<'static, Key>> = FuturesUnordered::new();
         let mut receiver_open = true;
         loop {
-            Self::start_ready(&mut lanes, &mut active, &mut running, self);
+            self.start_ready(&mut lanes, &mut running);
             set_in_flight(running.len());
-            if !receiver_open && lanes.is_empty() && running.is_empty() {
+            if !receiver_open && lanes.is_idle() && running.is_empty() {
                 break;
             }
             let rx = self.rx.as_mut().expect("running workers have receivers");
             tokio::select! {
                 () = self.shutdown.cancelled() => {
                     while let Ok(queued) = rx.try_recv() {
-                        lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued);
+                        lanes.accept(queued);
                     }
-                    if tokio::time::timeout(DRAIN_TIMEOUT, Self::drain(&mut lanes, &mut active, &mut running, self)).await.is_err() {
+                    if tokio::time::timeout(DRAIN_TIMEOUT, self.drain(&mut lanes, &mut running)).await.is_err() {
                         tracing::warn!(target: "notedthat::indexing", "indexer worker: drain timeout elapsed");
                     }
                     break;
                 }
                 Some(key) = running.next(), if !running.is_empty() => {
-                    active.remove(&key);
+                    lanes.finish(key);
                     set_in_flight(running.len());
                 }
                 queued = rx.recv(), if receiver_open => match queued {
-                    Some(queued) => lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued),
+                    Some(queued) => lanes.accept(queued),
                     None => receiver_open = false,
                 },
             }
         }
     }
 
+    /// Start waiting files, oldest first, until every slot is taken.
     fn start_ready(
-        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
-        active: &mut HashSet<(KbSlug, ObjectPath)>,
-        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
-        worker: &Self,
+        &self,
+        lanes: &mut Lanes,
+        running: &mut FuturesUnordered<BoxFuture<'static, Key>>,
     ) {
-        while running.len() < worker.index_concurrency.get() {
-            let Some(key) = lanes.keys().find(|key| !active.contains(*key)).cloned() else {
+        while running.len() < self.index_concurrency.get() {
+            let Some((key, queued)) = lanes.start_next() else {
                 break;
             };
-            let event = lanes
-                .get_mut(&key)
-                .and_then(VecDeque::pop_front)
-                .expect("ready lane has event");
-            if lanes.get(&key).is_some_and(VecDeque::is_empty) {
-                lanes.remove(&key);
-            }
-            active.insert(key.clone());
-            let pipeline = worker.pipeline_context();
+            let pipeline = self.pipeline_context();
             running.push(Box::pin(async move {
-                let queued = event;
-                pipeline.handle(queued.event).await;
+                // Rebound whole: the block would otherwise capture only
+                // `queued.event` and drop the permit before the handler runs.
+                // Held here, the permit is released once the outcome has been
+                // recorded, however the handler ended.
+                let queued = queued;
+                let tombstone = matches!(queued.event, IndexEvent::Tombstone { .. });
+                let handled = AssertUnwindSafe(pipeline.handle(queued.event))
+                    .catch_unwind()
+                    .await;
+                if let Err(payload) = handled {
+                    let detail = panic_detail(&*payload);
+                    pipeline.handler_panicked(&key, tombstone, detail).await;
+                }
                 key
             }));
         }
     }
 
     async fn drain(
-        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
-        active: &mut HashSet<(KbSlug, ObjectPath)>,
-        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
-        worker: &Self,
+        &self,
+        lanes: &mut Lanes,
+        running: &mut FuturesUnordered<BoxFuture<'static, Key>>,
     ) {
-        while !lanes.is_empty() || !running.is_empty() {
-            Self::start_ready(lanes, active, running, worker);
+        while !lanes.is_idle() || !running.is_empty() {
+            self.start_ready(lanes, running);
             set_in_flight(running.len());
             if let Some(key) = running.next().await {
-                active.remove(&key);
+                lanes.finish(key);
             }
+        }
+    }
+
+    /// Record a handler that panicked as that file's failure, so one bad file
+    /// costs one outcome instead of the worker (#255). Its lane is freed by the
+    /// caller, and D73's one-outcome-per-handler still holds, so `pending`
+    /// drains.
+    async fn handler_panicked(&self, (kb, object_key): &Key, tombstone: bool, detail: String) {
+        let message = format!("file handler panicked: {detail}");
+        tracing::error!(
+            target: "notedthat::indexing",
+            kb = %kb.as_str(),
+            path = %object_key.as_str(),
+            error = %message,
+            "INDEXING_FAILED"
+        );
+        self.health
+            .failed(kb.as_str(), object_key.as_str(), &message);
+        if !tombstone {
+            self.publish(ObjectEvent::index_failed(
+                kb.clone(),
+                object_key.clone(),
+                None,
+                None,
+                bound_summary(&message),
+            ))
+            .await;
         }
     }
 
@@ -433,6 +424,68 @@ impl IndexerWorker {
             "tombstoned"
         );
         Ok(())
+    }
+}
+
+/// The message a panic was raised with, when it was raised with one.
+fn panic_detail(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|detail| (*detail).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned())
+}
+
+/// The file an event is about. Events for one key run one at a time, in order.
+type Key = (KbSlug, ObjectPath);
+
+/// Accepted events waiting to run, one FIFO lane per key, and the order in
+/// which keys became ready to start.
+///
+/// A key is in `ready` exactly when its lane holds events and no handler for
+/// it is running, so a start is a pop from the front: files start in the
+/// order they became ready, whatever the map's iteration order (#254).
+#[derive(Default)]
+struct Lanes {
+    waiting: HashMap<Key, VecDeque<QueuedEvent>>,
+    active: HashSet<Key>,
+    ready: VecDeque<Key>,
+}
+
+impl Lanes {
+    /// Queue an accepted event behind any earlier one for the same key.
+    fn accept(&mut self, queued: QueuedEvent) {
+        let key = (queued.event.kb().clone(), queued.event.object_key().clone());
+        let lane = self.waiting.entry(key.clone()).or_default();
+        lane.push_back(queued);
+        if lane.len() == 1 && !self.active.contains(&key) {
+            self.ready.push_back(key);
+        }
+    }
+
+    /// Take the oldest ready key's next event and mark the key running.
+    fn start_next(&mut self) -> Option<(Key, QueuedEvent)> {
+        let key = self.ready.pop_front()?;
+        let lane = self.waiting.get_mut(&key).expect("a ready key has a lane");
+        let queued = lane.pop_front().expect("a ready lane holds an event");
+        if lane.is_empty() {
+            self.waiting.remove(&key);
+        }
+        self.active.insert(key.clone());
+        Some((key, queued))
+    }
+
+    /// A key's handler finished; it is ready again if more events wait for it.
+    fn finish(&mut self, key: Key) {
+        self.active.remove(&key);
+        if self.waiting.contains_key(&key) {
+            self.ready.push_back(key);
+        }
+    }
+
+    /// No event is waiting to start.
+    fn is_idle(&self) -> bool {
+        self.waiting.is_empty()
     }
 }
 

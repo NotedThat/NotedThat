@@ -181,8 +181,8 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
     );
 
     let storage = Arc::new(InMemoryStorage::with_kbs([&kb_slug]));
-    let (indexer_tx, indexer_rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, indexer_rx) =
+        notedthat_indexer::index_queue(notedthat_indexer::INDEX_QUEUE_CAPACITY);
     let shutdown = CancellationToken::new();
 
     // Worker uses the same InMemoryStorage that the HTTP router stores objects in.
@@ -193,6 +193,7 @@ async fn setup_full_e2e(kb: &str) -> FullE2eEnv {
         indexer_rx,
         shutdown.clone(),
         32,
+        std::num::NonZeroUsize::MIN,
     );
     let worker_handle = tokio::spawn(worker.run());
 
