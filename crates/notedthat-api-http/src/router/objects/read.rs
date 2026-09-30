@@ -44,11 +44,16 @@ fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     }
 }
 
+/// The `Content-Type` a read answers with: the stored type, normalized, or
+/// `application/octet-stream` when none was stored. `HEAD` and `GET` share it,
+/// so the two cannot disagree (RFC 9110 §9.3.2).
+fn response_content_type(stored: Option<&str>) -> Cow<'_, str> {
+    normalize_content_type(stored.unwrap_or("application/octet-stream"))
+}
+
 /// Read an object's metadata.
 ///
-/// The headers `GET` would send, without the body, except `Content-Type`:
-/// `HEAD` sends it only when one was stored, where `GET` falls back to
-/// `application/octet-stream`. `Range` is ignored.
+/// The headers `GET` would send, without the body. `Range` is ignored.
 #[utoipa::path(
     head,
     path = "/knowledgebases/{kb_slug}/{object_path}",
@@ -58,7 +63,7 @@ fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
     responses(
         (status = 200, description = "The object exists.",
             headers(
-                ("Content-Type" = String, description = "As stored; absent when none was stored."),
+                ("Content-Type" = String, description = "As stored; `application/octet-stream` when none was."),
                 ("Content-Length" = u64, description = "The object's size in bytes."),
                 ("ETag" = String, description = "The object's entity tag."),
                 ("Last-Modified" = String, description = "The object's modification time."),
@@ -108,12 +113,10 @@ pub(in crate::router) async fn head_object(
         .await
         .map_err(|e| err(ApiError::from(e)))?;
 
-    let mut builder = Response::builder().status(StatusCode::OK);
-
-    if let Some(ct) = &meta.content_type {
-        let content_type = normalize_content_type(ct);
-        builder = builder.header("content-type", content_type.as_ref());
-    }
+    let content_type = response_content_type(meta.content_type.as_deref());
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref());
     builder = with_validators(builder, meta.etag.as_deref(), meta.last_modified)
         .header(ACCEPT_RANGES, "bytes");
     // Content-Length from metadata size, not body length (HEAD has no body).
@@ -273,12 +276,7 @@ pub(in crate::router) async fn get_object(
 /// The response for a byte read: `206` with `Content-Range` when the backend served a
 /// slice, `200` with the whole object otherwise.
 fn full_or_partial_response(read: ObjectRead) -> Response {
-    let content_type = normalize_content_type(
-        read.meta
-            .content_type
-            .as_deref()
-            .unwrap_or("application/octet-stream"),
-    );
+    let content_type = response_content_type(read.meta.content_type.as_deref());
 
     let status = if read.content_range.is_some() {
         StatusCode::PARTIAL_CONTENT
@@ -353,12 +351,7 @@ async fn serve_line_range_read(
         }))
     })?;
     let sliced = read.bytes.slice(range_start..range_end);
-    let content_type = normalize_content_type(
-        read.meta
-            .content_type
-            .as_deref()
-            .unwrap_or("application/octet-stream"),
-    );
+    let content_type = response_content_type(read.meta.content_type.as_deref());
 
     let mut builder = Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)

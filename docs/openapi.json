@@ -879,7 +879,7 @@
           "objects"
         ],
         "summary": "Read an object's metadata.",
-        "description": "The headers `GET` would send, without the body, except `Content-Type`:\n`HEAD` sends it only when one was stored, where `GET` falls back to\n`application/octet-stream`. `Range` is ignored.",
+        "description": "The headers `GET` would send, without the body. `Range` is ignored.",
         "operationId": "head_object",
         "parameters": [
           {
@@ -959,7 +959,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "As stored; absent when none was stored."
+                "description": "As stored; `application/octet-stream` when none was."
               },
               "ETag": {
                 "schema": {

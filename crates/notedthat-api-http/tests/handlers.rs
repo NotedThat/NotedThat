@@ -29,15 +29,30 @@ fn app_reporting(snapshot: ReadinessSnapshot) -> axum::Router {
     app_with(1024, None, receiver_for(snapshot))
 }
 
+fn declared_kbs() -> BTreeMap<String, KbSlug> {
+    let mut kbs = BTreeMap::new();
+    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
+    kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
+    kbs
+}
+
 fn app_with(
     max_body_size: u64,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
     readiness: ReadinessReceiver,
 ) -> axum::Router {
-    let mut kbs = BTreeMap::new();
-    kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
-    kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
-    let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
+    let storage = Arc::new(InMemoryStorage::with_kbs(declared_kbs().values()));
+    app_over(storage, max_body_size, events, readiness)
+}
+
+/// A router over `storage`, for a test that seeds it behind the API's back.
+fn app_over(
+    storage: Arc<InMemoryStorage>,
+    max_body_size: u64,
+    events: Option<Arc<dyn notedthat_core::EventPublisher>>,
+    readiness: ReadinessReceiver,
+) -> axum::Router {
+    let kbs = declared_kbs();
     let state = AppState {
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size,
@@ -1330,6 +1345,61 @@ async fn get_default_content_type_for_untyped_put() {
         resp.headers().get("content-type").unwrap(),
         "application/octet-stream"
     );
+}
+
+/// RFC 9110 §9.3.2: `HEAD` sends the `Content-Type` `GET` would, byte and line
+/// reads alike, whether or not a type was stored.
+#[tokio::test]
+async fn head_and_get_send_the_same_content_type() {
+    use notedthat_core::{ConditionalHeaders, ObjectPath, Storage};
+
+    // An API `PUT` always stores a type, so an untyped object is seeded directly,
+    // as one dropped into an fs tree with an unknown extension would be.
+    let storage = Arc::new(InMemoryStorage::with_kbs(declared_kbs().values()));
+    storage
+        .put_object(
+            &KbSlug::try_new(KB).unwrap(),
+            &ObjectPath::try_from_str("raw.bin").unwrap(),
+            "abc".into(),
+            None,
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap();
+    let a = app_over(storage, 16 * 1024 * 1024, None, ready_receiver());
+    assert_eq!(
+        put_with_content_type(a.clone(), KB, "typed.md", "text/markdown", "# hi\n").await,
+        StatusCode::CREATED
+    );
+
+    for (path, expected) in [
+        ("raw.bin", "application/octet-stream"),
+        ("typed.md", "text/markdown; charset=utf-8"),
+    ] {
+        let uri = format!("/api/v1/knowledgebases/{KB}/{path}");
+        let head = a
+            .clone()
+            .oneshot(authed_request("HEAD", uri.clone(), Body::empty()))
+            .await
+            .unwrap();
+        let get = a
+            .clone()
+            .oneshot(authed_request("GET", uri.clone(), Body::empty()))
+            .await
+            .unwrap();
+        let mut lines = authed_request("GET", uri, Body::empty());
+        lines
+            .headers_mut()
+            .insert(header::RANGE, "lines=1-1".parse().unwrap());
+        let lines = a.clone().oneshot(lines).await.unwrap();
+        assert_eq!(lines.status(), StatusCode::PARTIAL_CONTENT, "{path}");
+
+        let content_type =
+            |resp: &axum::response::Response| resp.headers().get(header::CONTENT_TYPE).cloned();
+        assert_eq!(content_type(&head), content_type(&get), "{path}");
+        assert_eq!(content_type(&lines), content_type(&get), "{path}");
+        assert_eq!(content_type(&head).unwrap(), expected, "{path}");
+    }
 }
 
 #[tokio::test]
