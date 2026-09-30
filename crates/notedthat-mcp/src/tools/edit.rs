@@ -26,8 +26,9 @@ pub struct EditArgs {
 }
 
 // The tool's arguments as a client sends them. Named `EditArgs` in the
-// schema, so the published input schema keeps the title it had before the
-// raw twin existed.
+// schema, so `schema_for_type::<EditArgs>()` keeps the title it had before the
+// raw twin existed. The `tools/list` input schema carries no title, since
+// rmcp strips it.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "EditArgs")]
 pub struct RawEditArgs {
