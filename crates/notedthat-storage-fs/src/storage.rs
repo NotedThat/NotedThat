@@ -1,6 +1,6 @@
 //! [`Storage`] over a local directory tree.
 
-use std::fs::Metadata;
+use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,6 +27,9 @@ const MANIFEST_KEY: &str = ".notedthat/manifest.json";
 
 /// Bytes read per chunk when streaming an object body.
 const STREAM_CHUNK: usize = 64 * 1024;
+
+/// Times `Inner::open` looks again at a path swapped out from under it before giving up.
+const OPEN_ATTEMPTS: usize = 3;
 
 /// Largest page `list_objects` will return, matching S3's `MaxKeys` ceiling.
 const MAX_LIST_LIMIT: u32 = 1000;
@@ -99,8 +102,8 @@ impl FsStorage {
             let mut walk = OrderedWalk::new(inner.layout.bucket_dir(&bucket));
             let mut found = Vec::new();
             while let Some(entry) = walk.next_match(None, prefix.as_deref()) {
-                match inner.resolve(&bucket, &entry.key) {
-                    Ok((_, _, attrs)) => found.push((entry.key, attrs.etag)),
+                match inner.describe(&bucket, &entry.key) {
+                    Ok((_, attrs)) => found.push((entry.key, attrs.etag)),
                     // Vanished between the walk and the stat, or unreadable. Skipping it
                     // means the pass reports nothing about that key, which leaves the index
                     // as it was — the safe direction, and the next event covers it.
@@ -172,6 +175,7 @@ impl Inner {
     ///
     /// A directory is not an object. `WebDAV` depends on this: it distinguishes a resource
     /// from a collection by a `head_object` that reports `NotFound`, then a prefix list.
+    /// Nor is a symlink, so this is an `lstat`.
     fn stat(path: &Path, key: &str) -> Result<Metadata, StorageError> {
         let metadata =
             std::fs::symlink_metadata(path).map_err(|error| errors::object(key, error))?;
@@ -183,21 +187,71 @@ impl Inner {
         Ok(metadata)
     }
 
-    /// Stat plus resolved metadata, rehashing only when the file has moved on.
+    /// Open an object, treating anything that is not a regular file as absent, by the
+    /// same rules as [`Self::stat`].
+    ///
+    /// A symlink is not an object, and `open` follows one, so the path is `lstat`ed first and the
+    /// handle's own `stat` must name the same file. When it does not, the path was
+    /// swapped between the two — an editor's save, or a symlink put in its place — and
+    /// the path is looked at again. The `lstat` also keeps a FIFO from blocking `open`.
+    /// Without an inode to compare (non-unix) the handle only has to be a regular file.
+    fn open(path: &Path, key: &str) -> Result<(File, Metadata), StorageError> {
+        for _ in 0..OPEN_ATTEMPTS {
+            let linked =
+                std::fs::symlink_metadata(path).map_err(|error| errors::object(key, error))?;
+            if !linked.is_file() {
+                break;
+            }
+            let file = File::open(path).map_err(|error| errors::object(key, error))?;
+            let metadata = file
+                .metadata()
+                .map_err(|error| errors::object(key, error))?;
+            if metadata.is_file() && same_file(&linked, &metadata) {
+                return Ok((file, metadata));
+            }
+        }
+        Err(StorageError::NotFound {
+            key: key.to_string(),
+        })
+    }
+
+    /// An open object plus its resolved metadata, rehashing only when the file has moved
+    /// on.
+    ///
+    /// The stamp, the `ETag` and any bytes the caller goes on to read all come from the
+    /// one handle returned, so they describe one version of the object even when the
+    /// path is renamed over in between: the handle stays on the inode it opened.
     fn resolve(
         &self,
         bucket: &str,
         key: &str,
-    ) -> Result<(PathBuf, Metadata, ObjectAttrs), StorageError> {
+    ) -> Result<(File, Metadata, ObjectAttrs), StorageError> {
         let path = self.layout.object_path(bucket, key)?;
-        let metadata = Self::stat(&path, key)?;
-        let hash_path = path.clone();
+        let (file, metadata) = Self::open(&path, key)?;
         let attrs = self
             .meta
             .resolve(&self.layout, bucket, key, &metadata, || {
-                hash_file(&hash_path).map_err(|error| errors::object(key, error))
+                hash_file(&file).map_err(|error| errors::object(key, error))
             })?;
-        Ok((path, metadata, attrs))
+        Ok((file, metadata, attrs))
+    }
+
+    /// An object's metadata, for callers that serve none of its bytes: `head_object`,
+    /// write preconditions and `walk_etags`.
+    ///
+    /// Only a stale or missing record opens the file, through [`Self::resolve`], so the
+    /// repaired stamp and `ETag` still come from one handle. A fresh record needs just
+    /// the `lstat`, so an object the process may not read (`chmod 000`) can still be
+    /// described, replaced and deleted, as a rename or unlink needs no read permission.
+    /// With no bytes returned, #294's mislabel cannot happen here.
+    fn describe(&self, bucket: &str, key: &str) -> Result<(Metadata, ObjectAttrs), StorageError> {
+        let path = self.layout.object_path(bucket, key)?;
+        let metadata = Self::stat(&path, key)?;
+        if let Some(attrs) = self.meta.fresh(&self.layout, bucket, key, &metadata) {
+            return Ok((metadata, attrs));
+        }
+        let (_, metadata, attrs) = self.resolve(bucket, key)?;
+        Ok((metadata, attrs))
     }
 
     fn object_meta(key: &str, size: u64, metadata: &Metadata, attrs: &ObjectAttrs) -> ObjectMeta {
@@ -225,8 +279,8 @@ impl Inner {
         bucket: &str,
         key: &str,
     ) -> Result<Option<(Metadata, ObjectAttrs)>, StorageError> {
-        match self.resolve(bucket, key) {
-            Ok((_, metadata, attrs)) => Ok(Some((metadata, attrs))),
+        match self.describe(bucket, key) {
+            Ok(found) => Ok(Some(found)),
             // Only the object's own absence: a missing bucket must never read as
             // "nothing there, go ahead and write".
             Err(StorageError::NotFound { .. }) => Ok(None),
@@ -267,9 +321,21 @@ impl Inner {
     }
 }
 
-/// Hash a file's current content without holding it in memory.
-fn hash_file(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+/// Whether two stats describe the same file.
+#[cfg(unix)]
+fn same_file(a: &Metadata, b: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_a: &Metadata, _b: &Metadata) -> bool {
+    true
+}
+
+/// Hash an open file's whole content without holding it in memory.
+fn hash_file(mut file: &File) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
     let mut hasher = EtagHasher::new();
     let mut buffer = vec![0_u8; STREAM_CHUNK];
     loop {
@@ -282,9 +348,8 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
     Ok(hasher.finish())
 }
 
-/// Read `len` bytes starting at `start`.
-fn read_slice(path: &Path, start: u64, len: u64) -> std::io::Result<Bytes> {
-    let mut file = std::fs::File::open(path)?;
+/// Read `len` bytes of an open file starting at `start`.
+fn read_slice(mut file: &File, start: u64, len: u64) -> std::io::Result<Bytes> {
     file.seek(SeekFrom::Start(start))?;
     let capacity = usize::try_from(len).unwrap_or(usize::MAX);
     let mut buffer = BytesMut::zeroed(capacity);
@@ -398,7 +463,7 @@ impl Storage for FsStorage {
         let key = key_of(path).to_string();
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
-            let (_, metadata, attrs) = inner.resolve(&bucket, &key)?;
+            let (metadata, attrs) = inner.describe(&bucket, &key)?;
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
             Ok(Inner::object_meta(&key, metadata.len(), &metadata, &attrs))
         })
@@ -416,23 +481,22 @@ impl Storage for FsStorage {
         let key = key_of(path).to_string();
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
-            let (file_path, metadata, attrs) = inner.resolve(&bucket, &key)?;
+            let (file, metadata, attrs) = inner.resolve(&bucket, &key)?;
             evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
             let total = metadata.len();
-            let (bytes, content_range) = match resolve_range(total, range.as_ref())? {
+            let (start, length, content_range) = match resolve_range(total, range.as_ref())? {
                 Some((exclusive, content_range)) => (
-                    read_slice(&file_path, exclusive.start, exclusive.end - exclusive.start)
-                        .map_err(|error| errors::object(&key, error))?,
+                    exclusive.start,
+                    exclusive.end - exclusive.start,
                     Some(content_range),
                 ),
-                None => (
-                    Bytes::from(
-                        std::fs::read(&file_path).map_err(|error| errors::object(&key, error))?,
-                    ),
-                    None,
-                ),
+                None => (0, total, None),
             };
+            // From the handle `resolve` stamped, so the bytes are the ones the `ETag`
+            // describes.
+            let bytes =
+                read_slice(&file, start, length).map_err(|error| errors::object(&key, error))?;
 
             // As on S3, `size` reports the length served, not the object length.
             let meta = Inner::object_meta(&key, bytes.len() as u64, &metadata, &attrs);
@@ -455,28 +519,28 @@ impl Storage for FsStorage {
         let bucket = self.bucket(kb);
         let key = key_of(path).to_string();
 
-        // Resolve and open under the lock, then stream from the open handle. The handle
-        // pins the inode, so a concurrent overwrite leaves this reader on the bytes whose
-        // ETag we just reported rather than splicing two versions together.
+        // No lock: stream from the handle `resolve` opened and stamped. A rename over the
+        // path after that leaves this reader on the inode whose `ETag` we report, so it
+        // never serves one version's bytes under another's label, nor splices the two. An
+        // in-place rewrite of that same inode is not guarded against.
         let (file, meta, content_range) = self
             .blocking(move |inner| {
                 inner.require_bucket(&bucket)?;
-                let (file_path, metadata, attrs) = inner.resolve(&bucket, &key)?;
+                let (mut file, metadata, attrs) = inner.resolve(&bucket, &key)?;
                 evaluate_read_preconditions(Inner::state(&attrs, &metadata), &conditionals)?;
 
                 let total = metadata.len();
-                let resolved = resolve_range(total, range.as_ref())?;
-                let mut file =
-                    std::fs::File::open(&file_path).map_err(|error| errors::object(&key, error))?;
-
-                let (length, content_range) = match resolved {
-                    Some((exclusive, content_range)) => {
-                        file.seek(SeekFrom::Start(exclusive.start))
-                            .map_err(|error| errors::object(&key, error))?;
-                        (exclusive.end - exclusive.start, Some(content_range))
-                    }
-                    None => (total, None),
+                let (start, length, content_range) = match resolve_range(total, range.as_ref())? {
+                    Some((exclusive, content_range)) => (
+                        exclusive.start,
+                        exclusive.end - exclusive.start,
+                        Some(content_range),
+                    ),
+                    None => (0, total, None),
                 };
+                // Always seek: a rehash in `resolve` leaves the cursor at the end.
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|error| errors::object(&key, error))?;
 
                 let meta = Inner::object_meta(&key, length, &metadata, &attrs);
                 let reader = tokio::io::AsyncReadExt::take(tokio::fs::File::from_std(file), length);
@@ -600,7 +664,7 @@ impl Storage for FsStorage {
             .await;
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
-            let (source_path, _, source_attrs) = inner.resolve(&bucket, &source_key)?;
+            let (mut source, _, source_attrs) = inner.resolve(&bucket, &source_key)?;
 
             if let Some(expected) = &options.source_if_match
                 && !matches_if_match(&source_attrs.etag, expected)
@@ -630,10 +694,12 @@ impl Storage for FsStorage {
                 &destination_key,
                 content_type.as_deref(),
                 |file, hasher| {
-                    let mut reader = std::fs::File::open(&source_path)?;
+                    // The handle `source_if_match` was checked against, not a fresh open
+                    // that an out-of-band save could have swapped underneath.
+                    source.seek(SeekFrom::Start(0))?;
                     let mut buffer = vec![0_u8; STREAM_CHUNK];
                     loop {
-                        let read = reader.read(&mut buffer)?;
+                        let read = source.read(&mut buffer)?;
                         if read == 0 {
                             return Ok(());
                         }
@@ -774,5 +840,197 @@ fn log_ignored_delete_conditions(conditionals: &ConditionalHeaders) {
     }
     if conditionals.if_unmodified_since.is_some() {
         tracing::debug!("if_unmodified_since ignored on DELETE (no equivalent on the S3 API)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FsStorage, hash_file, read_slice};
+    use crate::config::FsConfig;
+    use bytes::Bytes;
+    use notedthat_core::{
+        ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError, TenantSlug, compute_etag,
+    };
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        storage: FsStorage,
+        kb: KbSlug,
+    }
+
+    async fn env() -> Env {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = FsConfig::new(dir.path().to_path_buf());
+        let storage = FsStorage::new(&config, dir.path().to_path_buf(), TenantSlug::default());
+        let kb = KbSlug::try_new("notes").expect("slug");
+        storage.ensure_bucket(&kb).await.expect("bucket");
+        Env {
+            _dir: dir,
+            storage,
+            kb,
+        }
+    }
+
+    fn path(key: &str) -> ObjectPath {
+        ObjectPath::try_from_str(key).expect("valid key")
+    }
+
+    async fn put(env: &Env, key: &str, body: &'static str) {
+        env.storage
+            .put_object(
+                &env.kb,
+                &path(key),
+                Bytes::from_static(body.as_bytes()),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("put");
+    }
+
+    /// What an editor's save does: write a sibling, rename it over the object.
+    fn rename_over(target: &std::path::Path, body: &[u8]) {
+        let staged = target.with_extension("swap");
+        std::fs::write(&staged, body).expect("stage");
+        std::fs::rename(&staged, target).expect("rename");
+    }
+
+    /// The handle `resolve` returns is the version its `ETag` describes, whatever lands
+    /// on the path afterwards — the race a read takes no lock against.
+    #[tokio::test]
+    async fn a_resolved_handle_keeps_the_version_it_labels() {
+        let env = env().await;
+        put(&env, "a.md", "first").await;
+        let bucket = env.storage.bucket(&env.kb);
+        let inner = &env.storage.inner;
+        let object = inner.layout.object_path(&bucket, "a.md").expect("path");
+
+        let (file, metadata, attrs) = inner.resolve(&bucket, "a.md").expect("resolve");
+        rename_over(&object, b"second, and longer");
+
+        assert_eq!(attrs.etag, compute_etag(b"first"));
+        let bytes = read_slice(&file, 0, metadata.len()).expect("read");
+        assert_eq!(&bytes[..], b"first");
+    }
+
+    /// A rehash reads the handle it was given, not whatever the path names by then.
+    #[test]
+    fn a_rehash_hashes_the_open_handle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let object = dir.path().join("a.md");
+        std::fs::write(&object, b"first").expect("write");
+
+        let file = std::fs::File::open(&object).expect("open");
+        rename_over(&object, b"second");
+
+        assert_eq!(hash_file(&file).expect("hash"), compute_etag(b"first"));
+        // And again from the end, where a first pass leaves the cursor.
+        assert_eq!(hash_file(&file).expect("hash"), compute_etag(b"first"));
+    }
+
+    /// A symlink is not an object on any read path, even though `open` would follow it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_is_not_an_object_to_read() {
+        let env = env().await;
+        put(&env, "real.md", "content").await;
+        let bucket = env.storage.bucket(&env.kb);
+        let layout = &env.storage.inner.layout;
+        std::os::unix::fs::symlink(
+            layout.object_path(&bucket, "real.md").expect("path"),
+            layout.object_path(&bucket, "link.md").expect("path"),
+        )
+        .expect("symlink");
+
+        let link = path("link.md");
+        let head = env
+            .storage
+            .head_object(&env.kb, &link, ConditionalHeaders::default())
+            .await;
+        assert!(
+            matches!(head, Err(StorageError::NotFound { .. })),
+            "{head:?}"
+        );
+        let get = env
+            .storage
+            .get_object(&env.kb, &link, None, ConditionalHeaders::default())
+            .await;
+        assert!(
+            matches!(get, Err(StorageError::NotFound { .. })),
+            "get should be NotFound"
+        );
+        let stream = env
+            .storage
+            .get_object_stream(&env.kb, &link, None, ConditionalHeaders::default())
+            .await;
+        assert!(
+            matches!(stream, Err(StorageError::NotFound { .. })),
+            "stream should be NotFound"
+        );
+    }
+
+    /// Only the paths that serve bytes need to read the object. With a fresh record,
+    /// `HEAD`, the `ETag` walk, an unconditional `PUT` and a `DELETE` need no more than
+    /// the `lstat`, as before #294, so a `chmod 000` object can still be replaced and
+    /// removed. A `GET` still needs to read it, and says the store is unavailable.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_object_with_a_fresh_record_can_be_replaced_and_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let env = env().await;
+        put(&env, "a.md", "first").await;
+        put(&env, "b.md", "other").await;
+        let bucket = env.storage.bucket(&env.kb);
+        let layout = &env.storage.inner.layout;
+        let closed = std::fs::Permissions::from_mode(0o000);
+        for key in ["a.md", "b.md"] {
+            let object = layout.object_path(&bucket, key).expect("path");
+            std::fs::set_permissions(&object, closed.clone()).expect("chmod 000");
+        }
+        if std::fs::File::open(layout.object_path(&bucket, "a.md").expect("path")).is_ok() {
+            eprintln!("skipped: this process ignores permission bits (root)");
+            return;
+        }
+
+        let head = env
+            .storage
+            .head_object(&env.kb, &path("a.md"), ConditionalHeaders::default())
+            .await
+            .expect("head needs no read");
+        assert_eq!(head.etag, Some(compute_etag(b"first")));
+        let walked = env.storage.walk_etags(&env.kb, None).await.expect("walk");
+        assert!(
+            walked.contains(&("a.md".to_string(), compute_etag(b"first"))),
+            "{walked:?}"
+        );
+        let get = env
+            .storage
+            .get_object(&env.kb, &path("a.md"), None, ConditionalHeaders::default())
+            .await;
+        assert!(
+            matches!(get, Err(StorageError::BackendUnavailable { .. })),
+            "get must read the object"
+        );
+
+        let outcome = env
+            .storage
+            .put_object(
+                &env.kb,
+                &path("a.md"),
+                Bytes::from_static(b"second"),
+                None,
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("an unconditional put renames over the object");
+        assert!(!outcome.created);
+        assert_eq!(outcome.etag, Some(compute_etag(b"second")));
+
+        env.storage
+            .delete_object(&env.kb, &path("b.md"), ConditionalHeaders::default())
+            .await
+            .expect("delete unlinks the object");
+        assert!(!layout.object_path(&bucket, "b.md").expect("path").exists());
     }
 }

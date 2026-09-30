@@ -115,6 +115,18 @@ impl MetaStore {
         Self { mode }
     }
 
+    /// The recorded attributes, when they still describe the file `metadata` came from.
+    pub(crate) fn fresh(
+        self,
+        layout: &Layout,
+        bucket: &str,
+        key: &str,
+        metadata: &Metadata,
+    ) -> Option<ObjectAttrs> {
+        self.load(layout, bucket, key)
+            .filter(|attrs| attrs.is_fresh_for(metadata))
+    }
+
     /// Resolve an object's attributes, repairing them when the file has moved on.
     ///
     /// `hash` recomputes the `ETag` from the file's current content; it is only called
