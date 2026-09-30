@@ -461,10 +461,16 @@ jobs:
       # copy of release-plz.toml for this run only. Everything else still
       # publishes — including the new crate's own dependencies at the new
       # version, which is what its bootstrap builds against. The facade
-      # `notedthat` depends on every crate (via notedthat-server), so it is held
-      # back too: no tag and no GitHub Release until the whole workspace is on
-      # crates.io, exactly as before. The held-back crates are named in a
+      # `notedthat` is always held back while anything is, whether or not it
+      # depends on the missing crate: it owns the workspace tag, the GitHub
+      # Release and the release.yml dispatch, so none of those happen until the
+      # whole workspace is on crates.io. The held-back crates are named in a
       # warning and in the job summary.
+      #
+      # If that holds back every publishable crate (the missing crate is one
+      # that notedthat-core depends on), there is nothing left to publish and
+      # release-plz would fail with "no public packages found", so the step
+      # sets `skip=true` and release-plz does not run at all.
       #
       # Only a definite 404 holds a crate back. Any other answer (a timeout, a
       # 5xx) leaves the crate in, so release-plz publishes it as usual and a
@@ -499,19 +505,22 @@ jobs:
             {
               echo "config=release-plz.toml"
               echo "held-back="
+              echo "skip=false"
             } >>"$GITHUB_OUTPUT"
             exit 0
           fi
 
           # The never-published crates plus, transitively, every publishable
           # workspace crate with a normal or build dependency on one of them.
+          # The facade `notedthat` is seeded too, whatever its dependencies, so
+          # no tag or GitHub Release goes out while anything is missing.
           held=$(jq -r --argjson seeds "$(printf '%s\n' "${missing[@]}" | jq -R . | jq -sc .)" '
             [.packages[] | select(.publish != [])
               | {name, deps: [.dependencies[] | select(.path != null and .kind != "dev") | .name]}] as $pkgs
             | def grow($s):
                 ([$pkgs[] | select(any(.deps[]; IN($s[]))) | .name] + $s | unique) as $n
                 | if ($n | length) == ($s | length) then $s else grow($n) end;
-              grow($seeds | unique)[]' <<<"$meta")
+              grow($seeds + ["notedthat"] | unique)[]' <<<"$meta")
 
           config="$RUNNER_TEMP/release-plz.toml"
           cp release-plz.toml "$config"
@@ -549,16 +558,33 @@ jobs:
             echo
             echo "Never published to crates.io: \`${missing[*]}\`. Trusted Publishing cannot create a crate, so it needs the **Publish crate (initial)** workflow first."
             echo
-            echo "Held back this run (those crates plus everything that depends on them): \`${held_list}\`. The workspace tag and GitHub Release wait until they are all on crates.io."
+            echo "Held back this run (those crates, everything that depends on them, and the facade \`notedthat\`): \`${held_list}\`. The workspace tag, the GitHub Release and the release.yml dispatch wait until they are all on crates.io."
             echo
             echo "Next steps: RELEASING.md, *Adding a Crate to the Workspace*."
           } >>"$GITHUB_STEP_SUMMARY"
+
+          # Every publishable crate held back: release-plz would find no
+          # package to release and fail with "no public packages found".
+          skip=false
+          if [ "$(sort -u <<<"$held")" = "$(sort -u <<<"$publishable")" ]; then
+            skip=true
+            echo "Every publishable crate is held back, so there is nothing to publish; skipping release-plz this run."
+            {
+              echo
+              echo "Every publishable crate is held back, so **release-plz was skipped** this run: nothing to publish, tag or release."
+            } >>"$GITHUB_STEP_SUMMARY"
+          fi
           {
             echo "config=${config}"
             echo "held-back=$(paste -sd' ' - <<<"$held")"
+            echo "skip=${skip}"
           } >>"$GITHUB_OUTPUT"
       - name: Run release-plz (release)
         id: release-plz
+        # Skipped when the pre-flight held back every publishable crate; its
+        # `releases` output is then empty, so the dispatch and index-wait steps
+        # below are skipped too.
+        if: steps.preflight.outputs.skip != 'true'
         uses: release-plz/action@v0.5
         with:
           command: release
