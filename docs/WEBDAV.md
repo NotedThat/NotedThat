@@ -40,7 +40,7 @@ own routes: `index`, `events` and `search` as files, and the file `reconcile` in
 `index`. Saving, copying or moving a file to one returns `400 Bad Request`. Folders with
 these names are ordinary folders, and the same names deeper in a folder, or with an extension
 (`index.md`), are fine. A file saved under one of these names before the rule existed can
-still be opened and moved to a new name.
+still be opened, moved to a new name or deleted.
 
 ## Linux
 

@@ -185,3 +185,24 @@ async fn collecting_three_kbs_of_fifty_has_no_drops_or_duplicates() {
     );
     assert_eq!(actual, expected);
 }
+
+/// `resources/read` refuses a reserved key (#279), so an object left under one
+/// by an earlier release is not advertised; a folder of that name is ordinary.
+#[tokio::test]
+async fn a_reserved_key_is_not_advertised() {
+    let server = MockServer::start().await;
+    mount_kbs(&server, &["notes"]).await;
+    mount_list_page(
+        &server,
+        "notes",
+        None,
+        &["search".to_string(), "search/a.md".to_string()],
+        None,
+    )
+    .await;
+    let c = client(&server.uri());
+
+    let page = list_resources(&c, None).await.unwrap();
+
+    assert_eq!(resource_names(&page.resources), ["search/a.md"]);
+}

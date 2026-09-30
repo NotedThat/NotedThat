@@ -525,11 +525,13 @@ the one leading `/` is stripped. A folder of the same name (`search/results.md`)
 ordinary folder, which WebDAV and `/browse` handle like any other, and nested keys (`notes/index`) and look-alikes (`index.md`, `Search`) are ordinary objects.
 
 **Upgrading.** An object stored under one of these keys by an earlier release stays in
-storage. WebDAV can still read it and `MOVE` it to a new name, which also removes its search
-entry. If you rename it in the bucket or directory instead, its search entry is removed on
-`fs` by the watcher, and on `s3` by the next reconcile pass (at startup, or
-`POST …/index/reconcile`). A pass removes any search entry for a reserved key, even while the
-object is still there, since no object may be indexed under one.
+storage, and its key still appears in `list` results (not on `/browse` or in MCP
+`resources/list`). The API and MCP refuse to read or delete it, but WebDAV can still read it,
+`MOVE` it to a new name or `DELETE` it, and either of those also removes its search entry. If
+you rename it in the bucket or directory instead, its search entry is removed on `fs` by the
+watcher, and on `s3` by the next reconcile pass (at startup, or `POST …/index/reconcile`). A
+pass removes any search entry for a reserved key, even while the object is still there, since
+no object may be indexed under one.
 
 ---
 

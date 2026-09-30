@@ -507,6 +507,31 @@ async fn an_object_under_a_reserved_key_can_be_moved_away() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
+/// `DELETE` removes such an object too, the other way to be rid of it.
+#[tokio::test]
+async fn an_object_under_a_reserved_key_can_be_deleted() {
+    let state = state_with_note("search").await;
+    let request = |method: Method| {
+        Request::builder()
+            .method(method)
+            .uri("/webdav/notes/search")
+            .header("Authorization", good_auth())
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = build_router(state.clone())
+        .oneshot(request(Method::DELETE))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = build_router(state)
+        .oneshot(request(Method::GET))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn delete_returns_204() {
     let app = build_router(state_with_note("test.md").await);

@@ -104,6 +104,11 @@ impl ObjectPath {
     /// compared exactly and case-sensitively after the leading `/` is
     /// stripped. Folder and listing prefixes go through `try_from_str`
     /// instead, so a folder named `search` stays usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for any path [`ObjectPath::try_from_str`]
+    /// refuses, or when the path is one of the [`RESERVED_KEYS`].
     pub fn try_object_key(input: &str) -> Result<Self, Error> {
         let path = Self::try_from_str(input)?;
         if path.is_reserved() {
