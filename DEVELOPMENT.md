@@ -150,10 +150,16 @@ docker run --rm -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/target rust:1 \
 ### Backends in tests
 
 Almost everything runs on in-process substitutes. `notedthat_indexer::testing`
-carries `InMemoryVectorStore` and `StubEmbedder`, `notedthat_api_http::testing`
-carries `InMemoryStorage`; each is behind that crate's `test-support` feature.
-Reach for those first — they need no Docker, and the suites that use them run in
-the normal `cargo test` pass rather than behind `#[ignore]`.
+carries `InMemoryVectorStore` and `StubEmbedder`, `notedthat_core::testing`
+carries `InMemoryStorage` (re-exported from `notedthat_api_http::testing`); each
+is behind that crate's `test-support` feature. Reach for those first — they need
+no Docker, and the suites that use them run in the normal `cargo test` pass
+rather than behind `#[ignore]`.
+
+A test that needs storage to fail, or to change under the caller mid-request,
+wraps it in `notedthat_core::testing::ScriptedStorage` rather than writing
+another `impl Storage`: it records every call, fails the next N (or every) call
+to an operation, and runs hooks against the store before or after one.
 
 To bring up a whole server over them, build a `notedthat_server::run::Backends`
 and hand it to `run_with` (enable `notedthat-server`'s `test-support` feature).

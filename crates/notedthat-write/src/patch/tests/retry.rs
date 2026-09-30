@@ -1,5 +1,6 @@
 use super::support::{Script, TestStorage, conditionals, run_patch};
 use bytes::Bytes;
+use notedthat_core::testing::compute_etag;
 use notedthat_core::{ByteRange, StorageError};
 
 use crate::{PatchMode, WriteError};
@@ -13,14 +14,14 @@ fn byte_patch() -> PatchMode {
 
 #[tokio::test]
 async fn succeeds_on_first_attempt_without_retry() {
-    let storage = TestStorage::with_script(b"0123456789", Script::default());
+    let storage = TestStorage::with_script(b"0123456789", Script::default()).await;
 
     let (outcome, _rx) = run_patch(&storage, byte_patch(), conditionals(Some("etag1")), 1024)
         .await
         .expect("patch succeeds");
 
-    assert_eq!(outcome.etag.as_deref(), Some("etag2"));
-    assert_eq!(storage.body(), Bytes::from_static(b"xy23456789"));
+    assert_eq!(outcome.etag, Some(compute_etag(b"xy23456789")));
+    assert_eq!(storage.body().await, Bytes::from_static(b"xy23456789"));
     let calls = storage.calls();
     assert_eq!(calls.head, 1);
     assert_eq!(calls.get, 1);
@@ -35,13 +36,14 @@ async fn retries_two_put_precondition_failures_then_succeeds() {
             put_failures_remaining: 2,
             ..Script::default()
         },
-    );
+    )
+    .await;
 
     run_patch(&storage, byte_patch(), conditionals(Some("etag1")), 1024)
         .await
         .expect("third attempt succeeds");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"xy23456789"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"xy23456789"));
     let calls = storage.calls();
     assert_eq!(calls.head, 3);
     assert_eq!(calls.get, 3);
@@ -56,7 +58,8 @@ async fn propagates_third_put_precondition_failure() {
             put_failures_remaining: 3,
             ..Script::default()
         },
-    );
+    )
+    .await;
 
     let err = run_patch(&storage, byte_patch(), conditionals(Some("etag1")), 1024)
         .await
@@ -80,13 +83,14 @@ async fn retries_two_get_precondition_failures_then_succeeds() {
             get_failures_remaining: 2,
             ..Script::default()
         },
-    );
+    )
+    .await;
 
     run_patch(&storage, byte_patch(), conditionals(Some("etag1")), 1024)
         .await
         .expect("third attempt succeeds");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"xy23456789"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"xy23456789"));
     let calls = storage.calls();
     assert_eq!(calls.head, 3);
     assert_eq!(calls.get, 3);
@@ -95,7 +99,7 @@ async fn retries_two_get_precondition_failures_then_succeeds() {
 
 #[tokio::test]
 async fn stale_caller_precondition_is_not_retried() {
-    let storage = TestStorage::with_script(b"0123456789", Script::default());
+    let storage = TestStorage::with_script(b"0123456789", Script::default()).await;
 
     let err = run_patch(&storage, byte_patch(), conditionals(Some("stale")), 1024)
         .await
@@ -120,7 +124,8 @@ async fn retry_rechecks_caller_precondition_against_advanced_head_etag() {
             advance_etag_on_put_failure: true,
             ..Script::default()
         },
-    );
+    )
+    .await;
 
     let err = run_patch(&storage, byte_patch(), conditionals(Some("etag1")), 1024)
         .await
@@ -130,7 +135,7 @@ async fn retry_rechecks_caller_precondition_against_advanced_head_etag() {
         err,
         WriteError::Storage(StorageError::PreconditionFailed)
     ));
-    assert_eq!(storage.body(), Bytes::from_static(b"0123456789"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"0123456789"));
     let calls = storage.calls();
     assert_eq!(calls.head, 2);
     assert_eq!(calls.get, 1);

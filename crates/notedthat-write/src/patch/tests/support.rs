@@ -1,268 +1,96 @@
 use super::super::*;
-use async_trait::async_trait;
-use notedthat_core::{KbManifest, ListResponse, ObjectMeta, ObjectRead};
+use notedthat_core::testing::{ScriptedStorage, StorageOp};
 use notedthat_indexer::IndexEvent;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::mpsc;
 
-#[derive(Clone)]
-struct StoredObject {
-    body: Bytes,
-    etag: String,
-    content_type: Option<String>,
-}
+const KB: &str = "test-kb";
+const PATH: &str = "test.md";
 
-#[derive(Default)]
-pub(super) struct TestStorage {
-    objects: Mutex<HashMap<String, StoredObject>>,
-    calls: Mutex<Calls>,
-    script: Mutex<Script>,
-}
+/// A [`ScriptedStorage`] seeded with `test-kb/test.md` at `ETag` `etag1`.
+pub(super) struct TestStorage(ScriptedStorage);
 
-#[derive(Default)]
+/// How many calls to each operation the patch made, failed ones included.
 pub(super) struct Calls {
-    pub(super) head: u32,
-    pub(super) get: u32,
-    pub(super) put: u32,
+    pub(super) head: usize,
+    pub(super) get: usize,
+    pub(super) put: usize,
 }
 
 #[derive(Default)]
 pub(super) struct Script {
     pub(super) get_failures_remaining: u32,
     pub(super) put_failures_remaining: u32,
+    /// Move the stored `ETag` to `etag2` as each scripted PUT failure fires, the
+    /// way a concurrent writer landing in the window would.
     pub(super) advance_etag_on_put_failure: bool,
 }
 
-#[async_trait]
-impl Storage for TestStorage {
-    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
-    async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-        unimplemented!()
-    }
-
-    async fn write_manifest(
-        &self,
-        _kb: &KbSlug,
-        _manifest: &KbManifest,
-    ) -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
-    async fn head_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectMeta, StorageError> {
-        self.calls.lock().expect("mutex not poisoned").head += 1;
-        let object = self.object(kb, path)?;
-        Self::check_if_match(&conditionals, &object.etag)?;
-        Ok(Self::meta(path, &object))
-    }
-
-    async fn get_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _range: Option<ByteRange>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectRead, StorageError> {
-        self.calls.lock().expect("mutex not poisoned").get += 1;
-        let object = self.object(kb, path)?;
-        Self::check_if_match(&conditionals, &object.etag)?;
-        let mut script = self.script.lock().expect("mutex not poisoned");
-        if script.get_failures_remaining > 0 {
-            script.get_failures_remaining -= 1;
-            return Err(StorageError::PreconditionFailed);
-        }
-        drop(script);
-        Ok(ObjectRead {
-            bytes: object.body.clone(),
-            meta: Self::meta(path, &object),
-            content_range: None,
-        })
-    }
-
-    async fn get_object_stream(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _range: Option<ByteRange>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<notedthat_core::ObjectStream, StorageError> {
-        unimplemented!()
-    }
-
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        self.calls.lock().expect("mutex not poisoned").put += 1;
-        let key = key(kb, path);
-        let mut objects = self.objects.lock().expect("mutex not poisoned");
-        let current = objects.get(&key).map(|object| object.etag.as_str());
-        if conditionals
-            .if_match
-            .as_deref()
-            .is_some_and(|etag| current != Some(etag))
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-        let mut script = self.script.lock().expect("mutex not poisoned");
-        if script.put_failures_remaining > 0 {
-            script.put_failures_remaining -= 1;
-            if script.advance_etag_on_put_failure {
-                let object = objects.get_mut(&key).expect("object exists");
-                object.etag = "etag2".to_string();
-            }
-            return Err(StorageError::PreconditionFailed);
-        }
-        drop(script);
-        let etag = "etag2".to_string();
-        let replaced = objects.insert(
-            key,
-            StoredObject {
-                body: bytes,
-                etag: etag.clone(),
-                content_type: content_type.map(str::to_string),
-            },
-        );
-        Ok(PutOutcome {
-            etag: Some(etag),
-            created: replaced.is_none(),
-        })
-    }
-
-    async fn put_staged_object(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _body: notedthat_core::StagedBody,
-        _content_type: Option<&str>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        unimplemented!()
-    }
-
-    async fn copy_object(
-        &self,
-        _kb: &KbSlug,
-        _source: &ObjectPath,
-        _destination: &ObjectPath,
-        _options: notedthat_core::CopyObjectOptions,
-    ) -> Result<PutOutcome, StorageError> {
-        unimplemented!()
-    }
-
-    async fn delete_object(
-        &self,
-        _kb: &KbSlug,
-        _path: &ObjectPath,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
-        unimplemented!()
-    }
-
-    async fn list_objects(
-        &self,
-        _kb: &KbSlug,
-        _prefix: Option<&str>,
-        _limit: u32,
-        _cursor: Option<&str>,
-    ) -> Result<ListResponse, StorageError> {
-        unimplemented!()
-    }
-}
-
 impl TestStorage {
-    pub(super) fn with_body(body: &'static [u8]) -> Self {
-        let storage = Self::default();
-        storage.insert(Bytes::from_static(body), "etag1");
-        storage
+    pub(super) async fn with_body(body: &'static [u8]) -> Self {
+        Self::with_script(body, Script::default()).await
     }
 
-    pub(super) fn with_script(body: &'static [u8], script: Script) -> Self {
-        let storage = Self {
-            objects: Mutex::new(HashMap::new()),
-            calls: Mutex::new(Calls::default()),
-            script: Mutex::new(script),
-        };
-        storage.insert(Bytes::from_static(body), "etag1");
+    pub(super) async fn with_script(body: &'static [u8], script: Script) -> Self {
+        let storage = ScriptedStorage::default();
         storage
+            .inner()
+            .seed(KB, PATH, body, Some("text/plain"), Some("etag1"))
+            .await;
+        let precondition_failed = || StorageError::PreconditionFailed;
+        storage.fail_next(
+            StorageOp::GetObject,
+            script.get_failures_remaining,
+            precondition_failed,
+        );
+        storage.fail_next(
+            StorageOp::PutObject,
+            script.put_failures_remaining,
+            precondition_failed,
+        );
+        if script.advance_etag_on_put_failure {
+            // The hook runs on every PUT, before the scripted failure; counting down
+            // in step with the failures keeps it off the PUT that is let through.
+            let advances = Arc::new(AtomicU32::new(script.put_failures_remaining));
+            storage.before(StorageOp::PutObject, move |store| {
+                let advances = Arc::clone(&advances);
+                async move {
+                    let due = advances
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok();
+                    if due {
+                        let current = store.object(KB, PATH).await.expect("object exists");
+                        store
+                            .seed(
+                                KB,
+                                PATH,
+                                current.bytes,
+                                current.meta.content_type.as_deref(),
+                                Some("etag2"),
+                            )
+                            .await;
+                    }
+                }
+            });
+        }
+        Self(storage)
     }
 
-    pub(super) fn body(&self) -> Bytes {
-        self.objects
-            .lock()
-            .expect("mutex not poisoned")
-            .get(&key(&kb(), &path()))
+    pub(super) async fn body(&self) -> Bytes {
+        self.0
+            .inner()
+            .object(KB, PATH)
+            .await
             .expect("object exists")
-            .body
-            .clone()
+            .bytes
     }
 
     pub(super) fn calls(&self) -> Calls {
-        let calls = self.calls.lock().expect("mutex not poisoned");
         Calls {
-            head: calls.head,
-            get: calls.get,
-            put: calls.put,
-        }
-    }
-
-    fn insert(&self, body: Bytes, etag: &str) {
-        self.objects.lock().expect("mutex not poisoned").insert(
-            key(&kb(), &path()),
-            StoredObject {
-                body,
-                etag: etag.to_string(),
-                content_type: Some("text/plain".to_string()),
-            },
-        );
-    }
-
-    fn object(&self, kb: &KbSlug, path: &ObjectPath) -> Result<StoredObject, StorageError> {
-        self.objects
-            .lock()
-            .expect("mutex not poisoned")
-            .get(&key(kb, path))
-            .cloned()
-            .ok_or_else(|| StorageError::NotFound { key: key(kb, path) })
-    }
-
-    fn check_if_match(
-        conditionals: &ConditionalHeaders,
-        current_etag: &str,
-    ) -> Result<(), StorageError> {
-        if conditionals
-            .if_match
-            .as_deref()
-            .is_some_and(|etag| etag != current_etag)
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-        Ok(())
-    }
-
-    fn meta(path: &ObjectPath, object: &StoredObject) -> ObjectMeta {
-        ObjectMeta {
-            key: path.as_str().to_string(),
-            size: object.body.len() as u64,
-            last_modified: None,
-            content_type: object.content_type.clone(),
-            etag: Some(object.etag.clone()),
+            head: self.0.count(StorageOp::HeadObject),
+            get: self.0.count(StorageOp::GetObject),
+            put: self.0.count(StorageOp::PutObject),
         }
     }
 }
@@ -284,7 +112,7 @@ pub(super) async fn run_patch(
     let kb = kb();
     let path = path();
     let outcome = patch(
-        storage,
+        &storage.0,
         &crate::WriteSinks::indexer_only(&indexer_tx),
         PatchRequest {
             kb: &kb,
@@ -300,13 +128,9 @@ pub(super) async fn run_patch(
 }
 
 fn kb() -> KbSlug {
-    KbSlug::try_new("test-kb").expect("valid kb slug")
+    KbSlug::try_new(KB).expect("valid kb slug")
 }
 
 fn path() -> ObjectPath {
-    ObjectPath::try_from_str("test.md").expect("valid path")
-}
-
-fn key(kb: &KbSlug, path: &ObjectPath) -> String {
-    format!("{}/{}", kb.as_str(), path.as_str())
+    ObjectPath::try_from_str(PATH).expect("valid path")
 }

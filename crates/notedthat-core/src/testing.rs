@@ -98,6 +98,53 @@ impl InMemoryStorage {
     }
 }
 
+impl InMemoryStorage {
+    /// Store `bytes` at `path` directly, provisioning `kb` if it is not already, so a
+    /// fixture can pin the `ETag` a test then conditions on. `etag: None` computes it
+    /// the way a `put_object` would.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kb` or `path` is not a valid slug or object path.
+    pub async fn seed(
+        &self,
+        kb: &str,
+        path: &str,
+        bytes: impl Into<Bytes>,
+        content_type: Option<&str>,
+        etag: Option<&str>,
+    ) {
+        let kb = KbSlug::try_new(kb).expect("seeded knowledge base is a valid slug");
+        let path = ObjectPath::try_from_str(path).expect("seeded path is a valid object path");
+        let bytes = bytes.into();
+        let etag = etag.map_or_else(|| compute_etag(&bytes), str::to_string);
+        let mut inner = self.inner.write().await;
+        inner.buckets.insert(kb.as_str().to_string());
+        inner.objects.insert(
+            (kb.as_str().to_string(), path.as_str().to_string()),
+            StoredObject {
+                bytes,
+                content_type: content_type.map(str::to_string),
+                etag,
+                last_modified: SystemTime::now(),
+            },
+        );
+    }
+
+    /// The object at `path`, read past every precondition and reachability switch,
+    /// for a test asserting on what the store ended up holding.
+    pub async fn object(&self, kb: &str, path: &str) -> Option<ObjectRead> {
+        let inner = self.inner.read().await;
+        let stored = inner.objects.get(&(kb.to_string(), path.to_string()))?;
+        let path = ObjectPath::try_from_str(path).ok()?;
+        Some(ObjectRead {
+            meta: object_meta(&path, stored, stored.bytes.len() as u64),
+            bytes: stored.bytes.clone(),
+            content_range: None,
+        })
+    }
+}
+
 impl InMemoryInner {
     /// The bucket a real backend would have looked up first.
     fn require_bucket(&self, kb: &KbSlug) -> Result<(), StorageError> {
@@ -112,6 +159,9 @@ impl InMemoryInner {
 }
 
 pub use crate::etag::compute_etag;
+
+mod scripted;
+pub use scripted::{ScriptedStorage, StorageCall, StorageOp};
 
 /// A [`crate::TokenVerifier`] over a fixed map, for surface tests that need
 /// an identity-provider user without an identity provider.

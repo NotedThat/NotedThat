@@ -6,7 +6,7 @@ use crate::{PatchMode, WriteError};
 
 #[tokio::test]
 async fn replaces_byte_range_and_enqueues_event() {
-    let storage = TestStorage::with_body(b"0123456789TAIL");
+    let storage = TestStorage::with_body(b"0123456789TAIL").await;
 
     let (_outcome, mut rx) = run_patch(
         &storage,
@@ -20,7 +20,7 @@ async fn replaces_byte_range_and_enqueues_event() {
     .await
     .expect("byte patch succeeds");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"REPLACEDTAIL"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"REPLACEDTAIL"));
     let event = rx.recv().await.expect("index event enqueued");
     assert_eq!(event.kb().as_str(), "test-kb");
     assert_eq!(event.object_key().as_str(), "test.md");
@@ -28,7 +28,7 @@ async fn replaces_byte_range_and_enqueues_event() {
 
 #[tokio::test]
 async fn replaces_line_range() {
-    let storage = TestStorage::with_body(b"one\ntwo\nthree\nfour\nfive\n");
+    let storage = TestStorage::with_body(b"one\ntwo\nthree\nfour\nfive\n").await;
 
     run_patch(
         &storage,
@@ -43,14 +43,14 @@ async fn replaces_line_range() {
     .expect("line patch succeeds");
 
     assert_eq!(
-        storage.body(),
+        storage.body().await,
         Bytes::from_static(b"one\nTWO\nTHREE\nfour\nfive\n")
     );
 }
 
 #[tokio::test]
 async fn inserts_before_line() {
-    let storage = TestStorage::with_body(b"one\ntwo\nthree\nfour\nfive\n");
+    let storage = TestStorage::with_body(b"one\ntwo\nthree\nfour\nfive\n").await;
 
     run_patch(
         &storage,
@@ -65,14 +65,14 @@ async fn inserts_before_line() {
     .expect("line insert succeeds");
 
     assert_eq!(
-        storage.body(),
+        storage.body().await,
         Bytes::from_static(b"one\ntwo\ninserted\nthree\nfour\nfive\n")
     );
 }
 
 #[tokio::test]
 async fn appends_with_caller_if_match() {
-    let storage = TestStorage::with_body(b"base");
+    let storage = TestStorage::with_body(b"base").await;
 
     run_patch(
         &storage,
@@ -85,12 +85,12 @@ async fn appends_with_caller_if_match() {
     .await
     .expect("append succeeds");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"baseappended"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"baseappended"));
 }
 
 #[tokio::test]
 async fn appends_without_caller_if_match() {
-    let storage = TestStorage::with_body(b"base");
+    let storage = TestStorage::with_body(b"base").await;
 
     run_patch(
         &storage,
@@ -103,12 +103,12 @@ async fn appends_without_caller_if_match() {
     .await
     .expect("append without caller If-Match succeeds");
 
-    assert_eq!(storage.body(), Bytes::from_static(b"baseappended"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"baseappended"));
 }
 
 #[tokio::test]
 async fn byte_patch_without_if_match_requires_a_precondition() {
-    let storage = TestStorage::with_body(b"base");
+    let storage = TestStorage::with_body(b"base").await;
 
     let err = run_patch(
         &storage,
@@ -127,7 +127,7 @@ async fn byte_patch_without_if_match_requires_a_precondition() {
 
 #[tokio::test]
 async fn stale_caller_if_match_is_precondition_failed() {
-    let storage = TestStorage::with_body(b"base");
+    let storage = TestStorage::with_body(b"base").await;
 
     let err = run_patch(
         &storage,
@@ -149,7 +149,7 @@ async fn stale_caller_if_match_is_precondition_failed() {
 
 #[tokio::test]
 async fn star_if_match_is_invalid() {
-    let storage = TestStorage::with_body(b"base");
+    let storage = TestStorage::with_body(b"base").await;
 
     let err = run_patch(
         &storage,
@@ -168,7 +168,7 @@ async fn star_if_match_is_invalid() {
 
 #[tokio::test]
 async fn pre_splice_size_gate_rejects_without_mutation() {
-    let storage = TestStorage::with_body(b"too-large");
+    let storage = TestStorage::with_body(b"too-large").await;
 
     let err = run_patch(
         &storage,
@@ -183,5 +183,5 @@ async fn pre_splice_size_gate_rejects_without_mutation() {
     .expect_err("oversized object fails");
 
     assert!(matches!(err, WriteError::PatchTooLarge { .. }));
-    assert_eq!(storage.body(), Bytes::from_static(b"too-large"));
+    assert_eq!(storage.body().await, Bytes::from_static(b"too-large"));
 }

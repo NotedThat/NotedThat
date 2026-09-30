@@ -3,11 +3,10 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
+use notedthat_core::testing::ScriptedStorage;
 use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Verb, Who};
 use notedthat_webdav::state::WebDavState;
 use tokio::sync::mpsc;
-
-use super::storage::MemoryStorage;
 
 /// Build a policy granting `verbs` to `who` across the whole knowledge base.
 ///
@@ -37,7 +36,7 @@ pub(super) const SERVICE_TOKEN: &str = "test-service-token";
 pub(super) const ALICE_TOKEN: &str = "jwt-alice";
 
 pub(super) fn state_with_policies(
-    storage: Arc<MemoryStorage>,
+    storage: Arc<ScriptedStorage>,
     policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
     let (indexer_tx, _indexer_rx) = mpsc::channel(8);

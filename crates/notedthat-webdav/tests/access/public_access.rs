@@ -1,3 +1,4 @@
+use notedthat_core::testing::StorageOp;
 use notedthat_core::{AccessPolicy, Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,12 +11,12 @@ use tower::ServiceExt;
 use super::fixture::{
     PROPFIND_BODY, policy, request, response_body, scoped_policy, state_with_policies,
 };
-use super::storage::MemoryStorage;
+use super::storage::memory_storage;
 
 #[tokio::test]
 async fn anonymous_root_propfind_lists_only_discoverable_kbs() {
     // Given
-    let storage = Arc::new(MemoryStorage::default());
+    let storage = Arc::new(memory_storage([]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([
@@ -46,10 +47,8 @@ async fn anonymous_root_propfind_lists_only_discoverable_kbs() {
 #[tokio::test]
 async fn anonymous_capabilities_are_independent() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([
-        ("discoverable", "public.md"),
-        ("private", "private.md"),
-    ]));
+    let storage =
+        Arc::new(memory_storage([("discoverable", "public.md"), ("private", "private.md")]).await);
     let policies = BTreeMap::from([
         (
             "discoverable".to_string(),
@@ -104,13 +103,13 @@ async fn anonymous_capabilities_are_independent() {
 #[tokio::test]
 async fn anonymous_internal_paths_are_challenged_and_filtered_across_pages() {
     // Given
-    let storage = Arc::new(
-        MemoryStorage::with_objects([
-            ("discoverable", ".notedthat/manifest.json"),
-            ("discoverable", "public.md"),
-        ])
-        .with_page_size(1),
-    );
+    let storage = memory_storage([
+        ("discoverable", ".notedthat/manifest.json"),
+        ("discoverable", "public.md"),
+    ])
+    .await;
+    storage.max_page(1);
+    let storage = Arc::new(storage);
     let app = build_router(state_with_policies(
         Arc::clone(&storage),
         BTreeMap::from([(
@@ -143,23 +142,13 @@ async fn anonymous_internal_paths_are_challenged_and_filtered_across_pages() {
     assert!(body.contains("public.md"), "body: {body}");
     assert!(!body.contains(".notedthat"), "body: {body}");
     assert_eq!(internal.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        storage
-            .calls()
-            .iter()
-            .filter(|call| *call == "list")
-            .count(),
-        2
-    );
+    assert_eq!(storage.count(StorageOp::ListObjects), 2);
 }
 
 #[tokio::test]
 async fn authenticated_access_remains_unfiltered() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([(
-        "private",
-        ".notedthat/manifest.json",
-    )]));
+    let storage = Arc::new(memory_storage([("private", ".notedthat/manifest.json")]).await);
     let app = build_router(state_with_policies(storage, BTreeMap::new()));
 
     // When
@@ -197,10 +186,13 @@ async fn authenticated_access_remains_unfiltered() {
 async fn a_prefix_scoped_grant_exposes_only_its_subtree_over_webdav() {
     // Given — the case the capability model could not express at all: one
     // knowledge base, half of it public.
-    let storage = Arc::new(MemoryStorage::with_objects([
-        ("discoverable", "public/open.md"),
-        ("discoverable", "internal/closed.md"),
-    ]));
+    let storage = Arc::new(
+        memory_storage([
+            ("discoverable", "public/open.md"),
+            ("discoverable", "internal/closed.md"),
+        ])
+        .await,
+    );
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([(
@@ -243,10 +235,13 @@ async fn a_prefix_scoped_grant_exposes_only_its_subtree_over_webdav() {
 #[tokio::test]
 async fn propfind_omits_denied_keys_and_refuses_their_get() {
     // Given — anyone may list and read the base, except `internal/`.
-    let storage = Arc::new(MemoryStorage::with_objects([
-        ("discoverable", "public/open.md"),
-        ("discoverable", "internal/closed.md"),
-    ]));
+    let storage = Arc::new(
+        memory_storage([
+            ("discoverable", "public/open.md"),
+            ("discoverable", "internal/closed.md"),
+        ])
+        .await,
+    );
     let policy: AccessPolicy = [
         notedthat_core::AccessRule::new(Who::Anyone, [Verb::List, Verb::Read]),
         notedthat_core::AccessRule::deny(Who::Anyone, [Verb::List, Verb::Read])

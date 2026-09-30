@@ -710,264 +710,80 @@ fn apply_seek_delta(base: u64, delta: i64) -> FsResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use axum::{
         body::{Body, to_bytes},
         http::{Method, Request, StatusCode},
     };
     use futures::TryStreamExt as _;
-    use notedthat_core::{
-        KbManifest, ObjectRead, PutOutcome, Storage, StorageError, storage::ListResponse,
-    };
-    use std::sync::Mutex;
+    use notedthat_core::Storage;
+    use notedthat_core::testing::{ScriptedStorage, StorageCall, StorageOp};
     use tokio::sync::mpsc;
     use tower::ServiceExt as _;
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct ListCall {
-        kb: String,
-        prefix: Option<String>,
-        limit: u32,
-        cursor: Option<String>,
+    /// Size of every seeded object, so size assertions have a fixed number to check.
+    const OBJECT_SIZE: usize = 42;
+
+    /// A store with the `notes` knowledge base holding `keys`, each `OBJECT_SIZE` bytes.
+    async fn storage_with(keys: impl IntoIterator<Item = impl AsRef<str>>) -> Arc<ScriptedStorage> {
+        let storage = ScriptedStorage::with_kbs([&kb_slug("notes")]);
+        for key in keys {
+            storage
+                .inner()
+                .seed(
+                    "notes",
+                    key.as_ref(),
+                    vec![0; OBJECT_SIZE],
+                    Some("text/markdown"),
+                    None,
+                )
+                .await;
+        }
+        Arc::new(storage)
     }
 
-    struct MockListPage {
-        cursor: Option<String>,
-        objects: Vec<ObjectMeta>,
-        next_cursor: Option<String>,
+    async fn empty_storage() -> Arc<ScriptedStorage> {
+        storage_with(std::iter::empty::<&str>()).await
     }
 
-    #[derive(Default)]
-    struct MockStorage {
-        calls: Mutex<Vec<&'static str>>,
-        list_calls: Mutex<Vec<ListCall>>,
-        pages: Mutex<Vec<MockListPage>>,
-        objects: Mutex<Vec<ObjectMeta>>,
-        truncated: bool,
-        next_cursor: Option<String>,
-        head_not_found: bool,
-        get_range_not_satisfiable: bool,
-        /// When set, `head_object` answers with it and `get_object` serves zeroed bytes
-        /// sized to the requested range, so a `StorageReadFile` can be driven end to end.
-        object: Option<ObjectMeta>,
-        get_ranges: Mutex<Vec<Option<ByteRange>>>,
+    /// The `list_objects` calls the storage received, oldest first.
+    fn list_calls(storage: &ScriptedStorage) -> Vec<StorageCall> {
+        storage
+            .calls()
+            .into_iter()
+            .filter(|call| call.op() == StorageOp::ListObjects)
+            .collect()
     }
 
-    impl MockStorage {
-        fn with_objects(objects: Vec<ObjectMeta>) -> Self {
-            Self {
-                objects: Mutex::new(objects),
-                ..Self::default()
-            }
-        }
-
-        fn with_pages(pages: Vec<MockListPage>) -> Self {
-            Self {
-                pages: Mutex::new(pages),
-                ..Self::default()
-            }
-        }
-
-        fn record(&self, method: &'static str) {
-            self.calls.lock().expect("mutex not poisoned").push(method);
-        }
-
-        fn calls(&self) -> Vec<&'static str> {
-            self.calls.lock().expect("mutex not poisoned").clone()
-        }
-
-        fn list_calls(&self) -> Vec<ListCall> {
-            self.list_calls.lock().expect("mutex not poisoned").clone()
-        }
-
-        fn with_object(object: ObjectMeta) -> Self {
-            Self {
-                object: Some(object),
-                ..Self::default()
-            }
-        }
-
-        fn get_ranges(&self) -> Vec<Option<ByteRange>> {
-            self.get_ranges.lock().expect("mutex not poisoned").clone()
+    fn list_call(prefix: Option<&str>, limit: u32, cursor: Option<&str>) -> StorageCall {
+        StorageCall::ListObjects {
+            kb: "notes".to_string(),
+            prefix: prefix.map(str::to_string),
+            limit,
+            cursor: cursor.map(str::to_string),
         }
     }
 
-    fn unavailable() -> StorageError {
-        StorageError::BackendUnavailable {
-            message: "mock storage method is not configured for this test".to_string(),
-        }
-    }
-
-    #[async_trait]
-    impl Storage for MockStorage {
-        async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-            self.record("ensure_bucket");
-            Err(unavailable())
-        }
-
-        async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-            self.record("read_manifest");
-            Err(unavailable())
-        }
-
-        async fn write_manifest(
-            &self,
-            _kb: &KbSlug,
-            _manifest: &KbManifest,
-        ) -> Result<(), StorageError> {
-            self.record("write_manifest");
-            Err(unavailable())
-        }
-
-        async fn head_object(
-            &self,
-            _kb: &KbSlug,
-            path: &ObjectPath,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<ObjectMeta, StorageError> {
-            self.record("head_object");
-            if self.head_not_found {
-                return Err(StorageError::NotFound {
-                    key: path.as_str().to_string(),
-                });
-            }
-            if let Some(object) = &self.object {
-                return Ok(object.clone());
-            }
-            Err(unavailable())
-        }
-
-        async fn get_object(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            range: Option<ByteRange>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<ObjectRead, StorageError> {
-            self.record("get_object");
-            self.get_ranges
-                .lock()
-                .expect("mutex not poisoned")
-                .push(range.clone());
-            if self.get_range_not_satisfiable {
-                return Err(StorageError::RangeNotSatisfiable { complete_length: 0 });
-            }
-            let Some(object) = &self.object else {
-                return Err(unavailable());
-            };
-            let len = range.as_ref().map_or(0, |range| match range {
-                ByteRange::FromStart { first, last } => last.saturating_sub(*first) + 1,
-                ByteRange::FromStartOpen { .. } | ByteRange::Suffix { .. } => 0,
-            });
-            let len = usize::try_from(len).map_err(|_err| unavailable())?;
-            Ok(ObjectRead {
-                bytes: Bytes::from(vec![0; len]),
-                meta: object.clone(),
-                content_range: None,
+    /// The ranges `get_object` was asked for, oldest first.
+    fn get_ranges(storage: &ScriptedStorage) -> Vec<Option<ByteRange>> {
+        storage
+            .calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                StorageCall::GetObject { range, .. } => Some(range),
+                _ => None,
             })
-        }
+            .collect()
+    }
 
-        async fn get_object_stream(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _range: Option<ByteRange>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<notedthat_core::ObjectStream, StorageError> {
-            Err(unavailable())
-        }
-
-        async fn put_object(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _bytes: Bytes,
-            _content_type: Option<&str>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<PutOutcome, StorageError> {
-            self.record("put_object");
-            Err(unavailable())
-        }
-
-        async fn put_staged_object(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _body: notedthat_core::StagedBody,
-            _content_type: Option<&str>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<PutOutcome, StorageError> {
-            Err(unavailable())
-        }
-
-        async fn copy_object(
-            &self,
-            _kb: &KbSlug,
-            _source: &ObjectPath,
-            _destination: &ObjectPath,
-            _options: notedthat_core::CopyObjectOptions,
-        ) -> Result<PutOutcome, StorageError> {
-            Err(unavailable())
-        }
-
-        async fn delete_object(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<(), StorageError> {
-            self.record("delete_object");
-            Err(unavailable())
-        }
-
-        async fn list_objects(
-            &self,
-            kb: &KbSlug,
-            prefix: Option<&str>,
-            limit: u32,
-            cursor: Option<&str>,
-        ) -> Result<ListResponse, StorageError> {
-            self.record("list_objects");
-            self.list_calls
-                .lock()
-                .expect("mutex not poisoned")
-                .push(ListCall {
-                    kb: kb.as_str().to_string(),
-                    prefix: prefix.map(str::to_string),
-                    limit,
-                    cursor: cursor.map(str::to_string),
-                });
-            if let Some(page) = self
-                .pages
-                .lock()
-                .expect("mutex not poisoned")
-                .iter()
-                .find(|page| page.cursor.as_deref() == cursor)
-            {
-                return Ok(ListResponse {
-                    objects: page.objects.clone(),
-                    truncated: page.next_cursor.is_some(),
-                    next_cursor: page.next_cursor.clone(),
-                });
-            }
-
-            Ok(ListResponse {
-                objects: self
-                    .objects
-                    .lock()
-                    .expect("mutex not poisoned")
-                    .iter()
-                    .filter(|object| prefix.is_none_or(|prefix| object.key.starts_with(prefix)))
-                    .cloned()
-                    .collect(),
-                truncated: self.truncated,
-                next_cursor: self.next_cursor.clone(),
-            })
-        }
+    /// The cursor the first full page of the `notes` listing hands back, which is what
+    /// a paging caller must send next.
+    async fn first_page_cursor(storage: &ScriptedStorage) -> Option<String> {
+        storage
+            .inner()
+            .list_objects(&kb_slug("notes"), None, 1000, None)
+            .await
+            .expect("listing succeeds")
+            .next_cursor
     }
 
     fn kb_slug(value: &str) -> KbSlug {
@@ -985,36 +801,9 @@ mod tests {
             .collect()
     }
 
-    fn object_meta(key: &str) -> ObjectMeta {
-        ObjectMeta {
-            key: key.to_string(),
-            size: 42,
-            last_modified: Some(1),
-            content_type: Some("text/markdown".to_string()),
-            etag: Some(format!("\"etag-{key}\"")),
-        }
-    }
-
-    fn object_metas(count: usize) -> Vec<ObjectMeta> {
-        (0..count)
-            .map(|index| object_meta(&format!("file-{index:05}.md")))
-            .collect()
-    }
-
-    fn propfind_pages(total: usize) -> Vec<MockListPage> {
-        object_metas(total)
-            .chunks(1000)
-            .enumerate()
-            .map(|(index, chunk)| {
-                let next_index = index + 1;
-                let next_cursor = (next_index * 1000 < total).then(|| format!("page-{next_index}"));
-                MockListPage {
-                    cursor: (index > 0).then(|| format!("page-{index}")),
-                    objects: chunk.to_vec(),
-                    next_cursor,
-                }
-            })
-            .collect()
+    /// `count` keys that sort in index order, the way a listing returns them.
+    fn file_keys(count: usize) -> impl Iterator<Item = String> {
+        (0..count).map(|index| format!("file-{index:05}.md"))
     }
 
     fn test_state(
@@ -1131,7 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_dav_path_non_declared_kb_forbidden() {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage().await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
         let path = dav_path("/scratch/file.md");
 
@@ -1143,7 +932,7 @@ mod tests {
             .await
             .expect_err("non-declared KB is forbidden");
         assert_eq!(err, FsError::Forbidden);
-        assert!(storage.calls().is_empty());
+        assert!(storage.ops().is_empty());
     }
 
     #[test]
@@ -1157,7 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_dir_root_lists_all_declared_kbs() {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage().await;
         let fs = test_filesystem(storage.clone(), &["notes", "scratch"]);
 
         let entries = fs
@@ -1172,15 +961,12 @@ mod tests {
             assert!(entry.is_dir().await.expect("entry dir check succeeds"));
         }
         assert_eq!(entry_names(entries), vec!["notes", "scratch"]);
-        assert!(storage.calls().is_empty());
+        assert!(storage.ops().is_empty());
     }
 
     #[tokio::test]
     async fn test_read_dir_kb_root_calls_list_objects() {
-        let storage = Arc::new(MockStorage::with_objects(vec![
-            object_meta("folder/bravo.md"),
-            object_meta("alpha.md"),
-        ]));
+        let storage = storage_with(["folder/bravo.md", "alpha.md"]).await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
 
         let entries = fs
@@ -1191,23 +977,13 @@ mod tests {
             .await
             .expect("stream succeeds");
 
-        assert_eq!(
-            storage.list_calls(),
-            vec![ListCall {
-                kb: "notes".to_string(),
-                prefix: None,
-                limit: 1000,
-                cursor: None,
-            }]
-        );
+        assert_eq!(list_calls(&storage), vec![list_call(None, 1000, None)]);
         assert_eq!(entry_names(entries), vec!["folder", "alpha.md"]);
     }
 
     #[tokio::test]
     async fn test_read_dir_virtual_folder_uses_decoded_prefix() {
-        let storage = Arc::new(MockStorage::with_objects(vec![object_meta(
-            "hello world/bravo.md",
-        )]));
+        let storage = storage_with(["hello world/bravo.md"]).await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
 
         let entries = fs
@@ -1219,20 +995,15 @@ mod tests {
             .expect("stream succeeds");
 
         assert_eq!(
-            storage.list_calls(),
-            vec![ListCall {
-                kb: "notes".to_string(),
-                prefix: Some("hello world/".to_string()),
-                limit: 1000,
-                cursor: None,
-            }]
+            list_calls(&storage),
+            vec![list_call(Some("hello world/"), 1000, None)]
         );
         assert_eq!(entry_names(entries), vec!["bravo.md"]);
     }
 
     #[tokio::test]
     async fn propfind_walks_cursor_pages() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1500)));
+        let storage = storage_with(file_keys(1500)).await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
 
         let entries = fs
@@ -1244,28 +1015,20 @@ mod tests {
             .expect("stream succeeds");
 
         assert_eq!(entries.len(), 1500);
+        let next_cursor = first_page_cursor(&storage).await;
+        assert!(next_cursor.is_some(), "1500 objects take two pages");
         assert_eq!(
-            storage.list_calls(),
+            list_calls(&storage),
             vec![
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: None,
-                    limit: 1000,
-                    cursor: None,
-                },
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: None,
-                    limit: 1000,
-                    cursor: Some("page-1".to_string()),
-                },
+                list_call(None, 1000, None),
+                list_call(None, 1000, next_cursor.as_deref()),
             ]
         );
     }
 
     #[tokio::test]
     async fn propfind_exactly_10000_returns_207() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_000)));
+        let storage = storage_with(file_keys(10_000)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1282,12 +1045,12 @@ mod tests {
         assert_eq!(status, StatusCode::MULTI_STATUS);
         assert_eq!(body.matches("<D:response>").count(), 10_001);
         assert!(body.contains("file-09999.md"));
-        assert_eq!(storage.list_calls().len(), 10);
+        assert_eq!(storage.count(StorageOp::ListObjects), 10);
     }
 
     #[tokio::test]
     async fn propfind_depth_zero_skips_enumeration_when_target_exceeds_cap() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_001)));
+        let storage = storage_with(file_keys(10_001)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1298,14 +1061,14 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::MULTI_STATUS);
         assert!(
-            storage.list_calls().is_empty(),
+            list_calls(&storage).is_empty(),
             "Depth: 0 must not list objects before handling the target metadata"
         );
     }
 
     #[tokio::test]
     async fn propfind_depth_one_reuses_paginated_cap_listing() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1_500)));
+        let storage = storage_with(file_keys(1_500)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1319,21 +1082,13 @@ mod tests {
 
         let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
         assert!(body.contains("file-01499.md"));
+        let next_cursor = first_page_cursor(&storage).await;
+        assert!(next_cursor.is_some(), "1500 objects take two pages");
         assert_eq!(
-            storage.list_calls(),
+            list_calls(&storage),
             vec![
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: None,
-                    limit: 1000,
-                    cursor: None,
-                },
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: None,
-                    limit: 1000,
-                    cursor: Some("page-1".to_string()),
-                },
+                list_call(None, 1000, None),
+                list_call(None, 1000, next_cursor.as_deref()),
             ],
             "the capped traversal must be the only directory listing for this request"
         );
@@ -1343,7 +1098,7 @@ mod tests {
     async fn propfind_without_depth_is_refused_as_infinite() {
         // RFC 4918 §9.1: no Depth header means infinity, which is refused before any
         // listing, so the uncapped walk dav-server would do cannot happen.
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1_500)));
+        let storage = storage_with(file_keys(1_500)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1361,15 +1116,12 @@ mod tests {
         .expect("UTF-8 body");
 
         assert!(body.contains("<D:propfind-finite-depth/>"));
-        assert!(storage.list_calls().is_empty());
+        assert!(list_calls(&storage).is_empty());
     }
 
     #[tokio::test]
     async fn propfind_depth_one_virtual_directory_reuses_listing_after_metadata_probe() {
-        let storage = Arc::new(MockStorage {
-            head_not_found: true,
-            ..MockStorage::with_objects(vec![object_meta("folder/bravo.md")])
-        });
+        let storage = storage_with(["folder/bravo.md"]).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1380,20 +1132,10 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::MULTI_STATUS);
         assert_eq!(
-            storage.list_calls(),
+            list_calls(&storage),
             vec![
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: Some("folder/".to_string()),
-                    limit: 1000,
-                    cursor: None,
-                },
-                ListCall {
-                    kb: "notes".to_string(),
-                    prefix: Some("folder/".to_string()),
-                    limit: 1,
-                    cursor: None,
-                },
+                list_call(Some("folder/"), 1000, None),
+                list_call(Some("folder/"), 1, None),
             ],
             "the existing virtual-directory metadata probe is allowed, but read_dir must use the cap listing"
         );
@@ -1401,7 +1143,7 @@ mod tests {
 
     #[tokio::test]
     async fn propfind_infinity_with_litmus_is_refused_as_forbidden() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1)));
+        let storage = storage_with(file_keys(1)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
         let mut request = propfind_request_with_depth("/notes/", "infinity");
@@ -1415,12 +1157,12 @@ mod tests {
             .expect("PROPFIND request succeeds");
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(storage.list_calls().is_empty());
+        assert!(list_calls(&storage).is_empty());
     }
 
     #[tokio::test]
     async fn propfind_duplicate_depth_is_rejected_before_listing() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(1)));
+        let storage = storage_with(file_keys(1)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
         let request = Request::builder()
@@ -1440,18 +1182,12 @@ mod tests {
             .expect("PROPFIND request succeeds");
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(storage.list_calls().is_empty());
+        assert!(list_calls(&storage).is_empty());
     }
 
     #[tokio::test]
     async fn propfind_concurrent_virtual_directories_keep_listings_request_scoped() {
-        let storage = Arc::new(MockStorage {
-            head_not_found: true,
-            ..MockStorage::with_objects(vec![
-                object_meta("alpha/one.md"),
-                object_meta("beta/two.md"),
-            ])
-        });
+        let storage = storage_with(["alpha/one.md", "beta/two.md"]).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1480,12 +1216,12 @@ mod tests {
         assert!(beta_body.contains("two.md"));
         assert!(!beta_body.contains("one.md"));
 
-        let calls = storage.list_calls();
+        let calls = list_calls(&storage);
         for prefix in ["alpha/", "beta/"] {
             assert_eq!(
                 calls
                     .iter()
-                    .filter(|call| { call.prefix.as_deref() == Some(prefix) && call.limit == 1000 })
+                    .filter(|call| { matches!(call, StorageCall::ListObjects { prefix: Some(p), limit: 1000, .. } if p == prefix) })
                     .count(),
                 1,
                 "each request must perform its own cached cap traversal"
@@ -1493,7 +1229,7 @@ mod tests {
             assert_eq!(
                 calls
                     .iter()
-                    .filter(|call| call.prefix.as_deref() == Some(prefix) && call.limit == 1)
+                    .filter(|call| matches!(call, StorageCall::ListObjects { prefix: Some(p), limit: 1, .. } if p == prefix))
                     .count(),
                 1,
                 "each request retains only its own virtual-directory metadata probe"
@@ -1503,7 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn propfind_over_10000_returns_507() {
-        let storage = Arc::new(MockStorage::with_pages(propfind_pages(10_001)));
+        let storage = storage_with(file_keys(10_001)).await;
         let state = test_state(storage.clone(), declared_kbs(&["notes"]));
         let app = crate::router::build_router((*state).clone());
 
@@ -1519,15 +1255,12 @@ mod tests {
 
         assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
         assert_eq!(body, PROPFIND_TOO_LARGE_DAV_XML);
-        assert_eq!(storage.list_calls().len(), 11);
+        assert_eq!(storage.count(StorageOp::ListObjects), 11);
     }
 
     #[tokio::test]
     async fn test_metadata_virtual_folder_falls_back_to_prefix_listing() {
-        let storage = Arc::new(MockStorage {
-            head_not_found: true,
-            ..MockStorage::with_objects(vec![object_meta("folder/bravo.md")])
-        });
+        let storage = storage_with(["folder/bravo.md"]).await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
 
         let metadata = fs
@@ -1537,46 +1270,41 @@ mod tests {
 
         assert!(metadata.is_dir());
         assert_eq!(
-            storage.list_calls(),
-            vec![ListCall {
-                kb: "notes".to_string(),
-                prefix: Some("folder/".to_string()),
-                limit: 1,
-                cursor: None,
-            }]
+            list_calls(&storage),
+            vec![list_call(Some("folder/"), 1, None)]
         );
     }
 
     #[tokio::test]
     async fn test_metadata_delegates_to_head_object_and_caches_size() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage.clone());
 
         let meta = file.metadata().await.expect("metadata should load");
 
         assert_eq!(meta.len(), 42);
         assert_eq!(file.size_hint, Some(42));
-        assert_eq!(storage.calls(), vec!["head_object"]);
+        assert_eq!(storage.ops(), vec![StorageOp::HeadObject]);
     }
 
     #[tokio::test]
     async fn test_read_bytes_translates_to_storage_range_request() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage.clone());
 
         let bytes = file.read_bytes(10).await.expect("read should succeed");
 
         assert_eq!(bytes.len(), 10);
-        assert_eq!(storage.calls(), vec!["get_object"]);
+        assert_eq!(storage.ops(), vec![StorageOp::GetObject]);
         assert_eq!(
-            storage.get_ranges(),
+            get_ranges(&storage),
             vec![Some(ByteRange::FromStart { first: 0, last: 9 })]
         );
     }
 
     #[tokio::test]
     async fn test_read_bytes_advances_offset() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage);
 
         let _bytes = file.read_bytes(5).await.expect("read should succeed");
@@ -1586,7 +1314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seek_from_start() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage);
 
         let offset = file
@@ -1600,7 +1328,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seek_from_end_uses_cached_size() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage.clone());
         let _meta = file.metadata().await.expect("metadata should load");
 
@@ -1612,8 +1340,8 @@ mod tests {
         assert_eq!(offset, 42);
         assert_eq!(file.read_offset, 42);
         assert_eq!(
-            storage.calls(),
-            vec!["head_object"],
+            storage.ops(),
+            vec![StorageOp::HeadObject],
             "seek from end must reuse the size cached by metadata()"
         );
     }
@@ -1622,7 +1350,7 @@ mod tests {
     async fn test_seek_from_end_without_a_cached_size_asks_storage_once() {
         // The branch the dead copy never had: no `metadata()` call first, so the
         // size comes from a `head_object` of its own — and is cached for the next.
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage.clone());
 
         let offset = file
@@ -1632,7 +1360,7 @@ mod tests {
 
         assert_eq!(offset, 40);
         assert_eq!(file.size_hint, Some(42));
-        assert_eq!(storage.calls(), vec!["head_object"]);
+        assert_eq!(storage.ops(), vec![StorageOp::HeadObject]);
 
         let offset = file
             .seek(SeekFrom::End(0))
@@ -1640,8 +1368,8 @@ mod tests {
             .expect("second seek should succeed");
         assert_eq!(offset, 42);
         assert_eq!(
-            storage.calls(),
-            vec!["head_object"],
+            storage.ops(),
+            vec![StorageOp::HeadObject],
             "the size learnt by the first seek is reused"
         );
     }
@@ -1650,10 +1378,7 @@ mod tests {
     async fn test_read_bytes_past_the_end_is_empty_and_leaves_the_offset_alone() {
         // The other divergence: the dead copy turned `RangeNotSatisfiable` into
         // `NotFound`; the live path reads it as EOF and does not move.
-        let storage = Arc::new(MockStorage {
-            get_range_not_satisfiable: true,
-            ..MockStorage::with_object(object_meta("test.md"))
-        });
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage.clone());
         file.read_offset = 42;
 
@@ -1662,7 +1387,7 @@ mod tests {
         assert!(bytes.is_empty());
         assert_eq!(file.read_offset, 42);
         assert_eq!(
-            storage.get_ranges(),
+            get_ranges(&storage),
             vec![Some(ByteRange::FromStart {
                 first: 42,
                 last: 49
@@ -1673,7 +1398,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seek_from_current() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage);
         file.read_offset = 5;
 
@@ -1688,7 +1413,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_bytes_returns_not_implemented() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage);
 
         let result = file.write_bytes(Bytes::new()).await;
@@ -1698,7 +1423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_buf_returns_not_implemented() {
-        let storage = Arc::new(MockStorage::with_object(object_meta("test.md")));
+        let storage = storage_with(["test.md"]).await;
         let mut file = read_file(storage);
 
         let result = file.write_buf(Box::new(Bytes::new())).await;
@@ -1708,10 +1433,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_bytes_range_not_satisfiable_returns_empty_at_eof() {
-        let storage = Arc::new(MockStorage {
-            get_range_not_satisfiable: true,
-            ..MockStorage::default()
-        });
+        // An empty object: any range of it is past the end.
+        let storage = empty_storage().await;
+        storage
+            .inner()
+            .seed("notes", "file.md", Bytes::new(), None, None)
+            .await;
         let fs = test_filesystem(storage, &["notes"]);
         let mut file = fs
             .open(&dav_path("/notes/file.md"), OpenOptions::default())
@@ -1725,19 +1452,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_dir_returns_ok_without_storage_call() {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage().await;
         let fs = test_filesystem(storage.clone(), &["notes"]);
 
         fs.create_dir(&dav_path("/notes/new-folder"))
             .await
             .expect("MKCOL succeeds as a no-op");
 
-        assert!(storage.calls().is_empty());
+        assert!(storage.ops().is_empty());
     }
 
     #[tokio::test]
     async fn test_have_props_returns_false() {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage().await;
         let fs = test_filesystem(storage, &["notes"]);
 
         assert!(!fs.have_props(&dav_path("/")).await);

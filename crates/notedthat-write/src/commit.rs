@@ -331,164 +331,27 @@ mod tests {
     use crate::WriteEffect;
     use async_trait::async_trait;
     use bytes::Bytes;
+    use notedthat_core::testing::{ScriptedStorage, StorageOp};
     use notedthat_core::{
-        EventId, EventPublisher, EventSource, EventStream, KbManifest, ListResponse, ObjectEvent,
-        ObjectMeta, ObjectRead, PublishError, SubscribeError,
+        EventId, EventPublisher, EventSource, EventStream, ObjectEvent, PublishError,
+        SubscribeError,
     };
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
-    #[derive(Default)]
-    struct TestStorage {
-        objects: Mutex<HashMap<String, String>>,
+    /// A store with the test knowledge base provisioned and nothing in it.
+    fn storage() -> ScriptedStorage {
+        ScriptedStorage::with_kbs([&kb()])
     }
 
-    #[async_trait]
-    impl Storage for TestStorage {
-        async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-            unimplemented!()
-        }
-
-        async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-            unimplemented!()
-        }
-
-        async fn write_manifest(
-            &self,
-            _kb: &KbSlug,
-            _manifest: &KbManifest,
-        ) -> Result<(), StorageError> {
-            unimplemented!()
-        }
-
-        async fn head_object(
-            &self,
-            kb: &KbSlug,
-            path: &ObjectPath,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<ObjectMeta, StorageError> {
-            let key = format!("{}/{}", kb.as_str(), path.as_str());
-            let objects = self.objects.lock().expect("mutex not poisoned");
-            let etag = objects
-                .get(&key)
-                .ok_or_else(|| StorageError::NotFound { key: key.clone() })?;
-            Ok(ObjectMeta {
-                key: path.as_str().to_string(),
-                size: 7,
-                last_modified: Some(1_700_000_000),
-                content_type: Some("text/markdown".into()),
-                etag: Some(etag.clone()),
-            })
-        }
-
-        async fn get_object(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _range: Option<notedthat_core::ByteRange>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<ObjectRead, StorageError> {
-            unimplemented!()
-        }
-
-        async fn get_object_stream(
-            &self,
-            _kb: &KbSlug,
-            _path: &ObjectPath,
-            _range: Option<notedthat_core::ByteRange>,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<notedthat_core::ObjectStream, StorageError> {
-            unimplemented!()
-        }
-
-        async fn put_object(
-            &self,
-            kb: &KbSlug,
-            path: &ObjectPath,
-            _bytes: Bytes,
-            _content_type: Option<&str>,
-            conditionals: ConditionalHeaders,
-        ) -> Result<PutOutcome, StorageError> {
-            let key = format!("{}/{}", kb.as_str(), path.as_str());
-            let mut objects = self.objects.lock().expect("mutex not poisoned");
-            let existing = objects.get(&key);
-            if let Some(if_match) = conditionals.if_match
-                && existing.is_none_or(|etag| etag != &if_match)
-            {
-                return Err(StorageError::PreconditionFailed);
-            }
-
-            let etag = format!("\"etag-{}\"", objects.len() + 1);
-            let replaced = objects.insert(key, etag.clone());
-            Ok(PutOutcome {
-                etag: Some(etag),
-                created: replaced.is_none(),
-            })
-        }
-
-        async fn put_staged_object(
-            &self,
-            kb: &KbSlug,
-            path: &ObjectPath,
-            body: StagedBody,
-            content_type: Option<&str>,
-            conditionals: ConditionalHeaders,
-        ) -> Result<PutOutcome, StorageError> {
-            let bytes =
-                body.memory_bytes()
-                    .cloned()
-                    .ok_or_else(|| StorageError::BackendUnavailable {
-                        message: "file staging is outside this commit unit test".into(),
-                    })?;
-            self.put_object(kb, path, bytes, content_type, conditionals)
-                .await
-        }
-
-        async fn copy_object(
-            &self,
-            kb: &KbSlug,
-            _source: &ObjectPath,
-            destination: &ObjectPath,
-            _options: CopyObjectOptions,
-        ) -> Result<PutOutcome, StorageError> {
-            let key = format!("{}/{}", kb.as_str(), destination.as_str());
-            let mut objects = self.objects.lock().expect("mutex not poisoned");
-            let etag = format!("\"etag-{}\"", objects.len() + 1);
-            let replaced = objects.insert(key, etag.clone());
-            Ok(PutOutcome {
-                etag: Some(etag),
-                created: replaced.is_none(),
-            })
-        }
-
-        async fn delete_object(
-            &self,
-            kb: &KbSlug,
-            path: &ObjectPath,
-            _conditionals: ConditionalHeaders,
-        ) -> Result<(), StorageError> {
-            let key = format!("{}/{}", kb.as_str(), path.as_str());
-            self.objects
-                .lock()
-                .expect("mutex not poisoned")
-                .remove(&key);
-            Ok(())
-        }
-
-        async fn list_objects(
-            &self,
-            _kb: &KbSlug,
-            _prefix: Option<&str>,
-            _limit: u32,
-            _cursor: Option<&str>,
-        ) -> Result<ListResponse, StorageError> {
-            unimplemented!()
-        }
+    /// A store holding `path` as a seven-byte markdown object, the source a copy reads.
+    async fn storage_with_source(path: &str) -> ScriptedStorage {
+        let storage = storage();
+        storage
+            .inner()
+            .seed("test-kb", path, "# Seven", Some("text/markdown"), None)
+            .await;
+        storage
     }
 
     fn kb() -> KbSlug {
@@ -505,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_put_enqueues_event() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path();
         let (indexer_tx, mut rx) = mpsc::channel(1024);
@@ -531,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_native_copy_enqueues_destination_event() {
-        let storage = TestStorage::default();
+        let storage = storage_with_source("source.md").await;
         let kb = kb();
         let source = path_named("source.md");
         let destination = path_named("destination.md");
@@ -551,11 +414,16 @@ mod tests {
         assert!(outcome.etag.is_some());
         let event = rx.recv().await.expect("destination event");
         assert_eq!(event.object_key(), &destination);
+        assert_eq!(
+            storage.count(StorageOp::HeadObject),
+            0,
+            "no subscriber, so no HEAD for the stamp"
+        );
     }
 
     #[tokio::test]
     async fn full_queue_returns_indexer_backpressure() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path();
         let (indexer_tx, _rx) = mpsc::channel(1);
@@ -590,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn burst_write_returns_backpressure_after_capacity() {
-        let storage = Arc::new(TestStorage::default());
+        let storage = Arc::new(storage());
         let kb = kb();
         let path_a = path_named("a.md");
         let path_b = path_named("b.md");
@@ -636,11 +504,7 @@ mod tests {
             "expected IndexerBackpressureUpsert, got {err:?}"
         );
         assert!(
-            storage
-                .objects
-                .lock()
-                .expect("mutex not poisoned")
-                .contains_key("test-kb/c.md"),
+            storage.inner().object("test-kb", "c.md").await.is_some(),
             "stored object should remain after enqueue backpressure"
         );
     }
@@ -676,7 +540,7 @@ mod tests {
             }
         }
 
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path_named("cancelled.md");
         let (indexer_tx, mut rx) = mpsc::channel(4);
@@ -722,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_delete_full_queue_returns_backpressure() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path_named("delete.md");
         storage
@@ -759,18 +623,18 @@ mod tests {
             "expected IndexerBackpressureTombstone, got {err:?}"
         );
         assert!(
-            !storage
-                .objects
-                .lock()
-                .expect("mutex not poisoned")
-                .contains_key("test-kb/delete.md"),
+            storage
+                .inner()
+                .object("test-kb", "delete.md")
+                .await
+                .is_none(),
             "deleted object should remain deleted after enqueue backpressure"
         );
     }
 
     #[tokio::test]
     async fn closed_queue_returns_write_success() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path();
         let (indexer_tx, rx) = mpsc::channel(1024);
@@ -796,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_failure_returns_error_no_event() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let kb = kb();
         let path = path();
         let (indexer_tx, mut rx) = mpsc::channel(1024);
@@ -920,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_committed_write_is_published_with_its_stamp_and_source() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let events = RecordingPublisher::recording();
         let (indexer_tx, mut rx) = mpsc::channel(8);
 
@@ -962,7 +826,7 @@ mod tests {
     /// again — at least once, never zero times.
     #[tokio::test]
     async fn a_full_queue_still_refuses_the_write_after_its_event_was_published() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let events = RecordingPublisher::recording();
         let (indexer_tx, _rx) = mpsc::channel(1);
         indexer_tx
@@ -996,7 +860,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_publish_fails_the_write_but_the_object_stays_stored() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let events = RecordingPublisher::refusing();
         let (indexer_tx, mut rx) = mpsc::channel(8);
 
@@ -1022,11 +886,7 @@ mod tests {
             "{err:?}"
         );
         assert!(
-            storage
-                .objects
-                .lock()
-                .expect("mutex not poisoned")
-                .contains_key("test-kb/test.md"),
+            storage.inner().object("test-kb", "test.md").await.is_some(),
             "the bytes were stored before publishing failed"
         );
         assert!(
@@ -1037,7 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_publish_still_enqueues_the_tombstone() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let events = RecordingPublisher::refusing();
         let (indexer_tx, mut rx) = mpsc::channel(8);
 
@@ -1068,7 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_delete_publishes_a_deleted_event_and_a_refusal_says_deleted() {
-        let storage = TestStorage::default();
+        let storage = storage();
         let (indexer_tx, _rx) = mpsc::channel(8);
 
         let events = RecordingPublisher::recording();
@@ -1106,7 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_copy_heads_the_destination_for_the_stamp_only_when_publishing() {
-        let storage = TestStorage::default();
+        let storage = storage_with_source("src.md").await;
         let (indexer_tx, _rx) = mpsc::channel(8);
         let events = RecordingPublisher::recording();
 
@@ -1134,5 +994,6 @@ mod tests {
             }
             other => panic!("a copy is a write, got {other:?}"),
         }
+        assert_eq!(storage.count(StorageOp::HeadObject), 1);
     }
 }

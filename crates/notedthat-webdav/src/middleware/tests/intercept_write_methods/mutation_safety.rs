@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn put_body_read_failure_returns_400_without_storage_write() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let body = Body::from_stream(futures::stream::once(async {
         Err::<Bytes, std::io::Error>(std::io::Error::other("client disconnected"))
     }));
@@ -17,12 +17,12 @@ async fn put_body_read_failure_returns_400_without_storage_write() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(!storage.calls().contains(&"put_object"));
+    assert!(!storage.put_called());
 }
 
 #[tokio::test]
 async fn put_shorter_than_content_length_returns_400_without_storage_write() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -35,12 +35,12 @@ async fn put_shorter_than_content_length_returns_400_without_storage_write() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(!storage.calls().contains(&"put_object"));
+    assert!(!storage.put_called());
 }
 
 #[tokio::test]
 async fn put_malformed_content_length_returns_400_before_storage() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -53,12 +53,12 @@ async fn put_malformed_content_length_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn put_duplicate_content_length_returns_400_before_storage() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -72,12 +72,12 @@ async fn put_duplicate_content_length_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn put_accepts_17_mib_body_via_staging_file() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let body = vec![b'x'; 17 * 1024 * 1024];
     let resp = app(storage.clone())
         .oneshot(
@@ -91,7 +91,7 @@ async fn put_accepts_17_mib_body_via_staging_file() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(storage.staged_lengths(), vec![17 * 1024 * 1024]);
-    assert!(storage.get_stored("notes", "large.bin").is_some());
+    assert!(storage.get_stored("notes", "large.bin").await.is_some());
     let staged_paths = storage.staged_paths();
     assert_eq!(staged_paths.len(), 1);
     assert!(!staged_paths[0].exists());
@@ -100,7 +100,9 @@ async fn put_accepts_17_mib_body_via_staging_file() {
 #[tokio::test]
 #[ignore = "5 GiB upload stress scenario"]
 async fn stress_put_accepts_actual_5_gib_without_content_length() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
+    // Only the staging path is under test; holding 5 GiB in the store is not.
+    storage.discard_staged_bodies();
     let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
     let chunk_len = u64::try_from(chunk.len()).unwrap();
     let chunks = usize::try_from(notedthat_write::MAX_UPLOAD_BYTES / chunk_len).unwrap();
@@ -130,7 +132,7 @@ async fn stress_put_accepts_actual_5_gib_without_content_length() {
 async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     use futures::StreamExt as _;
 
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let directory = std::env::temp_dir().join(format!(
         "notedthat-overflow-staging-{}",
         uuid::Uuid::now_v7()
@@ -139,12 +141,11 @@ async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
     let chunk_len = u64::try_from(chunk.len()).unwrap();
     let chunks = usize::try_from(notedthat_write::MAX_UPLOAD_BYTES / chunk_len).unwrap();
-    let generated = futures::stream::iter(
-        (0..chunks).map(move |_| Ok::<_, std::io::Error>(chunk.clone())),
-    )
-    .chain(futures::stream::once(async {
-        Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
-    }));
+    let generated =
+        futures::stream::iter((0..chunks).map(move |_| Ok::<_, std::io::Error>(chunk.clone())))
+            .chain(futures::stream::once(async {
+                Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
+            }));
     let resp = app_with_staging_config(
         storage.clone(),
         notedthat_core::StagingConfig::new(directory.clone()),
@@ -159,14 +160,14 @@ async fn stress_put_rejects_actual_body_over_5_gib_and_removes_staging_file() {
     .await
     .unwrap();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(!storage.calls().contains(&"put_object"));
+    assert!(!storage.put_called());
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
     std::fs::remove_dir(directory).unwrap();
 }
 
 #[tokio::test]
 async fn put_staging_disk_failure_returns_507_without_storage_write() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let missing = std::env::temp_dir().join(format!(
         "notedthat-missing-staging-{}",
         uuid::Uuid::now_v7()
@@ -184,11 +185,11 @@ async fn put_staging_disk_failure_returns_507_without_storage_write() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::INSUFFICIENT_STORAGE);
-    assert!(!storage.calls().contains(&"put_object"));
+    assert!(!storage.put_called());
 }
 
 async fn self_copy_or_move(method: &'static str, error_name: &str) {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -202,7 +203,7 @@ async fn self_copy_or_move(method: &'static str, error_name: &str) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert!(response_body(resp).await.contains(error_name));
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
@@ -217,9 +218,13 @@ async fn move_to_same_decoded_object_returns_403_before_storage() {
 
 #[tokio::test]
 async fn copy_overwrite_false_existing_destination_returns_412() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage
+        .insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"")
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -234,7 +239,7 @@ async fn copy_overwrite_false_existing_destination_returns_412() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
     assert_eq!(
-        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        storage.get_stored("notes", "dst.md").await.unwrap().bytes,
         Bytes::from_static(b"old")
     );
     assert_eq!(
@@ -249,9 +254,11 @@ async fn copy_overwrite_false_existing_destination_returns_412() {
 async fn copy_status_follows_the_backend_when_the_destination_appears_mid_request() {
     // The destination is written between the request's arrival and the copy; the
     // copy replaces it, so the answer is 204 (RFC 4918 §9.8.5), not 201.
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.race_destination_before_copy();
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage.race_destination_before_copy("notes", "dst.md");
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -265,7 +272,7 @@ async fn copy_status_follows_the_backend_when_the_destination_appears_mid_reques
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert_eq!(
-        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        storage.get_stored("notes", "dst.md").await.unwrap().bytes,
         Bytes::from_static(b"source")
     );
 }
@@ -275,7 +282,7 @@ async fn copy_or_move_of_a_missing_source_is_404_despite_if_match() {
     // Without its preconditions the request is a 404, so they are ignored
     // (RFC 9110 §13.2.1).
     for method in ["COPY", "MOVE"] {
-        let storage = Arc::new(MockStorage::default());
+        let storage = empty_storage();
         let resp = app(storage.clone())
             .oneshot(
                 HttpRequest::builder()
@@ -289,15 +296,17 @@ async fn copy_or_move_of_a_missing_source_is_404_despite_if_match() {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method}");
-        assert!(!storage.calls().contains(&"copy_object"), "{method}");
+        assert!(!storage.ops().contains(&StorageOp::CopyObject), "{method}");
     }
 }
 
 #[tokio::test]
 async fn copy_overwrite_false_protects_destination_creation_race() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.race_destination_before_copy();
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage.race_destination_before_copy("notes", "dst.md");
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -312,16 +321,18 @@ async fn copy_overwrite_false_protects_destination_creation_race() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
     assert_eq!(
-        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        storage.get_stored("notes", "dst.md").await.unwrap().bytes,
         Bytes::from_static(b"racing writer")
     );
 }
 
 #[tokio::test]
 async fn copy_source_change_before_native_copy_returns_412_without_destination() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.change_source_before_copy();
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage.change_source_before_copy("notes", "src.md");
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -334,7 +345,7 @@ async fn copy_source_change_before_native_copy_returns_412_without_destination()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
-    assert!(storage.get_stored("notes", "dst.md").is_none());
+    assert!(storage.get_stored("notes", "dst.md").await.is_none());
     assert_eq!(
         storage.copy_options()[0].source_if_match.as_deref(),
         Some("\"src\"")
@@ -343,9 +354,13 @@ async fn copy_source_change_before_native_copy_returns_412_without_destination()
 
 #[tokio::test]
 async fn copy_overwrite_true_replaces_destination_and_preserves_mime() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"");
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage
+        .insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"")
+        .await;
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -359,25 +374,28 @@ async fn copy_overwrite_true_replaces_destination_and_preserves_mime() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    let copied = storage.get_stored("notes", "dst.md").unwrap();
+    let copied = storage.get_stored("notes", "dst.md").await.unwrap();
     assert_eq!(copied.bytes, Bytes::from_static(b"source"));
-    assert_eq!(copied.content_type.as_deref(), Some("text/markdown"));
+    assert_eq!(copied.meta.content_type.as_deref(), Some("text/markdown"));
     let options = storage.copy_options();
     assert_eq!(options[0].source_if_match.as_deref(), Some("\"src\""));
     assert_eq!(options[0].destination_if_none_match, None);
+    assert_eq!(options[0].content_type.as_deref(), Some("text/markdown"));
 }
 
 #[tokio::test]
 async fn copy_infers_markdown_mime_from_destination_path() {
     // Given
-    let storage = Arc::new(MockStorage::default());
-    storage.insert_with_content_type(
-        "notes",
-        "src.tmp",
-        Bytes::from_static(b"# source"),
-        "\"src\"",
-        "application/octet-stream",
-    );
+    let storage = empty_storage();
+    storage
+        .insert_with_content_type(
+            "notes",
+            "src.tmp",
+            Bytes::from_static(b"# source"),
+            "\"src\"",
+            "application/octet-stream",
+        )
+        .await;
 
     // When
     let resp = app(storage.clone())
@@ -397,7 +415,9 @@ async fn copy_infers_markdown_mime_from_destination_path() {
     assert_eq!(
         storage
             .get_stored("notes", "dst.md")
+            .await
             .expect("COPY creates the destination")
+            .meta
             .content_type
             .as_deref(),
         Some("text/markdown")
@@ -406,7 +426,7 @@ async fn copy_infers_markdown_mime_from_destination_path() {
 
 #[tokio::test]
 async fn copy_invalid_overwrite_returns_400_before_storage() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -420,12 +440,12 @@ async fn copy_invalid_overwrite_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn copy_duplicate_overwrite_returns_400_before_storage() {
-    let storage = Arc::new(MockStorage::default());
+    let storage = empty_storage();
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -440,14 +460,16 @@ async fn copy_duplicate_overwrite_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.calls().is_empty());
+    assert!(storage.ops().is_empty());
 }
 
 #[tokio::test]
 async fn move_source_change_returns_412_with_partial_completion_body() {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.change_source_after_copy();
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage.change_source_after_copy("notes", "src.md");
     let resp = app(storage.clone())
         .oneshot(
             HttpRequest::builder()
@@ -464,18 +486,22 @@ async fn move_source_change_returns_412_with_partial_completion_body() {
     assert!(body.contains("partially completed"));
     assert!(body.contains("queued for indexing"));
     assert!(body.contains("source changed before deletion"));
-    assert!(storage.get_stored("notes", "src.md").is_some());
-    assert!(storage.get_stored("notes", "dst.md").is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
+    assert!(storage.get_stored("notes", "dst.md").await.is_some());
 }
 
 /// COPY or MOVE `src.md` (`ETag` `"src"`) onto `dst.md` (`ETag` `"dst"`) with `headers`.
 async fn copy_or_move_with(
     method: &str,
     headers: &[(&str, &str)],
-) -> (StatusCode, Arc<MockStorage>) {
-    let storage = Arc::new(MockStorage::default());
-    storage.insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"");
-    storage.insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"");
+) -> (StatusCode, ScriptedStorage) {
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"source"), "\"src\"")
+        .await;
+    storage
+        .insert("notes", "dst.md", Bytes::from_static(b"old"), "\"dst\"")
+        .await;
     let mut builder = HttpRequest::builder()
         .method(method)
         .uri("/webdav/notes/src.md")
@@ -497,7 +523,7 @@ async fn copy_with_stale_if_match_returns_412_without_copying() {
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
     assert!(storage.copy_options().is_empty());
     assert_eq!(
-        storage.get_stored("notes", "dst.md").unwrap().bytes,
+        storage.get_stored("notes", "dst.md").await.unwrap().bytes,
         Bytes::from_static(b"old")
     );
 }
@@ -506,14 +532,14 @@ async fn copy_with_stale_if_match_returns_412_without_copying() {
 async fn move_with_current_if_match_succeeds() {
     let (status, storage) = copy_or_move_with("MOVE", &[("if-match", "\"src\"")]).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(storage.get_stored("notes", "src.md").is_none());
+    assert!(storage.get_stored("notes", "src.md").await.is_none());
 }
 
 #[tokio::test]
 async fn move_with_matching_if_none_match_returns_412() {
     let (status, storage) = copy_or_move_with("MOVE", &[("if-none-match", "*")]).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(storage.get_stored("notes", "src.md").is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
 }
 
 /// RFC 4918 §10.4: an untagged `If` list applies to the source.
@@ -532,11 +558,14 @@ async fn copy_honours_the_if_header() {
 async fn move_with_a_lock_token_in_the_if_header_returns_412() {
     let (status, storage) = copy_or_move_with(
         "MOVE",
-        &[("if", "(<opaquelocktoken:a515cfa4-5da4-22e1-f5bf-00a0451e6bf7>)")],
+        &[(
+            "if",
+            "(<opaquelocktoken:a515cfa4-5da4-22e1-f5bf-00a0451e6bf7>)",
+        )],
     )
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(storage.get_stored("notes", "src.md").is_some());
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
 
     let (status, _) = copy_or_move_with("MOVE", &[("if", "(Not <DAV:no-lock>)")]).await;
     assert_eq!(status, StatusCode::NO_CONTENT);

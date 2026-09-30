@@ -8,12 +8,12 @@ use notedthat_webdav::router::build_router;
 use tower::ServiceExt;
 
 use super::fixture::{policy, request, state_with_policies};
-use super::storage::MemoryStorage;
+use super::storage::memory_storage;
 
 #[tokio::test]
 async fn anonymous_options_advertises_only_capability_methods() {
     // Given
-    let storage = Arc::new(MemoryStorage::default());
+    let storage = Arc::new(memory_storage([]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([
@@ -63,7 +63,7 @@ async fn anonymous_options_advertises_only_capability_methods() {
 #[tokio::test]
 async fn anonymous_options_rejects_private_targets_and_private_root() {
     // Given
-    let storage = Arc::new(MemoryStorage::default());
+    let storage = Arc::new(memory_storage([]).await);
     let private_app = build_router(state_with_policies(Arc::clone(&storage), BTreeMap::new()));
     let mixed_app = build_router(state_with_policies(
         storage,
@@ -91,7 +91,7 @@ async fn anonymous_options_rejects_private_targets_and_private_root() {
 #[tokio::test]
 async fn anonymous_content_preserves_range_and_conditional_responses() {
     // Given
-    let storage = Arc::new(MemoryStorage::with_objects([("private", "private.md")]));
+    let storage = Arc::new(memory_storage([("private", "private.md")]).await);
     let app = build_router(state_with_policies(
         storage,
         BTreeMap::from([("private".to_string(), policy(Who::Anyone, &[Verb::Read]))]),
