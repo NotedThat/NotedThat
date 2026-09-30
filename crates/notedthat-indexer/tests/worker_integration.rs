@@ -3096,18 +3096,27 @@ async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() 
     }
 }
 
-/// An API write without a `Content-Type` header still indexes under a Markdown key.
+/// An API write without a media type still indexes under a Markdown key:
+/// no `Content-Type` header, an empty one, or one with only parameters.
 #[tokio::test]
 async fn an_untyped_markdown_key_is_still_indexed() {
+    for declared in [None, Some(""), Some(";charset=utf-8")] {
+        an_untyped_markdown_key_is_still_indexed_when_declared(declared).await;
+    }
+}
+
+async fn an_untyped_markdown_key_is_still_indexed_when_declared(declared: Option<&str>) {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
-    storage.insert_untyped(
-        "test-kb",
-        "notes/Draft.MD",
-        Bytes::from_static(b"# Draft\n\nstill indexed"),
-    );
+    let content = Bytes::from_static(b"# Draft\n\nstill indexed");
+    match declared {
+        None => storage.insert_untyped("test-kb", "notes/Draft.MD", content),
+        Some(content_type) => {
+            storage.insert_bytes("test-kb", "notes/Draft.MD", content, content_type);
+        }
+    }
     let health = Arc::new(IndexHealth::new());
 
     run_one_with_health(
@@ -3124,13 +3133,17 @@ async fn an_untyped_markdown_key_is_still_indexed() {
     .await;
 
     let points = scroll_points(&store, &kb, "notes/Draft.MD", false).await;
-    assert!(!points.is_empty());
+    assert!(!points.is_empty(), "{declared:?}: indexed");
     for point in &points {
         assert_eq!(
             string_payload(point, "mime"),
             "text/markdown",
-            "the chunks carry the type the key names"
+            "{declared:?}: the chunks carry the type the key names"
         );
     }
-    assert_eq!(health.snapshot("test-kb").last_failure, None);
+    assert_eq!(
+        health.snapshot("test-kb").last_failure,
+        None,
+        "{declared:?}: no failure"
+    );
 }

@@ -115,11 +115,14 @@ impl IndexerWorker {
         }
 
         // An object with no declared type — a file the fs backend could not
-        // guess one for, or a PUT with an empty `Content-Type` — is judged by its
-        // key, so an attachment is not read as Markdown. The type resolved here is
-        // the one the outcome event reports and the chunks carry (D65).
-        let mime = match head.content_type.as_deref().map(str::trim) {
-            Some(declared) if !declared.is_empty() => declared.to_owned(),
+        // guess one for, or a PUT whose `Content-Type` names no media type (empty,
+        // or only parameters such as `;charset=utf-8`) — is judged by its key, so
+        // an attachment is not read as Markdown. The type resolved here is the one
+        // the outcome event reports and the chunks carry (D65).
+        let mime = match head.content_type.as_deref() {
+            Some(declared) if !crate::mime::essence(declared).is_empty() => {
+                declared.trim().to_owned()
+            }
             _ => content_type_from_key(object_key.as_str())
                 .unwrap_or_default()
                 .to_owned(),
