@@ -1480,7 +1480,7 @@ closes it in two cases, each announced by one last frame with fixed text:
 
 | Last frame | When | What the client does |
 |------------|------|----------------------|
-| `event: auth.expired` with `data: {}` and no `id` | The identity-provider token the stream was opened with stops verifying: at its `exp` plus the 60-second leeway the server allows for clock skew ([How a token is checked](CONFIGURATION.md#how-a-token-is-checked)), the moment a reconnect with the same token would be refused with `401` | Get a fresh token, then reconnect with `Last-Event-ID`. The frame has no `id`, so the last one received still marks the position and nothing is missed |
+| `event: auth.expired` with `data: {}` and no `id` | The identity-provider token the stream was opened with stops verifying: 61 seconds after its `exp`, since the server allows 60 seconds for clock skew and compares whole seconds ([How a token is checked](CONFIGURATION.md#how-a-token-is-checked)). That is the moment a reconnect with the same token would be refused with `401` | Get a fresh token, then reconnect with `Last-Event-ID`. The frame has no `id`, so the last one received still marks the position and nothing is missed |
 | A `: stream ended: …` comment | The event backend failed mid-stream, or the subscriber fell too far behind a live log | Reconnect with `Last-Event-ID`; the gap is replayed, or `410` says it is gone |
 
 A browser's `EventSource` delivers `auth.expired` to a listener registered for that name, but

@@ -227,8 +227,8 @@ where
 /// `data` payload. A server with events disabled answers `404`.
 ///
 /// A stream lasts only as long as the credential it was opened with. When an
-/// identity provider's token stops verifying (its `exp` plus the server's
-/// 60-second leeway), the stream sends `event: auth.expired` with `data: {}`
+/// identity provider's token stops verifying (61 seconds after its `exp`: the
+/// server's 60-second leeway, counted in whole seconds), the stream sends `event: auth.expired` with `data: {}`
 /// and no `id`, then ends: reconnect with a fresh token and `Last-Event-ID`.
 /// Streams opened with the service token or anonymously do not expire.
 #[utoipa::path(

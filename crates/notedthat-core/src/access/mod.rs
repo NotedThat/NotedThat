@@ -73,8 +73,8 @@ pub struct UserIdentity {
     pub subject: String,
     /// What `group:` rules are matched against.
     pub groups: BTreeSet<String>,
-    /// The last instant the verifier would still accept the credential this
-    /// identity came from, or `None` for one that does not expire.
+    /// The first instant the verifier refuses the credential this identity
+    /// came from, or `None` for one that does not expire.
     ///
     /// A request is over long before this matters. An event stream is not: it
     /// outlives the check it was admitted by, and ends here (§6.14).
