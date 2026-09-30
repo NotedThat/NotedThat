@@ -1,3 +1,4 @@
+use super::range::{EditSpan, RangeArgs};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
@@ -8,24 +9,61 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+// The tool's arguments, parsed: the range is one `EditSpan`, so a call naming
+// no range, half a pair or both pairs is refused while its arguments are
+// deserialized and never reaches `run`. The published schema is
+// `RawEditArgs`'s four flat range fields. Plain comments, not rustdoc: a doc
+// here would become the input schema's description.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(try_from = "RawEditArgs")]
+#[schemars(with = "RawEditArgs")]
 pub struct EditArgs {
+    pub kb: String,
+    pub path: String,
+    pub span: EditSpan,
+    pub content: String,
+    pub if_match: String,
+}
+
+// The tool's arguments as a client sends them.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RawEditArgs {
     /// Knowledge base slug.
     pub kb: String,
     /// Object path within the knowledge base.
     pub path: String,
-    /// First line to replace (1-based inclusive).
+    /// First line to replace (1-based inclusive). Requires `line_end`; not with `byte_*`.
     pub line_start: Option<u64>,
-    /// Last line to replace (1-based inclusive). Set to `line_start - 1` for an insert point.
+    /// Last line to replace (1-based inclusive). Requires `line_start`. Set to `line_start - 1` for an insert point.
     pub line_end: Option<u64>,
-    /// First byte to replace (0-based inclusive).
+    /// First byte to replace (0-based inclusive). Requires `byte_end`; not with `line_*`.
     pub byte_start: Option<u64>,
-    /// End byte to replace (0-based exclusive).
+    /// End byte to replace (0-based exclusive). Requires `byte_start`, and must exceed it: a zero-width byte range is not supported.
     pub byte_end: Option<u64>,
     /// Replacement content.
     pub content: String,
     /// Required `ETag` from a previous GET or write (concurrency control).
     pub if_match: String,
+}
+
+impl TryFrom<RawEditArgs> for EditArgs {
+    type Error = String;
+
+    fn try_from(raw: RawEditArgs) -> Result<Self, Self::Error> {
+        let span = EditSpan::parse(RangeArgs {
+            line_start: raw.line_start,
+            line_end: raw.line_end,
+            byte_start: raw.byte_start,
+            byte_end: raw.byte_end,
+        })?;
+        Ok(Self {
+            kb: raw.kb,
+            path: raw.path,
+            span,
+            content: raw.content,
+            if_match: raw.if_match,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -38,85 +76,12 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: EditArgs,
 ) -> Result<CallToolResult, McpError> {
-    let line_range_requested = args.line_start.is_some() || args.line_end.is_some();
-    let byte_range_requested = args.byte_start.is_some() || args.byte_end.is_some();
-
-    if line_range_requested && byte_range_requested {
-        return Err(McpToolError::InvalidRequest(
-            "line_* and byte_* arguments are mutually exclusive; provide one pair or the other"
-                .into(),
-        )
-        .into());
-    }
-    if args.line_end.is_some() && args.line_start.is_none() {
-        return Err(McpToolError::InvalidRequest(
-            "line_end requires line_start; provide both or omit both".into(),
-        )
-        .into());
-    }
-    if args.line_start.is_some() && args.line_end.is_none() {
-        return Err(McpToolError::InvalidRequest(
-            "line_start requires line_end; provide both or omit both".into(),
-        )
-        .into());
-    }
-    if args.byte_end.is_some() && args.byte_start.is_none() {
-        return Err(McpToolError::InvalidRequest(
-            "byte_end requires byte_start; provide both or omit both".into(),
-        )
-        .into());
-    }
-    if args.byte_start.is_some() && args.byte_end.is_none() {
-        return Err(McpToolError::InvalidRequest(
-            "byte_start requires byte_end; provide both or omit both".into(),
-        )
-        .into());
-    }
-    if !line_range_requested && !byte_range_requested {
-        return Err(McpToolError::InvalidRequest(
-            "edit requires either (line_start, line_end) or (byte_start, byte_end); use append for EOF-only writes".into(),
-        )
-        .into());
-    }
-    if args.line_start == Some(0) {
-        return Err(McpToolError::InvalidRequest(
-            "line numbers are 1-based; line_start must be >= 1".into(),
-        )
-        .into());
-    }
-    if let (Some(start), Some(end)) = (args.line_start, args.line_end)
-        && start > end.saturating_add(1)
-    {
-        return Err(McpToolError::InvalidRequest(
-            "line_start must be <= line_end + 1 (set line_end = line_start - 1 for insert)".into(),
-        )
-        .into());
-    }
-    if let (Some(start), Some(end)) = (args.byte_start, args.byte_end)
-        && start >= end
-    {
-        return Err(McpToolError::InvalidRequest(
-            "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it".into(),
-        )
-        .into());
-    }
-
     let kb_enc = encode_kb_slug(&args.kb);
     let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
-    let content_range = match (
-        args.line_start,
-        args.line_end,
-        args.byte_start,
-        args.byte_end,
-    ) {
-        (Some(ls), Some(le), None, None) => format!("lines {ls}-{le}/*"),
-        (None, None, Some(bs), Some(be)) => format!("bytes {bs}-{}/*", be - 1),
-        _ => unreachable!("range validation rejected mixed/incomplete pairs"),
-    };
     let req = client
         .authorized(client.http.patch(url))
-        .header("Content-Range", content_range)
+        .header("Content-Range", args.span.content_range())
         .header("If-Match", &args.if_match)
         .body(args.content.into_bytes());
 
@@ -151,29 +116,30 @@ mod tests {
         NotedThatClient::new(url, "tok").unwrap()
     }
 
-    fn edit_args(line_start: u64, line_end: u64) -> EditArgs {
-        EditArgs {
-            kb: "notes".into(),
-            path: "hello.md".into(),
-            line_start: Some(line_start),
-            line_end: Some(line_end),
-            byte_start: None,
-            byte_end: None,
-            content: "replacement".into(),
-            if_match: "\"abc\"".into(),
-        }
+    /// Arguments as a client would send them, through the same parse rmcp runs.
+    fn parse(range: serde_json::Value) -> Result<EditArgs, String> {
+        let mut value = serde_json::json!({
+            "kb": "notes",
+            "path": "hello.md",
+            "content": "replacement",
+            "if_match": "\"abc\"",
+        });
+        let serde_json::Value::Object(range) = range else {
+            panic!("a range is an object: {range}");
+        };
+        value.as_object_mut().unwrap().extend(range);
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
-    fn byte_edit_args(byte_start: Option<u64>, byte_end: Option<u64>, content: &str) -> EditArgs {
+    fn edit_args(line_start: u64, line_end: u64) -> EditArgs {
+        parse(serde_json::json!({"line_start": line_start, "line_end": line_end})).unwrap()
+    }
+
+    fn byte_edit_args(byte_start: u64, byte_end: u64, content: &str) -> EditArgs {
         EditArgs {
-            kb: "notes".into(),
-            path: "hello.md".into(),
-            line_start: None,
-            line_end: None,
-            byte_start,
-            byte_end,
             content: content.into(),
             if_match: "\"e\"".into(),
+            ..parse(serde_json::json!({"byte_start": byte_start, "byte_end": byte_end})).unwrap()
         }
     }
 
@@ -234,38 +200,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn line_start_zero_returns_invalid_request_without_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let result = run(&c, edit_args(0, 0)).await;
-
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn reverse_range_that_is_not_insert_returns_invalid_request_without_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let result = run(&c, edit_args(5, 3)).await;
-
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
     async fn insert_point_encoding_sends_reversed_adjacent_line_range() {
         let server = MockServer::start().await;
         Mock::given(method("PATCH"))
@@ -297,32 +231,9 @@ mod tests {
             .await;
 
         let c = client(&server.uri());
-        let result = run(&c, byte_edit_args(Some(100), Some(200), "…"))
-            .await
-            .unwrap();
+        let result = run(&c, byte_edit_args(100, 200, "…")).await.unwrap();
 
         assert!(!result.content.is_empty());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn byte_start_equals_byte_end_returns_invalid_request_no_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let err = run(&c, byte_edit_args(Some(100), Some(100), "x"))
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            err.message.to_string(),
-            "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it"
-        );
         server.verify().await;
     }
 
@@ -339,80 +250,9 @@ mod tests {
             .await;
 
         let c = client(&server.uri());
-        let result = run(&c, byte_edit_args(Some(100), Some(200), ""))
-            .await
-            .unwrap();
+        let result = run(&c, byte_edit_args(100, 200, "")).await.unwrap();
 
         assert!(!result.content.is_empty());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn both_line_and_byte_pairs_return_invalid_request_no_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let args = EditArgs {
-            kb: "notes".into(),
-            path: "hello.md".into(),
-            line_start: Some(1),
-            line_end: Some(10),
-            byte_start: Some(100),
-            byte_end: Some(200),
-            content: "x".into(),
-            if_match: "\"e\"".into(),
-        };
-        let result = run(&c, args).await;
-
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn neither_pair_returns_invalid_request_no_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let err = run(&c, byte_edit_args(None, None, "x")).await.unwrap_err();
-
-        assert_eq!(
-            err.message.to_string(),
-            "edit requires either (line_start, line_end) or (byte_start, byte_end); use append for EOF-only writes"
-        );
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn half_a_byte_pair_returns_invalid_request_no_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let c = client(&server.uri());
-        let byte_start_only = run(&c, byte_edit_args(Some(100), None, "x")).await;
-        let byte_end_only = run(&c, byte_edit_args(None, Some(200), "x")).await;
-
-        assert_eq!(
-            byte_start_only.unwrap_err().message.to_string(),
-            "byte_start requires byte_end; provide both or omit both"
-        );
-        assert_eq!(
-            byte_end_only.unwrap_err().message.to_string(),
-            "byte_end requires byte_start; provide both or omit both"
-        );
         server.verify().await;
     }
 
@@ -428,32 +268,76 @@ mod tests {
             .await;
 
         let c = client(&server.uri());
-        let result = run(&c, byte_edit_args(Some(0), Some(10), "x"))
-            .await
-            .unwrap();
+        let result = run(&c, byte_edit_args(0, 10, "x")).await.unwrap();
 
         assert!(!result.content.is_empty());
         server.verify().await;
     }
 
-    #[tokio::test]
-    async fn byte_start_greater_than_byte_end_returns_invalid_request_no_http_call() {
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
+    #[test]
+    fn a_range_that_breaks_a_rule_is_refused_while_parsing_with_that_rule() {
+        let cases = [
+            (
+                serde_json::json!({"line_start": 1, "line_end": 10, "byte_start": 100, "byte_end": 200}),
+                "line_* and byte_* arguments are mutually exclusive; provide one pair or the other",
+            ),
+            (
+                serde_json::json!({}),
+                "edit requires either (line_start, line_end) or (byte_start, byte_end); use append for EOF-only writes",
+            ),
+            (
+                serde_json::json!({"line_start": 1}),
+                "line_start requires line_end; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"line_end": 1}),
+                "line_end requires line_start; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"byte_start": 100}),
+                "byte_start requires byte_end; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"byte_end": 200}),
+                "byte_end requires byte_start; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"line_start": 0, "line_end": 0}),
+                "line numbers are 1-based; line_start must be >= 1",
+            ),
+            (
+                serde_json::json!({"line_start": 5, "line_end": 3}),
+                "line_start must be <= line_end + 1 (set line_end = line_start - 1 for insert)",
+            ),
+            (
+                serde_json::json!({"byte_start": 100, "byte_end": 100}),
+                "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it",
+            ),
+            (
+                serde_json::json!({"byte_start": 200, "byte_end": 100}),
+                "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it",
+            ),
+        ];
+        for (range, message) in cases {
+            assert_eq!(parse(range.clone()).unwrap_err(), message, "{range}");
+        }
+    }
 
-        let c = client(&server.uri());
-        let err = run(&c, byte_edit_args(Some(200), Some(100), "x"))
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            err.message.to_string(),
-            "byte_start must be strictly less than byte_end; byte-mode insert (zero-width range) is not supported in v1 — the PATCH byte-range wire contract cannot represent it"
+    #[test]
+    fn the_published_schema_is_the_four_flat_range_fields() {
+        let schema = serde_json::Value::Object(
+            rmcp::handler::server::common::schema_for_type::<EditArgs>()
+                .as_ref()
+                .clone(),
         );
-        server.verify().await;
+        let properties = schema["properties"].as_object().expect("properties");
+        for field in ["line_start", "line_end", "byte_start", "byte_end"] {
+            assert!(properties.contains_key(field), "{field} missing: {schema}");
+        }
+        assert!(!properties.contains_key("span"), "{schema}");
+        assert!(schema.get("description").is_none(), "{schema}");
+        for combinator in ["anyOf", "oneOf", "allOf"] {
+            assert!(schema.get(combinator).is_none(), "{combinator}: {schema}");
+        }
     }
 }
