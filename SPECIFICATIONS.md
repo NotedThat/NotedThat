@@ -844,7 +844,8 @@ deletion reveals that the key existed. Then `?prefix=`, `?event=` (`written`, `d
 `type/*`, on the media type with parameters and case ignored on both sides, as in search,
 against the content type the event carries: a write's, or the one the indexer's
 `HEAD` reported (or its key named, when `HEAD` reported none or one naming no media type, such as `;charset=utf-8`); deletions, and an `index_failed` whose failure came before `HEAD`, carry none
-and never match a `mime` filter). One field is withheld inside a visible frame: the `summary`
+and never match a `mime` filter; a value with no media type left, empty or only
+parameters, is no filter). One field is withheld inside a visible frame: the `summary`
 on `object.index_failed` goes only to a subscriber whose `list` grant spans the whole knowledge
 base, the D62 rule for the same string; everyone the key gate admits still learns the key, the
 version and that indexing it failed.

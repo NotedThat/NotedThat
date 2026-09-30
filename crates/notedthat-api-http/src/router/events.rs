@@ -56,6 +56,7 @@ pub(super) struct EventsQuery {
     event: Option<String>,
     /// Only events carrying this content type, exactly or as `type/*`,
     /// ignoring parameters and case. A deletion carries none, so never matches.
+    /// A value with no media type (empty, blank or only parameters) is no filter.
     mime: Option<String>,
 }
 
@@ -64,6 +65,7 @@ pub(super) struct EventsQuery {
 pub(crate) struct EventFilter {
     prefix: Option<String>,
     kind: Option<Kind>,
+    /// Already reduced to its media-type essence, never empty.
     mime: Option<String>,
 }
 
@@ -115,7 +117,10 @@ impl EventFilter {
         Ok(Self {
             prefix: query.prefix.filter(|p| !p.is_empty()),
             kind,
-            mime: query.mime.filter(|m| !m.is_empty()),
+            // Normalised once here rather than per event. A pattern with no
+            // media type left (`" "`, `";charset=utf-8"`) is no filter, as an
+            // empty `?mime=` is: otherwise it would select only untyped writes.
+            mime: query.mime.map(|m| essence(&m)).filter(|m| !m.is_empty()),
         })
     }
 
@@ -143,8 +148,9 @@ impl EventFilter {
     }
 }
 
+/// `pattern` is already an essence (see [`EventFilter::parse`]).
 fn mime_matches(pattern: &str, mime: &str) -> bool {
-    let (pattern, mime) = (essence(pattern), essence(mime));
+    let mime = essence(mime);
     match pattern.strip_suffix("/*") {
         Some(kind) => mime
             .split_once('/')
@@ -557,5 +563,23 @@ mod tests {
     #[test]
     fn empty_filters_are_no_filters() {
         assert_eq!(filter(Some(""), None, Some("")), filter(None, None, None));
+    }
+
+    #[test]
+    fn a_mime_with_no_media_type_is_no_filter() {
+        for raw in [" ", ";charset=utf-8", " ; q=1"] {
+            let f = filter(None, None, Some(raw));
+            assert_eq!(f, filter(None, None, None), "{raw:?}");
+            assert!(f.matches(&written("a.md", "text/markdown")), "{raw:?}");
+            assert!(f.matches(&deleted("a.md")), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn mime_is_normalised_once_when_parsed() {
+        assert_eq!(
+            filter(None, None, Some(" Text/Markdown; charset=utf-8")).mime,
+            Some("text/markdown".to_owned())
+        );
     }
 }
