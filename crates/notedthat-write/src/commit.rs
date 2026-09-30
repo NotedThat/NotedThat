@@ -1,5 +1,6 @@
 //! Shared commit operations for object writes and deletes.
 
+use bytes::Bytes;
 use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
     Storage, StorageError,
@@ -296,6 +297,127 @@ pub(crate) async fn after_write(
         }
     }
     published
+}
+
+/// The object a [`cas_rewrite`] reads, splices and writes back.
+pub(crate) struct CasRewrite<'a> {
+    pub(crate) kb: &'a KbSlug,
+    pub(crate) path: &'a ObjectPath,
+    /// The caller's `If-Match`, compared to the HEAD `ETag` before any read.
+    pub(crate) caller_if_match: Option<&'a str>,
+    /// Largest stored object the rewrite will read.
+    pub(crate) max_size: u64,
+    pub(crate) caller_content_type: Option<&'a str>,
+}
+
+/// Rewrite an object in place: HEAD, GET and PUT all conditional on the HEAD
+/// `ETag`, with `splice` turning the stored bytes into the new ones.
+///
+/// A `412` from the GET or PUT means the object changed after the HEAD. With a
+/// caller `If-Match` that is final — the next HEAD would no longer match it —
+/// so only a rewrite without one (PATCH append) retries, at most twice.
+pub(crate) async fn cas_rewrite<T>(
+    storage: &dyn Storage,
+    sinks: &WriteSinks<'_>,
+    target: CasRewrite<'_>,
+    splice: impl Fn(&Bytes) -> Result<(Bytes, T), WriteError>,
+) -> Result<(PutOutcome, T), WriteError> {
+    let CasRewrite {
+        kb,
+        path,
+        caller_if_match,
+        max_size,
+        caller_content_type,
+    } = target;
+    let max_attempts: u32 = if caller_if_match.is_some() { 1 } else { 3 };
+
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let head_etag = head_anchor(storage, kb, path, caller_if_match, max_size).await?;
+        let retry = |stage: &str| {
+            // Only PATCH append reaches a retry, so it logs under PATCH's target.
+            tracing::debug!(target: "notedthat::patch", kb = %kb, path = %path, attempt, stage, "PATCH_RETRY_PRECONDITION");
+        };
+
+        let read = match storage
+            .get_object(kb, path, None, if_match(&head_etag))
+            .await
+        {
+            Ok(read) => read,
+            Err(StorageError::PreconditionFailed) if attempt < max_attempts => {
+                retry("get");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+        let (new_bytes, extra) = splice(&read.bytes)?;
+
+        crate::manifest::check_manifest_bytes(kb, path, &new_bytes)?;
+        let content_type = caller_content_type
+            .or(read.meta.content_type.as_deref())
+            .unwrap_or("application/octet-stream");
+        let new_size =
+            u64::try_from(new_bytes.len()).map_err(|_| WriteError::PatchInvalidRange {
+                message: "buffer length does not fit u64".into(),
+            })?;
+        let outcome = match storage
+            .put_object(
+                kb,
+                path,
+                new_bytes,
+                Some(content_type),
+                if_match(&head_etag),
+            )
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(StorageError::PreconditionFailed) if attempt < max_attempts => {
+                retry("put");
+                continue;
+            }
+            Err(error) => return Err(WriteError::Storage(error)),
+        };
+
+        after_write(sinks, kb, path, &outcome, new_size, content_type).await?;
+        return Ok((outcome, extra));
+    }
+}
+
+/// HEAD the object, check the caller's `If-Match` and the size limit — in that
+/// order, so a stale caller sees `412` before `413` — and return the `ETag`
+/// that anchors the rewrite.
+async fn head_anchor(
+    storage: &dyn Storage,
+    kb: &KbSlug,
+    path: &ObjectPath,
+    caller_if_match: Option<&str>,
+    max_size: u64,
+) -> Result<String, WriteError> {
+    let meta = storage
+        .head_object(kb, path, ConditionalHeaders::default())
+        .await?;
+    if let Some(caller_etag) = caller_if_match
+        && meta.etag.as_deref() != Some(caller_etag)
+    {
+        return Err(WriteError::Storage(StorageError::PreconditionFailed));
+    }
+    if meta.size > max_size {
+        return Err(WriteError::PatchTooLarge {
+            size: meta.size,
+            limit: max_size,
+        });
+    }
+    meta.etag.ok_or_else(|| WriteError::PatchInvalidRange {
+        message: "backend did not return ETag on HEAD".into(),
+    })
+}
+
+fn if_match(etag: &str) -> ConditionalHeaders {
+    ConditionalHeaders {
+        if_match: Some(etag.to_owned()),
+        ..ConditionalHeaders::default()
+    }
 }
 
 /// Delete an object idempotently, publish the change and enqueue a

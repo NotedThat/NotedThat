@@ -3,10 +3,10 @@
 use bytes::{Bytes, BytesMut};
 use notedthat_core::{
     ByteRange, ConditionalHeaders, KbSlug, LineIndex, LineRange, ObjectPath, PutOutcome, Storage,
-    StorageError,
 };
 
 use crate::WriteError;
+use crate::commit::{CasRewrite, cas_rewrite};
 use crate::sinks::WriteSinks;
 
 /// Specifies how an object's bytes should be spliced.
@@ -49,7 +49,7 @@ pub struct PatchRequest<'a> {
     pub caller_content_type: Option<&'a str>,
 }
 
-/// Apply one optimistic PATCH attempt using the current HEAD `ETag` as the internal CAS anchor.
+/// Apply one optimistic PATCH using the current HEAD `ETag` as the internal CAS anchor.
 ///
 /// # Errors
 /// Returns [`WriteError`] when caller preconditions fail, the requested splice is invalid, the
@@ -59,7 +59,6 @@ pub async fn patch(
     sinks: &WriteSinks<'_>,
     request: PatchRequest<'_>,
 ) -> Result<PutOutcome, WriteError> {
-    const MAX_ATTEMPTS: u32 = 3;
     let PatchRequest {
         kb,
         path,
@@ -71,100 +70,51 @@ pub async fn patch(
 
     validate_caller_if_match(&patch_mode, &caller_conditionals)?;
 
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
+    let target = CasRewrite {
+        kb,
+        path,
+        caller_if_match: caller_conditionals.if_match.as_deref(),
+        max_size: max_patchable_size,
+        caller_content_type,
+    };
+    let (outcome, ()) = cas_rewrite(storage, sinks, target, |src| {
+        apply_patch(&patch_mode, src, max_patchable_size).map(|bytes| (bytes, ()))
+    })
+    .await?;
+    Ok(outcome)
+}
 
-        let meta = storage
-            .head_object(kb, path, ConditionalHeaders::default())
-            .await?;
-        check_caller_precondition(&patch_mode, &caller_conditionals, meta.etag.as_deref())?;
+/// Splice `patch_mode` into `src`, refusing a result larger than `max` before building it.
+fn apply_patch(patch_mode: &PatchMode, src: &Bytes, max: u64) -> Result<Bytes, WriteError> {
+    let read_len = bytes_len_u64(src.len())?;
+    let (byte_range, new_len) = splice_plan(patch_mode, src, read_len)?;
+    if new_len > max {
+        return Err(WriteError::PatchTooLarge {
+            size: new_len,
+            limit: max,
+        });
+    }
 
-        if meta.size > max_patchable_size {
-            return Err(WriteError::PatchTooLarge {
-                size: meta.size,
-                limit: max_patchable_size,
-            });
-        }
-
-        let head_etag = meta
-            .etag
-            .clone()
-            .ok_or_else(|| WriteError::PatchInvalidRange {
-                message: "backend did not return ETag on HEAD".into(),
+    match (patch_mode, byte_range) {
+        (PatchMode::Bytes { body, .. } | PatchMode::Lines { body, .. }, Some(br)) => {
+            let start = usize::try_from(br.start).map_err(|_| WriteError::PatchInvalidRange {
+                message: "splice start does not fit usize".into(),
             })?;
-
-        let get_conditionals = ConditionalHeaders {
-            if_match: Some(head_etag.clone()),
-            ..ConditionalHeaders::default()
-        };
-        let read = match storage.get_object(kb, path, None, get_conditionals).await {
-            Ok(read) => read,
-            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
-                tracing::debug!(target: "notedthat::patch", kb = %kb, path = %path, attempt, stage = "get", "PATCH_RETRY_PRECONDITION");
-                continue;
-            }
-            Err(error) => return Err(WriteError::Storage(error)),
-        };
-        let read_len = bytes_len_u64(read.bytes.len())?;
-        let (byte_range, new_len) = splice_plan(&patch_mode, &read.bytes, read_len)?;
-
-        if new_len > max_patchable_size {
-            return Err(WriteError::PatchTooLarge {
-                size: new_len,
-                limit: max_patchable_size,
-            });
+            let end = usize::try_from(br.end).map_err(|_| WriteError::PatchInvalidRange {
+                message: "splice end does not fit usize".into(),
+            })?;
+            Ok(splice_bytes(src, start..end, body))
         }
-
-        let new_bytes = match (&patch_mode, byte_range) {
-            (PatchMode::Bytes { body, .. } | PatchMode::Lines { body, .. }, Some(br)) => {
-                let start =
-                    usize::try_from(br.start).map_err(|_| WriteError::PatchInvalidRange {
-                        message: "splice start does not fit usize".into(),
-                    })?;
-                let end = usize::try_from(br.end).map_err(|_| WriteError::PatchInvalidRange {
-                    message: "splice end does not fit usize".into(),
-                })?;
-                splice_bytes(&read.bytes, start..end, body)
-            }
-            (PatchMode::Append { body }, None) => {
-                let mut buf = BytesMut::with_capacity(capacity_from_u64(new_len)?);
-                buf.extend_from_slice(&read.bytes);
-                buf.extend_from_slice(body);
-                buf.freeze()
-            }
-            (PatchMode::Bytes { .. } | PatchMode::Lines { .. }, None)
-            | (PatchMode::Append { .. }, Some(_)) => {
-                return Err(WriteError::PatchInvalidRange {
-                    message: "internal patch mode/range contradiction".into(),
-                });
-            }
-        };
-
-        crate::manifest::check_manifest_bytes(kb, path, &new_bytes)?;
-        let put_conditionals = ConditionalHeaders {
-            if_match: Some(head_etag),
-            ..ConditionalHeaders::default()
-        };
-        let content_type = caller_content_type
-            .or(read.meta.content_type.as_deref())
-            .unwrap_or("application/octet-stream");
-        let new_size = bytes_len_u64(new_bytes.len())?;
-        let outcome = match storage
-            .put_object(kb, path, new_bytes, Some(content_type), put_conditionals)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StorageError::PreconditionFailed) if attempt < MAX_ATTEMPTS => {
-                tracing::debug!(target: "notedthat::patch", kb = %kb, path = %path, attempt, stage = "put", "PATCH_RETRY_PRECONDITION");
-                continue;
-            }
-            Err(error) => return Err(WriteError::Storage(error)),
-        };
-
-        crate::commit::after_write(sinks, kb, path, &outcome, new_size, content_type).await?;
-
-        return Ok(outcome);
+        (PatchMode::Append { body }, None) => {
+            let mut buf = BytesMut::with_capacity(capacity_from_u64(new_len)?);
+            buf.extend_from_slice(src);
+            buf.extend_from_slice(body);
+            Ok(buf.freeze())
+        }
+        (PatchMode::Bytes { .. } | PatchMode::Lines { .. }, None)
+        | (PatchMode::Append { .. }, Some(_)) => Err(WriteError::PatchInvalidRange {
+            message: "internal patch mode/range contradiction".into(),
+        }),
     }
 }
 
@@ -215,22 +165,6 @@ pub(crate) fn require_strong_if_match(
         return Err(WriteError::PatchInvalidRange {
             message: "If-Match: * and multi-value If-Match not supported on PATCH in v1".into(),
         });
-    }
-    Ok(())
-}
-
-fn check_caller_precondition(
-    patch_mode: &PatchMode,
-    caller_conditionals: &ConditionalHeaders,
-    current_etag: Option<&str>,
-) -> Result<(), WriteError> {
-    let should_check_caller =
-        !matches!(patch_mode, PatchMode::Append { .. }) || caller_conditionals.if_match.is_some();
-    if should_check_caller
-        && let Some(caller_etag) = &caller_conditionals.if_match
-        && current_etag != Some(caller_etag.as_str())
-    {
-        return Err(WriteError::Storage(StorageError::PreconditionFailed));
     }
     Ok(())
 }
