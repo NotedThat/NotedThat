@@ -376,7 +376,7 @@ mod route_constants {
                 "route key {key:?} is not in RESERVED_KEYS"
             );
             assert!(
-                notedthat_core::ObjectPath::try_from_str(key).is_err(),
+                notedthat_core::ObjectPath::try_object_key(key).is_err(),
                 "{key:?} is a valid object path"
             );
         }

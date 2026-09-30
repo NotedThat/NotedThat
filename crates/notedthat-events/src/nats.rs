@@ -278,9 +278,8 @@ impl EventPublisher for NatsPublisher {
 /// stream would end on it again after every reconnect, since a reconnect
 /// resumes just before it, and so wedge every subscriber of the knowledge base
 /// until retention drops it. Ids already have gaps, so a skipped one is not a
-/// new shape for a subscriber. One way to get here is an event written before
-/// an upgrade that made its key invalid, such as a key `ObjectPath` now
-/// reserves (#279).
+/// new shape for a subscriber. One way to get here is an event written by a
+/// build whose event shape or `ObjectPath` rules differ from this one's.
 fn decode(sequence: u64, payload: &[u8]) -> Option<ObjectEvent> {
     match serde_json::from_slice(payload) {
         Ok(event) => Some(event),
@@ -374,11 +373,11 @@ mod tests {
         let payload = serde_json::to_vec(&event).unwrap();
         assert_eq!(decode(1, &payload), Some(event));
 
-        // The same event for a key that is now reserved no longer decodes.
+        // The same event for a key `ObjectPath` refuses no longer decodes.
         let stale = String::from_utf8(payload)
             .unwrap()
-            .replace("\"a.md\"", "\"index\"");
-        assert_ne!(stale.find("\"index\""), None, "the key was rewritten");
+            .replace("\"a.md\"", "\"a/../b.md\"");
+        assert_ne!(stale.find("\"a/../b.md\""), None, "the key was rewritten");
         assert_eq!(decode(2, stale.as_bytes()), None);
         assert_eq!(decode(3, b"not json"), None);
     }

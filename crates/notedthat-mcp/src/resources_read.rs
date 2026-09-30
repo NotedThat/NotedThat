@@ -98,7 +98,7 @@ pub(crate) fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpErro
     // `push` would drop a `.` or `..` segment instead of encoding it.
     KbSlug::try_new(kb_slug)
         .map_err(|err| invalid_params(format!("invalid resource knowledge base: {err}")))?;
-    ObjectPath::try_from_str(&object_key)
+    ObjectPath::try_object_key(&object_key)
         .map_err(|err| invalid_params(format!("invalid resource object path: {err}")))?;
 
     Ok(ParsedResourceUri {

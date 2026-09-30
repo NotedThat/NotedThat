@@ -19,6 +19,6 @@ pub(super) fn parse_kb(kb: &str) -> Result<KbSlug, McpError> {
 
 /// Parse a caller-supplied object path; `what` names the argument in the error.
 pub(super) fn parse_object_path(path: &str, what: &str) -> Result<ObjectPath, McpError> {
-    ObjectPath::try_from_str(path)
+    ObjectPath::try_object_key(path)
         .map_err(|error| McpToolError::InvalidRequest(format!("invalid {what}: {error}")).into())
 }

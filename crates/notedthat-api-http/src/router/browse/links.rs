@@ -20,8 +20,9 @@
 //!    resolve `/api/v1/knowledgebases/notes/a/../../docs/x` into a different
 //!    knowledge base. Our write path rejects such keys, but S3 accepts them and
 //!    a bucket can be filled out of band — so [`super::listing`] drops any key
-//!    that fails `ObjectPath::try_from_str` before it can reach a link. That
-//!    filter is load-bearing, not defence in depth.
+//!    that fails `ObjectPath::try_object_key` (which applies every
+//!    `try_from_str` rule) before it can reach a link. That filter is
+//!    load-bearing, not defence in depth.
 
 use super::super::BROWSE_PREFIX;
 use super::super::helpers::{object_location, percent_encode_path};

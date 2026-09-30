@@ -394,6 +394,119 @@ async fn writes_to_reserved_root_keys_are_refused() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
+/// Send one request for `uri` to a store holding `notes/<folder>/a.md`.
+async fn folder_request(
+    folder: &str,
+    method: &[u8],
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &'static str,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method(Method::from_bytes(method).unwrap())
+        .uri(uri)
+        .header("Authorization", good_auth());
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    build_router(state_with_note(&format!("{folder}/a.md")).await)
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Only an object is refused a reserved key (#279): a *folder* named `index`,
+/// `events` or `search` answers `PROPFIND`, `MKCOL`, `MOVE` and `DELETE` exactly
+/// as a folder with any other name does, where a reserved key used to be `400`.
+#[tokio::test]
+async fn folders_named_like_reserved_keys_behave_like_any_folder() {
+    // `MOVE` and `DELETE` of any folder URI ending in `/` are `400` alike, so
+    // they are sent without it, where only a reserved name used to be `400`.
+    let moved = [("Destination", "/webdav/notes/moved")];
+    let requests = [
+        ("MKCOL", "/", &[][..]),
+        ("MOVE", "", &moved[..]),
+        ("DELETE", "", &[][..]),
+    ];
+    for folder in ["index", "events", "search"] {
+        let resp = folder_request(
+            folder,
+            b"PROPFIND",
+            &format!("/webdav/notes/{folder}/"),
+            &[("Depth", "1")],
+            PROPFIND_BODY,
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::MULTI_STATUS,
+            "PROPFIND {folder}/"
+        );
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(&format!("{folder}/a.md")),
+            "{folder}/: {body}"
+        );
+
+        for (name, slash, headers) in requests {
+            let method = name.as_bytes();
+            let control = folder_request(
+                "drafts",
+                method,
+                &format!("/webdav/notes/drafts{slash}"),
+                headers,
+                "",
+            )
+            .await
+            .status();
+            let status = folder_request(
+                folder,
+                method,
+                &format!("/webdav/notes/{folder}{slash}"),
+                headers,
+                "",
+            )
+            .await
+            .status();
+            assert_ne!(status, StatusCode::BAD_REQUEST, "{name} {folder}{slash}");
+            assert_eq!(status, control, "{name} {folder}{slash}");
+        }
+    }
+}
+
+/// An object stored under a reserved key before #279 can still be read and
+/// moved away over `WebDAV`, which is how it is renamed after the upgrade.
+#[tokio::test]
+async fn an_object_under_a_reserved_key_can_be_moved_away() {
+    let state = state_with_note("search").await;
+    let resp = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/webdav/notes/search")
+                .header("Authorization", good_auth())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::from_bytes(b"MOVE").unwrap())
+                .uri("/webdav/notes/search")
+                .header("Authorization", good_auth())
+                .header("Destination", "/webdav/notes/search.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn delete_returns_204() {
     let app = build_router(state_with_note("test.md").await);
