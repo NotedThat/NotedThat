@@ -413,6 +413,33 @@ mod client_for {
         // fallback over HTTP
         assert!(forbidden(&refused), "{refused:?}");
     }
+
+    #[tokio::test]
+    async fn a_request_with_a_refreshed_bearer_moves_stranded_subscriptions() {
+        // Given: a session whose subscription was stranded when its old
+        // bearer expired while the client sat idle
+        let api = wiremock::MockServer::start().await;
+        let shutdown = CancellationToken::new();
+        let handler = NotedThatMcp::for_http(
+            NotedThatClient::new(&api.uri(), "configured").unwrap(),
+            Some(&shutdown),
+        );
+        let subscriptions = handler.subscriptions.clone().unwrap();
+
+        // When: the client's next request carries its refreshed bearer
+        // Then: the subscription moves onto it — this call site is the only
+        // thing that tells the session about the new bearer
+        crate::subscriptions::tests::a_key_stranded_while_idle_moves_on_the_next_request(
+            &api,
+            &subscriptions,
+            || {
+                handler
+                    .client_for(&http_call(Some(Caller::unverified("t2"))))
+                    .unwrap();
+            },
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
