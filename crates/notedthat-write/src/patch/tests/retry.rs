@@ -105,20 +105,23 @@ async fn append_without_if_match_retries_two_get_precondition_failures() {
 
 #[tokio::test]
 async fn stale_caller_precondition_is_not_retried() {
-    let storage = TestStorage::with_script(b"0123456789", Script::default()).await;
+    for mode in [byte_patch(), append()] {
+        let storage = TestStorage::with_script(b"0123456789", Script::default()).await;
 
-    let err = run_patch(&storage, byte_patch(), conditionals(Some("stale")), 1024)
-        .await
-        .expect_err("caller precondition fails permanently");
+        let err = run_patch(&storage, mode, conditionals(Some("stale")), 1024)
+            .await
+            .expect_err("caller precondition fails permanently");
 
-    assert!(matches!(
-        err,
-        WriteError::Storage(StorageError::PreconditionFailed)
-    ));
-    let calls = storage.calls();
-    assert_eq!(calls.head, 1);
-    assert_eq!(calls.get, 0);
-    assert_eq!(calls.put, 0);
+        assert!(matches!(
+            err,
+            WriteError::Storage(StorageError::PreconditionFailed)
+        ));
+        assert_eq!(storage.body().await, Bytes::from_static(b"0123456789"));
+        let calls = storage.calls();
+        assert_eq!(calls.head, 1);
+        assert_eq!(calls.get, 0);
+        assert_eq!(calls.put, 0);
+    }
 }
 
 #[tokio::test]
