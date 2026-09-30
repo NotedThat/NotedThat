@@ -177,16 +177,40 @@ impl StubTokenVerifier {
     /// Accept `token` as `subject`, a member of `groups`.
     #[must_use]
     pub fn accepting(
+        self,
+        token: &str,
+        subject: &str,
+        groups: impl IntoIterator<Item = &'static str>,
+    ) -> Self {
+        self.accept(token, subject, groups, None)
+    }
+
+    /// Accept `token` as `subject`, a member of `groups`, until `valid_until`
+    /// and not after, the way a provider's token with an `exp` is.
+    #[must_use]
+    pub fn accepting_until(
+        self,
+        token: &str,
+        subject: &str,
+        groups: impl IntoIterator<Item = &'static str>,
+        valid_until: std::time::SystemTime,
+    ) -> Self {
+        self.accept(token, subject, groups, Some(valid_until))
+    }
+
+    fn accept(
         mut self,
         token: &str,
         subject: &str,
         groups: impl IntoIterator<Item = &'static str>,
+        valid_until: Option<std::time::SystemTime>,
     ) -> Self {
         self.identities.insert(
             token.to_string(),
             crate::UserIdentity {
                 subject: subject.to_string(),
                 groups: groups.into_iter().map(str::to_string).collect(),
+                valid_until,
             },
         );
         self
@@ -198,6 +222,11 @@ impl crate::TokenVerifier for StubTokenVerifier {
     async fn verify(&self, token: &str) -> Result<crate::UserIdentity, crate::TokenRejected> {
         self.identities
             .get(token)
+            .filter(|identity| {
+                identity
+                    .valid_until
+                    .is_none_or(|until| std::time::SystemTime::now() <= until)
+            })
             .cloned()
             .ok_or_else(|| crate::TokenRejected::new("not a token the stub knows"))
     }

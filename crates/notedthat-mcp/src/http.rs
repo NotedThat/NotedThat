@@ -1346,6 +1346,7 @@ mod caller_identity {
                 Principal::SignedIn(Identity::User(notedthat_core::UserIdentity {
                     subject: "alice".to_string(),
                     groups: std::collections::BTreeSet::new(),
+                    valid_until: None,
                 })),
             ] {
                 let label = OWNER_KINDS(&kind);

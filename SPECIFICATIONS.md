@@ -476,6 +476,10 @@ than an hour is refreshed before use. Accepted algorithms: `RS256`, `RS384`, `RS
 introspection and no session: an opaque access token is refused, so Authelia and Zitadel must be
 configured to issue JWTs (`docs/CONFIGURATION.md`).
 
+A verified token carries how long it stays valid: its `exp` plus the leeway. Nothing that ends
+with its request needs that, and an event stream (§6.14) is the one thing that does not end with
+its request, so it closes at that instant.
+
 **Identity.** The subject is the configurable username claim (`preferred_username`), falling back
 to `sub`; `user:<name>` rules match it. Groups come from the configurable groups claim (`groups`),
 which may be an array of strings, a single string, or — Zitadel's roles shape — an object keyed by
@@ -836,6 +840,17 @@ and never match a `mime` filter). One field is withheld inside a visible frame: 
 on `object.index_failed` goes only to a subscriber whose `list` grant spans the whole knowledge
 base, the D62 rule for the same string; everyone the key gate admits still learns the key, the
 version and that indexing it failed.
+
+**Lifetime.** The grant resolved at connect is the one the stream filters by, for as long as it
+stays open, and the stream stays open no longer than the credential it was opened with. A user
+principal's `valid_until` (§6.9.2: `exp` plus the leeway) becomes a monotonic deadline when the
+stream opens. At that deadline the stream sends `event: auth.expired`, `data: {}`, with no id,
+so `Last-Event-ID` still names the last event delivered, and then ends. That is the moment a
+reconnect with the same token is first refused `401`, so a client is never cut off and then let
+straight back in. The service token and anonymous callers have no deadline. The frame's text is
+fixed: nothing about the caller, the credential or the backend. Access rules are a startup
+snapshot, so until they can be reloaded (#187) expiry is the only way a caller's access can
+change while a stream is open; applying a reload to open streams is part of that work.
 
 **Ids and replay.** The adapter owns the id: a process counter for `memory`, the JetStream
 stream sequence for `nats` (global across replicas and knowledge bases; gaps per knowledge base

@@ -13,15 +13,18 @@
 //! answers exactly as it does everywhere else, whether or not events are on.
 
 use std::convert::Infallible;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::header::{CACHE_CONTROL, HeaderName, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use notedthat_core::{
-    Error as CoreError, EventId, ObjectEvent, ObjectEventKind, StreamError, SubscribeError, Verb,
+    Error as CoreError, EventId, EventStream, ObjectEvent, ObjectEventKind, StreamError,
+    SubscribeError, Verb,
 };
 use serde::Deserialize;
 
@@ -43,6 +46,8 @@ const RETRY_HINT: Duration = Duration::from_millis(3000);
 const HEARTBEAT: Duration = Duration::from_secs(15);
 /// The header a client resumes with, per the SSE specification.
 const LAST_EVENT_ID: &str = "last-event-id";
+/// The event a stream ends with when the caller's credential expires.
+const CREDENTIAL_EXPIRED: &str = "auth.expired";
 
 /// Optional server-side filters, applied after the access filter.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -220,6 +225,12 @@ where
 /// keys the caller may `list` are sent. Reconnect with `Last-Event-ID` to
 /// resume after the last event received. See the `ObjectEvent` schema for the
 /// `data` payload. A server with events disabled answers `404`.
+///
+/// A stream lasts only as long as the credential it was opened with. When an
+/// identity provider's token stops verifying (its `exp` plus the server's
+/// 60-second leeway), the stream sends `event: auth.expired` with `data: {}`
+/// and no `id`, then ends: reconnect with a fresh token and `Last-Event-ID`.
+/// Streams opened with the service token or anonymously do not expire.
 #[utoipa::path(
     get,
     path = "/knowledgebases/{kb_slug}/events",
@@ -270,7 +281,9 @@ pub(super) async fn subscribe_events(
     let kb_label = access.kb().as_str().to_string();
     let filter = EventFilter::parse(query).map_err(&err)?;
     let after = parse_last_event_id(&req).map_err(&err)?;
-    let summary_visible = access.filter(Verb::List).covers_whole_kb();
+    // Taken before `subscribe` is awaited, so the time it takes does not
+    // stretch the credential.
+    let expired = expiry(access.valid_until());
 
     let stream = events
         .subscribe(access.kb(), after)
@@ -300,32 +313,12 @@ pub(super) async fn subscribe_events(
     // The first frame carries the retry hint. Then each event the caller may
     // see, in log order; an adapter error ends the stream with a comment, and
     // the client's reconnect with `Last-Event-ID` either replays the gap or is
-    // told it is gone.
+    // told it is gone. An expiring credential ends it with `auth.expired`, and
+    // the same reconnect needs a fresh one.
     let head = futures::stream::once(async {
         Ok::<Event, Infallible>(Event::default().retry(RETRY_HINT).comment("subscribed"))
     });
-    let body = stream
-        .scan(false, |ended, item| {
-            if *ended {
-                return futures::future::ready(None);
-            }
-            *ended = item.is_err();
-            futures::future::ready(Some(item))
-        })
-        .filter_map(move |item| {
-            let frame = match item {
-                Ok((id, mut event)) => {
-                    let visible = access.allows(Verb::List, event.object_key.as_str())
-                        && filter.matches(&event);
-                    if visible && !summary_visible {
-                        withhold_summary(&mut event);
-                    }
-                    visible.then(|| frame_for(id, &event))
-                }
-                Err(error) => Some(ended(&error)),
-            };
-            futures::future::ready(frame.map(Ok::<Event, Infallible>))
-        });
+    let body = frames(access, filter, stream, expired).map(Ok::<Event, Infallible>);
 
     let mut response = Sse::new(head.chain(guarded(subscriber, body)))
         .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
@@ -370,6 +363,103 @@ fn frame_for(id: EventId, event: &ObjectEvent) -> Event {
 
 fn ended(error: &StreamError) -> Event {
     Event::default().comment(format!("stream ended: {error}"))
+}
+
+/// The frame a stream ends with once its credential no longer verifies.
+///
+/// A named event rather than a comment, so a browser's `EventSource` sees it
+/// too. It carries no id, so `Last-Event-ID` still names the last event the
+/// client was sent, and fixed text only: nothing about the caller, the
+/// credential or the backend.
+fn credential_expired() -> Event {
+    Event::default().event(CREDENTIAL_EXPIRED).data("{}")
+}
+
+/// Resolves when the caller's credential stops verifying, or never.
+///
+/// The wall-clock instant is turned into a monotonic deadline once, here, so a
+/// clock step does not move it and a test can drive it with paused time.
+fn expiry(valid_until: Option<SystemTime>) -> BoxFuture<'static, ()> {
+    match valid_until {
+        Some(until) => {
+            let left = until
+                .duration_since(SystemTime::now())
+                .unwrap_or(Duration::ZERO);
+            Box::pin(tokio::time::sleep_until(tokio::time::Instant::now() + left))
+        }
+        None => Box::pin(futures::future::pending()),
+    }
+}
+
+/// What the stream is made of, in the order it happens.
+enum Step {
+    Logged(Result<(EventId, ObjectEvent), StreamError>),
+    /// The log ended without an error.
+    Closed,
+    /// The credential stopped verifying.
+    Expired,
+}
+
+/// The frames after the retry hint: each logged event the caller may see,
+/// until the log fails, closes, or the caller's credential expires.
+///
+/// Whichever comes first ends the stream then and there. A terminal frame is
+/// the last one sent: the stream does not wait for the log's next event to
+/// notice it is over, which on a quiet log would be never.
+fn frames(
+    access: KbAccess,
+    filter: EventFilter,
+    log: EventStream,
+    expired: BoxFuture<'static, ()>,
+) -> BoxStream<'static, Event> {
+    let log = log
+        .map(Step::Logged)
+        .chain(futures::stream::once(futures::future::ready(Step::Closed)));
+    let expired = futures::stream::once(expired).map(|()| Step::Expired);
+    let open = Open {
+        summary_visible: access.filter(Verb::List).covers_whole_kb(),
+        steps: futures::stream::select(log, expired),
+        access,
+        filter,
+    };
+
+    // The state is `None` once a terminal frame has gone out.
+    futures::stream::unfold(Some(open), |open| async move {
+        let mut open = open?;
+        loop {
+            let frame = match open.steps.next().await? {
+                Step::Logged(Ok((id, mut event))) => {
+                    if !open.shows(&event) {
+                        continue;
+                    }
+                    if !open.summary_visible {
+                        withhold_summary(&mut event);
+                    }
+                    return Some((frame_for(id, &event), Some(open)));
+                }
+                Step::Logged(Err(error)) => ended(&error),
+                Step::Expired => credential_expired(),
+                Step::Closed => return None,
+            };
+            return Some((frame, None));
+        }
+    })
+    .boxed()
+}
+
+/// A stream that has not ended yet, and what it filters by.
+struct Open<S> {
+    steps: S,
+    access: KbAccess,
+    filter: EventFilter,
+    summary_visible: bool,
+}
+
+impl<S> Open<S> {
+    /// Whether the caller may see `event` and asked to.
+    fn shows(&self, event: &ObjectEvent) -> bool {
+        self.access.allows(Verb::List, event.object_key.as_str()) && self.filter.matches(event)
+    }
 }
 
 #[cfg(test)]

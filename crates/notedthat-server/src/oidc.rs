@@ -15,7 +15,7 @@ use notedthat_core::{TokenRejected, TokenVerifier, UserIdentity};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The algorithms a token may be signed with.
 ///
@@ -348,8 +348,43 @@ impl TokenVerifier for OidcVerifier {
             .map(groups_from_claim)
             .unwrap_or_default();
 
-        Ok(UserIdentity { subject, groups })
+        let valid_until = Some(valid_until(&claims)?);
+
+        Ok(UserIdentity {
+            subject,
+            groups,
+            valid_until,
+        })
     }
+}
+
+/// The last instant this verifier would still accept a validated token: its
+/// `exp` plus the [`LEEWAY`] validation forgives.
+///
+/// The leeway is included on purpose. A stream that ended at the bare `exp`
+/// would be reopened, with the same token, straight away, and ended again, for
+/// as long as the leeway lasts. Ending it where a reconnect is first refused
+/// leaves the client one thing to do: get a new token.
+///
+/// `exp` is read the way validation read it: a whole number of seconds, or a
+/// fraction truncated to one. Validation has already required it, so a miss
+/// here is a refusal rather than a token that never expires.
+fn valid_until(
+    claims: &serde_json::Map<String, serde_json::Value>,
+) -> Result<SystemTime, TokenRejected> {
+    let exp = claims.get("exp");
+    let seconds = exp
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            exp.and_then(serde_json::Value::as_f64)
+                .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+                .map(|exp| exp.as_secs())
+        })
+        .ok_or_else(|| TokenRejected::new("`exp` is not a number of seconds"))?;
+    Duration::from_secs(seconds)
+        .checked_add(LEEWAY)
+        .and_then(|since_epoch| UNIX_EPOCH.checked_add(since_epoch))
+        .ok_or_else(|| TokenRejected::new("`exp` is out of range"))
 }
 
 /// An operator-facing reason for a validation failure. Never the token.
@@ -577,6 +612,45 @@ mod tests {
             .await
             .expect_err("expired");
         assert_eq!(rejected.reason, "expired");
+    }
+
+    #[tokio::test]
+    async fn a_token_is_valid_until_its_exp_plus_the_leeway() {
+        // Given
+        let exp = now() + 300;
+        let mut claims = claims(ISSUER, "alice", &[]);
+        claims["exp"] = serde_json::json!(exp);
+
+        // When
+        let identity = verifier().verify(&mint(&claims)).await.expect("verifies");
+
+        // Then — the instant a reconnect with this token is first refused.
+        assert_eq!(
+            identity.valid_until,
+            Some(UNIX_EPOCH + Duration::from_secs(exp) + LEEWAY)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fractional_exp_is_truncated_as_validation_truncates_it() {
+        // Given
+        let exp = now() + 300;
+        let mut claims = claims(ISSUER, "alice", &[]);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a timestamp fits an f64 exactly"
+        )]
+        let fractional = exp as f64 + 0.75;
+        claims["exp"] = serde_json::json!(fractional);
+
+        // When
+        let identity = verifier().verify(&mint(&claims)).await.expect("verifies");
+
+        // Then
+        assert_eq!(
+            identity.valid_until,
+            Some(UNIX_EPOCH + Duration::from_secs(exp) + LEEWAY)
+        );
     }
 
     #[tokio::test]

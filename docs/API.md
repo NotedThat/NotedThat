@@ -1415,6 +1415,9 @@ somewhere, or an `anyone` rule granting `list` for anonymous callers. Each event
 individually: a subscriber receives an event for a key only if it may `list` that key. Deletions
 are filtered the same way as writes, since a deletion reveals that the key existed. A credential
 granted nothing answers `403`; an anonymous caller granted nothing is concealed with `404`.
+Access is decided when the stream opens, and the stream lasts only as long as the credential
+does: an identity provider's token ends it when it stops verifying (see
+[How a stream ends](#how-a-stream-ends)). The service token and anonymous access never expire.
 
 **Path parameters:**
 
@@ -1471,6 +1474,19 @@ data: {"event":"object.indexed","kb":"notes","object_key":"inbox/memo.mp3.md","e
 
 : keep-alive
 ```
+
+<a id="how-a-stream-ends"></a>**How a stream ends.** A stream has no natural end; the server
+closes it in two cases, each announced by one last frame with fixed text:
+
+| Last frame | When | What the client does |
+|------------|------|----------------------|
+| `event: auth.expired` with `data: {}` and no `id` | The identity-provider token the stream was opened with stops verifying: at its `exp` plus the 60-second leeway the server allows for clock skew ([How a token is checked](CONFIGURATION.md#how-a-token-is-checked)), the moment a reconnect with the same token would be refused with `401` | Get a fresh token, then reconnect with `Last-Event-ID`. The frame has no `id`, so the last one received still marks the position and nothing is missed |
+| A `: stream ended: …` comment | The event backend failed mid-stream, or the subscriber fell too far behind a live log | Reconnect with `Last-Event-ID`; the gap is replayed, or `410` says it is gone |
+
+A browser's `EventSource` delivers `auth.expired` to a listener registered for that name, but
+never shows comments. Clients that only handle `object.*` events can ignore the frame, since the
+reconnect that follows answers `401` until the token is refreshed. Neither frame names the
+caller, the credential or the backend.
 
 **Event schema.** The `data` object repeats the type under `event` so it is self-describing on its
 own.

@@ -14,6 +14,7 @@ use crate::state::AppState;
 use axum::extract::Request;
 use notedthat_core::{AccessPolicy, KbSlug, KeyFilter, Principal, Verb};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// A resolved knowledge base, the asking principal, and the policy between them.
 #[derive(Clone)]
@@ -55,6 +56,11 @@ impl KbAccess {
     /// The resolved knowledge base.
     pub(crate) fn kb(&self) -> &KbSlug {
         &self.kb
+    }
+
+    /// When the caller's credential stops verifying, if it ever does.
+    pub(crate) fn valid_until(&self) -> Option<SystemTime> {
+        self.principal.valid_until()
     }
 
     /// Authorize one verb on one key.
