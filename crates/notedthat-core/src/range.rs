@@ -258,7 +258,7 @@ impl LineIndex {
     }
 }
 
-/// Parsed `Range:` header. Unit is preserved so callers can ignore non-`bytes` units per RFC 7233 §2.1.
+/// Parsed `Range:` header. The unit is kept, normalised to lowercase, so callers can ignore non-`bytes` units per RFC 7233 §2.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedRange {
     /// Range unit token, lowercased, such as `bytes`.
