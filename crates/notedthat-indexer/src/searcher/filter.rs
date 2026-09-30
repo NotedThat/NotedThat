@@ -113,7 +113,10 @@ pub fn translate_filter(filter: &SearchFilter) -> TranslatedFilter {
     TranslatedFilter { qdrant, post }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "unix seconds stay far below 2^53, where f64 is still exact"
+)]
 fn unix_seconds_as_range_bound(value: i64) -> f64 {
     value as f64
 }

@@ -5,10 +5,9 @@
 //! cargo test -p notedthat-server --locked --test metrics_e2e
 //! ```
 
-#[path = "support/metrics_env.rs"]
-mod metrics_env;
+use notedthat_server::testing::metrics_server;
 
-use metrics_env::{MetricsServer, series_lines};
+use metrics_server::{MetricsServer, series_lines};
 use reqwest::StatusCode;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use std::time::Duration;
 /// forbidden".
 #[tokio::test]
 async fn with_metrics_off_nothing_is_bound_and_the_product_listener_has_no_metrics_route() {
-    let server = MetricsServer::start_with(metrics_env::in_memory_backends(), false).await;
+    let server = MetricsServer::start_with(metrics_server::in_memory_backends(), false).await;
 
     let addr = server
         .metrics_base
@@ -35,7 +34,7 @@ async fn with_metrics_off_nothing_is_bound_and_the_product_listener_has_no_metri
         "nothing may listen on {addr} while metrics are off"
     );
 
-    for credential in [Some(metrics_env::LEAK_TOKEN), None] {
+    for credential in [Some(metrics_server::LEAK_TOKEN), None] {
         let mut request = server.client.get(format!("{}/metrics", server.base_url));
         if let Some(token) = credential {
             request = request.header("Authorization", format!("Bearer {token}"));

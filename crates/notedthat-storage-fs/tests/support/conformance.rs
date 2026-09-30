@@ -24,7 +24,6 @@
 //! `ETag`s are always resolved through `head_object`, never from `PutOutcome`: `SeaweedFS`
 //! does not always return one on PUT, which is a backend artifact rather than a contract.
 
-#![allow(dead_code)]
 // Each scenario group is a declarative table of cases. Splitting them to satisfy a line
 // count would scatter one readable table across several functions for no benefit.
 #![allow(clippy::too_many_lines)]
@@ -41,30 +40,23 @@ use notedthat_core::{
 pub type Observations = Vec<(&'static str, String)>;
 
 /// Which implementation produced a set of observations, and where its code lives.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Backend {
-    S3,
-    Fs,
-    Memory,
+///
+/// A value rather than an enum: each suite compares two of the three backends, so a
+/// variant only the other suite constructs would be dead code. [`FS`] lives here
+/// because both suites run it; `S3` and `MEMORY` live in the suite that runs them.
+#[derive(Clone, Copy)]
+pub struct Backend {
+    pub label: &'static str,
+    pub source_file: &'static str,
+    /// This backend's column in [`PINNED_DIVERGENCES`].
+    pub pinned: fn(&Divergence) -> &'static str,
 }
 
-impl Backend {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::S3 => "S3Storage",
-            Self::Fs => "FsStorage",
-            Self::Memory => "InMemoryStorage",
-        }
-    }
-
-    pub fn source_file(self) -> &'static str {
-        match self {
-            Self::S3 => "crates/notedthat-storage-s3/src/storage.rs",
-            Self::Fs => "crates/notedthat-storage-fs/src/storage.rs",
-            Self::Memory => "crates/notedthat-core/src/testing.rs",
-        }
-    }
-}
+pub const FS: Backend = Backend {
+    label: "FsStorage",
+    source_file: "crates/notedthat-storage-fs/src/storage.rs",
+    pinned: |row| row.fs,
+};
 
 /// Renders `ETag`s as stable aliases, so two backends are comparable without comparing
 /// values. Reset per scenario group, so `E1` means "the first distinct tag this group saw".
@@ -942,21 +934,21 @@ pub fn assert_pinned(backend: Backend, observed: &Observations) {
             .iter()
             .find(|row| row.name == *name)
             .unwrap_or_else(|| panic!("no pinned divergence named {name}"));
-        let recorded = match backend {
-            Backend::S3 => row.s3,
-            Backend::Fs => row.fs,
-            Backend::Memory => row.memory,
-        };
+        let recorded = (backend.pinned)(row);
         assert_eq!(
             recorded,
             actual.as_str(),
             "'{name}': {} no longer behaves the way PINNED_DIVERGENCES records.\n  \
              recorded: {recorded}\n  observed: {actual}\n\
+             On file for every backend: S3 {}, Fs {}, Memory {}\n\
              Reason on file: {}\n\
              If a backend was fixed, delete the row so the agreement suite covers it \
              instead. Do not edit the row to match new behaviour without deciding which \
              side is right — that is how a pinned decision turns back into a silent bug.",
-            backend.label(),
+            backend.label,
+            row.s3,
+            row.fs,
+            row.memory,
             row.why
         );
     }
@@ -1485,7 +1477,7 @@ pub fn assert_premises(backend: Backend, observed: &Observations) {
         .collect();
     let get = |name: &str| {
         *map.get(name)
-            .unwrap_or_else(|| panic!("{}: missing observation {name}", backend.label()))
+            .unwrap_or_else(|| panic!("{}: missing observation {name}", backend.label))
     };
 
     assert_eq!(
@@ -1493,21 +1485,21 @@ pub fn assert_premises(backend: Backend, observed: &Observations) {
         "E1",
         "{}: returned no ETag, so every alias collapses and the conditional rows below \
          would agree for the wrong reason",
-        backend.label()
+        backend.label
     );
     assert_eq!(
         get("roundtrip/rewrite_new_bytes_etag_alias"),
         "E2",
         "{}: writing different bytes did not change the ETag, so nothing below can \
          distinguish a stale validator from a fresh one",
-        backend.label()
+        backend.label
     );
     assert_eq!(
         get("listing/list/all/truncated"),
         "false",
         "{}: the unfiltered listing did not return the whole corpus, so the prefix rows \
          prove nothing",
-        backend.label()
+        backend.label
     );
 }
 
@@ -1526,26 +1518,23 @@ pub fn assert_agree(
         from_reference.len(),
         from_candidate.len(),
         "{} produced {} observations and {} produced {}; both must run the same scenarios",
-        reference.label(),
+        reference.label,
         from_reference.len(),
-        candidate.label(),
+        candidate.label,
         from_candidate.len()
     );
 
     let mut mismatches = Vec::new();
     for ((name, expected), (candidate_name, actual)) in from_reference.iter().zip(from_candidate) {
         assert_eq!(
-            name,
-            candidate_name,
+            name, candidate_name,
             "observation order must match between {} and {}",
-            reference.label(),
-            candidate.label()
+            reference.label, candidate.label
         );
         if expected != actual {
             mismatches.push(format!(
                 "  {name}\n    {}: [{expected}]\n    {}: [{actual}]",
-                reference.label(),
-                candidate.label()
+                reference.label, candidate.label
             ));
         }
     }
@@ -1558,11 +1547,11 @@ pub fn assert_agree(
          NOTEDTHAT_STORAGE_BACKEND, and the E2E suites run one backend at a time and \
          cannot see it. If a difference is intentional, do not weaken this assertion — \
          decide which side is right and add a row to PINNED_DIVERGENCES saying why.",
-        reference.label(),
-        candidate.label(),
+        reference.label,
+        candidate.label,
         mismatches.len(),
         mismatches.join("\n"),
-        reference.source_file(),
-        candidate.source_file(),
+        reference.source_file,
+        candidate.source_file,
     );
 }

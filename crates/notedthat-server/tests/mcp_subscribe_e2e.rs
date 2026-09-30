@@ -8,15 +8,14 @@
 //! ```
 #![allow(missing_docs)]
 
-#[path = "support/patch_env.rs"]
-mod patch_env;
+use notedthat_server::testing::patch_server;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use notedthat_events::MemoryPublisher;
 use notedthat_mcp::testing::{McpSession, NotificationStream};
-use patch_env::{API_TOKEN, PatchServer};
+use patch_server::{API_TOKEN, PatchServer};
 
 const MAX_PATCHABLE: u64 = 10 * 1024 * 1024;
 const WAIT: Duration = Duration::from_secs(5);

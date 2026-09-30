@@ -1,9 +1,13 @@
 use reqwest::StatusCode;
 
 use super::{
-    access_env::{API_TOKEN, INTERNAL_BODY, PRIVATE_BODY, PRIVATE_KB, PUBLIC_BODY, PUBLIC_KB},
+    access_env::{API_TOKEN, PRIVATE_KB, PUBLIC_KB},
+    access_probes::{
+        INTERNAL_BODY, PRIVATE_BODY, PUBLIC_BODY, assert_http_401, assert_http_concealed_404,
+        method,
+    },
     access_server::ServerInstance,
-    access_wire::{assert_http_401, assert_http_concealed_404, method, search, wire},
+    access_wire::{search, wire},
 };
 
 pub async fn verify(client: &reqwest::Client, server: &ServerInstance) {

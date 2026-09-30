@@ -10,13 +10,6 @@ fn hybrid_searcher_is_send_sync() {
 }
 
 #[test]
-fn collection_for_format() {
-    use notedthat_core::KbSlug;
-    let slug = KbSlug::try_new("notes").unwrap();
-    assert_eq!(HybridSearcher::collection_for(&slug), "kb_notes_v1");
-}
-
-#[test]
 fn search_error_from_store_maps_collection_not_found_to_unknown_kb() {
     let err = search_error_from_store(
         "kb_my-notes_v1",

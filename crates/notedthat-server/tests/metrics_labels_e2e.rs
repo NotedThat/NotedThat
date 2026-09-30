@@ -11,11 +11,10 @@
 //! cargo test -p notedthat-server --locked --test metrics_labels_e2e
 //! ```
 
-#[path = "support/metrics_env.rs"]
-mod metrics_env;
+use notedthat_server::testing::metrics_server;
 
 use async_trait::async_trait;
-use metrics_env::{LEAK_PASSWORD, LEAK_PRINCIPAL, LEAK_TOKEN, MetricsServer, series_lines};
+use metrics_server::{LEAK_PASSWORD, LEAK_PRINCIPAL, LEAK_TOKEN, MetricsServer, series_lines};
 use notedthat_indexer::embedder::{Embedder, EmbedderError};
 use notedthat_indexer::testing::StubEmbedder;
 use reqwest::StatusCode;
@@ -117,7 +116,7 @@ async fn the_exposition_names_no_key_principal_credential_or_subscriber_filter()
     let backends = notedthat_server::run::Backends {
         embedder: embedder.clone(),
         events: Some(publisher),
-        ..metrics_env::in_memory_backends()
+        ..metrics_server::in_memory_backends()
     };
     let server = MetricsServer::start_with(backends, true).await;
 

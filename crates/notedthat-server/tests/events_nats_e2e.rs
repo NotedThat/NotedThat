@@ -7,10 +7,8 @@
 //! `cargo test -p notedthat-server --test events_nats_e2e -- --ignored`.
 #![allow(missing_docs)]
 
-#[path = "support/patch_env.rs"]
-mod patch_env;
-#[path = "support/sse.rs"]
-mod sse;
+use notedthat_server::testing::patch_server;
+use notedthat_server::testing::sse;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +19,7 @@ use notedthat_events::{NatsConfig, NatsPublisher};
 use notedthat_indexer::testing::{InMemoryVectorStore, StubEmbedder};
 use notedthat_server::config::{Config, EmbedderConfig};
 use notedthat_server::run::Backends;
-use patch_env::API_TOKEN;
+use patch_server::API_TOKEN;
 use reqwest::StatusCode;
 use sse::{Subscription, change_events};
 use testcontainers::{

@@ -29,8 +29,6 @@
 //! start a fresh log at 1, but the contract is only that ids are strictly increasing and
 //! that a subscriber resuming after one sees exactly what came later.
 
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use async_trait::async_trait;

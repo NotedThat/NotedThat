@@ -7,4 +7,7 @@ pub mod config;
 pub mod oidc;
 pub mod provision;
 pub mod run;
+/// Test support: in-process servers the workspace's E2E suites drive.
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub mod tracing_init;

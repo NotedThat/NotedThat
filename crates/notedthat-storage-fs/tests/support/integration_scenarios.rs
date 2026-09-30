@@ -31,8 +31,6 @@
 //! [`etag_of`], but only because the [`put`] helper they seed with discards its
 //! `PutOutcome`; it is not a hedge against a backend withholding one.
 
-#![allow(dead_code)]
-
 use bytes::Bytes;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ObjectPath, Storage,

@@ -4,6 +4,8 @@
 mod access_env;
 #[path = "support/access_http.rs"]
 mod access_http;
+#[path = "support/access_probes.rs"]
+mod access_probes;
 #[path = "support/access_server.rs"]
 mod access_server;
 #[path = "support/access_webdav.rs"]
@@ -11,13 +13,12 @@ mod access_webdav;
 #[path = "support/access_wire.rs"]
 mod access_wire;
 
-use access_env::{
-    API_TOKEN, Backends, INTERNAL_BODY, PRIVATE_BODY, PRIVATE_KB, PUBLIC_BODY, PUBLIC_KB, kb,
-    stored_manifest,
-};
+use access_env::{API_TOKEN, Backends, PRIVATE_KB, PUBLIC_KB, kb};
+use access_probes::{INTERNAL_BODY, PRIVATE_BODY, PUBLIC_BODY, assert_http_concealed_404};
 use access_server::{ServerInstance, wait_ready};
-use access_wire::{assert_http_concealed_404, search, wait_indexed, wire};
+use access_wire::{search, wait_indexed, wire};
 use notedthat_core::{AccessPolicy, AccessRule, KbManifest, Storage, TenantSlug, Verb, Who};
+use notedthat_storage_s3::S3Storage;
 use reqwest::StatusCode;
 use std::time::Duration;
 
@@ -252,4 +253,11 @@ async fn stored_access_rules_are_loaded_only_at_server_startup() {
     access_webdav::verify(&client, &second).await;
     second.stop();
     backends.remove().await;
+}
+
+async fn stored_manifest(storage: &S3Storage, slug: &str) -> notedthat_core::KbManifest {
+    storage
+        .read_manifest(&kb(slug))
+        .await
+        .expect("stored manifest")
 }

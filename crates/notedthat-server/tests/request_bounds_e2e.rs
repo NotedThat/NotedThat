@@ -7,10 +7,8 @@
 //! ```
 #![allow(missing_docs)]
 
-#[path = "support/patch_env.rs"]
-mod patch_env;
-#[path = "support/sse.rs"]
-mod sse;
+use notedthat_server::testing::patch_server;
+use notedthat_server::testing::sse;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +24,7 @@ use notedthat_events::MemoryPublisher;
 use notedthat_indexer::testing::StubEmbedder;
 use notedthat_indexer::{Embedder, EmbedderError};
 use notedthat_mcp::testing::McpSession;
-use patch_env::{API_TOKEN, PatchServer, in_memory_backends};
+use patch_server::{API_TOKEN, PatchServer, in_memory_backends};
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
 use sse::{Subscription, change_events};

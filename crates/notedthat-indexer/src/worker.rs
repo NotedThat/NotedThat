@@ -31,7 +31,10 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Publish how many file handlers are currently executing.
 fn set_in_flight(running: usize) {
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an in-flight count never nears 2^53, where f64 stops being exact"
+    )]
     metrics::gauge!(notedthat_core::metrics::name::INDEX_EVENTS_IN_FLIGHT).set(running as f64);
 }
 

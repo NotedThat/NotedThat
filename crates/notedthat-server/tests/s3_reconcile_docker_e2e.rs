@@ -10,20 +10,11 @@
 //! `cargo test -p notedthat-server --test s3_reconcile_docker_e2e -- --include-ignored`.
 #![allow(missing_docs)]
 
-// The harness is shared with `phase3_access_e2e`, which uses more of it.
-#[allow(dead_code)]
+// The harness `phase3_access_e2e` also runs on. Its probes stay there.
 #[path = "support/access_env.rs"]
 mod access_env;
-#[allow(dead_code)]
-#[path = "support/access_http.rs"]
-mod access_http;
-#[allow(dead_code)]
 #[path = "support/access_server.rs"]
 mod access_server;
-#[allow(dead_code)]
-#[path = "support/access_webdav.rs"]
-mod access_webdav;
-#[allow(dead_code)]
 #[path = "support/access_wire.rs"]
 mod access_wire;
 

@@ -1,7 +1,7 @@
 //! Writes made over MCP reach search, and deletes leave it: the tool surface
 //! and the indexer agree, driven at `POST /mcp` on a real server.
 
-#![allow(dead_code, missing_docs)]
+#![allow(missing_docs)]
 // allow: SIZE_OK — task requires duplicating the container-backed MCP E2E fixture here.
 
 use std::sync::OnceLock;

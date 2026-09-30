@@ -1,4 +1,4 @@
-use notedthat_core::{KbSlug, Storage, TenantSlug};
+use notedthat_core::{KbSlug, TenantSlug};
 use notedthat_server::config::{Config, EmbedderConfig, ServerQdrantConfig};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
@@ -14,12 +14,6 @@ pub const DAV_USER: &str = "phase3-user";
 pub const DAV_PASS: &str = "phase3-pass";
 pub const PUBLIC_KB: &str = "public";
 pub const PRIVATE_KB: &str = "private";
-pub const PUBLIC_BODY: &str = "# Public\n\nphase-three-public-needle";
-pub const PRIVATE_BODY: &str = "# Private\n\nphase-three-private-needle";
-pub const INTERNAL_BODY: &str = "phase-three-internal-needle";
-pub const PROPFIND: &str =
-    r#"<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#;
-
 const SEAWEEDFS_IAM: &[u8] = br#"{"identities":[{"name":"test","credentials":[{"accessKey":"any","secretKey":"any"}],"actions":["Admin","Read","Write","List","Tagging"]}]}"#;
 
 pub struct Backends {
@@ -146,13 +140,6 @@ impl Backends {
 
 pub fn kb(slug: &str) -> KbSlug {
     KbSlug::try_new(slug).expect("fixture KB slug")
-}
-
-pub async fn stored_manifest(storage: &S3Storage, slug: &str) -> notedthat_core::KbManifest {
-    storage
-        .read_manifest(&kb(slug))
-        .await
-        .expect("stored manifest")
 }
 
 fn free_addr() -> SocketAddr {

@@ -1,4 +1,4 @@
-use reqwest::{Method, Response, StatusCode, header::HeaderMap};
+use reqwest::{Response, StatusCode, header::HeaderMap};
 use std::time::Duration;
 
 use super::{
@@ -23,21 +23,20 @@ impl WireResponse {
 }
 
 pub async fn wire(label: &str, response: Response) -> WireResponse {
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = response.bytes().await.expect("wire response body").to_vec();
+    let wire = WireResponse {
+        status: response.status(),
+        headers: response.headers().clone(),
+        body: response.bytes().await.expect("wire response body").to_vec(),
+    };
     println!(
-        "WIRE {label} -> {status}; allow={:?}; challenge={:?}; range={:?}; body={}",
-        headers.get("allow"),
-        headers.get("www-authenticate"),
-        headers.get("content-range"),
-        String::from_utf8_lossy(&body).replace('\n', "\\n")
+        "WIRE {label} -> {}; allow={:?}; challenge={:?}; range={:?}; body={}",
+        wire.status,
+        wire.headers.get("allow"),
+        wire.headers.get("www-authenticate"),
+        wire.headers.get("content-range"),
+        String::from_utf8_lossy(&wire.body).replace('\n', "\\n")
     );
-    WireResponse {
-        status,
-        headers,
-        body,
-    }
+    wire
 }
 
 pub async fn search(
@@ -90,38 +89,4 @@ pub async fn wait_indexed(client: &reqwest::Client, server: &ServerInstance, key
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-}
-
-/// An anonymous caller the access rules refuse, on a route that names a
-/// knowledge base.
-///
-/// `404`, byte-identical to an undeclared slug, so the status cannot be used to
-/// discover which knowledge bases a deployment declares. Distinct from
-/// [`assert_http_401`], which is the authentication layer's answer: a credential
-/// missing where one is unconditionally required, or one that did not verify.
-pub fn assert_http_concealed_404(response: &WireResponse) {
-    assert_eq!(response.status, StatusCode::NOT_FOUND);
-    let json = response.json();
-    assert_eq!(json["error"], "not_found");
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|message| message.starts_with("not found: KB '")
-                && message.ends_with("' not declared")),
-        "a denial must carry the undeclared-slug message, got {:?}",
-        json["message"]
-    );
-}
-
-pub fn assert_http_401(response: &WireResponse) {
-    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
-    let json = response.json();
-    assert_eq!(json["error"], "unauthorized");
-    assert!(json["message"].as_str().is_some_and(|message| {
-        message.contains("valid Bearer token") && message.contains("Authorization")
-    }));
-}
-
-pub fn method(value: &str) -> Method {
-    Method::from_bytes(value.as_bytes()).expect("fixture HTTP method")
 }

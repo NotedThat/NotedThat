@@ -15,10 +15,17 @@
 mod conformance;
 
 use conformance::{
-    Backend, assert_agree, assert_pinned, assert_premises, observe_all, observe_pinned_divergences,
+    Backend, FS, assert_agree, assert_pinned, assert_premises, observe_all,
+    observe_pinned_divergences,
 };
 use notedthat_core::{KbSlug, Storage, TenantSlug, testing::InMemoryStorage};
 use notedthat_storage_fs::{FsConfig, FsStorage};
+
+const MEMORY: Backend = Backend {
+    label: "InMemoryStorage",
+    source_file: "crates/notedthat-core/src/testing.rs",
+    pinned: |row| row.memory,
+};
 
 #[tokio::test]
 async fn fs_storage_and_the_in_memory_substitute_agree() {
@@ -54,18 +61,15 @@ async fn fs_storage_and_the_in_memory_substitute_agree() {
     })
     .await;
 
-    assert_premises(Backend::Fs, &from_fs);
-    assert_premises(Backend::Memory, &from_memory);
-    assert_agree(Backend::Fs, &from_fs, Backend::Memory, &from_memory);
+    assert_premises(FS, &from_fs);
+    assert_premises(MEMORY, &from_memory);
+    assert_agree(FS, &from_fs, MEMORY, &from_memory);
 
     // Behaviours the backends are allowed to differ on are checked against what is
     // recorded, rather than against each other.
     let kb = KbSlug::try_new(format!("conf-div-{suffix}")).expect("slug");
     fs.ensure_bucket(&kb).await.expect("bucket");
     memory.ensure_bucket(&kb).await.expect("bucket");
-    assert_pinned(Backend::Fs, &observe_pinned_divergences(&fs, &kb).await);
-    assert_pinned(
-        Backend::Memory,
-        &observe_pinned_divergences(&memory, &kb).await,
-    );
+    assert_pinned(FS, &observe_pinned_divergences(&fs, &kb).await);
+    assert_pinned(MEMORY, &observe_pinned_divergences(&memory, &kb).await);
 }

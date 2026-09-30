@@ -95,7 +95,10 @@ fn heading_boundaries(raw: &str) -> Vec<HeadingBoundary> {
     let mut active_heading: Option<HeadingBoundary> = None;
 
     for (event, range) in Parser::new(raw).into_offset_iter() {
-        #[allow(clippy::match_same_arms)]
+        #[expect(
+            clippy::match_same_arms,
+            reason = "one arm per event kind reads clearer than merged patterns"
+        )]
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 active_heading = Some(HeadingBoundary {

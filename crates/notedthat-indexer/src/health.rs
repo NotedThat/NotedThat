@@ -252,7 +252,10 @@ impl IndexHealth {
         // as the base's would be a number that shrinks whenever a subtree is
         // rescanned. `scope` is exactly that distinction.
         if summary.scope.is_none() {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "an object count never nears 2^53, where f64 stops being exact"
+            )]
             metrics::gauge!(metric::RECONCILE_OBJECTS_ON_DISK, metric_label::KB => kb.to_string())
                 .set(summary.objects_on_disk as f64);
         }

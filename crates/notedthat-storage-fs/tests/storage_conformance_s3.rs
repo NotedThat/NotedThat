@@ -25,7 +25,8 @@ mod conformance;
 use std::sync::Arc;
 
 use conformance::{
-    Backend, assert_agree, assert_pinned, assert_premises, observe_all, observe_pinned_divergences,
+    Backend, FS, assert_agree, assert_pinned, assert_premises, observe_all,
+    observe_pinned_divergences,
 };
 use notedthat_core::{KbSlug, Storage, TenantSlug};
 use notedthat_storage_fs::{FsConfig, FsStorage};
@@ -34,6 +35,12 @@ use testcontainers::{
     GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
+};
+
+const S3: Backend = Backend {
+    label: "S3Storage",
+    source_file: "crates/notedthat-storage-s3/src/storage.rs",
+    pinned: |row| row.s3,
 };
 
 /// Start `SeaweedFS` and wait for the log line it prints once its listener is bound.
@@ -115,18 +122,15 @@ async fn s3_storage_and_fs_storage_agree() {
     })
     .await;
 
-    assert_premises(Backend::S3, &from_s3);
-    assert_premises(Backend::Fs, &from_fs);
-    assert_agree(Backend::S3, &from_s3, Backend::Fs, &from_fs);
+    assert_premises(S3, &from_s3);
+    assert_premises(FS, &from_fs);
+    assert_agree(S3, &from_s3, FS, &from_fs);
 
     // Behaviours the backends are allowed to differ on are checked against what is
     // recorded, rather than against each other.
     let kb = KbSlug::try_new(format!("conf-div-{suffix}")).expect("slug");
     s3.ensure_bucket(&kb).await.expect("bucket");
     fs.ensure_bucket(&kb).await.expect("bucket");
-    assert_pinned(
-        Backend::S3,
-        &observe_pinned_divergences(s3.as_ref(), &kb).await,
-    );
-    assert_pinned(Backend::Fs, &observe_pinned_divergences(&fs, &kb).await);
+    assert_pinned(S3, &observe_pinned_divergences(s3.as_ref(), &kb).await);
+    assert_pinned(FS, &observe_pinned_divergences(&fs, &kb).await);
 }
