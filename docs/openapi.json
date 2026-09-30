@@ -1727,7 +1727,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Content type as `HEAD` reported it or, when `HEAD` reported none\nor one naming no media type (such as `;charset=utf-8`), the type\nthe key's suffix names; absent when the failure came first."
+                "description": "Content type as `HEAD` reported it or, when `HEAD` reported none\nor one naming no media type (such as `;charset=utf-8`), the type\nthe key's suffix names; absent when the failure came first, or\nwhen neither `HEAD` nor the key names a type."
               },
               "summary": {
                 "type": [

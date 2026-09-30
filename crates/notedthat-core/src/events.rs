@@ -157,7 +157,8 @@ pub enum ObjectEventKind {
         etag: Option<String>,
         /// Content type as `HEAD` reported it or, when `HEAD` reported none
         /// or one naming no media type (such as `;charset=utf-8`), the type
-        /// the key's suffix names; absent when the failure came first.
+        /// the key's suffix names; absent when the failure came first, or
+        /// when neither `HEAD` nor the key names a type.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
         /// The pipeline's own error, first line, at most 200 characters — the
