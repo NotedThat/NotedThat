@@ -8,9 +8,9 @@
 //! its own collection, so every knowledge base's top hit scores the same
 //! whatever its relevance and a merged sort would be an arbitrary interleave.
 
+use super::args::parse_kb;
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use futures::StreamExt;
 use notedthat_core::search::{SearchHit, SearchResponse};
 use rmcp::{
@@ -200,6 +200,9 @@ async fn select(client: &NotedThatClient, kb: Vec<String>) -> Result<Selection, 
         ))
         .into());
     }
+    for slug in &kb {
+        parse_kb(slug)?;
+    }
     Ok(Selection::Explicit(kb))
 }
 
@@ -209,8 +212,7 @@ async fn search_one(
     slug: &str,
     body: &SearchBody<'_>,
 ) -> Result<SearchResponse, McpToolError> {
-    let kb_enc = encode_kb_slug(slug);
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc, "search"]);
+    let url = client.api_v1_url(&["knowledgebases", slug, "search"]);
     let resp = client
         .authorized(client.http.post(url).json(body))
         .send()

@@ -3,6 +3,7 @@ use crate::{
     error::{McpToolError, map_response},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use notedthat_core::{KbSlug, ObjectPath};
 use percent_encoding::percent_decode_str;
 use rmcp::{
     ErrorData as McpError,
@@ -93,6 +94,12 @@ pub(crate) fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpErro
     if object_key.is_empty() {
         return Err(invalid_params("resource URI must include an object path"));
     }
+    // The API's own rules, before the key reaches `api_v1_url`, whose
+    // `push` would drop a `.` or `..` segment instead of encoding it.
+    KbSlug::try_new(kb_slug)
+        .map_err(|err| invalid_params(format!("invalid resource knowledge base: {err}")))?;
+    ObjectPath::try_from_str(&object_key)
+        .map_err(|err| invalid_params(format!("invalid resource object path: {err}")))?;
 
     Ok(ParsedResourceUri {
         kb_slug: kb_slug.to_string(),
@@ -310,5 +317,20 @@ mod tests {
         );
         assert!(error.message.contains("read tool"), "{}", error.message);
         server.verify().await;
+    }
+
+    #[test]
+    fn unaddressable_resource_uri_is_invalid_params() {
+        for uri in [
+            "notedthat://notes/index",
+            "notedthat://notes/..",
+            "notedthat://notes/a%2F..%2Fb.md",
+            "notedthat://No_tes/a.md",
+        ] {
+            let Err(err) = parse_resource_uri(uri) else {
+                panic!("{uri} parsed");
+            };
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{uri}");
+        }
     }
 }

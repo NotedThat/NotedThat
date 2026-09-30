@@ -1,6 +1,6 @@
+use super::args::parse_kb;
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -20,8 +20,8 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: ListArgs,
 ) -> Result<CallToolResult, McpError> {
-    let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc]);
+    let kb = parse_kb(&args.kb)?;
+    let url = client.api_v1_url(&["knowledgebases", kb.as_str()]);
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(prefix) = args.prefix {
         query.push(("prefix", prefix));

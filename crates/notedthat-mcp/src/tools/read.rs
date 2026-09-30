@@ -1,7 +1,7 @@
+use super::args::{parse_kb, parse_object_path};
 use super::range::{RangeArgs, ReadSpan};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use reqwest::header::HeaderMap;
 use rmcp::{
     ErrorData as McpError,
@@ -214,9 +214,10 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: ReadArgs,
 ) -> Result<CallToolResult, McpError> {
-    let kb_enc = encode_kb_slug(&args.kb);
+    let kb = parse_kb(&args.kb)?;
+    let path = parse_object_path(&args.path, "path")?;
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", kb.as_str(), path.as_str()]);
 
     let mut req = client.authorized(client.http.get(url));
     if let Some(range) = args.span.range_header() {
@@ -818,5 +819,42 @@ mod tests {
         for combinator in ["anyOf", "oneOf", "allOf"] {
             assert!(schema.get(combinator).is_none(), "{combinator}: {schema}");
         }
+    }
+
+    /// `url`'s `push` drops `.` and `..`, so these would otherwise address
+    /// the listing or shift the path into the slug; a reserved key would reach
+    /// the index-health route. Each is refused before any request (#279).
+    #[tokio::test]
+    async fn unaddressable_kb_or_path_is_invalid_request_without_http_call() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+
+        for (kb, path) in [
+            ("notes", ".."),
+            ("notes", "."),
+            ("notes", "a/../b.md"),
+            ("notes", "index"),
+            ("notes", "events"),
+            ("notes", "search"),
+            ("notes", "index/reconcile"),
+            ("..", "a.md"),
+            ("Notes", "a.md"),
+        ] {
+            let args: ReadArgs =
+                serde_json::from_value(serde_json::json!({"kb": kb, "path": path})).unwrap();
+            let err = run(&c, args).await.unwrap_err();
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{kb} {path}"
+            );
+            assert!(err.message.starts_with("invalid "), "{kb} {path}: {err:?}");
+        }
+        server.verify().await;
     }
 }

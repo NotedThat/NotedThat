@@ -1,6 +1,6 @@
+use super::args::{parse_kb, parse_object_path};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -28,9 +28,10 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: WriteArgs,
 ) -> Result<CallToolResult, McpError> {
-    let kb_enc = encode_kb_slug(&args.kb);
+    let kb = parse_kb(&args.kb)?;
+    let path = parse_object_path(&args.path, "path")?;
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let url = client.api_v1_url(&["knowledgebases", kb.as_str(), path.as_str()]);
 
     let mut req = client
         .authorized(client.http.put(url))
@@ -172,6 +173,28 @@ mod tests {
         };
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn reserved_key_is_invalid_request_without_http_call() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = WriteArgs {
+            kb: "notes".into(),
+            path: "events".into(),
+            content: "x".into(),
+            if_match: None,
+            if_none_match: None,
+            mime_type: None,
+        };
+        let err = run(&c, args).await.unwrap_err();
+        assert!(err.message.contains("reserved"), "{err:?}");
         server.verify().await;
     }
 }
