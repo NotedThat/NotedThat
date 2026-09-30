@@ -57,6 +57,31 @@ async fn append_without_if_match_retries_two_put_precondition_failures() {
 }
 
 #[tokio::test]
+async fn append_without_if_match_retry_anchors_on_a_fresh_head() {
+    // A concurrent writer moves the ETag to `etag2` as the first PUT fails; a
+    // retry that reused `etag1` would 412 on every later GET and PUT.
+    let storage = TestStorage::with_script(
+        b"0123456789",
+        Script {
+            put_failures_remaining: 1,
+            advance_etag_on_put_failure: true,
+            ..Script::default()
+        },
+    )
+    .await;
+
+    run_patch(&storage, append(), conditionals(None), 1024)
+        .await
+        .expect("second attempt succeeds against the new ETag");
+
+    assert_eq!(storage.body().await, Bytes::from_static(b"0123456789ab"));
+    let calls = storage.calls();
+    assert_eq!(calls.head, 2);
+    assert_eq!(calls.get, 2);
+    assert_eq!(calls.put, 2);
+}
+
+#[tokio::test]
 async fn append_without_if_match_propagates_third_put_precondition_failure() {
     let storage = TestStorage::with_script(
         b"0123456789",
