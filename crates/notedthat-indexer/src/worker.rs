@@ -1,7 +1,8 @@
 //! `IndexerWorker` — keyed concurrent async task draining `IndexEvent`s into Qdrant.
 //!
-//! Behavior: up to `index_concurrency` files at once, events for one (kb, key)
-//! strictly in order, batched embedding, drain on shutdown.
+//! Behavior: up to `index_concurrency` files at once, started in the order they
+//! became ready; events for one (kb, key) strictly in order; batched embedding;
+//! a panic in a file's pipeline recorded as that file's failure; drain on shutdown.
 
 mod chunks;
 mod last_seen;
@@ -9,21 +10,23 @@ mod pipeline;
 mod points;
 mod snapshot;
 
+use crate::queue::QueuedEvent;
 use crate::{
     embedder::Embedder,
     event::IndexEvent,
     health::{IndexHealth, bound_summary},
     vector_store::{PointSelector, VectorStore},
 };
-use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
+use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use last_seen::LastSeen;
 use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
 use pipeline::{PipelineFailure, PipelineOutcome};
+use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Maximum time to continue draining already queued events after cancellation.
@@ -88,49 +91,10 @@ pub struct IndexerWorker {
 }
 
 impl IndexerWorker {
-    /// Build a worker around shared dependencies and an event receiver.
-    pub fn new(
-        storage: Arc<dyn Storage>,
-        embedder: Arc<dyn Embedder>,
-        store: Arc<dyn VectorStore>,
-        rx: mpsc::Receiver<IndexEvent>,
-        shutdown: CancellationToken,
-        batch_size: usize,
-    ) -> Self {
-        Self::with_receiver(
-            storage,
-            embedder,
-            store,
-            crate::IndexQueueReceiver::from_mpsc(rx),
-            shutdown,
-            batch_size,
-            NonZeroUsize::MIN,
-        )
-    }
-
-    /// Build a worker over bounded ingress.
+    /// Build a worker over the bounded ingress from [`crate::index_queue`],
+    /// running up to `index_concurrency` files at once.
     #[must_use]
-    pub fn new_queue(
-        storage: Arc<dyn Storage>,
-        embedder: Arc<dyn Embedder>,
-        store: Arc<dyn VectorStore>,
-        rx: crate::IndexQueueReceiver,
-        shutdown: CancellationToken,
-        batch_size: usize,
-        index_concurrency: NonZeroUsize,
-    ) -> Self {
-        Self::with_receiver(
-            storage,
-            embedder,
-            store,
-            rx,
-            shutdown,
-            batch_size,
-            index_concurrency,
-        )
-    }
-
-    fn with_receiver(
+    pub fn new(
         storage: Arc<dyn Storage>,
         embedder: Arc<dyn Embedder>,
         store: Arc<dyn VectorStore>,
@@ -178,70 +142,71 @@ impl IndexerWorker {
     }
 
     /// Run until the channel closes or shutdown is requested.
+    ///
+    /// # Panics
+    ///
+    /// A panic inside a file's pipeline is that file's failure and does not
+    /// reach here. A panic outside one — recording or publishing an outcome,
+    /// say from an event publisher that panics — ends the worker and
+    /// propagates, after the health view has been told the worker stopped.
     pub async fn run(mut self) {
+        // Whatever ends the loop, a return or an unwind, nothing drains the
+        // queue from here on, and the health view says so rather than
+        // reporting `indexing` forever (#255).
+        let _stopped = Stopped(Arc::clone(&self.health));
         self.run_loop().await;
-        set_in_flight(0);
-        // Whatever ended the loop, nothing drains the queue from here on, and
-        // the health view says so rather than reporting `indexing` forever.
-        self.health.worker_stopped();
     }
 
     async fn run_loop(&mut self) {
-        type Key = (KbSlug, ObjectPath);
-        let mut lanes: HashMap<Key, VecDeque<crate::queue::QueuedEvent>> = HashMap::new();
-        let mut active = HashSet::new();
+        let mut lanes = Lanes::default();
         let mut running: FuturesUnordered<BoxFuture<'static, Key>> = FuturesUnordered::new();
         let mut receiver_open = true;
         loop {
-            Self::start_ready(&mut lanes, &mut active, &mut running, self);
+            self.start_ready(&mut lanes, &mut running);
             set_in_flight(running.len());
-            if !receiver_open && lanes.is_empty() && running.is_empty() {
+            if !receiver_open && lanes.is_idle() && running.is_empty() {
                 break;
             }
             let rx = self.rx.as_mut().expect("running workers have receivers");
             tokio::select! {
                 () = self.shutdown.cancelled() => {
                     while let Ok(queued) = rx.try_recv() {
-                        lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued);
+                        lanes.accept(queued);
                     }
-                    if tokio::time::timeout(DRAIN_TIMEOUT, Self::drain(&mut lanes, &mut active, &mut running, self)).await.is_err() {
+                    if tokio::time::timeout(DRAIN_TIMEOUT, self.drain(&mut lanes, &mut running)).await.is_err() {
                         tracing::warn!(target: "notedthat::indexing", "indexer worker: drain timeout elapsed");
                     }
                     break;
                 }
                 Some(key) = running.next(), if !running.is_empty() => {
-                    active.remove(&key);
+                    lanes.finish(key);
                     set_in_flight(running.len());
                 }
                 queued = rx.recv(), if receiver_open => match queued {
-                    Some(queued) => lanes.entry((queued.event.kb().clone(), queued.event.object_key().clone())).or_default().push_back(queued),
+                    Some(queued) => lanes.accept(queued),
                     None => receiver_open = false,
                 },
             }
         }
     }
 
+    /// Start waiting files, oldest first, until every slot is taken.
     fn start_ready(
-        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
-        active: &mut HashSet<(KbSlug, ObjectPath)>,
-        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
-        worker: &Self,
+        &self,
+        lanes: &mut Lanes,
+        running: &mut FuturesUnordered<BoxFuture<'static, Key>>,
     ) {
-        while running.len() < worker.index_concurrency.get() {
-            let Some(key) = lanes.keys().find(|key| !active.contains(*key)).cloned() else {
+        while running.len() < self.index_concurrency.get() {
+            let Some((key, queued)) = lanes.start_next() else {
                 break;
             };
-            let event = lanes
-                .get_mut(&key)
-                .and_then(VecDeque::pop_front)
-                .expect("ready lane has event");
-            if lanes.get(&key).is_some_and(VecDeque::is_empty) {
-                lanes.remove(&key);
-            }
-            active.insert(key.clone());
-            let pipeline = worker.pipeline_context();
+            let pipeline = self.pipeline_context();
             running.push(Box::pin(async move {
-                let queued = event;
+                // Rebound whole: the block would otherwise capture only
+                // `queued.event` and drop the permit before the handler runs.
+                // Held here, the permit is released once the outcome has been
+                // recorded.
+                let queued = queued;
                 pipeline.handle(queued.event).await;
                 key
             }));
@@ -249,16 +214,15 @@ impl IndexerWorker {
     }
 
     async fn drain(
-        lanes: &mut HashMap<(KbSlug, ObjectPath), VecDeque<crate::queue::QueuedEvent>>,
-        active: &mut HashSet<(KbSlug, ObjectPath)>,
-        running: &mut FuturesUnordered<BoxFuture<'static, (KbSlug, ObjectPath)>>,
-        worker: &Self,
+        &self,
+        lanes: &mut Lanes,
+        running: &mut FuturesUnordered<BoxFuture<'static, Key>>,
     ) {
-        while !lanes.is_empty() || !running.is_empty() {
-            Self::start_ready(lanes, active, running, worker);
+        while !lanes.is_idle() || !running.is_empty() {
+            self.start_ready(lanes, running);
             set_in_flight(running.len());
             if let Some(key) = running.next().await {
-                active.remove(&key);
+                lanes.finish(key);
             }
         }
     }
@@ -295,32 +259,49 @@ impl IndexerWorker {
         // no `object.unindexed`, and `object.deleted` already said what
         // happened to the key.
         let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
-        let result = match event {
-            IndexEvent::Upsert {
-                kb,
-                object_key,
-                etag,
-                ..
-            } => {
-                self.remember(&kb, &object_key, Some(etag));
-                self.handle_upsert(kb, object_key, Skip::Never, None).await
-            }
-            IndexEvent::Refresh {
-                kb,
-                object_key,
-                origin,
-            } => {
-                self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
-                    .await
-            }
-            IndexEvent::Tombstone { kb, object_key } => {
-                self.remember(&kb, &object_key, None);
-                self.handle_tombstone(kb, object_key)
-                    .await
-                    .map(|()| PipelineOutcome::Tombstoned)
-                    .map_err(PipelineFailure::before_head)
+        let pipeline = async {
+            match event {
+                IndexEvent::Upsert {
+                    kb,
+                    object_key,
+                    etag,
+                    ..
+                } => {
+                    self.remember(&kb, &object_key, Some(etag));
+                    self.handle_upsert(kb, object_key, Skip::Never, None).await
+                }
+                IndexEvent::Refresh {
+                    kb,
+                    object_key,
+                    origin,
+                } => {
+                    self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
+                        .await
+                }
+                IndexEvent::Tombstone { kb, object_key } => {
+                    self.remember(&kb, &object_key, None);
+                    self.handle_tombstone(kb, object_key)
+                        .await
+                        .map(|()| PipelineOutcome::Tombstoned)
+                        .map_err(PipelineFailure::before_head)
+                }
             }
         };
+        // Only the pipeline is guarded: a panic in it becomes this file's
+        // failure and goes down the one outcome path below, so the file still
+        // gets exactly one outcome (#255). The outcome step itself is not
+        // guarded: a panic there may come after the outcome was recorded, and
+        // recording a second would break D73's one outcome per handler. It
+        // ends the worker instead, which `run` reports as stopped.
+        let result = AssertUnwindSafe(pipeline)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|payload| {
+                Err(PipelineFailure::before_head(format!(
+                    "file handler panicked: {}",
+                    panic_detail(&*payload)
+                )))
+            });
 
         // The health record is stamped before the outcome is published, so a
         // subscriber who reads `object.indexed` and then asks `/index` never
@@ -433,6 +414,79 @@ impl IndexerWorker {
             "tombstoned"
         );
         Ok(())
+    }
+}
+
+/// Marks the worker stopped on the health view when dropped, so the loop's
+/// every exit — a return or an unwind — is reported.
+struct Stopped(Arc<IndexHealth>);
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        set_in_flight(0);
+        self.0.worker_stopped();
+    }
+}
+
+/// The message a panic was raised with, when it was raised with one.
+fn panic_detail(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|detail| (*detail).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned())
+}
+
+/// The file an event is about. Events for one key run one at a time, in order.
+type Key = (KbSlug, ObjectPath);
+
+/// Accepted events waiting to run, one FIFO lane per key, and the order in
+/// which keys became ready to start.
+///
+/// A key is in `ready` exactly when its lane holds events and no handler for
+/// it is running, so a start is a pop from the front: files start in the
+/// order they became ready, whatever the map's iteration order (#254).
+#[derive(Default)]
+struct Lanes {
+    waiting: HashMap<Key, VecDeque<QueuedEvent>>,
+    active: HashSet<Key>,
+    ready: VecDeque<Key>,
+}
+
+impl Lanes {
+    /// Queue an accepted event behind any earlier one for the same key.
+    fn accept(&mut self, queued: QueuedEvent) {
+        let key = (queued.event.kb().clone(), queued.event.object_key().clone());
+        let lane = self.waiting.entry(key.clone()).or_default();
+        lane.push_back(queued);
+        if lane.len() == 1 && !self.active.contains(&key) {
+            self.ready.push_back(key);
+        }
+    }
+
+    /// Take the oldest ready key's next event and mark the key running.
+    fn start_next(&mut self) -> Option<(Key, QueuedEvent)> {
+        let key = self.ready.pop_front()?;
+        let lane = self.waiting.get_mut(&key).expect("a ready key has a lane");
+        let queued = lane.pop_front().expect("a ready lane holds an event");
+        if lane.is_empty() {
+            self.waiting.remove(&key);
+        }
+        self.active.insert(key.clone());
+        Some((key, queued))
+    }
+
+    /// A key's handler finished; it is ready again if more events wait for it.
+    fn finish(&mut self, key: Key) {
+        self.active.remove(&key);
+        if self.waiting.contains_key(&key) {
+            self.ready.push_back(key);
+        }
+    }
+
+    /// No event is waiting to start.
+    fn is_idle(&self) -> bool {
+        self.waiting.is_empty()
     }
 }
 

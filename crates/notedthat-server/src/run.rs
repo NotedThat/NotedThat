@@ -373,7 +373,7 @@ async fn build_infrastructure(
     };
 
     let worker_handle = tokio::spawn(
-        IndexerWorker::new_queue(
+        IndexerWorker::new(
             storage.clone(),
             embed_index,
             store.clone(),

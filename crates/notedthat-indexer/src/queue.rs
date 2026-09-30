@@ -24,9 +24,7 @@ pub fn index_queue(capacity: usize) -> (IndexQueueSender, IndexQueueReceiver) {
             },
             capacity,
         },
-        IndexQueueReceiver {
-            inner: ReceiverInner::Bounded(rx),
-        },
+        IndexQueueReceiver { rx },
     )
 }
 
@@ -47,7 +45,12 @@ enum SenderInner {
 }
 
 impl IndexQueueSender {
-    /// Adapt an existing bounded channel for test fixtures and legacy callers.
+    /// Adapt a raw channel for test fixtures that read what was enqueued.
+    ///
+    /// Nothing drains such a channel into a worker: [`IndexerWorker`] takes only
+    /// the [`IndexQueueReceiver`] from [`index_queue`].
+    ///
+    /// [`IndexerWorker`]: crate::IndexerWorker
     #[must_use]
     pub fn from_mpsc(tx: mpsc::Sender<IndexEvent>) -> Self {
         let capacity = tx.max_capacity();
@@ -79,7 +82,7 @@ impl IndexQueueSender {
                 };
                 tx.send(QueuedEvent {
                     event,
-                    _permit: Some(permit),
+                    _permit: permit,
                 })
                 .map_err(|error| mpsc::error::TrySendError::Closed(error.0.event))
             }
@@ -101,7 +104,7 @@ impl IndexQueueSender {
                 };
                 tx.send(QueuedEvent {
                     event,
-                    _permit: Some(permit),
+                    _permit: permit,
                 })
                 .map_err(|error| mpsc::error::SendError(error.0.event))
             }
@@ -140,33 +143,17 @@ impl From<&mpsc::Sender<IndexEvent>> for IndexQueueSender {
 }
 
 /// Receiver owned by the index scheduler.
+///
+/// It is only ever built by [`index_queue`], so every event it yields carries
+/// the permit that bounds the worker's lanes (#257).
 pub struct IndexQueueReceiver {
-    inner: ReceiverInner,
-}
-
-enum ReceiverInner {
-    Bounded(mpsc::UnboundedReceiver<QueuedEvent>),
-    Plain(mpsc::Receiver<IndexEvent>),
+    rx: mpsc::UnboundedReceiver<QueuedEvent>,
 }
 
 impl IndexQueueReceiver {
-    /// Adapt a raw channel for compatibility with embedders and test fixtures.
-    #[must_use]
-    pub fn from_mpsc(rx: mpsc::Receiver<IndexEvent>) -> Self {
-        Self {
-            inner: ReceiverInner::Plain(rx),
-        }
-    }
-
     /// Receive the next event, retaining its ingress permit until dropped.
     pub async fn recv(&mut self) -> Option<QueuedEvent> {
-        match &mut self.inner {
-            ReceiverInner::Bounded(rx) => rx.recv().await,
-            ReceiverInner::Plain(rx) => rx.recv().await.map(|event| QueuedEvent {
-                event,
-                _permit: None,
-            }),
-        }
+        self.rx.recv().await
     }
 
     /// Receive an already available event without waiting.
@@ -177,13 +164,7 @@ impl IndexQueueReceiver {
     /// waiting, and [`TryRecvError::Disconnected`](mpsc::error::TryRecvError::Disconnected)
     /// when every sender is gone.
     pub fn try_recv(&mut self) -> Result<QueuedEvent, mpsc::error::TryRecvError> {
-        match &mut self.inner {
-            ReceiverInner::Bounded(rx) => rx.try_recv(),
-            ReceiverInner::Plain(rx) => rx.try_recv().map(|event| QueuedEvent {
-                event,
-                _permit: None,
-            }),
-        }
+        self.rx.try_recv()
     }
 }
 
@@ -191,5 +172,5 @@ impl IndexQueueReceiver {
 pub struct QueuedEvent {
     /// The accepted operation.
     pub event: IndexEvent,
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: OwnedSemaphorePermit,
 }
