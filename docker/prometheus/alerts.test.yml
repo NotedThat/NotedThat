@@ -1,0 +1,144 @@
+# Unit tests for alerts.yml: `promtool test rules alerts.test.yml`.
+#
+# Each alert tested here has a case that fires and one that must stay quiet.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # The worker's gauge drops to 0 for a moment during a graceful shutdown; only
+  # a worker that stays down pages.
+  - interval: 30s
+    input_series:
+      - series: 'notedthat_index_worker_alive{instance="a"}'
+        values: '1 0 1 1 1 1 1 1'
+      - series: 'notedthat_index_worker_alive{instance="b"}'
+        values: '1 1 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: NotedThatIndexWorkerStopped
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: NotedThatIndexWorkerStopped
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: b
+            exp_annotations:
+              summary: "The indexer worker has stopped"
+              description: "Writes still succeed, but nothing they store is indexed (INDEX_QUEUE_CLOSED) until the process restarts."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexworkerstopped
+
+  # A watch lost once fires at once; a server that never lost one exports no
+  # series and stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_fs_watch_lost_total{instance="a",reason="max_files_watch"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: NotedThatFsWatchLost
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: NotedThatFsWatchLost
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+              reason: max_files_watch
+            exp_annotations:
+              summary: "A filesystem watch was lost (max_files_watch)"
+              description: "FS_WATCH_LOST: changes made outside NotedThat below new directories may go unnoticed until the next comparison."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatfswatchlost
+      # Ten minutes after the last loss the window no longer holds it.
+      - eval_time: 19m
+        alertname: NotedThatFsWatchLost
+        exp_alerts: []
+
+  # Storage unreachable pages only once it has lasted five minutes; an `error`
+  # outcome (a caller's mistake) never does.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="probe",outcome="unavailable"}'
+        values: '0+1x15'
+      - series: 'notedthat_storage_operations_total{instance="a",backend="s3",op="get_object",outcome="error"}'
+        values: '0+5x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NotedThatStorageUnavailable
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: NotedThatStorageUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: a
+              backend: s3
+              op: probe
+            exp_annotations:
+              summary: "The s3 storage backend is unreachable"
+              description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
+
+  # A single burst of refusals is backpressure doing its job; refusals that
+  # keep coming for ten minutes are an indexer that cannot keep up.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_index_events_refused_total{instance="a",kb="burst"}'
+        values: '0 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3'
+      - series: 'notedthat_index_events_refused_total{instance="a",kb="behind"}'
+        values: '0+2x23'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NotedThatIndexQueueRefusing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+              kb: behind
+            exp_annotations:
+              summary: "Writes to behind are being refused with INDEX_QUEUE_FULL"
+              description: "The indexing queue has been full on and off for 10 minutes, so writes answer 503 with Retry-After. The indexer is not keeping up."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexqueuerefusing
+
+  # Every 503 on /mcp here is the in-flight cap, so no session was refused.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_http_requests_total{instance="a",surface="mcp",route="/mcp",method="POST",status="503"}'
+        values: '0+4x15'
+      - series: 'notedthat_http_requests_refused_total{instance="a",surface="mcp",route="/mcp",reason="in_flight"}'
+        values: '0+4x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NotedThatMcpSessionsRefused
+        exp_alerts: []
+
+  # 503s beyond the in-flight cap's are the session cap; with no in-flight
+  # refusals at all that series does not exist, and the alert must still fire.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_http_requests_total{instance="a",surface="mcp",route="/mcp",method="POST",status="503"}'
+        values: '0+4x15'
+      - series: 'notedthat_http_requests_total{instance="b",surface="mcp",route="/mcp",method="POST",status="503"}'
+        values: '0+4x15'
+      - series: 'notedthat_http_requests_refused_total{instance="b",surface="mcp",route="/mcp",reason="in_flight"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NotedThatMcpSessionsRefused
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+            exp_annotations:
+              summary: "MCP clients are being refused a session"
+              description: "/mcp has answered 503 outside the in-flight cap for 5 minutes, most likely because NOTEDTHAT_MCP_MAX_SESSIONS is reached."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsrefused
+          - exp_labels:
+              severity: warning
+              instance: b
+            exp_annotations:
+              summary: "MCP clients are being refused a session"
+              description: "/mcp has answered 503 outside the in-flight cap for 5 minutes, most likely because NOTEDTHAT_MCP_MAX_SESSIONS is reached."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsrefused

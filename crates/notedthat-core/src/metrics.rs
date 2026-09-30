@@ -591,6 +591,53 @@ mod tests {
         assert!(!kind.contains(':'), "{kind} looks like it carries a URL");
     }
 
+    /// The shipped alerting rules name metrics by string (#186). A metric
+    /// renamed here and not there leaves an alert that can never fire and
+    /// that nothing reports, so every name the rules use must be in the
+    /// catalogue. Read at run time rather than with `include_str!`: the file
+    /// lives outside this crate, and `cargo package` would refuse the path.
+    #[test]
+    fn every_metric_the_alerting_rules_name_exists() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docker/prometheus/alerts.yml"
+        );
+        let file = std::fs::read_to_string(path)
+            .unwrap_or_else(|err| panic!("the alerting rules at {path}: {err}"));
+        // YAML comments name crates and paths, not series.
+        let rules: String = file
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut named = 0;
+        for (start, _) in rules.match_indices("notedthat_") {
+            // Not a suffix of some other identifier, e.g. `job="notedthat"`.
+            if rules[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let token: String = rules[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            let metric = ["_bucket", "_count", "_sum"]
+                .iter()
+                .find_map(|suffix| token.strip_suffix(suffix))
+                .filter(|base| ALL_NAMES.contains(base))
+                .unwrap_or(&token);
+            assert!(
+                ALL_NAMES.contains(&metric),
+                "docker/prometheus/alerts.yml names {token}, which is not in the catalogue"
+            );
+            named += 1;
+        }
+        assert!(named > 0, "no metric named in {path}");
+    }
+
     #[test]
     fn ok_is_ok() {
         assert_eq!(storage_outcome(&Ok::<_, StorageError>(())), outcome::OK);

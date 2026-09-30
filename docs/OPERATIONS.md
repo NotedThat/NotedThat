@@ -10,13 +10,12 @@ What this document adds is the part that lives in no single place: the reverse p
 what a `503` means, what to back up, what one instance holds, what a release may break, and what
 NotedThat does not do.
 
-**Monitoring is not covered here, and what exists depends on your release.** Through v0.10.0
-there is no metrics endpoint, and the operational signals are `/readyz`, the per-knowledge-base
-index endpoint and the log codes — all named below where they matter. From the release that
-carries [#164](https://github.com/NotedThat/NotedThat/issues/164) there is also `GET /metrics` in
-the Prometheus exposition format, on the separate listener described below; its settings and its
-metric catalogue are `docs/CONFIGURATION.md`'s, not this guide's. Alerting rules on top of either
-are still to be written.
+**Monitoring** is [its own section below](#monitoring): the alerting rules that ship in
+`docker/prometheus/alerts.yml`, and a runbook for each. They need `GET /metrics`, which exists from
+the release that carries [#164](https://github.com/NotedThat/NotedThat/issues/164); through
+v0.10.0 the operational signals are `/readyz`, the per-knowledge-base index endpoint and the log
+codes, all named below where they matter. The metrics settings and catalogue are
+`docs/CONFIGURATION.md`'s ([Metrics](CONFIGURATION.md#metrics)), not this guide's.
 
 ---
 
@@ -537,6 +536,181 @@ credential-bearing URLs, goes to the log instead.
 
 ---
 
+## Monitoring
+
+`docker/prometheus/alerts.yml` is a Prometheus rules file with one alert per condition this guide
+and [`docs/CONFIGURATION.md`](CONFIGURATION.md) call worth acting on. Each alert carries a
+`runbook_url` pointing at its heading below.
+
+### Wiring it up
+
+- **Compose:** `docker-compose.metrics.yml` mounts the file and `docker/prometheus/prometheus.yml`
+  loads it, so `docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d` evaluates
+  every rule. The alerts show under *Alerts* in Prometheus' UI on `127.0.0.1:9090`.
+- **Your own Prometheus:** copy `alerts.yml` next to your configuration and list it under
+  `rule_files`. The rules assume a scrape job named `notedthat` (only [NotedThatDown](#notedthatdown)
+  uses it) and aggregate by `instance`, so several replicas alert separately.
+- **Routing** is yours. No Alertmanager ships; add an `alerting:` block to your configuration and
+  route on the `severity` label:
+  - `critical` means the instance cannot serve requests or cannot index. Page someone.
+  - `warning` means it serves, but something is degraded or falling behind. A ticket or a chat
+    message.
+
+The rules are checked by `promtool` in CI, with unit tests in `docker/prometheus/alerts.test.yml`
+([DEVELOPMENT.md](../DEVELOPMENT.md#alerting-rules)). A series only exists once something has
+incremented it, so a healthy server exports no `notedthat_fs_watch_lost_total` at all; the rules
+are written so that an absent series is quiet, not firing.
+
+### NotedThatDown
+
+Prometheus has not scraped the server for two minutes.
+
+- Is the process running? `/healthz` on the main listener answers without touching a backend.
+- Is the metrics listener on? It is off unless `NOTEDTHAT_METRICS_ENABLED=true`, and it binds
+  `127.0.0.1:9090` by default, which another container or host cannot reach
+  ([Metrics](CONFIGURATION.md#metrics)).
+- While this fires, every other alert here is blind.
+
+### NotedThatStorageUnavailable
+
+The object store is not answering, for longer than five minutes. `/readyz` answers `503`
+(`unreachable` or `timeout`) and `READINESS_LOST` is in the log with the backend's own error.
+
+- **`s3`:** check the endpoint, credentials and network from the server's host. Reads and writes
+  fail until it is back; nothing is lost that a client has not already been told failed.
+- **`fs`:** check the mount under `NOTEDTHAT_FS_ROOT`. A probe that hangs on a dead mount is waited
+  for, not abandoned, so this may fire late or not at all while `/readyz` reports `timeout`.
+
+Recovery needs no restart; `READINESS_RESTORED` is logged when the probe answers again.
+
+### NotedThatBucketMissing
+
+The backend answers, but a bucket or directory that existed at startup is gone. `/readyz` stays
+`200` and reports storage `degraded` with `not_found`
+([Readiness](CONFIGURATION.md#readiness)); that knowledge base answers `404` on every surface and
+the others keep serving.
+
+Nothing re-creates it while the process runs. If it was deleted by mistake, restore it from backup
+([Restore](#restore)) and restart; the restart provisions an empty one if there is nothing to
+restore.
+
+### NotedThatVectorStoreUnavailable
+
+Qdrant is not answering, for longer than five minutes. Search fails and indexing stalls;
+`/readyz` answers `503`. Writes are still stored, and every write that reached the index queue in
+the meantime is logged as `INDEXING_FAILED`.
+
+Bring Qdrant back. Objects that failed to index are recovered by the next reconciliation pass — on
+`fs` a restart runs one, on `s3` a restart or `POST …/index/reconcile`
+([S3 reconciliation](CONFIGURATION.md#s3-reconciliation)).
+
+### NotedThatEmbedderFailing
+
+More than one embedding call in ten has failed for ten minutes. The `phase` label says whether it
+is indexing (`index`) or search (`query`). The embedding endpoint is not part of `/readyz`, so this
+is the only place it shows.
+
+`notedthat_embedding_errors_total` breaks the failures down by `error_kind`: `transport` or `http`
+is the endpoint (reachability, rate limits, credentials); `dimension_mismatch` or
+`count_mismatch` means the model behind the endpoint changed — see
+[Changing the embedding model](CONFIGURATION.md#changing-the-embedding-model).
+
+### NotedThatEventsDisconnected
+
+The NATS connection has been down for two minutes. `/readyz` answers `503` (`disconnected`), and
+every write answers `503 backend_unavailable` with `Retry-After: 5`, because a write whose event
+cannot be published fails ([NATS connection](CONFIGURATION.md#nats-connection)).
+
+The client reconnects on its own; fix the broker or the network between them. No restart is
+needed, and `notedthat_nats_reconnects_total` counts the recoveries.
+
+### NotedThatConditionalWritesNotEnforced
+
+At startup a knowledge base's bucket stored a `PUT` whose precondition did not hold, and the server
+was allowed to start anyway by `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true`. Concurrent
+edits to one object can silently overwrite each other ([Known limitations](#known-limitations),
+[S3 conditional writes](CONFIGURATION.md#s3-conditional-writes)).
+
+This does not clear while the process runs. It is resolved by moving to a backend that enforces
+conditional writes, or accepted as a known risk by silencing the alert.
+
+### NotedThatIndexQueueRefusing
+
+Writes to one knowledge base have kept being refused with `INDEX_QUEUE_FULL` for ten minutes. A
+short burst is normal ([`503` is normal](#503-is-normal)); refusals that keep coming mean the
+indexer consumes slower than clients write.
+
+Check whether a startup or requested reconciliation pass is running (it floods the queue by
+design), then embedder throughput (`notedthat_embedding_duration_seconds`) and Qdrant ingestion
+(`notedthat_vector_store_operation_duration_seconds`), in that order. Queue capacity is not
+tunable; `NOTEDTHAT_INDEX_CONCURRENCY` is ([Indexing behavior](CONFIGURATION.md#indexing-behavior)).
+
+### NotedThatIndexQueueNearlyFull
+
+The queue has been more than 80% full for ten minutes, so refusals are close. Same checks as
+[NotedThatIndexQueueRefusing](#notedthatindexqueuerefusing); this is the early warning.
+
+### NotedThatIndexingFailures
+
+The indexer gave up on at least one object in the last fifteen minutes, logged as
+`INDEXING_FAILED`. The object is stored and readable, but not searchable, and the knowledge base's
+index endpoint reports `failed` ([the endpoint](API.md#get-apiv1knowledgebaseskb_slugindex)).
+
+The log line names the object and the cause. If Qdrant or the embedder was down, the alerts above
+fired too, and the next reconciliation pass or write of the object recovers it. If one object keeps
+failing on its own, it is the object — read the cause.
+
+### NotedThatIndexWorkerStopped
+
+The indexer's loop has ended outside a shutdown. Writes still succeed, but nothing they store is
+indexed from here on: each one logs `INDEX_QUEUE_CLOSED` instead. The log around the time the
+worker stopped says why. Restart the process; the startup reconciliation pass catches up whatever
+was missed (on `s3`, while `NOTEDTHAT_S3_RECONCILE` is on).
+
+### NotedThatFsWatchLost
+
+`FS_WATCH_LOST` on the `notedthat::watch` target: a directory watch could not be kept, so changes
+made outside NotedThat below newly created directories may go unnoticed until the next comparison.
+The `reason` label says which: `max_files_watch` is the inotify limit, `error` is anything else
+([Operating it](CONFIGURATION.md#operating-it)).
+
+For `max_files_watch`, raise `fs.inotify.max_user_watches` as that section shows, then restart:
+the startup pass compares the whole tree. Writes through NotedThat itself are indexed either way.
+
+### NotedThatReconcileIncomplete
+
+A reconciliation pass over a knowledge base ended before comparing everything, so changes made
+outside NotedThat may be missing from the index. The `cause` label says which pass: `startup`,
+`rescan` (`fs`) or `requested` (`s3`).
+
+The log says why: `S3_RECONCILE_SKIPPED` (usually the Qdrant collection is gone; restart) or
+`S3_RECONCILE_INCOMPLETE` (the bucket could not be listed; fix access and request a pass) on the
+`notedthat::reconcile` target ([S3 reconciliation](CONFIGURATION.md#s3-reconciliation)), or a
+rescan that could not read the index on `fs`. A skipped pass and an incomplete one look the same
+to this alert.
+
+### NotedThatMcpSessionsRefused
+
+`/mcp` has kept answering `503` for reasons other than the in-flight cap, which almost always
+means the session cap, `NOTEDTHAT_MCP_MAX_SESSIONS`, is reached. New clients cannot `initialize`
+until a session ends or idles out.
+
+A client that re-`initialize`s per request is the usual cause
+([Capacity](#capacity-what-one-instance-holds), [MCP session ids](#mcp-session-ids)). Otherwise
+raise the cap, weighing [what a session costs](CONFIGURATION.md#what-a-session-costs).
+
+### Not alerted on yet
+
+- **Search latency.** There is no budget to alert against until
+  [#177](https://github.com/NotedThat/NotedThat/issues/177) sets one. For a dashboard, the P95 is
+  `histogram_quantile(0.95, sum by (le) (rate(notedthat_search_duration_seconds_bucket[5m])))`.
+- **MCP sessions near the cap.** No gauge of open sessions exists, so
+  [NotedThatMcpSessionsRefused](#notedthatmcpsessionsrefused) fires at the cap, not near it.
+- **A readiness probe that hangs.** It is reported by `/readyz` as `timeout` but records no metric
+  until it answers, so poll `/readyz` itself if that matters to you.
+
+---
+
 ## Known limitations
 
 These are properties of NotedThat today, not bugs, and an operator should know them before
@@ -590,7 +764,8 @@ committing to the deployment.
 - **Monitoring depends on the release.** Through v0.10.0 there is no metrics endpoint, and
   `/readyz`, the per-knowledge-base index endpoint and the log codes are what exists;
   [#164](https://github.com/NotedThat/NotedThat/issues/164) adds `GET /metrics` on its own
-  loopback listener. No alerting rules ship either way.
+  loopback listener, and the alerting rules in [Monitoring](#monitoring) need it. Search latency
+  and the MCP session count are not alerted on yet ([below](#not-alerted-on-yet)).
 - **Other things NotedThat does not do:** no application rate limiter; no reload signal, so access
   rules need a restart; no object lock, retention or legal hold, and WebDAV `LOCK` is refused; no
   full reindex, so changing the embedding model has its own procedure; no admin API for creating
