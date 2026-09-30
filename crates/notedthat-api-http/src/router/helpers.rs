@@ -52,7 +52,7 @@ pub(crate) fn kb_not_found(slug: &str) -> ApiError {
 }
 
 pub(super) fn parse_path(raw: &str) -> Result<ObjectPath, ApiError> {
-    ObjectPath::try_from_str(raw).map_err(ApiError::Core)
+    ObjectPath::try_object_key(raw).map_err(ApiError::Core)
 }
 
 pub(super) fn body_limit_usize(max_body_size: u64) -> usize {

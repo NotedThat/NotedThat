@@ -1,6 +1,6 @@
+use super::args::{parse_kb, parse_object_path};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -31,8 +31,9 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: AppendArgs,
 ) -> Result<CallToolResult, McpError> {
-    let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
+    let kb = parse_kb(&args.kb)?;
+    let path = parse_object_path(&args.path, "path")?;
+    let url = client.api_v1_url(&["knowledgebases", kb.as_str(), path.as_str()]);
 
     let mut req = client
         .authorized(client.http.patch(url))

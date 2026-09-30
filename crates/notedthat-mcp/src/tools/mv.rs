@@ -1,7 +1,6 @@
+use super::args::{parse_kb, parse_object_path};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
-use notedthat_core::ObjectPath;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -21,16 +20,9 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: MoveArgs,
 ) -> Result<CallToolResult, McpError> {
-    let from = ObjectPath::try_from(args.from.as_str()).map_err(|error| {
-        McpError::from(McpToolError::InvalidRequest(format!(
-            "invalid from path: {error}"
-        )))
-    })?;
-    let to = ObjectPath::try_from(args.to.as_str()).map_err(|error| {
-        McpError::from(McpToolError::InvalidRequest(format!(
-            "invalid to path: {error}"
-        )))
-    })?;
+    let kb = parse_kb(&args.kb)?;
+    let from = parse_object_path(&args.from, "from path")?;
+    let to = parse_object_path(&args.to, "to path")?;
     if from == to {
         return Err(McpToolError::InvalidRequest(
             "from and to paths resolve to the same object".into(),
@@ -38,9 +30,8 @@ pub(super) async fn run(
         .into());
     }
 
-    let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
-    let get_url = client.api_v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
+    let get_url = client.api_v1_url(&["knowledgebases", kb.as_str(), from.as_str()]);
     let mut get_req = client.authorized(client.http.get(get_url));
     if let Some(ref if_match) = args.if_match {
         get_req = get_req.header("If-Match", if_match.as_str());
@@ -79,7 +70,7 @@ pub(super) async fn run(
         })
         .map_err(McpError::from)?;
 
-    let put_url = client.api_v1_url(&["knowledgebases", &kb_enc, to.as_str()]);
+    let put_url = client.api_v1_url(&["knowledgebases", kb.as_str(), to.as_str()]);
     let mut put_req = client.authorized(client.http.put(put_url)).body(body_bytes);
     if let Some(ct) = content_type {
         put_req = put_req.header("Content-Type", ct);
@@ -87,7 +78,7 @@ pub(super) async fn run(
     let put_resp = put_req.send().await.map_err(McpToolError::Transport)?;
     map_response(put_resp).await.map_err(McpError::from)?;
 
-    let del_url = client.api_v1_url(&["knowledgebases", &kb_enc, from.as_str()]);
+    let del_url = client.api_v1_url(&["knowledgebases", kb.as_str(), from.as_str()]);
     let mut del_req = client.authorized(client.http.delete(del_url));
     if let Some(etag) = source_etag {
         del_req = del_req.header("If-Match", etag);

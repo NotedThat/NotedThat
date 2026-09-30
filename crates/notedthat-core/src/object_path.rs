@@ -13,6 +13,25 @@ pub fn is_internal_path(path: &str) -> bool {
     path == ".notedthat" || path.starts_with(".notedthat/")
 }
 
+/// Keys that name a knowledge-base-level API route rather than an object.
+///
+/// Each is a static route beside the object catch-all
+/// `/knowledgebases/{kb_slug}/{*object_path}`, and the router prefers the
+/// static one, so an object stored under exactly one of these keys could never
+/// be read, written or deleted over HTTP or MCP (#279). Every surface refuses
+/// to create or address an *object* under one of them, through
+/// [`ObjectPath::try_object_key`] or [`ObjectPath::is_reserved`], and the
+/// indexer takes one out of the search index rather than indexing it.
+///
+/// Only the exact key is reserved, never a folder: `search/results.md` is an
+/// ordinary object, so the folder `search/` is an ordinary folder, and
+/// [`ObjectPath::try_from_str`] (which parses folder and listing prefixes too)
+/// accepts all four. Nested keys (`notes/index`) and look-alikes (`index.md`)
+/// are ordinary objects.
+///
+/// The api-http router tests check this list against its route table.
+pub const RESERVED_KEYS: &[&str] = &["index", "index/reconcile", "events", "search"];
+
 /// A normalized object path within a knowledge-base bucket.
 ///
 /// Rules (D40, §6.12 path normalization):
@@ -23,6 +42,9 @@ pub fn is_internal_path(path: &str) -> bool {
 /// - Backslash (`\`) and NUL (`\0`) characters are rejected.
 /// - Case and Unicode are preserved verbatim.
 /// - Spaces are valid (S3 permits them).
+///
+/// A [`RESERVED_KEYS`] entry is a valid `ObjectPath`, because it can name a
+/// folder; [`ObjectPath::try_object_key`] also refuses it as an object key.
 ///
 /// The stored form has no leading slash and uses `/` as the separator.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -74,6 +96,35 @@ impl ObjectPath {
             }
         }
         Ok(Self(s.to_string()))
+    }
+
+    /// Validate and construct the key of an object to create or address.
+    ///
+    /// [`ObjectPath::try_from_str`], plus refusing the [`RESERVED_KEYS`],
+    /// compared exactly and case-sensitively after the leading `/` is
+    /// stripped. Folder and listing prefixes go through `try_from_str`
+    /// instead, so a folder named `search` stays usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for any path [`ObjectPath::try_from_str`]
+    /// refuses, or when the path is one of the [`RESERVED_KEYS`].
+    pub fn try_object_key(input: &str) -> Result<Self, Error> {
+        let path = Self::try_from_str(input)?;
+        if path.is_reserved() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "path '{path}' is reserved: it names an API route of the knowledge base"
+                ),
+            });
+        }
+        Ok(path)
+    }
+
+    /// Whether this is one of the [`RESERVED_KEYS`], which no object may have.
+    #[must_use]
+    pub fn is_reserved(&self) -> bool {
+        RESERVED_KEYS.contains(&self.0.as_str())
     }
 
     /// Returns the normalized path as a `&str` (no leading slash).
@@ -255,5 +306,39 @@ mod tests {
         let s = String::from("foo/bar.md");
         let p = ObjectPath::try_from(s).unwrap();
         assert_eq!(p.as_ref(), "foo/bar.md");
+    }
+
+    #[test]
+    fn test_try_object_key_err_reserved_key() {
+        for path in ["index", "/index", "index/reconcile", "events", "search"] {
+            assert!(ObjectPath::try_object_key(path).is_err(), "{path}");
+            // Still a valid path: it can name a folder (`search/a.md`).
+            let parsed = ObjectPath::try_from(path).unwrap();
+            assert!(parsed.is_reserved(), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_try_object_key_err_invalid_path() {
+        for path in ["", "a//b", "../a", "a\\b"] {
+            assert!(ObjectPath::try_object_key(path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_try_object_key_reserved_look_alikes_valid() {
+        for path in [
+            "index.md",
+            "Index",
+            "SEARCH",
+            "notes/index",
+            "notes/events",
+            "index/other",
+            "search/results.md",
+            "events.md",
+        ] {
+            let parsed = ObjectPath::try_object_key(path).unwrap();
+            assert!(!parsed.is_reserved(), "{path}");
+        }
     }
 }

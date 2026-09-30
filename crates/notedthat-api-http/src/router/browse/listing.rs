@@ -126,7 +126,9 @@ fn is_visible(key: &str, filter: &KeyFilter<'_>) -> bool {
     // so it should not exist — but if one does, its link would resolve out of
     // the knowledge base in the browser. Dropping it here is what makes the
     // link-safety argument in `super::links` hold.
-    if ObjectPath::try_from_str(key).is_err() {
+    // A reserved key (#279) names an API route, so its object link could
+    // never be followed; the folder of the same name is still listed.
+    if ObjectPath::try_object_key(key).is_err() {
         tracing::debug!(key, "browse: omitting an unrepresentable object key");
         return false;
     }

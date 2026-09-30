@@ -100,6 +100,11 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
+    // Only the destination: an object already stored under a reserved key
+    // (before #279) can still be copied or moved away from it.
+    if dst_obj.is_reserved() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     if src_kb != dst_kb {
         return (
             StatusCode::FORBIDDEN,

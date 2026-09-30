@@ -311,8 +311,10 @@ async fn resolve_ambiguous(
     }
 
     // Probe as an object only when the caller may read one, so a read-denied
-    // object and an absent object are indistinguishable here.
-    if access.allows(Verb::Read, path.as_str())
+    // object and an absent object are indistinguishable here. A reserved key
+    // is never an object (#279), only possibly a folder.
+    if !path.is_reserved()
+        && access.allows(Verb::Read, path.as_str())
         && state
             .storage
             .head_object(

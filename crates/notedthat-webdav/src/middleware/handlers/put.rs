@@ -37,6 +37,10 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
         DavTarget::Root | DavTarget::KbRoot(_) => return StatusCode::BAD_REQUEST.into_response(),
         DavTarget::NonDeclaredKb => return StatusCode::FORBIDDEN.into_response(),
     };
+    // A folder may be named `search`; a file may not (#279).
+    if path.is_reserved() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let content_type = req
         .headers()
         .get("content-type")

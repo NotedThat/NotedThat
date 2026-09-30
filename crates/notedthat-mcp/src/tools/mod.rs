@@ -1,6 +1,7 @@
 //! HTTP-backed MCP tool router.
 
 mod append;
+mod args;
 mod delete;
 mod edit;
 mod index_status;

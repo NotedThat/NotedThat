@@ -35,6 +35,13 @@ ask for a lock and are unaffected. A few insist on one before they will save:
 
 Everything below is known to work read-write.
 
+Four names are refused at the top of a knowledge base, because the HTTP API uses them for its
+own routes: `index`, `events` and `search` as files, and the file `reconcile` inside a folder named
+`index`. Saving, copying or moving a file to one returns `400 Bad Request`. Folders with
+these names are ordinary folders, and the same names deeper in a folder, or with an extension
+(`index.md`), are fine. A file saved under one of these names before the rule existed can
+still be opened, moved to a new name or deleted.
+
 ## Linux
 
 **GNOME Files (Nautilus)** — *Other Locations* → *Connect to Server*, or `Ctrl+L` in any

@@ -512,6 +512,32 @@ The following features are intentionally out of scope:
 
 ---
 
+## Reserved object keys
+
+Four keys at the root of a knowledge base name routes rather than objects: `index`,
+`index/reconcile`, `events` and `search`. Each is a literal sibling of the object route
+`/api/v1/knowledgebases/{kb_slug}/{path}`, and the literal route wins, so an object stored
+under one of them could never be read, replaced or deleted through the API. They are
+therefore not valid object keys on any surface: the API answers `400 invalid_request` when
+one reaches the object route (e.g. as `%69ndex`), WebDAV refuses to `PUT`, `COPY` or `MOVE`
+to one, and the MCP tools refuse one before calling the API. A file created under one of
+these names directly in an `fs` directory or S3 bucket is never indexed.
+
+Only the exact key is reserved, never a folder. The match is exact and case-sensitive, after
+the one leading `/` is stripped. A folder of the same name (`search/results.md`) is an
+ordinary folder, which WebDAV and `/browse` handle like any other, and nested keys (`notes/index`) and look-alikes (`index.md`, `Search`) are ordinary objects.
+
+**Upgrading.** An object stored under one of these keys by an earlier release stays in
+storage, and its key still appears in `list` results (not on `/browse` or in MCP
+`resources/list`). The API and MCP refuse to read or delete it, but WebDAV can still read it,
+`MOVE` it to a new name or `DELETE` it, and either of those also removes its search entry. If
+you rename it in the bucket or directory instead, its search entry is removed on `fs` by the
+watcher, and on `s3` by the next reconcile pass (at startup, or `POST …/index/reconcile`). A
+pass removes any search entry for a reserved key, even while the object is still there, since
+no object may be indexed under one.
+
+---
+
 ## Routes
 
 ### GET /healthz
@@ -1605,8 +1631,8 @@ would produce (the transcription worker below skips an mp3 whose `.md` already e
 Nothing suppresses that server-side; filter by `mime` (a transcription worker subscribes to
 `mime=audio/*` and writes `text/markdown`) or by `prefix`, or compare `etag`.
 
-**Naming.** `events` at the root of a knowledge base is a route, like `search`: an object stored
-under exactly that key is not reachable through `GET /api/v1/knowledgebases/{kb_slug}/events`.
+**Naming.** `events` at the root of a knowledge base is a route, like `search`, so it is a
+[reserved object key](#reserved-object-keys): no object can be stored under exactly that key.
 
 **Example** — transcribe every mp3 uploaded under `inbox/` and write the text back as a document
 beside it (`examples/events/transcribe-mp3.sh` is the complete script):
@@ -1963,6 +1989,7 @@ The following decoded values are rejected:
 - **Decoded NUL byte** — e.g., `%00` (filesystem safety)
 - **Non-UTF-8 percent sequences** — e.g., `%FF%FE` (strict UTF-8 validation)
 - **Double leading slash** — e.g., `//notes/file.md` (path normalization)
+- **A [reserved object key](#reserved-object-keys)** — `index`, `index/reconcile`, `events` or `search` at the root of a knowledge base, as a `PUT`, `COPY` or `MOVE` destination (a folder of that name is fine)
 
 #### Allowed decoded values
 
@@ -2529,6 +2556,8 @@ answer `method_not_found` (`-32601`).
 ### Path Encoding
 
 Object paths are percent-encoded per RFC 3986 before being placed in URLs. The `/` separator within a path is encoded as `%2F`. Example: `docs/rfc/7231.md` → `docs%2Frfc%2F7231.md`.
+
+Before building that URL, every tool and `resources/read` checks the `kb` slug and each object path against the API's own rules: a malformed slug, a path with an empty, `.` or `..` segment, a backslash or NUL, or a [reserved object key](#reserved-object-keys) is `invalid_request` without an API call.
 
 ### Error Codes
 

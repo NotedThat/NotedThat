@@ -46,7 +46,7 @@ pub use events::{
 };
 pub use kb::{KbDetails, KbManifest, ManifestEmbedding, ObjectMeta, slug_kb_details};
 pub use listing::{Rollup, roll_up};
-pub use object_path::{ObjectPath, is_internal_path};
+pub use object_path::{ObjectPath, RESERVED_KEYS, is_internal_path};
 pub use preconditions::{
     ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
     matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range, unix_seconds,

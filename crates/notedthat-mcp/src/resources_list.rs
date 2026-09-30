@@ -4,6 +4,7 @@ use crate::{
     path::encode_object_path,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use notedthat_core::ObjectPath;
 use notedthat_core::kb::ObjectMeta;
 use rmcp::{
     ErrorData as McpError,
@@ -41,9 +42,13 @@ pub async fn list_resources(
         position.backend_cursor.as_deref(),
     )
     .await?;
+    // A key `resources/read` would refuse is not advertised: a reserved key
+    // (#279) left from an earlier release, or one S3 accepts and `ObjectPath`
+    // does not, such as a `docs/` directory marker.
     let resources = page
         .objects
         .into_iter()
+        .filter(|object| ObjectPath::try_object_key(&object.key).is_ok())
         .map(|object| resource_for(&position.kb_slug, object.key))
         .collect();
     let next_cursor = match page.next_cursor {

@@ -1,9 +1,9 @@
 //! `index_status(kb)`: one knowledge base's search-index health, as
 //! `GET /api/v1/knowledgebases/{kb}/index` reports it (#97).
 
+use super::args::parse_kb;
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
-use crate::path::encode_kb_slug;
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, ContentBlock},
@@ -23,8 +23,8 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: IndexStatusArgs,
 ) -> Result<CallToolResult, McpError> {
-    let kb_enc = encode_kb_slug(&args.kb);
-    let url = client.api_v1_url(&["knowledgebases", &kb_enc, "index"]);
+    let kb = parse_kb(&args.kb)?;
+    let url = client.api_v1_url(&["knowledgebases", kb.as_str(), "index"]);
     let resp = client
         .authorized(client.http.get(url))
         .send()

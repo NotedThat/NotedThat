@@ -19,6 +19,7 @@ metrics.workspace = true
 futures.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true, features = ["v7", "std"] }
 

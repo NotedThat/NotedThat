@@ -2502,6 +2502,7 @@ dependencies = [
  "testcontainers",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

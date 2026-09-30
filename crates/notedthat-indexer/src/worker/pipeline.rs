@@ -72,6 +72,22 @@ impl IndexerWorker {
         skip: Skip,
         announce: Option<EventSource>,
     ) -> Result<PipelineOutcome, PipelineFailure> {
+        // No object may live under a reserved key (#279), so none is indexed there.
+        // Reconcile and the `fs` watcher still hand one over: this is how search
+        // entries indexed for it before the key was reserved are removed.
+        if object_key.is_reserved() {
+            tracing::debug!(
+                target: "notedthat::indexing",
+                kb = %kb.as_str(),
+                path = %object_key.as_str(),
+                "reserved key; removing index entries"
+            );
+            return self
+                .handle_tombstone(kb, object_key)
+                .await
+                .map(|()| PipelineOutcome::Tombstoned)
+                .map_err(PipelineFailure::before_head);
+        }
         let head = match self
             .storage
             .head_object(&kb, &object_key, ConditionalHeaders::default())

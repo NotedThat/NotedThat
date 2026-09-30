@@ -1,7 +1,9 @@
 use axum::http::StatusCode;
 use notedthat_core::{Verb, Who};
 
-use super::fixture::{app, get, grant, grant_under, hrefs, location, page, parent_link, policy};
+use super::fixture::{
+    app, app_with_keys, get, grant, grant_under, hrefs, location, page, parent_link, policy,
+};
 
 /// The everyday grant: anonymous callers may walk and read `public/`.
 fn public_tree() -> notedthat_core::AccessPolicy {
@@ -210,4 +212,38 @@ async fn an_undeclared_knowledge_base_is_not_found() {
 
     // Then
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Only an object is refused a reserved key (#279): a folder named `search`
+/// browses like any other, and an object stored at exactly `search` before the
+/// upgrade is left off the page, since its API link names the search route.
+#[tokio::test]
+async fn a_folder_named_like_a_reserved_key_browses_like_any_folder() {
+    // Given
+    let app = app_with_keys(
+        policy([grant(Who::Anyone, [Verb::List, Verb::Read])]),
+        &["search", "search/a.md", "index/other.md"],
+    )
+    .await;
+
+    // When / Then — the folder lists its contents.
+    let html = page(&app, "/browse/notes/search/", None).await;
+    assert!(html.contains("a.md"), "{html}");
+    page(&app, "/browse/notes/index/", None).await;
+
+    // The root offers the folders and no link to the reserved object.
+    let root = hrefs(&page(&app, "/browse/notes/", None).await);
+    assert!(
+        root.contains(&"/browse/notes/search/".to_string()),
+        "{root:?}"
+    );
+    assert!(
+        !root.contains(&"/api/v1/knowledgebases/notes/search".to_string()),
+        "{root:?}"
+    );
+
+    // Without the slash it resolves to the folder, not the object.
+    let response = get(&app, "/browse/notes/search", None).await;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(location(&response), "/browse/notes/search/");
 }
