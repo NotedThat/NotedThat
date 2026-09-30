@@ -12,12 +12,12 @@ use std::sync::OnceLock;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::KbSlug;
-use utoipa::openapi::path::{Operation, ParameterIn};
+use utoipa::openapi::path::{Operation, Parameter, ParameterBuilder, ParameterIn};
 use utoipa::openapi::response::{Response as ApiResponse, ResponseBuilder};
-use utoipa::openapi::schema::{Schema, SchemaType, Type};
+use utoipa::openapi::schema::{ObjectBuilder, Schema, SchemaType, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::openapi::{Content, Header, Ref, RefOr};
-use utoipa::{IntoParams, Modify, OpenApi, ToResponse};
+use utoipa::openapi::{Content, Header, Ref, RefOr, Required};
+use utoipa::{IntoParams, Modify, OpenApi, ToResponse, ToSchema};
 
 use super::{events, index_health, index_reconcile, kbs, objects};
 use crate::error::{ErrorBody, ErrorCode, RefusalBody, ReplaceAmbiguousBody};
@@ -369,75 +369,97 @@ responses! {
     );
 }
 
-/// The path parameter every knowledge-base route takes.
-#[derive(IntoParams)]
-#[into_params(parameter_in = Path)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct KbPath {
-    /// The knowledge base.
-    kb_slug: KbSlug,
+/// A required path parameter.
+fn path_param(name: &str, description: &str, schema: impl Into<RefOr<Schema>>) -> ParameterBuilder {
+    ParameterBuilder::new()
+        .name(name)
+        .parameter_in(ParameterIn::Path)
+        .description(Some(description))
+        .required(Required::True)
+        .schema(Some(schema))
 }
 
-/// The path parameters of an object route.
-#[derive(IntoParams)]
-#[into_params(parameter_in = Path)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct ObjectPathParams {
-    /// The knowledge base.
-    kb_slug: KbSlug,
-    /// The object's path within the knowledge base, percent-encoded as one segment:
-    /// `docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts
-    /// its `/` unencoded, which is how it writes `Location`.
-    object_path: String,
+/// The knowledge base's slug, as a path parameter.
+fn kb_slug_param() -> ParameterBuilder {
+    path_param(
+        "kb_slug",
+        "The knowledge base.",
+        Ref::from_schema_name(<KbSlug as ToSchema>::name()),
+    )
 }
 
-/// The conditional request headers a read honours (RFC 9110 §13).
-#[derive(IntoParams)]
-#[into_params(parameter_in = Header)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "named after the headers they declare"
-)]
-pub(crate) struct ReadConditions {
-    /// Answer `412` unless the object's entity tag is one of these, or `*`.
-    #[param(rename = "If-Match")]
-    if_match: Option<String>,
-    /// Answer `304` if the object's entity tag is one of these, or `*`.
-    #[param(rename = "If-None-Match")]
-    if_none_match: Option<String>,
-    /// Answer `304` unless the object changed after this HTTP date.
-    #[param(rename = "If-Modified-Since")]
-    if_modified_since: Option<String>,
-    /// Answer `412` if the object changed after this HTTP date.
-    #[param(rename = "If-Unmodified-Since")]
-    if_unmodified_since: Option<String>,
+/// An optional request header whose value is a string.
+fn optional_header(name: &str, description: &str) -> ParameterBuilder {
+    ParameterBuilder::new()
+        .name(name)
+        .parameter_in(ParameterIn::Header)
+        .description(Some(description))
+        .required(Required::False)
+        .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
 }
 
-/// The conditional request headers a write or delete honours.
-#[derive(IntoParams)]
-#[into_params(parameter_in = Header)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct WriteConditions {
-    /// Proceed only if the object's current entity tag is one of these, or `*` for any
-    /// existing object; otherwise `412`.
-    #[param(rename = "If-Match")]
-    if_match: Option<String>,
-    /// `*`: proceed only if the object does not exist; otherwise `412`.
-    #[param(rename = "If-None-Match")]
-    if_none_match: Option<String>,
+/// Declare reusable parameter sets: each a unit type implementing
+/// [`IntoParams`], named in a handler's `params(...)`.
+macro_rules! params {
+    ($($(#[$doc:meta])* $name:ident => [$($param:expr),+ $(,)?];)+) => {
+        $(
+            $(#[$doc])*
+            pub(crate) struct $name;
+
+            impl IntoParams for $name {
+                fn into_params(_: impl Fn() -> Option<ParameterIn>) -> Vec<Parameter> {
+                    vec![$($param.build()),+]
+                }
+            }
+        )+
+    };
+}
+
+params! {
+    /// The path parameter every knowledge-base route takes.
+    KbPath => [kb_slug_param()];
+    /// The path parameters of an object route.
+    ObjectPathParams => [
+        kb_slug_param(),
+        path_param(
+            "object_path",
+            "The object's path within the knowledge base, percent-encoded as one segment:\n\
+             `docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts\n\
+             its `/` unencoded, which is how it writes `Location`.",
+            ObjectBuilder::new().schema_type(Type::String),
+        ),
+    ];
+    /// The conditional request headers a read honours (RFC 9110 §13).
+    ReadConditions => [
+        optional_header(
+            "If-Match",
+            "Answer `412` unless the object's entity tag is one of these, or `*`.",
+        ),
+        optional_header(
+            "If-None-Match",
+            "Answer `304` if the object's entity tag is one of these, or `*`.",
+        ),
+        optional_header(
+            "If-Modified-Since",
+            "Answer `304` unless the object changed after this HTTP date.",
+        ),
+        optional_header(
+            "If-Unmodified-Since",
+            "Answer `412` if the object changed after this HTTP date.",
+        ),
+    ];
+    /// The conditional request headers a write or delete honours.
+    WriteConditions => [
+        optional_header(
+            "If-Match",
+            "Proceed only if the object's current entity tag is one of these, or `*` for any\n\
+             existing object; otherwise `412`.",
+        ),
+        optional_header(
+            "If-None-Match",
+            "`*`: proceed only if the object does not exist; otherwise `412`.",
+        ),
+    ];
 }
 
 #[cfg(test)]
@@ -450,7 +472,8 @@ mod tests {
     use super::document;
     use crate::middleware::ANONYMOUS_REACHABLE;
     use crate::router::{API_ROUTES, API_V1_PREFIX, MATCHED_KB_OBJECT, OPENAPI_PATH, build_router};
-    use crate::testing::{InMemoryStorage, test_app_state_with_default_channel};
+    use crate::state::AppState;
+    use crate::testing::InMemoryStorage;
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode};
     use bytes::Bytes;
@@ -527,14 +550,12 @@ mod tests {
             .await
             .expect("seed");
         let kbs = BTreeMap::from([("notes".to_string(), kb)]);
-        let mut state = test_app_state_with_default_channel(
-            Arc::new(storage),
-            Arc::new(kbs.clone()),
-            Arc::new(Authenticator::new(TOKEN)),
-            1024,
-        );
-        state.access_policies = Arc::new(notedthat_core::signed_in_policies(&kbs));
-        build_router(state)
+        build_router(AppState {
+            authenticator: Arc::new(Authenticator::new(TOKEN)),
+            max_body_size: 1024,
+            max_patchable_size: 1024,
+            ..AppState::for_tests(Arc::new(storage), kbs)
+        })
     }
 
     /// The URL a documented path template names, with the test's slug and key.

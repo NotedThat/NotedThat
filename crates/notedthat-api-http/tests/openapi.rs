@@ -19,18 +19,16 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use notedthat_api_http::router::openapi::document_json;
 use notedthat_api_http::router::{OPENAPI_PATH, build_router};
-use notedthat_api_http::testing::test_app_state_with_default_channel;
-use notedthat_core::Authenticator;
+use notedthat_api_http::state::AppState;
+use notedthat_api_http::testing::InMemoryStorage;
 use tower::ServiceExt;
 
 const UPDATE: &str = "NOTEDTHAT_UPDATE_OPENAPI";
 
 fn router() -> axum::Router {
-    build_router(test_app_state_with_default_channel(
-        Arc::new(notedthat_api_http::testing::InMemoryStorage::default()),
-        Arc::new(BTreeMap::new()),
-        Arc::new(Authenticator::new("token")),
-        1024,
+    build_router(AppState::for_tests(
+        Arc::new(InMemoryStorage::default()),
+        BTreeMap::new(),
     ))
 }
 
