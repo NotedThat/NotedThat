@@ -2067,8 +2067,8 @@ describes by default, which is what lets it push `notifications/resources/update
     rotate its token underneath it. Subscriptions made with the old token move to the newest
     token the session has presented once the old one is refused, each checked again as the new
     token, and each is sent one `notifications/resources/updated` at that moment: re-read it,
-    since changes in between may have gone unreported. A key the new token cannot `list` is
-    dropped instead. See [Subscriptions](#subscriptions).
+    since changes in between may have gone unreported. A key the API refuses to the new token
+    (`403`, `404`) is dropped instead. See [Subscriptions](#subscriptions).
   - The service token is one owner: whatever holds it holds all of its sessions.
   - Every caller presenting **no** credential is one owner, since nothing distinguishes two of
     them. On a deployment that admits anonymous callers, one anonymous client can still attach
@@ -2421,10 +2421,15 @@ client refreshing mid-session ends up with subscriptions under both tokens. When
 refuses the old token as expired (`401`), its subscriptions in that knowledge base move to the
 newest credential the session has presented — at once if it already sent a request with one,
 otherwise on its next request. Each key is probed again as that credential, exactly as
-`resources/subscribe` would probe it, and a key it cannot `list` is dropped. Until they move,
-the subscriptions still count, so the session is kept open for them. A credential the route
-refuses because it lost access (`403`, `404`) has its subscriptions in that knowledge base
-dropped. Either way, every affected key is sent one `notifications/resources/updated`, and a
+`resources/subscribe` would probe it. A key the probe refuses (`403`, `404`) is dropped; one
+whose probe fails any other way (the new token has expired too, the API errors or times out)
+keeps waiting, and is tried again on the session's next request. A key that moves is sent one
+more `notifications/resources/updated` once its new stream is open, and a moved `list_changed`
+watch one more `list_changed`, for anything written while it moved. Until they move, the
+subscriptions still count, so the session is kept open for them, but only for five minutes, the
+session idle timeout: if no newer credential arrives in that time (a revoked bearer is refused
+as `401` too), they are dropped and the session may idle out. A credential the route refuses
+because it lost access (`403`, `404`) has its subscriptions in that knowledge base dropped. Either way, every affected key is sent one `notifications/resources/updated`, and a
 watched knowledge base one `list_changed`. Re-read it: changes may have gone unreported while the
 stream was down, and a re-read presents your current token, which is what moves the rest. A
 dropped key sends nothing more, and subscribing to it again is refused with the reason.
