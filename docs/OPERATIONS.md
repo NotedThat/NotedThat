@@ -517,7 +517,10 @@ The failure mode is loud, which is the useful part. Run under `--read-only` with
 `NOTEDTHAT_UPLOAD_TMP_DIR` and startup refuses before any listener binds:
 
 ```
-staging configuration error: staging directory is unusable: Read-only file system (os error 30)
+Error: failed to validate NOTEDTHAT_UPLOAD_TMP_DIR
+
+Caused by:
+    staging configuration error: staging directory is unusable: Read-only file system (os error 30)
 ```
 
 Nothing degrades silently, so a misconfigured hardened deployment cannot look healthy.
