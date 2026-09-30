@@ -261,10 +261,10 @@ impl IndexerWorker {
             // that lost us this race raises its own event and re-enqueues the key.
             //
             // That repair is configuration-dependent, and this error is terminal —
-            // `process_event` logs INDEXING_FAILED and drops it, with no backoff and no
-            // dead-letter queue. On S3, or on the filesystem with NOTEDTHAT_FS_WATCH=false,
-            // nothing re-enqueues it and the object stays stale in the index until it is
-            // next written.
+            // `IndexerWorker::handle` logs INDEXING_FAILED and drops it, with no backoff
+            // and no dead-letter queue. On S3, or on the filesystem with
+            // NOTEDTHAT_FS_WATCH=false, nothing re-enqueues it and the object stays stale
+            // in the index until it is next written.
             return Err("streamed snapshot ETag differs from preceding HEAD".to_owned());
         }
         let object_meta = object_stream.meta;
