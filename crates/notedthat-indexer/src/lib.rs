@@ -7,7 +7,7 @@ pub mod embedder;
 pub mod event;
 pub mod health;
 mod mime;
-pub mod okf;
+mod okf;
 pub mod provisioner;
 pub mod qdrant;
 pub mod queue;
@@ -17,7 +17,7 @@ pub mod testing;
 pub mod vector_store;
 pub mod worker;
 
-pub use chunker::{Chunk, SOFT_CHAR_CAP, chunk};
+pub use chunker::{Chunk, SOFT_CHAR_CAP};
 pub use embedder::{Embedder, EmbedderError};
 pub use embedder::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder};
 pub use event::{IndexEvent, RefreshOrigin};

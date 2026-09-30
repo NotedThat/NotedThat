@@ -128,9 +128,6 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 thiserror = "2.0"
 anyhow = "1"
 
-# Text processing
-text-splitter = { version = "0.32", features = ["markdown"] }
-
 # Security & IDs
 subtle = "2.4"
 # OIDC bearer verification: RS*/ES* over a JWKS. At least 10.3, which rejects a

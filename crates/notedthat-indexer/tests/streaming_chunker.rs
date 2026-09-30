@@ -2,7 +2,8 @@
 
 use std::io::Cursor;
 
-use notedthat_indexer::chunker::{Chunk, chunk, stream_chunks};
+use notedthat_indexer::chunker::{Chunk, stream_chunks};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
 #[path = "streaming_chunker/bounds.rs"]
 mod bounds;
@@ -17,6 +18,43 @@ fn collect(raw: &str, max_chars: usize, base: usize) -> Vec<Chunk> {
         .with_min_chars(0)
         .collect::<std::io::Result<Vec<_>>>()
         .expect("valid UTF-8 input")
+}
+
+/// Section starts and heading paths as pulldown-cmark sees the whole document:
+/// the oracle the streaming scanner's bounded view has to agree with.
+fn parsed_sections(raw: &str) -> Vec<(usize, Vec<String>)> {
+    let mut sections = Vec::new();
+    let mut heading_path: Vec<String> = Vec::new();
+    let mut active: Option<(usize, usize, String)> = None;
+    for (event, range) in Parser::new(raw).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let depth = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    _ => 3,
+                };
+                active = Some((range.start, depth, String::new()));
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, _, label)) = active.as_mut() {
+                    label.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((start, depth, label)) = active.take() {
+                    heading_path.truncate(depth - 1);
+                    heading_path.push(label.trim().to_owned());
+                    sections.push((start, heading_path.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !raw.is_empty() && sections.first().is_none_or(|(start, _)| *start > 0) {
+        sections.insert(0, (0, Vec::new()));
+    }
+    sections
 }
 
 #[test]
@@ -93,10 +131,7 @@ fn matches_bounded_parser_heading_boundaries_for_ordinary_markdown() {
 
     // Then
     for (raw, streamed) in inputs.iter().zip(actual) {
-        let expected: Vec<_> = chunk(raw)
-            .into_iter()
-            .map(|chunk| (chunk.byte_start, chunk.heading_path))
-            .collect();
+        let expected = parsed_sections(raw);
         let streamed: Vec<_> = streamed
             .into_iter()
             .map(|chunk| (chunk.byte_start, chunk.heading_path))

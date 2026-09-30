@@ -1,36 +1,10 @@
 //! OKF metadata extraction without rewriting source bytes.
 
-use crate::chunker::{Chunk, chunk};
 use notedthat_core::search::ConceptMetadata;
 use serde_yaml_ng::Value;
 
-/// Searchable body chunks and optional OKF concept metadata.
-pub struct Document {
-    /// Metadata is present only for concept documents with a non-empty string type.
-    pub metadata: Option<ConceptMetadata>,
-    /// Chunk offsets always address the original document, including its frontmatter.
-    pub chunks: Vec<Chunk>,
-}
-
-/// Recognize OKF concepts, falling back to ordinary Markdown for other documents.
-pub fn parse(path: &str, raw: &str) -> Document {
-    let Some((metadata, body_start)) = concept_prefix(path, raw) else {
-        return Document {
-            metadata: None,
-            chunks: chunk(raw),
-        };
-    };
-    let mut chunks = chunk(&raw[body_start..]);
-    for chunk in &mut chunks {
-        chunk.byte_start += body_start;
-        chunk.byte_end += body_start;
-    }
-    Document {
-        metadata: Some(metadata),
-        chunks,
-    }
-}
-
+/// Recognizes an OKF concept prefix, returning its metadata and the byte offset
+/// where the body begins; `None` means the document is ordinary Markdown.
 pub(crate) fn concept_prefix(path: &str, prefix: &str) -> Option<(ConceptMetadata, usize)> {
     let concept_id = path.strip_suffix(".md")?;
     if matches!(path.rsplit('/').next(), Some("index.md" | "log.md")) {
@@ -82,6 +56,21 @@ pub(crate) fn concept_prefix(path: &str, prefix: &str) -> Option<(ConceptMetadat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunker::{Chunk, SOFT_CHAR_CAP, stream_chunks};
+    use std::io::Cursor;
+
+    /// Chunks the body after a recognized prefix the way the indexer does, with
+    /// offsets into the whole document.
+    fn body_chunks(raw: &str, body_start: usize) -> Vec<Chunk> {
+        stream_chunks(
+            Cursor::new(&raw.as_bytes()[body_start..]),
+            SOFT_CHAR_CAP,
+            body_start,
+        )
+        .expect("valid chunk iterator")
+        .collect::<std::io::Result<Vec<_>>>()
+        .expect("valid UTF-8 body")
+    }
 
     #[test]
     fn concept_prefix_returns_metadata_and_absolute_body_start() {
@@ -110,5 +99,95 @@ mod tests {
 
         // Then: it falls back to ordinary Markdown instead of reading beyond the cap.
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn concept_metadata_and_body_offsets_when_frontmatter_contains_extensions() {
+        // Given: CRLF frontmatter with Unicode values and unknown extension keys.
+        let raw = "---\r\ntype: Custom Concept\r\ntitle: 日本語\r\ndescription: >-\r\n  A linked\r\n  concept.\r\nresource: /other.md\r\ntags: [finance, 日本語]\r\nverified: {by: 'human:editor', at: '2026-09-07T00:00:00Z'}\r\ncustom: {nested: [1, true]}\r\n---\r\n# 本文\r\nSee [missing](/missing.md).\r\n";
+
+        // When: the prefix is recognized and the body chunked after it.
+        let (metadata, body_start) =
+            concept_prefix("metrics/revenue.md", raw).expect("OKF concept");
+        let chunks = body_chunks(raw, body_start);
+
+        // Then: known fields are read and the body chunk addresses the original bytes.
+        assert_eq!(metadata.concept_id, "metrics/revenue");
+        assert_eq!(metadata.concept_type, "Custom Concept");
+        assert_eq!(metadata.title.as_deref(), Some("日本語"));
+        assert_eq!(metadata.description.as_deref(), Some("A linked concept."));
+        assert_eq!(metadata.resource.as_deref(), Some("/other.md"));
+        assert_eq!(metadata.tags, ["finance", "日本語"]);
+        assert_eq!(chunks.len(), 1);
+        for chunk in chunks {
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+            assert_eq!(chunk.byte_start, raw.find("# 本文").expect("body"));
+            assert_eq!(chunk.heading_path, ["本文"]);
+        }
+    }
+
+    #[test]
+    fn ordinary_markdown_is_not_a_concept() {
+        for raw in [
+            "# Plain\nText",
+            "---\ntitle: Legacy\n---\n# Body",
+            "---\ntype: [broken\n---\n# Body",
+            "---\ntype: Metric\n# Unclosed",
+            "---\ntype: 42\n---\n# Body",
+            "---\ntype: '  '\n---\n# Body",
+            "---\n- Metric\n---\n# Body",
+        ] {
+            assert!(concept_prefix("note.md", raw).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn reserved_and_non_markdown_files_are_not_concepts() {
+        let raw = "---\ntype: Metric\n---\n# Body";
+        for path in [
+            "index.md",
+            "log.md",
+            "nested/index.md",
+            "nested/log.md",
+            "note.txt",
+        ] {
+            assert!(concept_prefix(path, raw).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn minimal_concept_is_accepted_when_body_is_empty() {
+        let raw = "---\ntype: Metric\n---";
+        let (metadata, body_start) = concept_prefix("metric.md", raw).expect("minimal concept");
+        assert_eq!(metadata.concept_type, "Metric");
+        assert!(metadata.title.is_none());
+        assert!(metadata.tags.is_empty());
+        assert!(body_chunks(raw, body_start).is_empty());
+    }
+
+    #[test]
+    fn invalid_optional_fields_do_not_reject_a_concept() {
+        let (metadata, _) = concept_prefix(
+            "metric.md",
+            "---\ntype: Metric\ntitle: [odd]\ntags: [valid, 42]\n---\nBody",
+        )
+        .expect("optional guidance is soft");
+        assert!(metadata.title.is_none());
+        assert_eq!(metadata.tags, ["valid"]);
+    }
+
+    #[test]
+    fn split_body_offsets_remain_absolute_when_unicode_exceeds_chunk_cap() {
+        let raw = format!(
+            "---\ntype: Reference\ntitle: 知識\n---\n# 日本語\n{}",
+            "本文 ".repeat(3000)
+        );
+        let (_, body_start) = concept_prefix("reference.md", &raw).expect("OKF concept");
+        let chunks = body_chunks(&raw, body_start);
+        assert!(chunks.len() > 1);
+        for chunk in chunks {
+            assert_eq!(&raw[chunk.byte_start..chunk.byte_end], chunk.text);
+            assert_eq!(chunk.heading_path, ["日本語"]);
+        }
     }
 }
