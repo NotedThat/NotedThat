@@ -302,8 +302,8 @@ pub struct ServerCli {
     #[arg(long, env = "NOTEDTHAT_EVENTS_MEMORY_CAPACITY", value_name = "COUNT")]
     pub events_memory_capacity: Option<OsString>,
 
-    /// NATS server URL, `nats://[user:pass@]host:4222`. Required with the
-    /// `nats` events backend; credentials travel in the URL.
+    /// NATS server URL, `nats://[user:pass@]host:4222` or `tls://…`. Required
+    /// whenever a backend selects NATS; credentials may travel in the URL.
     #[arg(
         long,
         env = "NOTEDTHAT_NATS_URL",
@@ -312,11 +312,69 @@ pub struct ServerCli {
     )]
     pub nats_url: Option<String>,
 
+    /// NATS decentralised-auth credentials file (`.creds`). At most one of
+    /// this, `--nats-nkey-seed-file` and `--nats-token`.
+    #[arg(long, env = "NOTEDTHAT_NATS_CREDS_FILE", value_name = "PATH")]
+    pub nats_creds_file: Option<OsString>,
+
+    /// File holding a NATS NKey seed.
+    #[arg(long, env = "NOTEDTHAT_NATS_NKEY_SEED_FILE", value_name = "PATH")]
+    pub nats_nkey_seed_file: Option<OsString>,
+
+    /// NATS server token. Visible in `ps` when passed as a flag; prefer the
+    /// environment variable.
+    #[arg(
+        long,
+        env = "NOTEDTHAT_NATS_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub nats_token: Option<String>,
+
+    /// Root certificates (PEM) trusted instead of the system roots: include every
+    /// CA the broker's certificates chain to. Setting it requires TLS.
+    #[arg(long, env = "NOTEDTHAT_NATS_TLS_CA_FILE", value_name = "PATH")]
+    pub nats_tls_ca_file: Option<OsString>,
+
+    /// Client certificate (PEM) for mutual TLS; needs `--nats-tls-key-file`.
+    /// Setting it requires TLS.
+    #[arg(long, env = "NOTEDTHAT_NATS_TLS_CERT_FILE", value_name = "PATH")]
+    pub nats_tls_cert_file: Option<OsString>,
+
+    /// Client certificate key (PEM) for mutual TLS; needs `--nats-tls-cert-file`.
+    #[arg(long, env = "NOTEDTHAT_NATS_TLS_KEY_FILE", value_name = "PATH")]
+    pub nats_tls_key_file: Option<OsString>,
+
+    /// Refuse a plaintext NATS connection: `true` or `false` [default: false].
+    #[arg(long, env = "NOTEDTHAT_NATS_TLS_REQUIRED", value_name = "BOOL")]
+    pub nats_tls_required: Option<OsString>,
+
+    /// Replicas of every NotedThat-owned `JetStream` stream, 1 to 5. Unset, a new
+    /// stream gets 1 and an existing one keeps its own.
+    #[arg(long, env = "NOTEDTHAT_NATS_REPLICAS", value_name = "COUNT")]
+    pub nats_replicas: Option<OsString>,
+
+    /// Where `JetStream` keeps NotedThat's streams: `file` or `memory`. Unset, a new
+    /// stream gets `file` and an existing one is accepted as found.
+    #[arg(long, env = "NOTEDTHAT_NATS_STORAGE", value_name = "STORAGE")]
+    pub nats_storage: Option<OsString>,
+
+    /// How long the broker drops a repeated publish, in seconds; at least 10 and
+    /// at most the retention. Unset, a new stream gets 120 (or the retention, if
+    /// shorter) and an existing one keeps its own.
+    #[arg(
+        long,
+        env = "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+        value_name = "SECS"
+    )]
+    pub nats_duplicate_window_secs: Option<OsString>,
+
     /// `JetStream` stream holding the event log [default: notedthat-events].
     #[arg(long, env = "NOTEDTHAT_NATS_STREAM", value_name = "NAME")]
     pub nats_stream: Option<String>,
 
-    /// How long the stream retains an event, in seconds [default: 604800].
+    /// How long the stream retains an event, in seconds; at least 10
+    /// [default: 604800].
     #[arg(long, env = "NOTEDTHAT_NATS_MAX_AGE_SECS", value_name = "SECS")]
     pub nats_max_age_secs: Option<OsString>,
 
@@ -580,6 +638,7 @@ mod tests {
                 "NOTEDTHAT_NATS_URL",
                 Some("nats://u:nats-leak-canary@broker:4222"),
             ),
+            ("NOTEDTHAT_NATS_TOKEN", Some("nats-token-leak-canary")),
             ("EMBEDDING_API_KEY", Some("embedding-leak-canary")),
             // A non-credential, to show the value is hidden only where it must be.
             ("NOTEDTHAT_LISTEN_ADDR", Some("127.0.0.1:9999")),

@@ -9,16 +9,17 @@ use std::ffi::{OsStr, OsString};
 use std::time::Duration;
 
 use notedthat_core::{Error, setting};
+use notedthat_nats::{
+    MIN_NATS_DUPLICATE_WINDOW_SECS, NatsConnectConfig, NatsConnectSettings, parse_positive,
+    parse_stream_name,
+};
 
 /// Every environment variable the `memory` adapter reads.
 pub const MEMORY_ENV_VARS: [&str; 1] = ["NOTEDTHAT_EVENTS_MEMORY_CAPACITY"];
 
-/// Every environment variable the `nats` adapter reads.
-pub const NATS_ENV_VARS: [&str; 3] = [
-    "NOTEDTHAT_NATS_URL",
-    "NOTEDTHAT_NATS_STREAM",
-    "NOTEDTHAT_NATS_MAX_AGE_SECS",
-];
+/// Every environment variable the `nats` adapter reads beyond the shared
+/// connection settings ([`notedthat_nats::NATS_CONNECT_ENV_VARS`]).
+pub const NATS_ENV_VARS: [&str; 2] = ["NOTEDTHAT_NATS_STREAM", "NOTEDTHAT_NATS_MAX_AGE_SECS"];
 
 /// Events the ring keeps before the oldest is dropped, unless configured.
 pub const DEFAULT_MEMORY_CAPACITY: usize = 10_000;
@@ -88,8 +89,8 @@ impl MemoryConfig {
 /// The raw, unvalidated value of every `nats` setting.
 #[derive(Debug, Clone, Default)]
 pub struct NatsSettings {
-    /// `NOTEDTHAT_NATS_URL`.
-    pub url: Option<String>,
+    /// The shared connection settings.
+    pub connect: NatsConnectSettings,
     /// `NOTEDTHAT_NATS_STREAM`.
     pub stream: Option<String>,
     /// `NOTEDTHAT_NATS_MAX_AGE_SECS`.
@@ -101,7 +102,7 @@ impl NatsSettings {
     #[must_use]
     pub fn from_env() -> Self {
         Self {
-            url: std::env::var("NOTEDTHAT_NATS_URL").ok(),
+            connect: NatsConnectSettings::from_env(),
             stream: std::env::var("NOTEDTHAT_NATS_STREAM").ok(),
             max_age_secs: std::env::var_os("NOTEDTHAT_NATS_MAX_AGE_SECS"),
         }
@@ -111,9 +112,8 @@ impl NatsSettings {
 /// The `nats` adapter's validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsConfig {
-    /// Server URL, `nats://[user:pass@]host:port`. Credentials, if any, travel
-    /// in the URL, which is why the server hides this value from `--help`.
-    pub url: String,
+    /// The shared connection: URL, authentication, TLS and stream settings.
+    pub connect: NatsConnectConfig,
     /// The `JetStream` stream that holds the log. Created if absent.
     pub stream: String,
     /// How long the stream keeps an event before retaining it out.
@@ -121,76 +121,77 @@ pub struct NatsConfig {
 }
 
 impl NatsConfig {
+    /// The defaults for a plain connection to `url` — what a test needs.
+    #[must_use]
+    pub fn plain(url: impl Into<String>) -> Self {
+        Self {
+            connect: NatsConnectConfig::plain(url),
+            stream: DEFAULT_NATS_STREAM.to_string(),
+            max_age: Duration::from_secs(DEFAULT_NATS_MAX_AGE_SECS),
+        }
+    }
+
     /// Validate already-collected settings, whatever supplied them.
     ///
     /// # Errors
     ///
-    /// `Error::Config` when the URL is absent or empty, the stream name has
-    /// characters `JetStream` refuses, or the retention is not a positive number
-    /// of seconds.
+    /// `Error::Config` when the connection settings are invalid (see
+    /// [`NatsConnectConfig::from_settings`]), the stream name has characters
+    /// `JetStream` refuses, or the retention is not a positive number of seconds.
     pub fn from_settings(settings: NatsSettings) -> Result<Self, Error> {
-        let url = settings.url.filter(|url| !url.is_empty()).ok_or_else(|| {
-            config_error(format!("{} is required", setting("NOTEDTHAT_NATS_URL")))
-        })?;
+        Self::with_connection(
+            NatsConnectConfig::from_settings(settings.connect)?,
+            settings.stream,
+            settings.max_age_secs.as_deref(),
+        )
+    }
 
-        let stream = match settings.stream {
-            None => DEFAULT_NATS_STREAM.to_string(),
-            Some(name) if name.is_empty() => {
-                return Err(config_error(format!(
-                    "{} must not be empty",
-                    setting("NOTEDTHAT_NATS_STREAM")
-                )));
-            }
-            Some(name) => {
-                if !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                {
-                    return Err(config_error(format!(
-                        "{} is invalid: expected letters, digits, '_' or '-', got \"{name}\"",
-                        setting("NOTEDTHAT_NATS_STREAM")
-                    )));
-                }
-                name
-            }
-        };
-
+    /// Validate the events-only settings over an already-validated connection.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_settings`], for the stream name and retention.
+    pub fn with_connection(
+        connect: NatsConnectConfig,
+        stream: Option<String>,
+        max_age_secs: Option<&OsStr>,
+    ) -> Result<Self, Error> {
+        let stream = parse_stream_name("NOTEDTHAT_NATS_STREAM", stream, DEFAULT_NATS_STREAM)?;
         let max_age_secs = parse_positive(
             "NOTEDTHAT_NATS_MAX_AGE_SECS",
-            settings.max_age_secs.as_deref(),
+            max_age_secs,
             DEFAULT_NATS_MAX_AGE_SECS,
             "a positive number of seconds",
         )?;
-
+        // An unset window is shortened to fit the retention
+        // (`notedthat_nats::StreamSpec`), so a retention shorter than the
+        // minimum window would bring back the double store the minimum prevents.
+        if max_age_secs < MIN_NATS_DUPLICATE_WINDOW_SECS {
+            return Err(config_error(format!(
+                "{} is {max_age_secs} seconds, shorter than the {MIN_NATS_DUPLICATE_WINDOW_SECS}-second \
+                 duplicate window a publish retried after a timed-out acknowledgement needs",
+                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+            )));
+        }
+        // nats-server refuses a duplicate window longer than the retention; an
+        // unset window is shortened to fit instead (`notedthat_nats::StreamSpec`).
+        if let Some(window) = connect.streams.duplicate_window
+            && window.as_secs() > max_age_secs
+        {
+            return Err(config_error(format!(
+                "{} is {} seconds, longer than {} ({max_age_secs} seconds); JetStream refuses a \
+                 duplicate window longer than the retention",
+                setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"),
+                window.as_secs(),
+                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+            )));
+        }
         Ok(Self {
-            url,
+            connect,
             stream,
             max_age: Duration::from_secs(max_age_secs),
         })
     }
-}
-
-fn parse_positive(
-    var: &str,
-    supplied: Option<&OsStr>,
-    default: u64,
-    accepted: &str,
-) -> Result<u64, Error> {
-    let Some(value) = supplied else {
-        return Ok(default);
-    };
-    let value = value
-        .to_str()
-        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
-    if value.is_empty() {
-        return Err(config_error(format!("{} must not be empty", setting(var))));
-    }
-    value.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
-        config_error(format!(
-            "{} is invalid: expected {accepted}, got \"{value}\"",
-            setting(var)
-        ))
-    })
 }
 
 fn config_error(message: String) -> Error {
@@ -200,6 +201,13 @@ fn config_error(message: String) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn url(url: &str) -> NatsConnectSettings {
+        NatsConnectSettings {
+            url: Some(url.into()),
+            ..NatsConnectSettings::default()
+        }
+    }
 
     fn message(err: Error) -> String {
         match err {
@@ -244,7 +252,10 @@ mod tests {
 
         let err = message(
             NatsConfig::from_settings(NatsSettings {
-                url: Some(String::new()),
+                connect: NatsConnectSettings {
+                    url: Some(String::new()),
+                    ..NatsConnectSettings::default()
+                },
                 ..NatsSettings::default()
             })
             .unwrap_err(),
@@ -255,11 +266,11 @@ mod tests {
     #[test]
     fn nats_defaults_fill_the_stream_and_retention() {
         let config = NatsConfig::from_settings(NatsSettings {
-            url: Some("nats://localhost:4222".into()),
+            connect: url("nats://localhost:4222"),
             ..NatsSettings::default()
         })
         .unwrap();
-        assert_eq!(config.url, "nats://localhost:4222");
+        assert_eq!(config, NatsConfig::plain("nats://localhost:4222"));
         assert_eq!(config.stream, DEFAULT_NATS_STREAM);
         assert_eq!(
             config.max_age,
@@ -270,7 +281,7 @@ mod tests {
     #[test]
     fn nats_stream_names_are_checked_the_way_jetstream_checks_them() {
         let ok = NatsConfig::from_settings(NatsSettings {
-            url: Some("nats://localhost:4222".into()),
+            connect: url("nats://localhost:4222"),
             stream: Some("nt_events-2".into()),
             ..NatsSettings::default()
         })
@@ -280,7 +291,7 @@ mod tests {
         for bad in ["with.dot", "with space", "wild*", ""] {
             let err = message(
                 NatsConfig::from_settings(NatsSettings {
-                    url: Some("nats://localhost:4222".into()),
+                    connect: url("nats://localhost:4222"),
                     stream: Some(bad.into()),
                     ..NatsSettings::default()
                 })
@@ -296,7 +307,7 @@ mod tests {
     #[test]
     fn nats_retention_is_positive_seconds() {
         let ok = NatsConfig::from_settings(NatsSettings {
-            url: Some("nats://localhost:4222".into()),
+            connect: url("nats://localhost:4222"),
             max_age_secs: Some("3600".into()),
             ..NatsSettings::default()
         })
@@ -306,7 +317,7 @@ mod tests {
         for bad in ["0", "7d", ""] {
             let err = message(
                 NatsConfig::from_settings(NatsSettings {
-                    url: Some("nats://localhost:4222".into()),
+                    connect: url("nats://localhost:4222"),
                     max_age_secs: Some(bad.into()),
                     ..NatsSettings::default()
                 })
@@ -317,6 +328,67 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn a_retention_shorter_than_the_minimum_duplicate_window_is_refused() {
+        let max_age = |secs: &str| {
+            NatsConfig::from_settings(NatsSettings {
+                connect: url("nats://localhost:4222"),
+                max_age_secs: Some(secs.into()),
+                ..NatsSettings::default()
+            })
+        };
+        let min = MIN_NATS_DUPLICATE_WINDOW_SECS;
+        assert_eq!(
+            max_age(&min.to_string()).unwrap().max_age,
+            Duration::from_secs(min)
+        );
+        let err = message(max_age(&(min - 1).to_string()).unwrap_err());
+        assert!(
+            err.contains("NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs)"),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("{min}-second duplicate window")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_window_longer_than_the_retention_is_refused() {
+        let settings = |window: &str| NatsSettings {
+            connect: NatsConnectSettings {
+                duplicate_window_secs: Some(window.into()),
+                ..url("nats://localhost:4222")
+            },
+            max_age_secs: Some("60".into()),
+            ..NatsSettings::default()
+        };
+        let ok = NatsConfig::from_settings(settings("60")).unwrap();
+        assert_eq!(
+            ok.connect.streams.duplicate_window,
+            Some(Duration::from_secs(60))
+        );
+
+        let err = message(NatsConfig::from_settings(settings("120")).unwrap_err());
+        assert!(
+            err.contains("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS (--nats-duplicate-window-secs)"),
+            "{err}"
+        );
+        assert!(
+            err.contains("NOTEDTHAT_NATS_MAX_AGE_SECS (--nats-max-age-secs)"),
+            "{err}"
+        );
+
+        // Unset, the window is left to fit the retention rather than refused.
+        let unset = NatsConfig::from_settings(NatsSettings {
+            connect: url("nats://localhost:4222"),
+            max_age_secs: Some("60".into()),
+            ..NatsSettings::default()
+        })
+        .unwrap();
+        assert_eq!(unset.connect.streams.duplicate_window, None);
     }
 
     #[test]
@@ -332,7 +404,7 @@ mod tests {
                 let memory = MemoryConfig::from_settings(&MemorySettings::from_env()).unwrap();
                 assert_eq!(memory.capacity, 42);
                 let nats = NatsConfig::from_settings(NatsSettings::from_env()).unwrap();
-                assert_eq!(nats.url, "nats://u:p@broker:4222");
+                assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
                 assert_eq!(nats.stream, "evt");
                 assert_eq!(nats.max_age, Duration::from_secs(60));
             },

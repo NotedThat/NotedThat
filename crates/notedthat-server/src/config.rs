@@ -9,6 +9,7 @@ use crate::cli::ServerCli;
 use crate::oidc::OidcSettings;
 use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
 use notedthat_events::{MemoryConfig, MemorySettings, NatsConfig, NatsSettings};
+use notedthat_nats::NatsConnectSettings;
 use notedthat_storage_fs::FsSettings;
 use notedthat_storage_s3::S3Settings;
 use notedthat_write::MAX_UPLOAD_BYTES;
@@ -137,6 +138,10 @@ impl std::fmt::Display for McpAnonymous {
 
 /// The selected events backend together with the configuration it needs.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "built once at startup, and boxing the NATS variant would change a public type"
+)]
 pub enum EventsConfig {
     /// No event log (the default).
     None,
@@ -236,6 +241,44 @@ fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKin
             cli.events_memory_capacity.is_some(),
         ),
         ("NOTEDTHAT_NATS_URL", Nats, cli.nats_url.is_some()),
+        (
+            "NOTEDTHAT_NATS_CREDS_FILE",
+            Nats,
+            cli.nats_creds_file.is_some(),
+        ),
+        (
+            "NOTEDTHAT_NATS_NKEY_SEED_FILE",
+            Nats,
+            cli.nats_nkey_seed_file.is_some(),
+        ),
+        ("NOTEDTHAT_NATS_TOKEN", Nats, cli.nats_token.is_some()),
+        (
+            "NOTEDTHAT_NATS_TLS_CA_FILE",
+            Nats,
+            cli.nats_tls_ca_file.is_some(),
+        ),
+        (
+            "NOTEDTHAT_NATS_TLS_CERT_FILE",
+            Nats,
+            cli.nats_tls_cert_file.is_some(),
+        ),
+        (
+            "NOTEDTHAT_NATS_TLS_KEY_FILE",
+            Nats,
+            cli.nats_tls_key_file.is_some(),
+        ),
+        (
+            "NOTEDTHAT_NATS_TLS_REQUIRED",
+            Nats,
+            cli.nats_tls_required.is_some(),
+        ),
+        ("NOTEDTHAT_NATS_REPLICAS", Nats, cli.nats_replicas.is_some()),
+        ("NOTEDTHAT_NATS_STORAGE", Nats, cli.nats_storage.is_some()),
+        (
+            "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+            Nats,
+            cli.nats_duplicate_window_secs.is_some(),
+        ),
         ("NOTEDTHAT_NATS_STREAM", Nats, cli.nats_stream.is_some()),
         (
             "NOTEDTHAT_NATS_MAX_AGE_SECS",
@@ -875,7 +918,19 @@ impl Config {
             }
             EventsBackendKind::Nats => {
                 EventsConfig::Nats(NatsConfig::from_settings(NatsSettings {
-                    url: cli.nats_url,
+                    connect: NatsConnectSettings {
+                        url: cli.nats_url,
+                        creds_file: cli.nats_creds_file,
+                        nkey_seed_file: cli.nats_nkey_seed_file,
+                        token: cli.nats_token,
+                        tls_ca_file: cli.nats_tls_ca_file,
+                        tls_cert_file: cli.nats_tls_cert_file,
+                        tls_key_file: cli.nats_tls_key_file,
+                        tls_required: cli.nats_tls_required,
+                        replicas: cli.nats_replicas,
+                        storage: cli.nats_storage,
+                        duplicate_window_secs: cli.nats_duplicate_window_secs,
+                    },
                     stream: cli.nats_stream,
                     max_age_secs: cli.nats_max_age_secs,
                 })?)
@@ -1416,7 +1471,7 @@ fn parse_positive_usize(
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) const ALL_ENV_KEYS: [&str; 63] = [
+    pub(crate) const ALL_ENV_KEYS: [&str; 73] = [
         "NOTEDTHAT_API_TOKEN",
         "NOTEDTHAT_KBS",
         "NOTEDTHAT_STORAGE_BACKEND",
@@ -1441,6 +1496,16 @@ pub(crate) mod tests {
         "NOTEDTHAT_EVENTS_BACKEND",
         "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
         "NOTEDTHAT_NATS_URL",
+        "NOTEDTHAT_NATS_CREDS_FILE",
+        "NOTEDTHAT_NATS_NKEY_SEED_FILE",
+        "NOTEDTHAT_NATS_TOKEN",
+        "NOTEDTHAT_NATS_TLS_CA_FILE",
+        "NOTEDTHAT_NATS_TLS_CERT_FILE",
+        "NOTEDTHAT_NATS_TLS_KEY_FILE",
+        "NOTEDTHAT_NATS_TLS_REQUIRED",
+        "NOTEDTHAT_NATS_REPLICAS",
+        "NOTEDTHAT_NATS_STORAGE",
+        "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
         "NOTEDTHAT_NATS_STREAM",
         "NOTEDTHAT_NATS_MAX_AGE_SECS",
         "NOTEDTHAT_QDRANT_URL",
@@ -1754,7 +1819,7 @@ pub(crate) mod tests {
     /// can silently lose its flag.
     #[test]
     fn all_env_keys_are_accounted_for() {
-        assert_eq!(ALL_ENV_KEYS.len(), 63);
+        assert_eq!(ALL_ENV_KEYS.len(), 73);
     }
 
     #[test]
@@ -2804,7 +2869,7 @@ pub(crate) mod tests {
                     let config = Config::from_env().expect("valid");
                     match config.events {
                         EventsConfig::Nats(nats) => {
-                            assert_eq!(nats.url, "nats://broker:4222");
+                            assert_eq!(nats.connect.url, "nats://broker:4222");
                             assert_eq!(nats.stream, "evt");
                             assert_eq!(nats.max_age, Duration::from_secs(60));
                         }
@@ -2912,7 +2977,16 @@ pub(crate) mod tests {
                 .map(|(name, _, _)| *name)
                 .collect();
             assert_eq!(memory, notedthat_events::MEMORY_ENV_VARS.to_vec());
-            assert_eq!(nats, notedthat_events::NATS_ENV_VARS.to_vec());
+            let expected: Vec<&str> = notedthat_nats::NATS_CONNECT_ENV_VARS
+                .iter()
+                .chain(notedthat_events::NATS_ENV_VARS.iter())
+                .copied()
+                .collect();
+            let mut nats_sorted = nats.clone();
+            nats_sorted.sort_unstable();
+            let mut expected_sorted = expected;
+            expected_sorted.sort_unstable();
+            assert_eq!(nats_sorted, expected_sorted);
 
             for (name, _, _) in &table {
                 assert!(

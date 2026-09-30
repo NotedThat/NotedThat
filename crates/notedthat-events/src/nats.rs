@@ -3,8 +3,11 @@
 //! The stream sequence is the event id, so ids are strictly increasing across
 //! replicas and across knowledge bases alike — a subscriber to one knowledge
 //! base sees gaps where other knowledge bases' events sit, which is normal.
-//! Every event is published to `notedthat.events.<kb>.<written|deleted>`, and
-//! a subscription is an ordered, ack-less consumer filtered to
+//! Every event is published to
+//! `notedthat.events.<kb>.<written|deleted|indexed|index_failed>` with a
+//! `Nats-Msg-Id` and a `NotedThat-Schema: object-event/1` header — the public
+//! contract `docs/NATS.md` documents for applications that consume the stream
+//! directly — and a subscription is an ordered, ack-less consumer filtered to
 //! `notedthat.events.<kb>.>` that starts one past the requested position.
 //!
 //! Retention is the stream's `max_age`. A position older than the stream's
@@ -12,13 +15,13 @@
 //! conservative for a knowledge base whose own events all survived, but never
 //! a silent skip.
 
-use std::time::Duration;
-
+use async_nats::Client;
 use async_nats::jetstream::consumer::DeliverPolicy;
 use async_nats::jetstream::consumer::pull::OrderedConfig;
-use async_nats::jetstream::stream::{Config as StreamConfig, DiscardPolicy, RetentionPolicy};
+use async_nats::jetstream::context::PublishErrorKind;
+use async_nats::jetstream::message::PublishMessage;
+use async_nats::jetstream::stream::{DiscardPolicy, RetentionPolicy};
 use async_nats::jetstream::{self, Context};
-use async_nats::{Client, ConnectOptions};
 use async_trait::async_trait;
 use futures::StreamExt;
 use notedthat_core::{
@@ -26,43 +29,29 @@ use notedthat_core::{
     StreamError, SubscribeError,
 };
 
+use notedthat_core::metrics::name;
+use notedthat_nats::{
+    NatsConnectError, SCHEMA_HEADER, StreamSetupError, StreamSpec, TIMEOUT, ensure_stream,
+};
+
 use crate::config::NatsConfig;
+
+/// The schema every event message declares in [`SCHEMA_HEADER`].
+pub const EVENT_SCHEMA: &str = "object-event/1";
 
 /// Every subject this adapter publishes sits under this root; the stream
 /// subscribes to `notedthat.events.>`.
 pub const SUBJECT_ROOT: &str = "notedthat.events";
 
-/// How long a connect, a `JetStream` API call or a publish acknowledgement may
-/// take before it is a failure.
-const TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Errors from bringing the adapter up.
 #[derive(Debug, thiserror::Error)]
 pub enum NatsError {
     /// The server could not be reached.
-    #[error("could not connect to NATS: {0}")]
-    Connect(#[from] async_nats::ConnectError),
-    /// The stream could not be created or read.
-    #[error("could not open JetStream stream {stream}: {message}")]
-    Stream {
-        /// The configured stream name.
-        stream: String,
-        /// What the server said.
-        message: String,
-    },
-    /// A stream by the configured name exists but is not ours.
-    #[error(
-        "JetStream stream {stream} exists with subjects {subjects:?}, not [\"{expected}\"]; \
-         point NOTEDTHAT_NATS_STREAM at a stream NotedThat owns"
-    )]
-    StreamMismatch {
-        /// The configured stream name.
-        stream: String,
-        /// The subjects the existing stream captures.
-        subjects: Vec<String>,
-        /// The subject filter this adapter needs.
-        expected: String,
-    },
+    #[error(transparent)]
+    Connect(#[from] NatsConnectError),
+    /// The stream could not be brought up, or is not ours.
+    #[error(transparent)]
+    Stream(#[from] StreamSetupError),
 }
 
 /// The `JetStream` event log.
@@ -106,87 +95,98 @@ fn is_gone(after: EventId, first: u64, last: u64) -> bool {
 }
 
 impl NatsPublisher {
-    /// Connect, and create the stream if it does not exist yet.
+    /// Open a connection of its own, then [`Self::open`] the stream on it.
     ///
     /// # Errors
     ///
-    /// The server cannot be reached within a few seconds, the stream cannot be
-    /// created or inspected, or a stream by that name already captures other
-    /// subjects.
+    /// As [`notedthat_nats::connect`] and [`Self::open`].
     pub async fn connect(config: &NatsConfig) -> Result<Self, NatsError> {
-        let client = ConnectOptions::new()
-            .connection_timeout(TIMEOUT)
-            .request_timeout(Some(TIMEOUT))
-            .name("notedthat-server")
-            .connect(&config.url)
-            .await?;
+        let client = notedthat_nats::connect(&config.connect, "notedthat-server").await?;
+        Self::open(client, config).await
+    }
+
+    /// Create the stream on an existing connection if it does not exist yet,
+    /// or bring its settings in line with the configuration if it does.
+    ///
+    /// # Errors
+    ///
+    /// The stream cannot be created, inspected or updated, or a stream by that
+    /// name already captures other subjects or has an unchangeable setting that
+    /// differs (see [`ensure_stream`]).
+    pub async fn open(client: Client, config: &NatsConfig) -> Result<Self, NatsError> {
         let mut js = jetstream::new(client.clone());
         js.set_timeout(TIMEOUT);
-
-        let desired = StreamConfig {
-            name: config.stream.clone(),
-            subjects: vec![stream_subject()],
-            max_age: config.max_age,
-            retention: RetentionPolicy::Limits,
-            discard: DiscardPolicy::Old,
-            ..StreamConfig::default()
-        };
-        let stream = js
-            .get_or_create_stream(desired.clone())
-            .await
-            .map_err(|error| NatsError::Stream {
-                stream: config.stream.clone(),
-                message: error.to_string(),
-            })?;
-        let info = stream.cached_info();
-        if info.config.subjects != desired.subjects {
-            return Err(NatsError::StreamMismatch {
-                stream: config.stream.clone(),
-                subjects: info.config.subjects.clone(),
-                expected: stream_subject(),
-            });
-        }
-        if info.config.max_age != desired.max_age {
-            // The operator changed the retention; the stream follows the config.
-            // Only that field: the rest of the existing configuration (replicas,
-            // storage, limits) is the operator's and is kept as found.
-            let updated = StreamConfig {
-                max_age: desired.max_age,
-                ..info.config.clone()
-            };
-            js.update_stream(&updated)
-                .await
-                .map_err(|error| NatsError::Stream {
-                    stream: config.stream.clone(),
-                    message: format!("could not update max_age: {error}"),
-                })?;
-        }
-
+        ensure_stream(
+            &js,
+            &StreamSpec {
+                name: config.stream.clone(),
+                name_setting: "NOTEDTHAT_NATS_STREAM",
+                subject: stream_subject(),
+                retention: RetentionPolicy::Limits,
+                discard: DiscardPolicy::Old,
+                max_age: config.max_age,
+                max_messages: None,
+                settings: config.connect.streams,
+            },
+        )
+        .await?;
         Ok(Self {
             client,
             js,
             stream: config.stream.clone(),
         })
     }
+
+    /// Publish once with `message_id`, awaiting the acknowledgement.
+    async fn publish_once(
+        &self,
+        subject: &str,
+        payload: &bytes::Bytes,
+        message_id: &str,
+    ) -> Result<
+        async_nats::jetstream::publish::PublishAck,
+        async_nats::jetstream::context::PublishError,
+    > {
+        self.js
+            .send_publish(
+                subject.to_string(),
+                PublishMessage::build()
+                    .payload(payload.clone())
+                    .message_id(message_id)
+                    .header(SCHEMA_HEADER, EVENT_SCHEMA),
+            )
+            .await?
+            .await
+    }
 }
 
 #[async_trait]
 impl EventPublisher for NatsPublisher {
     async fn publish(&self, event: ObjectEvent) -> Result<EventId, PublishError> {
-        let payload = serde_json::to_vec(&event).map_err(|error| PublishError::Unavailable {
-            message: format!("could not serialise event: {error}"),
-        })?;
-        let ack = self
-            .js
-            .publish(event_subject(&event), payload.into())
-            .await
+        let payload: bytes::Bytes = serde_json::to_vec(&event)
             .map_err(|error| PublishError::Unavailable {
-                message: error.to_string(),
+                message: format!("could not serialise event: {error}"),
             })?
-            .await
-            .map_err(|error| PublishError::Unavailable {
-                message: error.to_string(),
-            })?;
+            .into();
+        let subject = event_subject(&event);
+        // One id per logical publish, reused on the retry below: a timed-out
+        // acknowledgement does not say whether the broker stored the message,
+        // and the duplicate window turns the second attempt into a no-op if it
+        // did. A retried *write* is a new publish with a new id — that is the
+        // at-least-once contract, and it is unchanged.
+        let message_id = uuid::Uuid::now_v7().to_string();
+        let ack = match self.publish_once(&subject, &payload, &message_id).await {
+            Err(error) if error.kind() == PublishErrorKind::TimedOut => {
+                self.publish_once(&subject, &payload, &message_id).await
+            }
+            other => other,
+        }
+        .map_err(|error| PublishError::Unavailable {
+            message: error.to_string(),
+        })?;
+        if ack.duplicate {
+            metrics::counter!(name::EVENTS_PUBLISH_DEDUPLICATED).increment(1);
+        }
         Ok(EventId(ack.sequence))
     }
 

@@ -1,4 +1,3 @@
-#![cfg(feature = "nats")]
 #![allow(missing_docs)]
 
 //! The event log integration suite, run against a real NATS `JetStream` stream.
@@ -101,7 +100,7 @@ const STREAM: &str = "nt-integration";
 static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Fixture {
-    _broker: Arc<Broker>,
+    broker: Arc<Broker>,
     _turn: tokio::sync::MutexGuard<'static, ()>,
     js: jetstream::Context,
     log: NatsPublisher,
@@ -126,14 +125,14 @@ async fn fixture(scenario: &str) -> Fixture {
     );
 
     let log = NatsPublisher::connect(&NatsConfig {
-        url: broker.url.clone(),
+        connect: notedthat_nats::NatsConnectConfig::plain(broker.url.clone()),
         stream: STREAM.to_string(),
         max_age: Duration::from_secs(3600),
     })
     .await
     .expect("connect to the NATS container");
     Fixture {
-        _broker: broker,
+        broker,
         _turn: turn,
         js,
         log,
@@ -179,3 +178,170 @@ macro_rules! nats_scenario {
 }
 
 event_log_scenarios!(nats_scenario);
+
+/// What an application consuming the stream directly relies on (`docs/NATS.md`): the
+/// subject, the two headers and a payload that is exactly the SSE `data:` object.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn every_message_carries_the_public_contract() {
+    let fixture = fixture("contract").await;
+    let event = notedthat_core::ObjectEvent::written(
+        fixture.kb.clone(),
+        notedthat_core::ObjectPath::try_from_str("inbox/memo.md").unwrap(),
+        "\"9a3f\"".to_string(),
+        12,
+        "text/markdown".to_string(),
+        1_757_950_000,
+        notedthat_core::EventSource::Http,
+    );
+    let id = fixture.log.publish(event.clone()).await.expect("publish");
+
+    let stream = fixture.js.get_stream(STREAM).await.expect("stream exists");
+    let raw = stream.get_raw_message(id.0).await.expect("message stored");
+    assert_eq!(
+        raw.subject.as_str(),
+        format!("notedthat.events.{}.written", fixture.kb.as_str())
+    );
+    assert_eq!(
+        raw.headers
+            .get(notedthat_nats::SCHEMA_HEADER)
+            .map(async_nats::HeaderValue::as_str),
+        Some(notedthat_events::EVENT_SCHEMA)
+    );
+    assert_eq!(notedthat_events::EVENT_SCHEMA, "object-event/1");
+    let message_id = raw
+        .headers
+        .get("Nats-Msg-Id")
+        .map(|value| value.as_str().to_string())
+        .expect("every message carries a Nats-Msg-Id");
+    assert!(!message_id.is_empty());
+
+    let payload: serde_json::Value = serde_json::from_slice(&raw.payload).unwrap();
+    assert_eq!(payload, serde_json::to_value(&event).unwrap());
+    assert_eq!(payload["event"], "object.written");
+    assert_eq!(payload["object_key"], "inbox/memo.md");
+}
+
+/// Two publishes of one event get two ids: deduplication is per publish, never per
+/// content, so a rewrite of identical bytes is still announced.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn each_publish_has_its_own_message_id_and_a_repeated_id_is_dropped() {
+    let fixture = fixture("dedup").await;
+    let event = notedthat_core::ObjectEvent::deleted(
+        fixture.kb.clone(),
+        notedthat_core::ObjectPath::try_from_str("inbox/old.md").unwrap(),
+        notedthat_core::EventSource::Webdav,
+    );
+    let first = fixture.log.publish(event.clone()).await.unwrap();
+    let second = fixture.log.publish(event).await.unwrap();
+    assert_ne!(first, second, "identical content is announced twice");
+
+    // What the id buys: a retried publish under the same id is stored once.
+    let subject = format!("notedthat.events.{}.deleted", fixture.kb.as_str());
+    let publish = || {
+        fixture.js.send_publish(
+            subject.clone(),
+            async_nats::jetstream::message::PublishMessage::build()
+                .payload("{}".into())
+                .message_id("retried-once"),
+        )
+    };
+    let a = publish().await.unwrap().await.unwrap();
+    let b = publish().await.unwrap().await.unwrap();
+    assert!(!a.duplicate);
+    assert!(b.duplicate);
+    assert_eq!(a.sequence, b.sequence);
+}
+
+/// An existing stream follows the settings `JetStream` can change in place and refuses
+/// to start over one it cannot.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn an_existing_stream_follows_changeable_settings_and_refuses_the_rest() {
+    let fixture = fixture("settings").await;
+    let url = fixture.broker.url.clone();
+    let mut config = NatsConfig {
+        connect: notedthat_nats::NatsConnectConfig::plain(url),
+        stream: STREAM.to_string(),
+        max_age: Duration::from_secs(600),
+    };
+    config.connect.streams.duplicate_window = Some(Duration::from_secs(30));
+    NatsPublisher::connect(&config)
+        .await
+        .expect("a changed window and retention are applied");
+    let info = fixture
+        .js
+        .get_stream(STREAM)
+        .await
+        .unwrap()
+        .info()
+        .await
+        .unwrap()
+        .config
+        .clone();
+    assert_eq!(info.duplicate_window, Duration::from_secs(30));
+    assert_eq!(info.max_age, Duration::from_secs(600));
+
+    config.connect.streams.storage = Some(notedthat_nats::NatsStorage::Memory);
+    let Err(error) = NatsPublisher::connect(&config).await else {
+        panic!("a different storage type must refuse startup");
+    };
+    let message = error.to_string();
+    assert!(message.contains("storage"), "{message}");
+    assert!(message.contains("cannot change it in place"), "{message}");
+}
+
+/// An upgrade that introduced the shared stream settings does not reset a stream an
+/// operator tuned by hand: what is not configured is kept as found.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn unconfigured_stream_settings_are_kept_as_found() {
+    let fixture = fixture("kept").await;
+    let mut stream = fixture.js.get_stream(STREAM).await.unwrap();
+    let tuned = async_nats::jetstream::stream::Config {
+        max_messages: 5_000,
+        duplicate_window: Duration::from_secs(45),
+        storage: async_nats::jetstream::stream::StorageType::File,
+        ..stream.info().await.unwrap().config.clone()
+    };
+    fixture.js.update_stream(&tuned).await.unwrap();
+
+    NatsPublisher::connect(&NatsConfig {
+        connect: notedthat_nats::NatsConnectConfig::plain(fixture.broker.url.clone()),
+        stream: STREAM.to_string(),
+        max_age: Duration::from_secs(3600),
+    })
+    .await
+    .expect("an existing stream with unconfigured settings is accepted");
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.max_messages, 5_000);
+    assert_eq!(found.duplicate_window, Duration::from_secs(45));
+}
+
+/// A retention shorter than the default duplicate window starts, fresh and on an
+/// existing stream alike: nats-server refuses a window longer than `max_age`.
+#[tokio::test]
+#[ignore = "requires a NATS JetStream testcontainer"]
+async fn a_short_retention_takes_the_default_duplicate_window_with_it() {
+    let fixture = fixture("short").await;
+    let short = NatsConfig {
+        connect: notedthat_nats::NatsConnectConfig::plain(fixture.broker.url.clone()),
+        stream: STREAM.to_string(),
+        max_age: Duration::from_secs(60),
+    };
+    NatsPublisher::connect(&short)
+        .await
+        .expect("an existing stream is shortened with its window");
+    let mut stream = fixture.js.get_stream(STREAM).await.unwrap();
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.max_age, Duration::from_secs(60));
+    assert_eq!(found.duplicate_window, Duration::from_secs(60));
+
+    fixture.js.delete_stream(STREAM).await.unwrap();
+    NatsPublisher::connect(&short)
+        .await
+        .expect("a fresh stream is created with a window that fits");
+    let found = stream.info().await.unwrap().config.clone();
+    assert_eq!(found.duplicate_window, Duration::from_secs(60));
+}

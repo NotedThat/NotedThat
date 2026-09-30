@@ -39,7 +39,7 @@ thiserror.workspace = true
 notedthat-indexer = { path = "../notedthat-indexer", features = ["test-support"] }
 notedthat-api-http = { path = ".", features = ["test-support"] }
 # The memory event log, for the events route's tests. Without the broker client.
-notedthat-events = { path = "../notedthat-events", default-features = false }
+notedthat-events = { path = "../notedthat-events" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 # A debugging recorder, for asserting which series a refusal records.
 metrics-util = { version = "0.20", features = ["debugging"] }

@@ -30,6 +30,7 @@ notedthat-indexer = { path = "../notedthat-indexer", version = "0.12.3" }
 notedthat-mcp = { path = "../notedthat-mcp", version = "0.12.3" }  # M8 deliberate dependency extension — see plan §W1.3
 notedthat-write = { path = "../notedthat-write", version = "0.12.3" }
 notedthat-events = { path = "../notedthat-events", version = "0.12.3" }
+notedthat-nats = { path = "../notedthat-nats", version = "0.12.3" }
 anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
