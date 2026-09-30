@@ -1,10 +1,9 @@
 use axum::response::IntoResponse;
-use dav_server::fs::FsResult;
 use notedthat_core::Principal;
 use notedthat_core::{ConditionalHeaders, KbSlug, ObjectMeta};
 
 use crate::{
-    filesystem::{DavTarget, collect_propfind_objects, storage_error_to_fs},
+    filesystem::{DavTarget, ListingError, collect_propfind_objects},
     state::WebDavState,
 };
 
@@ -29,7 +28,7 @@ pub(crate) async fn prepare_propfind_listing(
     state: &WebDavState,
     target: &DavTarget,
     principal: &Principal,
-) -> FsResult<Option<PropfindListing>> {
+) -> Result<Option<PropfindListing>, ListingError> {
     match target {
         DavTarget::Root | DavTarget::NonDeclaredKb => Ok(None),
         DavTarget::KbRoot(kb) => collect_propfind_objects(state, kb, None, principal)
@@ -59,7 +58,7 @@ pub(crate) async fn prepare_propfind_listing(
                         })
                     })
             }
-            Err(err) => Err(storage_error_to_fs(&err)),
+            Err(err) => Err(ListingError::Storage(err)),
         },
     }
 }

@@ -10,8 +10,8 @@ use dav_server::{
 };
 use futures::StreamExt as _;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbSlug, ListResponse, ObjectMeta, ObjectPath, Principal,
-    StorageError, Verb, roll_up,
+    ByteRange, ConditionalHeaders, KbSlug, ObjectMeta, ObjectPath, Principal, StorageError, Verb,
+    roll_up,
 };
 use std::{
     collections::BTreeMap,
@@ -26,7 +26,10 @@ use crate::access::policy_for;
 use crate::propfind::PropfindListing;
 use crate::{metadata::WebDavMetaData, state::WebDavState};
 
-/// Maximum number of objects returned by a single `WebDAV` PROPFIND in v1.
+/// Maximum number of objects under the collection a single `WebDAV` PROPFIND lists in v1.
+///
+/// The count covers every object beneath the collection, not just its direct children:
+/// storage lists by prefix without a delimiter, and the children are rolled up from that.
 ///
 /// This is a hardcoded v1 safety hedge against memory and reverse-proxy timeout risk
 /// (KBs can have 1k–100k documents; unbounded enumeration would risk OOM and 60s proxy
@@ -175,31 +178,17 @@ impl DavFileSystem for WebDavStorage {
         path: &'a DavPath,
         _meta: ReadDirMeta,
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
-        let state = Arc::clone(&self.state);
-
         Box::pin(async move {
+            let state = self.state.as_ref();
+            let listing = self.propfind_listing.as_ref();
             match parse_dav_path(path, state.declared_kbs.as_ref())? {
-                DavTarget::Root => Ok(stream_entries(root_entries(&state, &self.principal))),
+                DavTarget::Root => Ok(stream_entries(root_entries(state, &self.principal))),
                 DavTarget::KbRoot(kb) => {
-                    list_entries(
-                        state,
-                        kb,
-                        None,
-                        self.propfind_listing.as_ref(),
-                        &self.principal,
-                    )
-                    .await
+                    list_entries(state, &kb, None, listing, &self.principal).await
                 }
                 DavTarget::Object(kb, path) => {
                     let prefix = format!("{}/", path.as_str());
-                    list_entries(
-                        state,
-                        kb,
-                        Some(prefix),
-                        self.propfind_listing.as_ref(),
-                        &self.principal,
-                    )
-                    .await
+                    list_entries(state, &kb, Some(&prefix), listing, &self.principal).await
                 }
                 DavTarget::NonDeclaredKb => Err(FsError::Forbidden),
             }
@@ -269,40 +258,64 @@ impl DavFileSystem for WebDavStorage {
     }
 }
 
+/// Serve a `Depth: 1` listing from the one `intercept_propfind_too_large` prepared.
+///
+/// The middleware lists before dav-server runs so that a failure becomes a `5xx`:
+/// dav-server 0.11 logs a `read_dir` error and answers `207` with the collection
+/// shown empty, so any error returned from here reaches the client as an empty
+/// listing. A missing or mismatched listing should not happen — both sides parse the
+/// same path — but if it does, listing again gives the right answer while the backend
+/// is up, where an error would always give the empty `207`.
 async fn list_entries(
-    state: Arc<WebDavState>,
-    kb: KbSlug,
-    prefix: Option<String>,
+    state: &WebDavState,
+    kb: &KbSlug,
+    prefix: Option<&str>,
     propfind_listing: Option<&PropfindListing>,
     principal: &Principal,
 ) -> FsResult<FsStream<Box<dyn DavDirEntry>>> {
-    let policy = policy_for(&state, &kb);
+    let policy = policy_for(state, kb);
     let filter = policy.key_filter(principal, Verb::List);
 
-    if let Some(listing) =
-        propfind_listing.filter(|listing| listing.matches(&kb, prefix.as_deref()))
-    {
+    if let Some(listing) = propfind_listing.filter(|listing| listing.matches(kb, prefix)) {
         return Ok(stream_entries(entries_from_objects(
             listing
                 .objects()
                 .iter()
                 .filter(|meta| filter.allows(&meta.key))
                 .cloned(),
-            prefix.as_deref(),
+            prefix,
         )));
     }
 
-    let objects = collect_propfind_objects(&state, &kb, prefix.as_deref(), principal).await?;
-    let response = ListResponse {
-        objects,
-        truncated: false,
-        next_cursor: None,
-    };
+    tracing::warn!(
+        kb = %kb,
+        prefix = prefix.unwrap_or(""),
+        "PROPFIND_LISTING_MISSING"
+    );
+    let objects = collect_propfind_objects(state, kb, prefix, principal)
+        .await
+        .map_err(FsError::from)?;
+    Ok(stream_entries(entries_from_objects(objects, prefix)))
+}
 
-    Ok(stream_entries(entries_from_list(
-        response,
-        prefix.as_deref(),
-    )))
+/// Why a PROPFIND listing could not be collected.
+#[derive(Debug)]
+pub(crate) enum ListingError {
+    /// The collection holds more than `PROPFIND_MAX_ENTRIES` visible objects, or the
+    /// scan passed `PROPFIND_MAX_SCANNED`.
+    TooLarge,
+    /// The backend failed. Kept whole so the middleware can tell an unavailable
+    /// backend (`503`) from any other failure (`500`) and log what went wrong.
+    Storage(StorageError),
+}
+
+impl From<ListingError> for FsError {
+    fn from(error: ListingError) -> Self {
+        match error {
+            ListingError::TooLarge => Self::InsufficientStorage,
+            ListingError::Storage(error) => storage_error_to_fs(&error),
+        }
+    }
 }
 
 pub(crate) async fn collect_propfind_objects(
@@ -310,7 +323,7 @@ pub(crate) async fn collect_propfind_objects(
     kb: &KbSlug,
     prefix: Option<&str>,
     principal: &Principal,
-) -> FsResult<Vec<ObjectMeta>> {
+) -> Result<Vec<ObjectMeta>, ListingError> {
     let policy = policy_for(state, kb);
     let filter = policy.key_filter(principal, Verb::List);
     let mut all_objects = Vec::new();
@@ -325,7 +338,7 @@ pub(crate) async fn collect_propfind_objects(
             .storage
             .list_objects(kb, prefix, page_limit, cursor.as_deref())
             .await
-            .map_err(|err| storage_error_to_fs(&err))?;
+            .map_err(ListingError::Storage)?;
 
         for object in response.objects {
             scanned += 1;
@@ -339,7 +352,7 @@ pub(crate) async fn collect_propfind_objects(
                     scanned,
                     "PROPFIND_SCAN_EXHAUSTED"
                 );
-                return Err(FsError::InsufficientStorage);
+                return Err(ListingError::TooLarge);
             }
             if !filter.allows(&object.key) {
                 continue;
@@ -351,7 +364,7 @@ pub(crate) async fn collect_propfind_objects(
                     cap = PROPFIND_MAX_ENTRIES,
                     "PROPFIND_TRUNCATED"
                 );
-                return Err(FsError::InsufficientStorage);
+                return Err(ListingError::TooLarge);
             }
             all_objects.push(object);
         }
@@ -403,10 +416,6 @@ fn root_entries(state: &WebDavState, principal: &Principal) -> Vec<Box<dyn DavDi
         .filter(|(_, kb)| policy_for(state, kb).visible_in_listing(principal))
         .map(|(name, kb)| Box::new(KbDirEntry::new(name.clone(), kb)) as Box<dyn DavDirEntry>)
         .collect()
-}
-
-fn entries_from_list(response: ListResponse, prefix: Option<&str>) -> Vec<Box<dyn DavDirEntry>> {
-    entries_from_objects(response.objects, prefix)
 }
 
 fn entries_from_objects(
@@ -775,6 +784,13 @@ mod tests {
             .collect()
     }
 
+    /// The error an unreachable backend answers with.
+    fn unavailable() -> StorageError {
+        StorageError::BackendUnavailable {
+            message: "scripted storage is unavailable".to_string(),
+        }
+    }
+
     /// The cursor the first full page of the `notes` listing hands back, which is what
     /// a paging caller must send next.
     async fn first_page_cursor(storage: &ScriptedStorage) -> Option<String> {
@@ -828,6 +844,19 @@ mod tests {
 
     fn test_filesystem(storage: Arc<dyn Storage>, declared_kbs: &[&str]) -> WebDavStorage {
         WebDavStorage::new(test_state(storage, self::declared_kbs(declared_kbs)))
+    }
+
+    /// A filesystem holding the listing the PROPFIND middleware would have prepared
+    /// for `path`, as `read_dir` sees it on a real `Depth: 1` request.
+    async fn prepared_filesystem(storage: Arc<dyn Storage>, path: &str) -> WebDavStorage {
+        let state = test_state(storage, declared_kbs(&["notes"]));
+        let target =
+            parse_dav_path(&dav_path(path), state.declared_kbs.as_ref()).expect("valid target");
+        let principal = Principal::service_token();
+        let listing = crate::propfind::prepare_propfind_listing(&state, &target, &principal)
+            .await
+            .expect("listing succeeds");
+        WebDavStorage::with_propfind_listing(state, listing, principal)
     }
 
     fn read_file(storage: Arc<dyn Storage>) -> StorageReadFile {
@@ -967,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_dir_kb_root_calls_list_objects() {
         let storage = storage_with(["folder/bravo.md", "alpha.md"]).await;
-        let fs = test_filesystem(storage.clone(), &["notes"]);
+        let fs = prepared_filesystem(storage.clone(), "/notes").await;
 
         let entries = fs
             .read_dir(&dav_path("/notes"), ReadDirMeta::None)
@@ -984,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_dir_virtual_folder_uses_decoded_prefix() {
         let storage = storage_with(["hello world/bravo.md"]).await;
-        let fs = test_filesystem(storage.clone(), &["notes"]);
+        let fs = prepared_filesystem(storage.clone(), "/notes/hello%20world/").await;
 
         let entries = fs
             .read_dir(&dav_path("/notes/hello%20world/"), ReadDirMeta::None)
@@ -1004,7 +1033,7 @@ mod tests {
     #[tokio::test]
     async fn propfind_walks_cursor_pages() {
         let storage = storage_with(file_keys(1500)).await;
-        let fs = test_filesystem(storage.clone(), &["notes"]);
+        let fs = prepared_filesystem(storage.clone(), "/notes").await;
 
         let entries = fs
             .read_dir(&dav_path("/notes"), ReadDirMeta::None)
@@ -1024,6 +1053,155 @@ mod tests {
                 list_call(None, 1000, next_cursor.as_deref()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn read_dir_without_a_prepared_listing_lists_again() {
+        let storage = storage_with(["alpha.md"]).await;
+        let fs = test_filesystem(storage.clone(), &["notes"]);
+
+        let entries = fs
+            .read_dir(&dav_path("/notes"), ReadDirMeta::None)
+            .await
+            .expect("read_dir falls back to listing")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("entries");
+
+        assert_eq!(entry_names(entries), vec!["alpha.md"]);
+        assert_eq!(list_calls(&storage).len(), 1);
+    }
+
+    /// dav-server's `read_dir` finds the listing the middleware prepared, so a
+    /// PROPFIND lists once: the middleware and dav-server parse the path alike,
+    /// including a percent-encoded name and with or without a trailing slash.
+    #[tokio::test]
+    async fn propfind_serves_the_prepared_listing_without_listing_again() {
+        // Each case names the member href only a served listing produces: the
+        // collection's own href never contains it.
+        for (uri, member) in [
+            ("/notes", "/webdav/notes/hello%20world/</D:href>"),
+            ("/notes/", "/webdav/notes/hello%20world/</D:href>"),
+            ("/notes/hello%20world", "/hello%20world/bravo.md</D:href>"),
+            ("/notes/hello%20world/", "/hello%20world/bravo.md</D:href>"),
+        ] {
+            let storage = storage_with(["hello world/bravo.md"]).await;
+            let state = test_state(storage.clone(), declared_kbs(&["notes"]));
+            let response = crate::router::build_router((*state).clone())
+                .oneshot(propfind_request(uri))
+                .await
+                .expect("PROPFIND request succeeds");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body bytes");
+            let body = String::from_utf8(body.to_vec()).expect("UTF-8 body");
+
+            assert_eq!(status, StatusCode::MULTI_STATUS, "{uri}: {body}");
+            assert!(body.contains(member), "{uri}: {body}");
+            // The middleware lists once; a fallback in `read_dir` would list twice.
+            // dav-server's `metadata` call on a folder probes it with a `limit: 1`
+            // listing, which is not a listing of the collection and is left out.
+            let full_listings = list_calls(&storage)
+                .into_iter()
+                .filter(|call| matches!(call, StorageCall::ListObjects { limit, .. } if *limit > 1))
+                .count();
+            assert_eq!(full_listings, 1, "{uri}: {:?}", list_calls(&storage));
+        }
+    }
+
+    /// The status and body of a `Depth: 1` PROPFIND of `uri` against `storage`.
+    async fn propfind_outcome(storage: Arc<ScriptedStorage>, uri: &str) -> (StatusCode, String) {
+        let state = test_state(storage, declared_kbs(&["notes"]));
+        let response = crate::router::build_router((*state).clone())
+            .oneshot(propfind_request(uri))
+            .await
+            .expect("PROPFIND request succeeds");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        (
+            status,
+            String::from_utf8(body.to_vec()).expect("UTF-8 body"),
+        )
+    }
+
+    #[tokio::test]
+    async fn propfind_kb_root_list_failure_is_503_not_an_empty_listing() {
+        let storage = empty_storage().await;
+        storage.fail_always(StorageOp::ListObjects, unavailable);
+
+        let (status, body) = propfind_outcome(storage, "/notes/").await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body.contains("multistatus"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn propfind_folder_list_failure_is_503_not_an_empty_listing() {
+        let storage = empty_storage().await;
+        storage.fail_always(StorageOp::ListObjects, unavailable);
+
+        let (status, body) = propfind_outcome(storage, "/notes/folder/").await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body.contains("multistatus"), "{body}");
+    }
+
+    fn other() -> StorageError {
+        StorageError::Other {
+            source: "malformed list response".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn propfind_list_failure_other_than_unavailable_is_500() {
+        let storage = empty_storage().await;
+        storage.fail_always(StorageOp::ListObjects, other);
+
+        let (status, body) = propfind_outcome(storage, "/notes/").await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!body.contains("multistatus"), "{body}");
+        assert!(
+            !body.contains("malformed"),
+            "the backend's text stays out: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn propfind_list_failure_on_a_later_page_is_503_not_a_truncated_listing() {
+        let storage = storage_with(file_keys(1500)).await;
+        // The first page lists; every page after it fails.
+        let failing = Arc::clone(&storage);
+        storage.after(StorageOp::ListObjects, move |_store| {
+            failing.fail_always(StorageOp::ListObjects, unavailable);
+            async {}
+        });
+
+        let (status, body) = propfind_outcome(storage.clone(), "/notes/").await;
+        assert_eq!(
+            storage.count(StorageOp::ListObjects),
+            2,
+            "the second page was asked for"
+        );
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body.contains("multistatus"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn propfind_head_failure_is_503_not_an_empty_listing() {
+        // `head_object` fails as an unreachable backend would, so the target cannot
+        // even be told apart as a file or a folder.
+        let storage = empty_storage().await;
+        storage.fail_always(StorageOp::HeadObject, unavailable);
+
+        let (status, body) = propfind_outcome(storage, "/notes/folder/").await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body.contains("multistatus"), "{body}");
     }
 
     #[tokio::test]

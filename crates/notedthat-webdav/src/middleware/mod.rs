@@ -8,7 +8,7 @@ mod path_validation;
 
 use crate::state::WebDavState;
 use crate::{
-    filesystem::{DavTarget, PROPFIND_TOO_LARGE_DAV_XML},
+    filesystem::{DavTarget, ListingError, PROPFIND_TOO_LARGE_DAV_XML},
     propfind::{
         PropfindDepth, depth_infinity_response, parse_propfind_depth, prepare_propfind_listing,
     },
@@ -22,7 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use handlers::{handle_copy, handle_delete, handle_move, handle_proppatch, handle_put};
-use notedthat_core::ConditionalHeaders;
+use notedthat_core::{ConditionalHeaders, StorageError};
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
@@ -124,7 +124,7 @@ pub async fn intercept_propfind_too_large(
 
     let principal = principal_of(&req);
     match prepare_propfind_listing(&state, &target, &principal).await {
-        Err(dav_server::fs::FsError::InsufficientStorage) => (
+        Err(ListingError::TooLarge) => (
             StatusCode::INSUFFICIENT_STORAGE,
             [(
                 axum::http::header::CONTENT_TYPE,
@@ -133,11 +133,32 @@ pub async fn intercept_propfind_too_large(
             PROPFIND_TOO_LARGE_DAV_XML,
         )
             .into_response(),
+        // Any other failure is answered here: dav-server logs a `read_dir` error and
+        // then answers `207` with the collection shown empty, which a sync client
+        // takes for a complete listing and deletes the difference.
+        Err(ListingError::Storage(error)) if error.is_not_found() => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(ListingError::Storage(error)) => {
+            // The backend's text goes to the log only, never the body: it can quote a
+            // bucket, a path or an endpoint (D43).
+            tracing::error!(
+                request_id = %access::extract_request_id(&req),
+                path = %req.uri().path(),
+                error = %error,
+                "PROPFIND_LISTING_FAILED"
+            );
+            match error {
+                StorageError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .into_response()
+        }
         Ok(Some(listing)) => {
             req.extensions_mut().insert(listing);
             next.run(req).await
         }
-        Ok(None) | Err(_) => next.run(req).await,
+        Ok(None) => next.run(req).await,
     }
 }
 
