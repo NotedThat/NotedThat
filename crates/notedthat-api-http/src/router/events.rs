@@ -26,6 +26,7 @@ use notedthat_core::{
     Error as CoreError, EventId, EventStream, ObjectEvent, ObjectEventKind, StreamError,
     SubscribeError, Verb,
 };
+use notedthat_indexer::mime::essence;
 use serde::Deserialize;
 
 use notedthat_core::metrics::{label as metric_label, name as metric};
@@ -58,8 +59,9 @@ pub(super) struct EventsQuery {
     /// Only this kind: `written`, `deleted`, `indexed` or `index_failed`. An
     /// `object.` prefix is accepted.
     event: Option<String>,
-    /// Only events carrying this content type, exactly or as `type/*`. A
-    /// deletion carries none, so never matches.
+    /// Only events carrying this content type, exactly or as `type/*`,
+    /// ignoring parameters and case. A deletion carries none, so never matches.
+    /// A value with no media type (empty, blank or only parameters) is no filter.
     mime: Option<String>,
 }
 
@@ -68,6 +70,7 @@ pub(super) struct EventsQuery {
 pub(crate) struct EventFilter {
     prefix: Option<String>,
     kind: Option<Kind>,
+    /// Already reduced to its media-type essence, never empty.
     mime: Option<String>,
 }
 
@@ -119,15 +122,20 @@ impl EventFilter {
         Ok(Self {
             prefix: query.prefix.filter(|p| !p.is_empty()),
             kind,
-            mime: query.mime.filter(|m| !m.is_empty()),
+            // Normalised once here rather than per event. A pattern with no
+            // media type left (`" "`, `";charset=utf-8"`) is no filter, as an
+            // empty `?mime=` is: otherwise it would select only untyped writes.
+            mime: query.mime.map(|m| essence(&m)).filter(|m| !m.is_empty()),
         })
     }
 
     /// `mime` matches the content type an event carries, exactly or by
     /// `type/*`: a write's, or the one the indexer's `HEAD` reported (or,
     /// when it reported none or one naming no media type, the type the key's
-    /// suffix names). A deletion carries none, nor does an `object.index_failed` whose failure
-    /// came before `HEAD`, so neither ever matches a `mime` filter.
+    /// suffix names). Both sides are compared as media types, parameters and
+    /// case ignored, the way the search filter compares them. A deletion
+    /// carries none, nor does an `object.index_failed` whose failure came
+    /// before `HEAD`, so neither ever matches a `mime` filter.
     pub(crate) fn matches(&self, event: &ObjectEvent) -> bool {
         if let Some(prefix) = &self.prefix
             && !event.object_key.as_str().starts_with(prefix.as_str())
@@ -145,12 +153,14 @@ impl EventFilter {
     }
 }
 
+/// `pattern` is already an essence (see [`EventFilter::parse`]).
 fn mime_matches(pattern: &str, mime: &str) -> bool {
+    let mime = essence(mime);
     match pattern.strip_suffix("/*") {
         Some(kind) => mime
             .split_once('/')
-            .is_some_and(|(actual, _)| actual.eq_ignore_ascii_case(kind)),
-        None => pattern.eq_ignore_ascii_case(mime),
+            .is_some_and(|(actual, _)| actual == kind),
+        None => pattern == mime,
     }
 }
 
@@ -595,6 +605,22 @@ mod tests {
     }
 
     #[test]
+    fn mime_matches_the_media_type_whatever_its_parameters() {
+        let exact = filter(None, None, Some("text/markdown"));
+        assert!(exact.matches(&written("a.md", "text/markdown; charset=utf-8")));
+        assert!(exact.matches(&written("a.md", "Text/Markdown ;charset=UTF-8")));
+        assert!(exact.matches(&indexed("a.md", "text/markdown; charset=utf-8")));
+        assert!(!exact.matches(&written("a.txt", "text/plain; charset=utf-8")));
+
+        let wild = filter(None, None, Some("text/*"));
+        assert!(wild.matches(&written("a.md", "text/markdown; charset=utf-8")));
+        assert!(wild.matches(&written("a.md", "Text/Markdown ;charset=UTF-8")));
+
+        let with_params = filter(None, None, Some("text/markdown; charset=utf-8"));
+        assert!(with_params.matches(&written("a.md", "text/markdown")));
+    }
+
+    #[test]
     fn mime_applies_to_the_indexers_outcomes_when_they_know_one() {
         let text = filter(None, None, Some("text/*"));
         assert!(text.matches(&indexed("a.md", "text/markdown")));
@@ -627,5 +653,23 @@ mod tests {
     #[test]
     fn empty_filters_are_no_filters() {
         assert_eq!(filter(Some(""), None, Some("")), filter(None, None, None));
+    }
+
+    #[test]
+    fn a_mime_with_no_media_type_is_no_filter() {
+        for raw in [" ", ";charset=utf-8", " ; q=1"] {
+            let f = filter(None, None, Some(raw));
+            assert_eq!(f, filter(None, None, None), "{raw:?}");
+            assert!(f.matches(&written("a.md", "text/markdown")), "{raw:?}");
+            assert!(f.matches(&deleted("a.md")), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn mime_is_normalised_once_when_parsed() {
+        assert_eq!(
+            filter(None, None, Some(" Text/Markdown; charset=utf-8")).mime,
+            Some("text/markdown".to_owned())
+        );
     }
 }

@@ -397,7 +397,7 @@
           {
             "name": "mime",
             "in": "query",
-            "description": "Only events carrying this content type, exactly or as `type/*`. A\ndeletion carries none, so never matches.",
+            "description": "Only events carrying this content type, exactly or as `type/*`,\nignoring parameters and case. A deletion carries none, so never matches.\nA value with no media type (empty, blank or only parameters) is no filter.",
             "required": false,
             "schema": {
               "type": "string"

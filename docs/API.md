@@ -1458,7 +1458,7 @@ does: an identity provider's token ends it when it stops verifying (see
 |-----------|-------------|
 | `prefix` | Only keys starting with this string, e.g. `prefix=inbox/` |
 | `event` | `written`, `deleted`, `indexed` or `index_failed` (the `object.` prefix is accepted, so `event=object.indexed` works too); anything else is `400` |
-| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported (or, when it reported none or one naming no media type, such as `;charset=utf-8`, the type the key's suffix names). Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
+| `mime` | Only events whose content type matches — exactly (`audio/mpeg`) or by type (`audio/*`): a write's stored type, or the type the indexer's `HEAD` reported (or, when it reported none or one naming no media type, such as `;charset=utf-8`, the type the key's suffix names). It matches the media type, with parameters and case ignored on both sides, the same way the search `mime` filter does: `text/markdown` finds an object stored as `text/markdown; charset=utf-8`. A value with no media type left once parameters are dropped (empty, blank, or only parameters such as `;charset=utf-8`) is no filter at all, like leaving `mime` out. Deletions carry no content type, nor does an `object.index_failed` whose failure came before `HEAD`; both are excluded whenever `mime` is set. |
 
 **Request headers:**
 
