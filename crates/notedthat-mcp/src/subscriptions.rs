@@ -12,6 +12,20 @@
 //! `notifications/resources/list_changed`. `object.indexed` and
 //! `object.index_failed` (D65) are ignored: the resource's text did not change.
 //!
+//! A forwarder runs as the credential that opened it, and an OIDC client
+//! rotates that credential underneath its session. When the events route
+//! refuses an expired bearer (`401`), the keys it fed are **stranded**, not
+//! dropped: the client is sent `notifications/resources/updated` for each, and
+//! they move onto a watch for the newest credential the session presents —
+//! at once if it already presented one, otherwise on its next request — after
+//! each key is probed again as that credential, and are sent a second notice
+//! once the new stream is open, for whatever was written while they moved. A
+//! probe the API refuses (`403`, `404`) drops the key; one that fails any
+//! other way leaves it stranded for the session's next request. Stranded keys are
+//! given up on after [`STRANDED_TTL`]. A `403` or `404` from the events route
+//! means the credential lost access rather than expired, so its keys are
+//! dropped, with the same notice.
+//!
 //! Everything here dies with the session: dropping the [`Subscriptions`] —
 //! which rmcp does when the session ends — cancels every task. Nothing is
 //! replayed and nothing persists.
@@ -24,13 +38,13 @@
 //! `resources/subscribe` and stops once the last one goes, so it never holds a
 //! session open for a client with nothing to receive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{PingRequest, ResourceUpdatedNotificationParam, ServerRequest};
+use rmcp::model::{ErrorCode, PingRequest, ResourceUpdatedNotificationParam, ServerRequest};
 use rmcp::service::{Peer, PeerRequestOptions, RoleServer};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +72,14 @@ const PROBE_PAGE_CAP: usize = 10;
 /// How long `subscribe` waits for the knowledge base's stream to be open
 /// before answering, so that a change made right after the answer is seen.
 const OPEN_WAIT: Duration = Duration::from_secs(5);
+
+/// How long stranded keys wait for a credential to move onto. rmcp's own
+/// session idle timeout: a client that sends no request for that long would
+/// have had its session closed had nothing been subscribed, so holding the
+/// session open longer for keys it may never claim — a revoked bearer is a
+/// `401` too, and a client can simply stop refreshing — would only pin a
+/// `MAX_SESSIONS` slot the keeper keeps alive for nothing it can deliver.
+const STRANDED_TTL: Duration = Duration::from_mins(5);
 
 /// The event kinds that mean the resource's bytes changed.
 const CHANGE_EVENTS: [&str; 2] = ["object.written", "object.deleted"];
@@ -97,7 +119,9 @@ pub(crate) struct Subscriptions {
 /// and rotates its access token underneath it every few minutes. The second
 /// `subscribe` would then be probed as the new token, served by the old
 /// token's stream, and lose every subscription on that knowledge base when the
-/// old token expired and the route answered `401`. The anonymous case is worse
+/// old token expired and the route answered `401`. The keys the old token
+/// subscribed still need a stream once it expires; they are stranded and
+/// re-homed onto the newest credential (see [`Subscriptions::note_caller`]). The anonymous case is worse
 /// and quieter: one request that arrives without an `Authorization` header
 /// opens the stream as the anonymous caller, and every authenticated
 /// subscription afterwards is fed by a stream D51 filters as anonymous — so
@@ -110,8 +134,55 @@ type WatchKey = (String, Option<String>);
 #[derive(Default)]
 struct Inner {
     kbs: HashMap<WatchKey, KbWatch>,
+    /// What a watch the route refused with `401` was feeding, waiting for a
+    /// newer credential to be re-homed onto.
+    stranded: HashMap<WatchKey, Stranded>,
+    /// The credential this session presented last; where stranded keys go.
+    /// Held verbatim like [`WatchKey`]'s and never logged.
+    latest: Option<NotedThatClient>,
+    /// The session's peer, so a re-home started from any request can open a
+    /// forwarder. Set by the first watch.
+    peer: Option<Peer<RoleServer>>,
+    /// A re-home task is running; the next request need not start another.
+    rehoming: bool,
     keeper_started: bool,
     coalescer_started: bool,
+}
+
+/// A refused watch's interest, kept until it is re-homed or given up on.
+struct Stranded {
+    /// Object key to the URI it was subscribed under, as in [`KbWatch`].
+    keys: HashMap<String, String>,
+    list_changed: bool,
+    /// When this is given up on if nothing has claimed it; reset whenever
+    /// another refusal strands more under the same watch key.
+    expires: Instant,
+}
+
+impl Stranded {
+    fn new() -> Self {
+        Self {
+            keys: HashMap::new(),
+            list_changed: false,
+            expires: Instant::now() + STRANDED_TTL,
+        }
+    }
+
+    fn wanted(&self) -> bool {
+        self.list_changed || !self.keys.is_empty()
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.expires
+    }
+}
+
+/// Forget stranded interest that is empty or past its [`STRANDED_TTL`].
+fn prune_stranded(inner: &mut Inner) {
+    let now = Instant::now();
+    inner
+        .stranded
+        .retain(|_, stranded| stranded.wanted() && !stranded.expired(now));
 }
 
 /// One knowledge base's forwarder, shared between the handler and the task.
@@ -233,6 +304,102 @@ impl Subscriptions {
         for watch_key in spent {
             inner.kbs.remove(&watch_key);
         }
+        // And every stranded copy, or a re-home would bring it back.
+        for (watch_key, stranded) in &mut inner.stranded {
+            if watch_key.0 == kb {
+                stranded.keys.remove(key);
+            }
+        }
+        inner.stranded.retain(|_, stranded| stranded.wanted());
+    }
+
+    /// Record the credential the session just presented, and re-home anything
+    /// stranded under another one onto it.
+    ///
+    /// Called for every request that reaches the handler, so a client whose
+    /// old token was refused while it sat idle gets its subscriptions back on
+    /// its next call — which the `resources/updated` sent at the refusal
+    /// invites, since a client re-reads a resource it is told changed.
+    pub(crate) fn note_caller(self: &Arc<Self>, client: &NotedThatClient) {
+        let mut inner = self.inner.lock().expect("subscriptions");
+        if inner
+            .latest
+            .as_ref()
+            .is_none_or(|latest| latest.credential() != client.credential())
+        {
+            inner.latest = Some(client.clone());
+        }
+        prune_stranded(&mut inner);
+        self.rehome_if_due(&mut inner);
+    }
+
+    /// Start a re-home onto the latest credential if anything is stranded
+    /// under a different one and no re-home is already running.
+    fn rehome_if_due(self: &Arc<Self>, inner: &mut Inner) {
+        self.rehome_unless_just_tried(inner, None, &HashSet::new());
+    }
+
+    /// [`Self::rehome_if_due`], except that the keys in `kept` — whose probe
+    /// as `tried` just failed without a verdict — do not count while `tried`
+    /// is still the latest credential. Probing them again at once as the same
+    /// credential would only fail the same way, in a loop; they wait for the
+    /// session's next request, or for [`STRANDED_TTL`].
+    fn rehome_unless_just_tried(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        tried: Option<&Option<String>>,
+        kept: &HashSet<(String, String)>,
+    ) {
+        if inner.rehoming {
+            return;
+        }
+        let Some(latest) = inner.latest.clone() else {
+            return;
+        };
+        let credential = latest.credential();
+        let retrying = tried == Some(&credential);
+        let due = inner
+            .stranded
+            .iter()
+            .filter(|(watch_key, _)| watch_key.1 != credential)
+            .any(|(watch_key, stranded)| {
+                stranded.list_changed
+                    || stranded.keys.keys().any(|key| {
+                        !(retrying && kept.contains(&(watch_key.0.clone(), key.clone())))
+                    })
+            });
+        if due {
+            inner.rehoming = true;
+            tokio::spawn(rehome(Arc::downgrade(self), latest, self.cancel.clone()));
+        }
+    }
+
+    /// A forwarder was refused with `status`: take what its watch was feeding,
+    /// and keep it for a re-home when the refusal is `401` — the bearer
+    /// expired, which is what a token refresh leaves behind. Returns the URIs
+    /// the client must be told about and whether the watch fed `list_changed`.
+    ///
+    /// Must run before [`Self::drop_watch`], which clears the watch. Takes the
+    /// session lock before reading the watch's keys, the order `unsubscribe`
+    /// takes them in: read first and recorded after, an `unsubscribe` landing
+    /// in between would remove the key from the watch while nothing was
+    /// stranded yet, and this would then strand it from its stale copy for a
+    /// re-home to bring back.
+    fn strand(&self, watch_key: &WatchKey, watch: &KbWatch, status: u16) -> (Vec<String>, bool) {
+        let mut inner = self.inner.lock().expect("subscriptions");
+        let keys = watch.keys.lock().expect("subscription keys").clone();
+        let list_changed = watch.list_changed.load(Ordering::SeqCst);
+        let uris = keys.values().cloned().collect();
+        if status == 401 && (list_changed || !keys.is_empty()) {
+            let stranded = inner
+                .stranded
+                .entry(watch_key.clone())
+                .or_insert_with(Stranded::new);
+            stranded.keys.extend(keys);
+            stranded.list_changed |= list_changed;
+            stranded.expires = Instant::now() + STRANDED_TTL;
+        }
+        (uris, list_changed)
     }
 
     /// Watch every knowledge base in `kbs` for list changes, as the caller
@@ -289,6 +456,9 @@ impl Subscriptions {
         client: &NotedThatClient,
         peer: &Peer<RoleServer>,
     ) -> KbWatch {
+        if inner.peer.is_none() {
+            inner.peer = Some(peer.clone());
+        }
         let watch_key: WatchKey = (kb.to_owned(), client.credential());
         // `alive` alone is not enough: it is cleared only where a forwarder
         // exits through `drop_watch`, and a cancelled token is the other way a
@@ -362,6 +532,7 @@ impl Subscriptions {
     /// subscribe again.
     fn stand_down_if_idle(&self) -> bool {
         let mut inner = self.inner.lock().expect("subscriptions");
+        prune_stranded(&mut inner);
         let idle = !any_subscribed(&inner);
         if idle {
             inner.keeper_started = false;
@@ -448,6 +619,207 @@ pub(crate) async fn probe_listable(
     Err(McpToolError::NotFound("object".to_owned()).into())
 }
 
+/// What a re-home probe found out about one stranded key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// The new credential may list it: move it.
+    Move,
+    /// The API refused it: `forbidden`, or `not_found` — the concealed denial,
+    /// a knowledge base or key that is gone. Drop it.
+    Drop,
+    /// No verdict: the new credential expired too (`401`), the API failed or
+    /// timed out. Keep it stranded for the session's next request.
+    Keep,
+}
+
+impl Verdict {
+    fn of(probe: &Result<(), McpError>) -> Self {
+        let Err(error) = probe else {
+            return Self::Move;
+        };
+        let forbidden = McpError::from(McpToolError::Forbidden);
+        let refused = error.code == ErrorCode::RESOURCE_NOT_FOUND
+            || (error.code == forbidden.code && error.message == forbidden.message);
+        if refused { Self::Drop } else { Self::Keep }
+    }
+}
+
+/// Move what is stranded under any credential but `client`'s onto `client`'s
+/// watches.
+///
+/// Every key is probed again as `client` before it moves: the stranded keys
+/// were admitted for the old credential, and a refresh can change the groups
+/// a subject is in, so carrying them over unchecked would feed a caller
+/// events for keys it may no longer list. A key the probe refuses is dropped;
+/// the client was already told to re-read it when it was stranded. A key
+/// whose probe fails any other way — `client` has expired as well, the API is
+/// down — stays stranded under its old credential, to be tried again on the
+/// session's next request: dropping it would lose the subscription with no sign,
+/// which is the bug this module's re-home exists to fix. A `list_changed`
+/// interest moves without a probe — the events route filters each event as
+/// the new credential, as it does for [`Subscriptions::watch_list_changes`].
+///
+/// Once moved, each key's new stream is awaited, as `subscribe` awaits it,
+/// and the key is sent `notifications/resources/updated` (a moved
+/// `list_changed`, one `list_changed`). The notice at the refusal covered the
+/// client's re-read, but not a write between that re-read and this stream
+/// opening, which no stream saw.
+///
+/// Holds the session only while it touches state, never across a probe or a
+/// wait, so a session that ends meanwhile is not kept alive by its own
+/// re-home; and stops at `cancel`, the session's token, so it makes no calls
+/// as a departed session's bearer.
+async fn rehome(session: Weak<Subscriptions>, client: NotedThatClient, cancel: CancellationToken) {
+    let credential = client.credential();
+    let foreign = |watch_key: &WatchKey| watch_key.1 != credential;
+    let pending: Vec<(String, String)> = {
+        let Some(live) = session.upgrade() else {
+            return;
+        };
+        let inner = live.inner.lock().expect("subscriptions");
+        inner
+            .stranded
+            .iter()
+            .filter(|(watch_key, _)| foreign(watch_key))
+            .flat_map(|(watch_key, stranded)| {
+                stranded
+                    .keys
+                    .keys()
+                    .map(|key| (watch_key.0.clone(), key.clone()))
+            })
+            .collect()
+    };
+    let mut verdicts = Vec::with_capacity(pending.len());
+    for (kb, key) in pending {
+        let verdict = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return,
+            probe = probe_listable(&client, &kb, &key) => Verdict::of(&probe),
+        };
+        verdicts.push((kb, key, verdict));
+    }
+
+    // What to announce once the new streams are open: each moved key's URI
+    // with its watch's link, and the links of watches that took a
+    // `list_changed`.
+    let mut moved = Vec::new();
+    let mut lists = Vec::new();
+    let (peer, coalescer) = {
+        let Some(live) = session.upgrade() else {
+            return;
+        };
+        let mut inner = live.inner.lock().expect("subscriptions");
+        inner.rehoming = false;
+        // Not a watch opened under an already-cancelled token.
+        if live.still_deliverable().is_err() {
+            return;
+        }
+        let Some(peer) = inner.peer.clone() else {
+            return;
+        };
+        let mut kept = HashSet::new();
+        for (kb, key, verdict) in verdicts {
+            if verdict == Verdict::Keep {
+                tracing::debug!(
+                    target: "notedthat::mcp",
+                    kb = %kb,
+                    "a stranded subscription could not be checked as the newer credential; kept for the next one"
+                );
+                kept.insert((kb, key));
+                continue;
+            }
+            // Taken only if it is still stranded: an `unsubscribe` while the
+            // probe ran has removed it, and must win.
+            let mut uri = None;
+            for (watch_key, stranded) in &mut inner.stranded {
+                if watch_key.0 == kb && foreign(watch_key) {
+                    uri = stranded.keys.remove(&key).or(uri);
+                }
+            }
+            match uri {
+                Some(uri) if verdict == Verdict::Move => {
+                    let watch = live.ensure_watch(&mut inner, &kb, &client, &peer);
+                    watch
+                        .keys
+                        .lock()
+                        .expect("subscription keys")
+                        .insert(key, uri.clone());
+                    moved.push((uri, watch.link.subscribe()));
+                }
+                Some(_) => tracing::debug!(
+                    target: "notedthat::mcp",
+                    kb = %kb,
+                    "a stranded subscription is refused to the newer credential; dropped"
+                ),
+                None => {}
+            }
+        }
+        let list_kbs: Vec<String> = inner
+            .stranded
+            .iter_mut()
+            .filter(|(watch_key, stranded)| foreign(watch_key) && stranded.list_changed)
+            .map(|(watch_key, stranded)| {
+                stranded.list_changed = false;
+                watch_key.0.clone()
+            })
+            .collect();
+        for kb in list_kbs {
+            let watch = live.ensure_watch(&mut inner, &kb, &client, &peer);
+            watch.list_changed.store(true, Ordering::SeqCst);
+            lists.push(watch.link.subscribe());
+        }
+        prune_stranded(&mut inner);
+        // Something may have been stranded, or a newer credential presented,
+        // while the probes ran.
+        live.rehome_unless_just_tried(&mut inner, Some(&credential), &kept);
+        (peer, live.list_changed.clone())
+    };
+
+    announce_moved(&peer, &coalescer, moved, lists, &cancel).await;
+}
+
+/// The second half of a re-home: wait for each moved key's new stream, as
+/// `subscribe` does, then tell the client to re-read it.
+async fn announce_moved(
+    peer: &Peer<RoleServer>,
+    coalescer: &Coalescer,
+    moved: Vec<(String, tokio::sync::watch::Receiver<Link>)>,
+    lists: Vec<tokio::sync::watch::Receiver<Link>>,
+    cancel: &CancellationToken,
+) {
+    let (uris, links): (Vec<_>, Vec<_>) = moved.into_iter().unzip();
+    let (states, list_states) = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return,
+        states = futures::future::join(
+            futures::future::join_all(links.into_iter().map(wait_open)),
+            futures::future::join_all(lists.into_iter().map(wait_open)),
+        ) => states,
+    };
+    // A refused stream sends its own notice when it strands or drops what it
+    // was given; everything else is announced, even a stream still
+    // connecting, which is live from whenever it opens.
+    for (uri, state) in uris.into_iter().zip(states) {
+        if matches!(state, Link::Refused(_)) {
+            continue;
+        }
+        let sent = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return,
+            sent = peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(uri)) => sent,
+        };
+        if sent.is_err() {
+            return;
+        }
+    }
+    if list_states
+        .iter()
+        .any(|state| !matches!(state, Link::Refused(_)))
+    {
+        coalescer.touch();
+    }
+}
+
 /// Everything a forwarder needs, owned by its task.
 struct Forwarder {
     session: Weak<Subscriptions>,
@@ -504,11 +876,44 @@ async fn forward(fw: Forwarder) {
     let watch_key = fw.watch_key.clone();
     let watch = fw.watch.clone();
     let session = fw.session.clone();
+    let peer = fw.peer.clone();
+    let coalescer = fw.coalescer.clone();
     run_forwarder(fw).await;
-    if let Some(session) = session.upgrade() {
-        session.drop_watch(&watch_key, &watch);
-    } else {
+    let Some(live) = session.upgrade() else {
         watch.alive.store(false, Ordering::SeqCst);
+        return;
+    };
+    let refused = match *watch.link.borrow() {
+        Link::Refused(status) => Some(status),
+        Link::Connecting | Link::Open => None,
+    };
+    let Some(status) = refused else {
+        live.drop_watch(&watch_key, &watch);
+        return;
+    };
+    let (uris, list_changed) = live.strand(&watch_key, &watch, status);
+    live.drop_watch(&watch_key, &watch);
+    if status == 401 {
+        live.rehome_if_due(&mut live.inner.lock().expect("subscriptions"));
+    }
+    // Not held across the notifications below; see `keep_alive`.
+    drop(live);
+    // Whatever happens to these keys next, events for them may have gone
+    // unseen since this stream last had them, and a dropped key would
+    // otherwise go quiet with no sign. The client re-reads what it is told
+    // changed — which also presents its current credential, and so re-homes
+    // what was stranded.
+    for uri in uris {
+        if peer
+            .notify_resource_updated(ResourceUpdatedNotificationParam::new(uri))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+    if list_changed {
+        coalescer.touch();
     }
 }
 
@@ -553,7 +958,7 @@ async fn run_forwarder(fw: Forwarder) {
                     target: "notedthat::mcp",
                     kb = %kb,
                     status,
-                    "the events route refused the subscriber; dropping its subscriptions for this knowledge base"
+                    "the events route refused the subscriber; its subscriptions for this knowledge base are stranded (401) or dropped"
                 );
                 fw.watch.link.send_replace(Link::Refused(status));
                 return;
@@ -616,15 +1021,23 @@ async fn pause(cancel: &CancellationToken, backoff: &mut Duration) -> bool {
     }
 }
 
-/// Whether any of a session's watches still holds a subscribed key.
+/// Whether any of a session's watches still holds a subscribed key, counting
+/// stranded ones until their [`STRANDED_TTL`]: those come back on the
+/// client's next request, so the session is still worth holding open for it
+/// — for a while, not for good.
 ///
 /// Takes `&Inner` rather than locking, so the keeper can test this and clear
 /// `keeper_started` without letting go in between.
 fn any_subscribed(inner: &Inner) -> bool {
+    let now = Instant::now();
     inner
         .kbs
         .values()
         .any(|watch| !watch.keys.lock().expect("subscription keys").is_empty())
+        || inner
+            .stranded
+            .values()
+            .any(|stranded| !stranded.keys.is_empty() && !stranded.expired(now))
 }
 
 /// Ping the client once a minute, for as long as it has a subscription to
@@ -635,8 +1048,10 @@ fn any_subscribed(inner: &Inner) -> bool {
 /// It stops of its own accord once nothing is subscribed. The keeper is what
 /// defeats rmcp's idle timer, so one that outlived the last subscription would
 /// pin a `MAX_SESSIONS` slot for a session with nothing to deliver — reachable
-/// by unsubscribing the last key, and by a `subscribe` that `ensure_keeper`
-/// started before the route refused it.
+/// by unsubscribing the last key, by a `subscribe` that `ensure_keeper`
+/// started before the route refused it, and by keys a `401` stranded that no
+/// newer credential claimed within [`STRANDED_TTL`] — a revoked bearer, or a
+/// client that stopped refreshing.
 ///
 /// The mark matters because cancelling tells rmcp nothing — the session stays
 /// open and usable for tools. Without it, a later `resources/subscribe` on the
@@ -654,8 +1069,10 @@ async fn keep_alive(
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(KEEPER_INTERVAL) => {}
         }
-        // Nothing subscribed any more — the last key was unsubscribed, or the
-        // route refused the only forwarder and `drop_watch` cleared it. Stop
+        // Nothing subscribed any more — the last key was unsubscribed, the
+        // route refused the only forwarder with a `403`/`404` and `drop_watch`
+        // cleared it, or what a `401` stranded went unclaimed for
+        // `STRANDED_TTL` and was pruned. Stop
         // pinging and let rmcp's idle timer reclaim the session: holding it
         // open past that point is the exact thing moving the keeper out of
         // `resources/list` was meant to stop, arrived at from the other end.
@@ -729,7 +1146,7 @@ impl Coalescer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn watch(keys: &[(&str, &str)], list_changed: bool) -> KbWatch {
@@ -965,6 +1382,543 @@ mod tests {
         let subs = Subscriptions::new(&CancellationToken::new());
         subs.cancel.cancel();
         assert!(subs.still_deliverable().is_err());
+    }
+
+    /// A `401` is an expired bearer — what a token refresh leaves behind — so
+    /// what the watch fed is kept for a newer credential; a `403` or `404` is a
+    /// credential that lost access, so it is not. The client hears about the
+    /// keys either way.
+    #[test]
+    fn an_expired_bearer_strands_its_keys_and_a_lost_grant_drops_them() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let w = watch(&[("a.md", "u")], true);
+
+        let (uris, list_changed) = subs.strand(&key("notes", Some("t1")), &w, 403);
+        assert_eq!((uris, list_changed), (vec!["u".to_owned()], true));
+        assert!(subs.inner.lock().unwrap().stranded.is_empty());
+
+        let (uris, _) = subs.strand(&key("notes", Some("t1")), &w, 401);
+        assert_eq!(uris, vec!["u".to_owned()]);
+        let inner = subs.inner.lock().unwrap();
+        let stranded = &inner.stranded[&key("notes", Some("t1"))];
+        assert_eq!(stranded.keys.get("a.md").map(String::as_str), Some("u"));
+        assert!(stranded.list_changed);
+    }
+
+    /// A stranded key is still a subscription: the keeper keeps the session
+    /// open for it, and `unsubscribe` reaches it so a re-home cannot bring it
+    /// back.
+    #[tokio::test]
+    async fn a_stranded_key_counts_as_subscribed_until_unsubscribed() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.strand(
+            &key("notes", Some("t1")),
+            &watch(&[("a.md", "u")], false),
+            401,
+        );
+        assert!(subs.has_subscriptions());
+
+        subs.unsubscribe("notes", "a.md");
+
+        assert!(!subs.has_subscriptions());
+        assert!(subs.inner.lock().unwrap().stranded.is_empty());
+    }
+
+    /// Presenting the credential the keys were stranded under starts nothing:
+    /// there is nowhere newer to move them.
+    #[tokio::test]
+    async fn the_stranding_credential_itself_does_not_re_home() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.strand(
+            &key("notes", Some("t1")),
+            &watch(&[("a.md", "u")], false),
+            401,
+        );
+
+        subs.note_caller(&NotedThatClient::new("http://127.0.0.1:9", "t1").unwrap());
+
+        assert!(!subs.inner.lock().unwrap().rehoming);
+        assert!(subs.has_subscriptions());
+    }
+
+    /// Records the `resources/updated` notifications a session is sent, by
+    /// URI, and each `list_changed` as [`LIST_CHANGED`].
+    #[derive(Clone, Default)]
+    pub(crate) struct Recorder(Arc<Mutex<Vec<String>>>);
+
+    const LIST_CHANGED: &str = "list_changed";
+
+    impl rmcp::ClientHandler for Recorder {
+        async fn on_resource_updated(
+            &self,
+            params: ResourceUpdatedNotificationParam,
+            _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+        ) {
+            self.0.lock().unwrap().push(params.uri);
+        }
+
+        async fn on_resource_list_changed(
+            &self,
+            _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+        ) {
+            self.0.lock().unwrap().push(LIST_CHANGED.to_owned());
+        }
+    }
+
+    struct Idle;
+    impl rmcp::ServerHandler for Idle {}
+
+    /// A server peer connected to a [`Recorder`] over an in-memory pipe. The
+    /// two running services are returned so they outlive the test body.
+    async fn connected() -> (Peer<RoleServer>, Recorder, impl Sized) {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let recorder = Recorder::default();
+        let (server, client) = tokio::join!(
+            rmcp::serve_server(Idle, server_io),
+            rmcp::serve_client(recorder.clone(), client_io)
+        );
+        let server = server.expect("server handshake");
+        let client = client.expect("client handshake");
+        (server.peer().clone(), recorder, (server, client))
+    }
+
+    fn updates(recorder: &Recorder, uri: &str) -> usize {
+        recorder
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|u| *u == uri)
+            .count()
+    }
+
+    async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    const URI: &str = "notedthat://notes/a.md";
+
+    /// The old bearer's stream: open once, then — the bearer having expired —
+    /// refused on the reconnect.
+    async fn mount_expiring_stream(api: &wiremock::MockServer, token: &str) {
+        mount_refused_stream(api, token, 401).await;
+    }
+
+    /// A stream open once, then refused with `status` on the reconnect.
+    async fn mount_refused_stream(api: &wiremock::MockServer, token: &str, status: u16) {
+        use wiremock::matchers::{header, method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes/events"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(api)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes/events"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(wiremock::ResponseTemplate::new(status))
+            .with_priority(2)
+            .mount(api)
+            .await;
+    }
+
+    /// A stream for `token` that opens and carries nothing: a write made
+    /// before it opened is one it never reports.
+    async fn mount_quiet_stream(api: &wiremock::MockServer, token: &str) {
+        use wiremock::matchers::{header, method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes/events"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(api)
+            .await;
+    }
+
+    /// The probe's listing as `token`, answering `status` with no body.
+    async fn mount_listing_status(api: &wiremock::MockServer, token: &str, status: u16) {
+        use wiremock::matchers::{header, method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(wiremock::ResponseTemplate::new(status))
+            .mount(api)
+            .await;
+    }
+
+    /// How many probe listings the API received as `token`.
+    async fn listings(api: &wiremock::MockServer, token: &str) -> usize {
+        let bearer = format!("Bearer {token}");
+        api.received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| {
+                request.url.path() == "/api/v1/knowledgebases/notes"
+                    && request
+                        .headers
+                        .get("authorization")
+                        .is_some_and(|value| value.as_bytes() == bearer.as_bytes())
+            })
+            .count()
+    }
+
+    /// Whether `a.md` is on the watch opened as `token`.
+    fn watched_as(subs: &Subscriptions, token: &str) -> bool {
+        subs.inner
+            .lock()
+            .unwrap()
+            .kbs
+            .get(&key("notes", Some(token)))
+            .is_some_and(|w| w.keys.lock().unwrap().get("a.md").map(String::as_str) == Some(URI))
+    }
+
+    /// The prefix listing the subscribe-time probe reads, as `token`.
+    async fn mount_listing(api: &wiremock::MockServer, token: &str, keys: &[&str]) {
+        use wiremock::matchers::{header, method, path, query_param};
+        let objects: Vec<_> = keys
+            .iter()
+            .map(|key| serde_json::json!({ "key": key, "size": 0 }))
+            .collect();
+        wiremock::Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes"))
+            .and(query_param("prefix", "a.md"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "objects": objects, "next_cursor": null })),
+            )
+            .mount(api)
+            .await;
+    }
+
+    /// The issue's case: one knowledge base, two credentials of one session.
+    /// The first stream is refused with `401`; the key subscribed under it
+    /// moves to the newer credential's stream, and the client is told to
+    /// re-read it twice: at the refusal, and once the new stream is open.
+    ///
+    /// The new stream carries nothing — the write the client must hear about
+    /// landed after its first re-read and before this stream opened, so no
+    /// stream ever reports it. Only the second notice covers it.
+    #[tokio::test]
+    async fn keys_under_an_expired_bearer_move_to_the_refreshed_one() {
+        let api = wiremock::MockServer::start().await;
+        mount_expiring_stream(&api, "t1").await;
+        mount_listing(&api, "t2", &["a.md"]).await;
+        mount_quiet_stream(&api, "t2").await;
+        let (peer, recorder, _services) = connected().await;
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let old = NotedThatClient::new(&api.uri(), "t1").unwrap();
+        let new = NotedThatClient::new(&api.uri(), "t2").unwrap();
+
+        subs.subscribe("notes", "a.md", URI, &old, &peer)
+            .await
+            .expect("subscribed as the old bearer");
+        // The client refreshes and makes a call with the new bearer.
+        subs.note_caller(&new);
+
+        eventually("the key re-homed onto the refreshed bearer", || {
+            let inner = subs.inner.lock().unwrap();
+            inner.stranded.is_empty() && !inner.kbs.contains_key(&key("notes", Some("t1")))
+        })
+        .await;
+        assert!(watched_as(&subs, "t2"));
+        eventually("the gap notice, then the notice once moved", || {
+            updates(&recorder, URI) == 2
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(updates(&recorder, URI), 2, "one each, no more");
+    }
+
+    /// The lazy path, end to end: the old bearer is refused while the client
+    /// is idle, so nothing moves until the client's next request shows the
+    /// refreshed bearer `t2` — which `present` does. Shared with the handler's
+    /// tests, where `present` is a real request through `client_for`.
+    pub(crate) async fn a_key_stranded_while_idle_moves_on_the_next_request(
+        api: &wiremock::MockServer,
+        subs: &Arc<Subscriptions>,
+        present: impl FnOnce(),
+    ) {
+        mount_expiring_stream(api, "t1").await;
+        mount_listing(api, "t2", &["a.md"]).await;
+        mount_quiet_stream(api, "t2").await;
+        let (peer, recorder, _services) = connected().await;
+        let old = NotedThatClient::new(&api.uri(), "t1").unwrap();
+
+        subs.subscribe("notes", "a.md", URI, &old, &peer)
+            .await
+            .expect("subscribed as the old bearer");
+        eventually("the key stranded", || {
+            !subs.inner.lock().unwrap().stranded.is_empty()
+        })
+        .await;
+        eventually("the gap notice", || updates(&recorder, URI) == 1).await;
+        assert!(!watched_as(subs, "t2"), "nothing to move onto yet");
+
+        present();
+
+        eventually("the key moved onto the refreshed bearer", || {
+            subs.inner.lock().unwrap().stranded.is_empty() && watched_as(subs, "t2")
+        })
+        .await;
+        eventually("the notice once moved", || updates(&recorder, URI) == 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_key_stranded_while_idle_moves_when_the_session_next_calls() {
+        let api = wiremock::MockServer::start().await;
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let new = NotedThatClient::new(&api.uri(), "t2").unwrap();
+        a_key_stranded_while_idle_moves_on_the_next_request(&api, &subs, || {
+            subs.note_caller(&new);
+        })
+        .await;
+    }
+
+    /// A probe that gives no verdict — the refreshed bearer has expired too,
+    /// or the API failed — is not a refusal: the key stays stranded, is not
+    /// probed again as the same credential in a loop, and moves once a later
+    /// credential can list it.
+    #[tokio::test]
+    async fn a_key_whose_probe_fails_waits_for_the_next_credential() {
+        for status in [401, 503] {
+            let api = wiremock::MockServer::start().await;
+            mount_expiring_stream(&api, "t1").await;
+            mount_listing_status(&api, "t2", status).await;
+            mount_listing(&api, "t3", &["a.md"]).await;
+            mount_quiet_stream(&api, "t3").await;
+            let (peer, recorder, _services) = connected().await;
+            let subs = Subscriptions::new(&CancellationToken::new());
+            let old = NotedThatClient::new(&api.uri(), "t1").unwrap();
+            subs.subscribe("notes", "a.md", URI, &old, &peer)
+                .await
+                .expect("subscribed as the old bearer");
+            eventually("the key stranded", || {
+                !subs.inner.lock().unwrap().stranded.is_empty()
+            })
+            .await;
+
+            subs.note_caller(&NotedThatClient::new(&api.uri(), "t2").unwrap());
+            eventually("the probe as t2 answered", || {
+                !subs.inner.lock().unwrap().rehoming
+            })
+            .await;
+            assert_eq!(listings(&api, "t2").await, 1, "{status}");
+            {
+                let inner = subs.inner.lock().unwrap();
+                let stranded = &inner.stranded[&key("notes", Some("t1"))];
+                assert!(stranded.keys.contains_key("a.md"), "{status}: kept");
+                assert!(!inner.kbs.contains_key(&key("notes", Some("t2"))));
+                assert!(any_subscribed(&inner), "{status}");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(listings(&api, "t2").await, 1, "{status}: no retry loop");
+
+            subs.note_caller(&NotedThatClient::new(&api.uri(), "t3").unwrap());
+            eventually("the key moved onto t3", || {
+                subs.inner.lock().unwrap().stranded.is_empty() && watched_as(&subs, "t3")
+            })
+            .await;
+            eventually("the notice once moved", || updates(&recorder, URI) == 2).await;
+        }
+    }
+
+    /// A `list_changed` interest moves without a probe — the events route
+    /// filters each event as the new credential — and the client is sent a
+    /// `list_changed` once the new stream is open.
+    #[tokio::test]
+    async fn a_stranded_list_watch_moves_without_a_probe() {
+        let api = wiremock::MockServer::start().await;
+        mount_quiet_stream(&api, "t2").await;
+        let (peer, recorder, _services) = connected().await;
+        let subs = Subscriptions::new(&CancellationToken::new());
+        {
+            let mut inner = subs.inner.lock().unwrap();
+            inner.peer = Some(peer.clone());
+            subs.ensure_coalescer(&mut inner, &peer);
+        }
+        subs.strand(&key("notes", Some("t1")), &watch(&[], true), 401);
+
+        subs.note_caller(&NotedThatClient::new(&api.uri(), "t2").unwrap());
+
+        eventually("the list watch moved onto t2", || {
+            let inner = subs.inner.lock().unwrap();
+            inner.stranded.is_empty()
+                && inner
+                    .kbs
+                    .get(&key("notes", Some("t2")))
+                    .is_some_and(|w| w.list_changed.load(Ordering::SeqCst))
+        })
+        .await;
+        eventually("list_changed once moved", || {
+            updates(&recorder, LIST_CHANGED) == 1
+        })
+        .await;
+        assert_eq!(listings(&api, "t2").await, 0, "no probe");
+    }
+
+    /// A credential that lost access (`403`, `404`) is not a refresh: its keys
+    /// are dropped, the client is told, nothing is re-homed even when a newer
+    /// credential arrives, and the keeper stands down.
+    #[tokio::test]
+    async fn a_revoked_grant_drops_its_keys_end_to_end() {
+        for status in [403, 404] {
+            let api = wiremock::MockServer::start().await;
+            mount_refused_stream(&api, "t1", status).await;
+            mount_listing(&api, "t2", &["a.md"]).await;
+            let (peer, recorder, _services) = connected().await;
+            let subs = Subscriptions::new(&CancellationToken::new());
+            let old = NotedThatClient::new(&api.uri(), "t1").unwrap();
+            subs.subscribe("notes", "a.md", URI, &old, &peer)
+                .await
+                .expect("subscribed while the grant held");
+
+            eventually("the notice at the refusal", || updates(&recorder, URI) == 1).await;
+            eventually("the watch gone", || {
+                subs.inner.lock().unwrap().kbs.is_empty()
+            })
+            .await;
+            assert!(subs.inner.lock().unwrap().stranded.is_empty(), "{status}");
+
+            subs.note_caller(&NotedThatClient::new(&api.uri(), "t2").unwrap());
+            assert!(!subs.inner.lock().unwrap().rehoming, "{status}");
+            assert!(!watched_as(&subs, "t2"), "{status}");
+            assert_eq!(listings(&api, "t2").await, 0, "{status}");
+            assert!(
+                subs.stand_down_if_idle(),
+                "{status}: the keeper stands down"
+            );
+        }
+    }
+
+    /// Stranded keys nobody claims are given up on: past [`STRANDED_TTL`]
+    /// they no longer hold the session open, the keeper prunes them, and a
+    /// later credential does not bring them back.
+    #[tokio::test]
+    async fn unclaimed_stranded_keys_expire() {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.strand(
+            &key("notes", Some("t1")),
+            &watch(&[("a.md", "u")], false),
+            401,
+        );
+        assert!(subs.has_subscriptions());
+
+        subs.inner
+            .lock()
+            .unwrap()
+            .stranded
+            .values_mut()
+            .for_each(|stranded| stranded.expires = Instant::now());
+
+        assert!(!subs.has_subscriptions(), "no longer counted");
+        assert!(subs.stand_down_if_idle(), "the keeper stands down");
+        assert!(subs.inner.lock().unwrap().stranded.is_empty(), "pruned");
+        subs.note_caller(&NotedThatClient::new("http://127.0.0.1:9", "t2").unwrap());
+        assert!(!subs.inner.lock().unwrap().rehoming);
+    }
+
+    /// The probe's verdicts: only a refusal drops a key.
+    #[test]
+    fn only_a_refused_probe_drops_a_stranded_key() {
+        assert_eq!(Verdict::of(&Ok(())), Verdict::Move);
+        let refused = [
+            McpToolError::Forbidden,
+            McpToolError::NotFound("object".to_owned()),
+        ];
+        for error in refused {
+            assert_eq!(Verdict::of(&Err(error.into())), Verdict::Drop);
+        }
+        let unsure = [
+            McpToolError::Unauthorized,
+            McpToolError::BackendUnavailable,
+            McpToolError::RequestTimeout("slow".to_owned()),
+            McpToolError::InternalError("boom".to_owned()),
+        ];
+        for error in unsure {
+            assert_eq!(Verdict::of(&Err(error.into())), Verdict::Keep);
+        }
+    }
+
+    /// Ending the session stops a re-home before it opens anything.
+    #[tokio::test]
+    async fn a_re_home_stops_with_the_session() {
+        let api = wiremock::MockServer::start().await;
+        mount_listing(&api, "t2", &["a.md"]).await;
+        mount_quiet_stream(&api, "t2").await;
+        let (peer, _recorder, _services) = connected().await;
+        let subs = Subscriptions::new(&CancellationToken::new());
+        subs.inner.lock().unwrap().peer = Some(peer);
+        subs.strand(
+            &key("notes", Some("t1")),
+            &watch(&[("a.md", URI)], false),
+            401,
+        );
+        subs.cancel.cancel();
+
+        rehome(
+            Arc::downgrade(&subs),
+            NotedThatClient::new(&api.uri(), "t2").unwrap(),
+            subs.cancel.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            listings(&api, "t2").await,
+            0,
+            "no call as the departed session"
+        );
+        assert!(subs.inner.lock().unwrap().kbs.is_empty(), "no watch opened");
+    }
+
+    /// Re-homing is not a way around authorization: the newer credential is
+    /// probed, and a key it is refused is dropped — after the client was told
+    /// to re-read it, so it does not simply go quiet.
+    #[tokio::test]
+    async fn a_key_the_refreshed_bearer_cannot_list_is_dropped_not_moved() {
+        let api = wiremock::MockServer::start().await;
+        mount_expiring_stream(&api, "t1").await;
+        mount_listing(&api, "t2", &[]).await;
+        let (peer, recorder, _services) = connected().await;
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let old = NotedThatClient::new(&api.uri(), "t1").unwrap();
+
+        subs.subscribe("notes", "a.md", URI, &old, &peer)
+            .await
+            .expect("subscribed as the old bearer");
+        // Refused while the client is idle: stranded, and the client told.
+        eventually("the key stranded", || {
+            !subs.inner.lock().unwrap().stranded.is_empty()
+        })
+        .await;
+        eventually("the gap notice", || updates(&recorder, URI) == 1).await;
+
+        // Its next call carries a refreshed bearer that may not list the key.
+        subs.note_caller(&NotedThatClient::new(&api.uri(), "t2").unwrap());
+
+        eventually("the re-home finished", || {
+            !subs.inner.lock().unwrap().rehoming
+        })
+        .await;
+        let inner = subs.inner.lock().unwrap();
+        assert!(inner.stranded.is_empty(), "given up on, not kept");
+        assert!(
+            !inner.kbs.contains_key(&key("notes", Some("t2"))),
+            "no stream opened for a key the credential cannot list"
+        );
+        assert!(!any_subscribed(&inner));
     }
 
     #[test]
