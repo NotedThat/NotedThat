@@ -7,7 +7,10 @@ use testcontainers::{
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
 };
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 pub const API_TOKEN: &str = "phase3-api-token";
 pub const DAV_USER: &str = "phase3-user";
@@ -62,6 +65,7 @@ impl Backends {
             .expect("Qdrant mapped port");
         let embedder = MockServer::start().await;
         Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "object": "list",
                 "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0, 0.0], "object": "embedding"}]
@@ -100,7 +104,7 @@ impl Backends {
                 ..base.qdrant
             },
             embedder: EmbedderConfig {
-                endpoint_url: self.embedder.uri(),
+                endpoint_url: format!("{}/v1", self.embedder.uri()),
                 model: "phase3-model".to_string(),
                 api_key: "phase3-embedder-key".to_string(),
                 max_retries: 1,
