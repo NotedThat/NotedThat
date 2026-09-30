@@ -898,6 +898,63 @@ async fn not_found_on_reread_implicit_tombstone() {
     );
 }
 
+/// A `Content-Type` with parameters or odd casing is indexed as its media type,
+/// so the `mime` filter a caller naturally writes finds it (#286).
+#[tokio::test]
+async fn parameterised_content_type_is_found_by_its_media_type() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(4, 1)))
+        .mount(&mock_server)
+        .await;
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        "test-kb",
+        "hello.md",
+        "# Hello\n\nThis is a test document.",
+        "Text/Markdown; charset=utf-8",
+    );
+    index_once(
+        storage,
+        make_embedder(&mock_server.uri(), 4),
+        Arc::new(store.clone()),
+        &kb,
+        "hello.md",
+        16,
+    )
+    .await;
+
+    let points = scroll_points(&store, &kb, "hello.md", false).await;
+    assert!(!points.is_empty(), "hello.md was not indexed");
+    for point in &points {
+        assert_eq!(string_payload(point, "mime"), "text/markdown");
+    }
+
+    let hits = store
+        .hybrid_search(
+            &kb,
+            HybridQuery {
+                text: "test document".to_string(),
+                dense: vec![1.0; 4],
+                filter: Some(notedthat_core::search::SearchFilter {
+                    mime: Some("text/markdown".to_string()),
+                    ..Default::default()
+                }),
+                prefetch_limit: 10,
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!hits.is_empty(), "mime filter text/markdown found nothing");
+}
+
 #[tokio::test]
 async fn non_markdown_content_type_skipped() {
     let kb = kb();

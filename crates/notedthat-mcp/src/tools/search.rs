@@ -59,7 +59,8 @@ pub struct SearchFilter {
     /// Only hits whose object key starts with this prefix, e.g. `docs/rfc/`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_key_prefix: Option<String>,
-    /// Only hits from objects of exactly this MIME type, e.g. `text/markdown`.
+    /// Only hits from objects of this media type, e.g. `text/markdown`;
+    /// parameters such as `charset`, and case, are ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
     /// Only Open Knowledge Format concept hits of exactly this type.

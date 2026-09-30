@@ -1,4 +1,5 @@
 use crate::chunker;
+use crate::mime::essence;
 use notedthat_core::{ObjectMeta, ObjectPath, search::ConceptMetadata};
 use qdrant_client::qdrant::{Document, PointStruct, Value, Vector};
 use std::collections::HashMap;
@@ -46,7 +47,7 @@ pub(super) fn build_points(
             );
             payload.insert(
                 "mime".to_string(),
-                meta.content_type.as_deref().unwrap_or("").into(),
+                essence(meta.content_type.as_deref().unwrap_or("")).into(),
             );
             payload.insert("mtime".to_string(), meta.last_modified.unwrap_or(0).into());
             payload.insert(
@@ -87,4 +88,34 @@ pub(super) fn point_id(object_key: &ObjectPath, chunk_index: usize) -> u64 {
         let hash = hash ^ u64::from(*byte);
         hash.wrapping_mul(FNV_PRIME)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qdrant_client::qdrant::value::Kind;
+
+    #[test]
+    fn mime_payload_is_the_media_type_essence() {
+        let chunk = chunker::Chunk {
+            text: "hello".to_string(),
+            byte_start: 0,
+            byte_end: 5,
+            heading_path: Vec::new(),
+        };
+        let meta = ObjectMeta {
+            key: "hello.md".to_string(),
+            size: 5,
+            last_modified: None,
+            content_type: Some("Text/Markdown; charset=utf-8".to_string()),
+            etag: None,
+        };
+        let key = ObjectPath::try_from("hello.md").expect("valid path");
+
+        let points =
+            build_points(&[(0, chunk)], &[vec![0.0]], &key, &meta, "hash", None).expect("points");
+
+        let mime = points[0].payload.get("mime").and_then(|v| v.kind.clone());
+        assert_eq!(mime, Some(Kind::StringValue("text/markdown".to_string())));
+    }
 }

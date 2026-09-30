@@ -248,6 +248,19 @@ const CORPUS: &[Doc] = &[
         tags: &["green"],
         okf_type: None,
     },
+    // Indexed before #286: the payload holds the raw Content-Type, not its
+    // essence, until the object is PUT again.
+    Doc {
+        object_key: "legacy.txt",
+        chunk_index: 0,
+        dense: [0.0, 0.5, 0.5],
+        text: "legacy theta shared",
+        mime: "text/plain; charset=UTF-8",
+        mtime: 6_000,
+        heading_path: &[],
+        tags: &[],
+        okf_type: None,
+    },
 ];
 
 /// Provision `kb` exactly as `QdrantProvisioner` does, then load [`CORPUS`].
@@ -358,6 +371,24 @@ async fn observe_filters(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
             "mime",
             Some(SearchFilter {
                 mime: Some("text/plain".to_string()),
+                ..SearchFilter::default()
+            }),
+        ),
+        // Parameters and case are not part of the media type: this admits
+        // exactly what "mime" does (#286).
+        (
+            "mime_with_params",
+            Some(SearchFilter {
+                mime: Some("Text/Plain; charset=UTF-8".to_string()),
+                ..SearchFilter::default()
+            }),
+        ),
+        // The exact raw value still reaches a chunk indexed before #286, and
+        // its essence still reaches the ones indexed since.
+        (
+            "mime_legacy_raw",
+            Some(SearchFilter {
+                mime: Some("text/plain; charset=UTF-8".to_string()),
                 ..SearchFilter::default()
             }),
         ),
@@ -734,6 +765,18 @@ async fn filters_admit_the_same_points_in_both_backends() {
         "the unfiltered query must return the whole corpus, otherwise the \
          filtered comparisons prove nothing"
     );
+
+    // Agreeing on nothing would pass assert_agree: the parameterised type must
+    // admit what the bare one does, and that must not be empty.
+    let observed = |name: &str| {
+        from_qdrant
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, admitted)| admitted.as_str())
+    };
+    assert_eq!(observed("mime"), Some("beta.txt#0"));
+    assert_eq!(observed("mime_with_params"), observed("mime"));
+    assert_eq!(observed("mime_legacy_raw"), Some("beta.txt#0,legacy.txt#0"));
 
     assert_agree(&from_qdrant, &from_memory);
 }

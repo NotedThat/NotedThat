@@ -1355,6 +1355,8 @@ curl -sSf -X POST \
 
 - **`content_hash`**: Stored in the Qdrant payload for idempotent reindex detection but is **not** exposed in `SearchHit`.
 
+- **`mime` filter**: Matches the object's media type. Parameters and case are ignored on both sides, so `text/markdown` finds an object stored as `text/markdown; charset=utf-8`, and so does `Text/Markdown; charset=UTF-8`. This holds for chunks indexed by this release or later. A chunk indexed earlier holds the raw stored type until its object is indexed again, and only a `mime` value that is exactly that raw type finds it; see the upgrade note below.
+
 - **`object_key_prefix` filter**: Applied **client-side** by the Searcher, together with the caller's `search` grant, after the vector backend has fused its candidates and before the page is cut to `limit`. (qdrant-client 1.15 does not expose a native keyword-index prefix matcher.) When either applies, both retrieval arms are deepened to 10× your `limit` (at most 250 per arm, 500 fused) and only hits inside the prefix and the grant are kept. A response shorter than `limit` means fewer than `limit` matching chunks ranked inside that window; a narrower query or a wider prefix recovers coverage.
 
 #### Upgrade notes (M4 → M5)
@@ -1370,6 +1372,19 @@ curl -sSf -X POST \
 > likely `filters` for `filter` — was getting unfiltered results and now gets told; fix the key.
 > The MCP `search` tool is strict the same way, and its `filters` argument gained the four fields
 > it was missing (`object_key_prefix`, `heading_path_prefix`, `updated_after`, `updated_before`).
+
+#### Upgrade notes (`mime` filter ignores parameters)
+
+> The `mime` filter used to compare against the stored `Content-Type` exactly. An object PUT as
+> `text/markdown; charset=utf-8` (or `text/plain;charset=UTF-8`, the browser `fetch` default) was
+> indexed but never matched `mime: "text/markdown"` (#286). Chunks are now indexed under the bare,
+> lowercased media type, and the filter is normalised the same way. Chunks indexed before this
+> release keep the raw stored type until their object is indexed again. Until then the bare type
+> does not find them: an object stored as `text/markdown; charset=utf-8` is not returned for
+> `mime: "text/markdown"`. The filter also matches its own value exactly, so passing the exact
+> raw type (`text/markdown; charset=utf-8`) still finds those chunks, together with any indexed
+> since. `POST …/index/reconcile` only refreshes objects whose bytes changed, so PUT affected
+> documents again, as for M4 → M5 above.
 
 ---
 

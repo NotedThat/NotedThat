@@ -442,13 +442,10 @@ pub(crate) fn collection_name(kb: &KbSlug) -> String {
 
 /// Check if the content type is indexable (markdown or plain text).
 pub fn is_indexable(mime: &str) -> bool {
-    let mime = mime
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    matches!(mime.as_str(), "text/markdown" | "text/plain" | "")
+    matches!(
+        crate::mime::essence(mime).as_str(),
+        "text/markdown" | "text/plain" | ""
+    )
 }
 
 #[cfg(test)]
