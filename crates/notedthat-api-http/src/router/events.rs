@@ -119,8 +119,9 @@ impl EventFilter {
     }
 
     /// `mime` matches the content type an event carries, exactly or by
-    /// `type/*`: a write's, or the one the indexer's `HEAD` reported. A
-    /// deletion carries none, nor does an `object.index_failed` whose failure
+    /// `type/*`: a write's, or the one the indexer's `HEAD` reported (or,
+    /// when it reported none or one naming no media type, the type the key's
+    /// suffix names). A deletion carries none, nor does an `object.index_failed` whose failure
     /// came before `HEAD`, so neither ever matches a `mime` filter.
     pub(crate) fn matches(&self, event: &ObjectEvent) -> bool {
         if let Some(prefix) = &self.prefix
