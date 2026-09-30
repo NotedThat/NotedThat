@@ -102,6 +102,11 @@ impl QdrantProvisioner {
     /// payload extension ("re-PUT your objects to backfill") could not help,
     /// because a re-PUT rewrites point payloads and does not create indexes. The
     /// only recovery was to delete the collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisionError::Qdrant`] when checking for, creating, or indexing the
+    /// collection fails.
     pub async fn ensure_collection(
         &self,
         kb: &KbSlug,
@@ -138,6 +143,11 @@ impl QdrantProvisioner {
     ///
     /// Returns `Ok(None)` if manifest has no embedding and needs provisioning,
     /// `Ok(Some(()))` if manifest matches env, and `Err(ManifestMismatch)` if it disagrees.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisionError::ManifestMismatch`] when the manifest records a different
+    /// embedding model or dimension count.
     pub fn cross_check_manifest(
         manifest: &KbManifest,
         env_model: &str,

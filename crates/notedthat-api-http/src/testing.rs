@@ -81,6 +81,10 @@ impl MockSearcher {
     }
 
     /// Push a response to the queue. Responses are returned in FIFO order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a previous holder of the response queue's lock panicked.
     pub fn push_response(
         &self,
         r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,

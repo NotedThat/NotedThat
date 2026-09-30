@@ -195,6 +195,10 @@ impl OidcVerifier {
     ///
     /// `jwks_uri` is where refetches go; `None` means an unknown `kid` is
     /// simply an unknown `kid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client cannot be built, for example when TLS is unavailable.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_jwks(settings: OidcSettings, jwks: &JwkSet, jwks_uri: Option<String>) -> Self {
         let http = reqwest::Client::builder()
@@ -456,6 +460,10 @@ pub mod test_support {
     pub const JWKS_JSON: &str = include_str!("oidc/testdata/jwks.json");
 
     /// The fixture key set.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixture is compiled in and parses.
     pub fn jwks() -> JwkSet {
         serde_json::from_str(JWKS_JSON).expect("fixture JWKS parses")
     }
@@ -479,6 +487,11 @@ pub mod test_support {
     }
 
     /// Sign `claims` with the fixture key, choosing algorithm and `kid`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `alg` is `ES256`, `ES384` or `EdDSA`: the fixture key is RSA, so only the
+    /// HMAC and RSA algorithms can be signed.
     pub fn mint_with(alg: Algorithm, kid: Option<&str>, claims: &serde_json::Value) -> String {
         let mut header = Header::new(alg);
         header.kid = kid.map(str::to_string);
@@ -492,6 +505,10 @@ pub mod test_support {
     }
 
     /// Seconds since the Unix epoch, for `exp`/`iat`/`nbf` claims.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the system clock is set before the Unix epoch.
     pub fn now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

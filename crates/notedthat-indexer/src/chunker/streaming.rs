@@ -75,6 +75,11 @@ pub struct ChunkIter<R> {
 /// to begin after an independently parsed prefix such as OKF frontmatter.
 /// The minimum chunk size defaults to a quarter of `max_chars`; see
 /// [`ChunkIter::with_min_chars`].
+///
+/// # Errors
+///
+/// Returns an [`InvalidInput`](io::ErrorKind::InvalidInput) error when `max_chars` is zero,
+/// or so large that its byte bound overflows `usize`.
 pub fn stream_chunks<R: Read + Seek>(
     reader: R,
     max_chars: usize,

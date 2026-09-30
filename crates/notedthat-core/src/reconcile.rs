@@ -253,6 +253,11 @@ pub async fn walk_etags(
 
 /// [`walk_etags`] with a caller-chosen page size, so a test can prove the cursor is
 /// followed without a thousand objects.
+///
+/// # Errors
+///
+/// As [`walk_etags`]: the first listing error, or [`StorageError::BackendUnavailable`] when
+/// a truncated listing supplies no cursor or repeats the one it was sent.
 pub async fn walk_etags_paged(
     storage: &dyn Storage,
     kb: &KbSlug,

@@ -28,6 +28,11 @@ pub fn derive_bucket_name(tenant: &TenantSlug, kb: &KbSlug) -> String {
 ///
 /// Call this once per declared KB during server startup, before any storage
 /// operation happens.
+///
+/// # Errors
+///
+/// Returns [`Error::BucketNameTooLong`] when the derived bucket name is longer than 63
+/// characters.
 pub fn validate_bucket_name(tenant: &TenantSlug, kb: &KbSlug) -> Result<(), Error> {
     let name = derive_bucket_name(tenant, kb);
     if name.len() > BUCKET_NAME_MAX {

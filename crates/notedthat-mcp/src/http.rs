@@ -103,6 +103,12 @@ pub struct McpHttpServiceConfig {
 
 impl McpHttpServiceConfig {
     /// Build validated HTTP transport config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpHttpServiceConfigError::EmptyAllowedHosts`] or
+    /// [`McpHttpServiceConfigError::EmptyAllowedOrigins`] when either list is empty: an
+    /// empty list would switch that check off.
     pub fn new(
         allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
         allowed_origins: impl IntoIterator<Item = impl Into<String>>,

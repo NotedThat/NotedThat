@@ -57,6 +57,13 @@ impl IndexQueueSender {
         }
     }
     /// Try to accept an event without waiting for room.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`](mpsc::error::TrySendError::Full) when the
+    /// pending-event bound is reached, and
+    /// [`TrySendError::Closed`](mpsc::error::TrySendError::Closed) when the receiver is
+    /// gone; both hand the event back.
     pub fn try_send(&self, event: IndexEvent) -> Result<(), mpsc::error::TrySendError<IndexEvent>> {
         match &self.inner {
             SenderInner::Plain(tx) => tx.try_send(event),
@@ -80,6 +87,11 @@ impl IndexQueueSender {
     }
 
     /// Wait until the pending-event bound has room, then accept an event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`](mpsc::error::SendError), handing the event back, when the
+    /// receiver is gone.
     pub async fn send(&self, event: IndexEvent) -> Result<(), mpsc::error::SendError<IndexEvent>> {
         match &self.inner {
             SenderInner::Plain(tx) => tx.send(event).await,
@@ -158,6 +170,12 @@ impl IndexQueueReceiver {
     }
 
     /// Receive an already available event without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`](mpsc::error::TryRecvError::Empty) when no event is
+    /// waiting, and [`TryRecvError::Disconnected`](mpsc::error::TryRecvError::Disconnected)
+    /// when every sender is gone.
     pub fn try_recv(&mut self) -> Result<QueuedEvent, mpsc::error::TryRecvError> {
         match &mut self.inner {
             ReceiverInner::Bounded(rx) => rx.try_recv(),

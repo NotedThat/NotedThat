@@ -35,6 +35,12 @@ pub struct ObjectPath(String);
 
 impl ObjectPath {
     /// Validate and construct an [`ObjectPath`] from a string slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the path, after its optional leading `/`, is
+    /// empty or contains a backslash, a NUL byte, an empty segment, or a `.` or `..`
+    /// segment.
     pub fn try_from_str(input: &str) -> Result<Self, Error> {
         let s = input.strip_prefix('/').unwrap_or(input);
 

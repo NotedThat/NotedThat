@@ -1,3 +1,3 @@
 # notedthat-mcp
 
-MCP tool definitions (rmcp) + HTTP-client-backed impl in later milestones. Placeholder in M1.
+The NotedThat MCP server: tools and `notedthat://` resources that wrap the HTTP API, served over the streamable HTTP transport.

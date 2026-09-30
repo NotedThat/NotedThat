@@ -130,6 +130,10 @@ impl S3Config {
     /// - `NOTEDTHAT_S3_RECONCILE` — `true` or `false`, defaults to `true`
     /// - `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES` — `true` or `false`, defaults
     ///   to `false`
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_settings`].
     pub fn from_env() -> Result<Self, Error> {
         Self::from_settings(S3Settings::from_env())
     }

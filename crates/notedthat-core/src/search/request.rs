@@ -71,6 +71,11 @@ impl SearchRequest {
     /// - `query` byte length must not exceed `MAX_QUERY_BYTES`.
     /// - `limit` must not be `Some(0)` (explicit zero is rejected; `None` → default 10).
     /// - `limit > MAX_LIMIT` is silently clamped to `MAX_LIMIT` (not an error).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchError::InvalidInput`] when the trimmed query is blank or longer than
+    /// `MAX_QUERY_BYTES`, or when `limit` is `Some(0)`.
     pub fn validate(self) -> Result<ValidatedRequest, SearchError> {
         let query = self.query.trim().to_string();
 
