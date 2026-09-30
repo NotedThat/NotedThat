@@ -2216,6 +2216,48 @@ async fn put_with_double_slash_path_returns_400_or_404() {
     assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
 }
 
+/// `index`, `index/reconcile`, `events` and `search` at the root are API
+/// routes, which the router prefers to the object catch-all. The keys are
+/// reserved, so a spelling that reaches the catch-all anyway (`%69ndex` is
+/// not the static segment `index`, and `%2F` is not a separator to the
+/// router) is refused rather than creating an object nothing could read back
+/// (#279).
+#[tokio::test]
+async fn reserved_root_keys_are_refused_on_the_object_route() {
+    let a = app();
+    for encoded in ["%69ndex", "index%2Freconcile", "%65vents", "%73earch"] {
+        for method in ["PUT", "GET", "DELETE"] {
+            let resp = a
+                .clone()
+                .oneshot(authed_request(
+                    method,
+                    format!("/api/v1/knowledgebases/{KB}/{encoded}"),
+                    Body::from("x"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{method} {encoded}");
+            let json = response_json(resp).await;
+            assert_eq!(json["error"], "invalid_request", "{method} {encoded}");
+            assert!(
+                json["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("reserved")),
+                "{method} {encoded}: {json}"
+            );
+        }
+    }
+
+    // Nested and look-alike keys are ordinary objects.
+    for path in ["notes%2Findex", "index.md", "Search"] {
+        assert_eq!(
+            put_text(a.clone(), KB, path, "x").await,
+            StatusCode::CREATED,
+            "{path}"
+        );
+    }
+}
+
 /// POST is now a registered method on the catch-all (dispatches to `replace_object` for replace/ paths);
 /// a bare POST to a non-action path returns 404 `not_found`.
 #[tokio::test]

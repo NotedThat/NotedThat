@@ -356,6 +356,37 @@ mod route_constants {
             assert_eq!(matched, format!("{API_V1_PREFIX}{route}"));
         }
     }
+
+    /// A static route beside the object catch-all shadows the object stored
+    /// under the same key, so every such route must be a reserved key that
+    /// `ObjectPath` refuses (#279). Adding a knowledge-base-level route without
+    /// reserving its key fails here.
+    #[test]
+    fn every_route_beside_the_object_catch_all_is_a_reserved_key() {
+        let kb_prefix = ROUTE_KB.to_owned() + "/";
+        let shadowing: Vec<&str> = super::API_ROUTES
+            .iter()
+            .filter(|route| **route != ROUTE_KB_OBJECT)
+            .filter_map(|route| route.strip_prefix(kb_prefix.as_str()))
+            .collect();
+        assert!(!shadowing.is_empty(), "the filter found no routes");
+        for key in &shadowing {
+            assert!(
+                notedthat_core::RESERVED_KEYS.contains(key),
+                "route key {key:?} is not in RESERVED_KEYS"
+            );
+            assert!(
+                notedthat_core::ObjectPath::try_from_str(key).is_err(),
+                "{key:?} is a valid object path"
+            );
+        }
+        for key in notedthat_core::RESERVED_KEYS {
+            assert!(
+                shadowing.contains(key),
+                "reserved key {key:?} names no route; drop it from RESERVED_KEYS"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

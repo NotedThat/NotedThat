@@ -13,6 +13,18 @@ pub fn is_internal_path(path: &str) -> bool {
     path == ".notedthat" || path.starts_with(".notedthat/")
 }
 
+/// Keys that name a knowledge-base-level API route rather than an object.
+///
+/// Each is a static route beside the object catch-all
+/// `/knowledgebases/{kb_slug}/{*object_path}`, and the router prefers the
+/// static one, so an object stored under exactly one of these keys could never
+/// be read, written or deleted over HTTP or MCP (#279). [`ObjectPath`] refuses
+/// them instead, on every surface. Nested keys (`notes/index`) and look-alikes
+/// (`index.md`) are ordinary objects.
+///
+/// The api-http router tests check this list against its route table.
+pub const RESERVED_KEYS: &[&str] = &["index", "index/reconcile", "events", "search"];
+
 /// A normalized object path within a knowledge-base bucket.
 ///
 /// Rules (D40, §6.12 path normalization):
@@ -23,6 +35,7 @@ pub fn is_internal_path(path: &str) -> bool {
 /// - Backslash (`\`) and NUL (`\0`) characters are rejected.
 /// - Case and Unicode are preserved verbatim.
 /// - Spaces are valid (S3 permits them).
+/// - The [`RESERVED_KEYS`] are rejected, compared exactly and case-sensitively.
 ///
 /// The stored form has no leading slash and uses `/` as the separator.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -72,6 +85,13 @@ impl ObjectPath {
                     message: "path must not contain '.' or '..' segments".into(),
                 });
             }
+        }
+        if RESERVED_KEYS.contains(&s) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "path '{s}' is reserved: it names an API route of the knowledge base"
+                ),
+            });
         }
         Ok(Self(s.to_string()))
     }
@@ -255,5 +275,28 @@ mod tests {
         let s = String::from("foo/bar.md");
         let p = ObjectPath::try_from(s).unwrap();
         assert_eq!(p.as_ref(), "foo/bar.md");
+    }
+
+    #[test]
+    fn test_try_from_err_reserved_key() {
+        for path in ["index", "/index", "index/reconcile", "events", "search"] {
+            assert!(ObjectPath::try_from(path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_try_from_reserved_look_alikes_valid() {
+        for path in [
+            "index.md",
+            "Index",
+            "SEARCH",
+            "notes/index",
+            "notes/events",
+            "index/other",
+            "search/results.md",
+            "events.md",
+        ] {
+            assert!(ObjectPath::try_from(path).is_ok(), "{path}");
+        }
     }
 }

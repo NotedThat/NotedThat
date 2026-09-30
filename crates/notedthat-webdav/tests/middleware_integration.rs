@@ -345,6 +345,55 @@ async fn put_calls_commit_and_returns_201() {
     assert!(resp.headers().contains_key("etag"));
 }
 
+/// `index`, `index/reconcile`, `events` and `search` at a knowledge base's
+/// root are API routes, so an object under one of them could never be read
+/// back over HTTP or MCP (#279). `WebDAV` refuses to create one, directly or as
+/// a `MOVE` destination; nested keys are ordinary objects.
+#[tokio::test]
+async fn writes_to_reserved_root_keys_are_refused() {
+    for key in ["index", "index/reconcile", "events", "search"] {
+        let resp = build_router(make_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/webdav/notes/{key}"))
+                    .header("Authorization", good_auth())
+                    .body(Body::from("x"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "PUT {key}");
+
+        let resp = build_router(state_with_note("a.md").await)
+            .oneshot(
+                Request::builder()
+                    .method(Method::from_bytes(b"MOVE").unwrap())
+                    .uri("/webdav/notes/a.md")
+                    .header("Authorization", good_auth())
+                    .header("Destination", format!("/webdav/notes/{key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "MOVE to {key}");
+    }
+
+    let resp = build_router(make_state())
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/webdav/notes/drafts/index")
+                .header("Authorization", good_auth())
+                .body(Body::from("x"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn delete_returns_204() {
     let app = build_router(state_with_note("test.md").await);

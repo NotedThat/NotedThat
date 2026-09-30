@@ -35,6 +35,11 @@ ask for a lock and are unaffected. A few insist on one before they will save:
 
 Everything below is known to work read-write.
 
+Four names are refused at the top of a knowledge base, because the HTTP API uses them for its
+own routes: `index`, `events` and `search` as files, and the file `reconcile` inside a folder named
+`index`. Saving one returns `400 Bad Request`; the same names deeper in a folder, or with
+an extension (`index.md`), are fine.
+
 ## Linux
 
 **GNOME Files (Nautilus)** — *Other Locations* → *Connect to Server*, or `Ctrl+L` in any
