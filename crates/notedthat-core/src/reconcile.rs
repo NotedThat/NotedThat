@@ -105,6 +105,12 @@ pub struct Reconciliation {
 ///
 /// A key that is not a valid [`ObjectPath`] cannot be re-read, so it is dropped from both
 /// sides before anything is counted — see [`is_actionable`].
+///
+/// A [reserved key](crate::RESERVED_KEYS) is dropped from the storage side only, for the
+/// same reason as `.notedthat/`: no object may be indexed under one (#279), so an object
+/// stored there is not counted, while an entry the index still holds for one — written
+/// before the key was reserved — is reported as orphaned. The consumer's re-read hands it
+/// to the indexer, which takes a reserved key out of the index rather than indexing it.
 pub fn compare(
     in_storage: impl IntoIterator<Item = (String, Option<String>)>,
     indexed: &[IndexedEtag],
@@ -114,6 +120,7 @@ pub fn compare(
         .into_iter()
         .filter(|(key, _)| !is_internal_path(key))
         .filter(|(key, _)| is_actionable(key))
+        .filter(|(key, _)| !is_reserved(key))
         .collect();
     debug_assert!(
         in_storage.windows(2).all(|pair| pair[0].0 < pair[1].0),
@@ -217,13 +224,19 @@ pub fn compare(
 /// Both sides are filtered, so the counts only ever describe keys a pass can act on.
 /// Filtering the index side cannot turn a real key into a phantom orphan: an index entry
 /// is written through an [`ObjectPath`] in the first place, so an unactionable one is
-/// already beyond this pass's reach.
+/// already beyond this pass's reach. A reserved key is a valid [`ObjectPath`], so it is
+/// actionable; see [`compare`] for how it is treated.
 fn is_actionable(key: &str) -> bool {
     if ObjectPath::try_from(key).is_ok() {
         return true;
     }
     tracing::warn!(key = %key, "skipping a key that is not a valid object path");
     false
+}
+
+/// Whether `key` is one of the [`RESERVED_KEYS`](crate::RESERVED_KEYS), exactly.
+fn is_reserved(key: &str) -> bool {
+    crate::RESERVED_KEYS.contains(&key)
 }
 
 /// The most keys one listing page asks for: S3's `ListObjectsV2` ceiling.
@@ -352,6 +365,37 @@ mod tests {
 
     fn keys(reconciliation: &Reconciliation) -> Vec<&str> {
         reconciliation.keys.iter().map(ObjectPath::as_str).collect()
+    }
+
+    /// An entry indexed under a now-reserved key before #279 is orphaned, even with the
+    /// object still in storage, so the consumer's re-read takes it out of the index; the
+    /// stored object itself is not counted. Folders of the same name are untouched.
+    #[test]
+    fn an_indexed_reserved_key_is_orphaned_and_a_stored_one_is_skipped() {
+        let r = compare(
+            stored(&[
+                ("events", "\"1\""),
+                ("index", "\"2\""),
+                ("search", "\"3\""),
+                ("search/a.md", "\"4\""),
+            ]),
+            &indexed(&[
+                ("index", "\"2\""),
+                ("search", "\"3\""),
+                ("search/a.md", "\"4\""),
+            ]),
+            None,
+        );
+        assert_eq!(
+            r.report,
+            ReconcileReport {
+                objects_on_disk: 1,
+                unchanged: 1,
+                changed: 0,
+                orphaned: 2,
+            }
+        );
+        assert_eq!(keys(&r), ["index", "search"]);
     }
 
     #[test]

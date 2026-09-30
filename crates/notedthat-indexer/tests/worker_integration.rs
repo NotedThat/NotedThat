@@ -29,7 +29,7 @@ use notedthat_indexer::{
     index_queue,
 };
 use qdrant_client::qdrant::{
-    RetrievedPoint, VectorsOutput, point_id::PointIdOptions, value::Kind,
+    PointStruct, RetrievedPoint, Vector, VectorsOutput, point_id::PointIdOptions, value::Kind,
     vectors_output::VectorsOptions,
 };
 use std::{
@@ -3146,4 +3146,50 @@ async fn an_untyped_markdown_key_is_still_indexed_when_declared(declared: Option
         None,
         "{declared:?}: no failure"
     );
+}
+
+/// A search entry indexed for a now-reserved key before #279 is removed when
+/// reconcile or the watcher hands the key over, even though the object is still
+/// in storage; a note inside a folder of that name is indexed as usual.
+#[tokio::test]
+async fn a_refresh_of_a_reserved_key_removes_its_index_entries() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "search", "# Legacy\n\nBody.", "text/markdown");
+    storage.insert(
+        kb.as_str(),
+        "search/a.md",
+        "# Folder\n\nBody.",
+        "text/markdown",
+    );
+
+    let fields: HashMap<String, qdrant_client::qdrant::Value> = HashMap::from([
+        ("object_key".to_owned(), "search".into()),
+        ("chunk_index".to_owned(), 0_i64.into()),
+        ("text".to_owned(), "Legacy".into()),
+    ]);
+    let vectors = HashMap::from([("dense".to_owned(), Vector::from(vec![0.1_f32; 4]))]);
+    store
+        .upsert_points(&kb, vec![PointStruct::new(1_u64, vectors, fields)])
+        .await
+        .unwrap();
+    assert_eq!(count_points(&store, &kb, "search").await, 1);
+
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+    refresh_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "search",
+    )
+    .await;
+    assert_eq!(count_points(&store, &kb, "search").await, 0);
+    assert_eq!(embedder.calls(), 0, "a reserved key is never embedded");
+
+    refresh_once(storage, embedder.clone(), store_arc, &kb, "search/a.md").await;
+    assert!(count_points(&store, &kb, "search/a.md").await > 0);
 }

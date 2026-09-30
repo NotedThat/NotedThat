@@ -515,13 +515,21 @@ Four keys at the root of a knowledge base name routes rather than objects: `inde
 `index/reconcile`, `events` and `search`. Each is a literal sibling of the object route
 `/api/v1/knowledgebases/{kb_slug}/{path}`, and the literal route wins, so an object stored
 under one of them could never be read, replaced or deleted through the API. They are
-therefore not valid object paths, on every surface: the API answers `400 invalid_request`
-when one reaches the object route (e.g. as `%69ndex`), WebDAV refuses to `PUT` or `MOVE` to
-one, and the MCP tools refuse one before calling the API. A file created under one of these
-names directly in an `fs` directory or S3 bucket is not indexed or reconciled.
+therefore not valid object keys on any surface: the API answers `400 invalid_request` when
+one reaches the object route (e.g. as `%69ndex`), WebDAV refuses to `PUT`, `COPY` or `MOVE`
+to one, and the MCP tools refuse one before calling the API. A file created under one of
+these names directly in an `fs` directory or S3 bucket is never indexed.
 
-The match is exact and case-sensitive, after the one leading `/` is stripped. Nested keys
-(`notes/index`) and look-alikes (`index.md`, `Search`) are ordinary objects.
+Only the exact key is reserved, never a folder. The match is exact and case-sensitive, after
+the one leading `/` is stripped. A folder of the same name (`search/results.md`) is an
+ordinary folder, which WebDAV and `/browse` handle like any other, and nested keys (`notes/index`) and look-alikes (`index.md`, `Search`) are ordinary objects.
+
+**Upgrading.** An object stored under one of these keys by an earlier release stays in
+storage. WebDAV can still read it and `MOVE` it to a new name, which also removes its search
+entry. If you rename it in the bucket or directory instead, its search entry is removed on
+`fs` by the watcher, and on `s3` by the next reconcile pass (at startup, or
+`POST …/index/reconcile`). A pass removes any search entry for a reserved key, even while the
+object is still there, since no object may be indexed under one.
 
 ---
 
@@ -1960,7 +1968,7 @@ The following decoded values are rejected:
 - **Decoded NUL byte** — e.g., `%00` (filesystem safety)
 - **Non-UTF-8 percent sequences** — e.g., `%FF%FE` (strict UTF-8 validation)
 - **Double leading slash** — e.g., `//notes/file.md` (path normalization)
-- **A [reserved object key](#reserved-object-keys)** — `index`, `index/reconcile`, `events` or `search` at the root of a knowledge base (a `PUT` or `MOVE` destination)
+- **A [reserved object key](#reserved-object-keys)** — `index`, `index/reconcile`, `events` or `search` at the root of a knowledge base, as a `PUT`, `COPY` or `MOVE` destination (a folder of that name is fine)
 
 #### Allowed decoded values
 
