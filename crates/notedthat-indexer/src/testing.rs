@@ -24,6 +24,7 @@
 
 use crate::vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
+    merge_chunk_etag,
 };
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
@@ -597,10 +598,12 @@ impl VectorStore for InMemoryVectorStore {
                 .ok_or_else(|| VectorStoreError::CollectionNotFound {
                     kb: kb.as_str().to_string(),
                 })?;
-        Ok(collection
+        // Every chunk must carry the same `ETag`; a chunk without one disagrees, as it does
+        // in Qdrant's `must_not` count.
+        let mut etags = collection
             .points
             .values()
-            .find(|point| {
+            .filter(|point| {
                 point
                     .payload
                     .get("object_key")
@@ -608,7 +611,13 @@ impl VectorStore for InMemoryVectorStore {
                     .as_deref()
                     == Some(object_key)
             })
-            .and_then(|point| point.payload.get("etag").and_then(as_string)))
+            .map(|point| point.payload.get("etag").and_then(as_string));
+        let Some(Some(etag)) = etags.next() else {
+            return Ok(None);
+        };
+        Ok(etags
+            .all(|other| other.as_deref() == Some(etag.as_str()))
+            .then_some(etag))
     }
 
     async fn indexed_objects(
@@ -632,13 +641,11 @@ impl VectorStore for InMemoryVectorStore {
             if prefix.is_some_and(|prefix| !object_key.starts_with(prefix)) {
                 continue;
             }
-            by_key.entry(object_key).or_insert_with(|| {
-                point
-                    .payload
-                    .get("etag")
-                    .and_then(as_string)
-                    .unwrap_or_default()
-            });
+            merge_chunk_etag(
+                &mut by_key,
+                object_key,
+                point.payload.get("etag").and_then(as_string),
+            );
         }
         Ok(by_key
             .into_iter()

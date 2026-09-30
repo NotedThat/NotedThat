@@ -516,6 +516,54 @@ async fn observe_deletes(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
     out
 }
 
+/// The points [`observe_indexed`] seeds, with their `etag` payloads.
+fn indexed_points() -> Vec<PointStruct> {
+    // `notes/a.md` deliberately spans three chunks: one object must be reported
+    // once, not once per chunk. Written in an order that is not key order, so an
+    // implementation reporting insertion order fails the ordering assertion below
+    // instead of passing by coincidence.
+    //
+    // `notes/mixed.md` is a re-index that failed part-way: two chunks rewritten, one
+    // still on the old `ETag`. Its lowest point id is a rewritten chunk, the order in
+    // which reading any single chunk wrongly reports it indexed (issue #276).
+    //
+    // `notes/untagged.md` has one chunk with no `etag` field at all. The tagged chunk
+    // has the lower point id, so Qdrant reads an `ETag` at the scroll and must reject
+    // it at the count.
+    [
+        ("other/c.md", 0, Some("\"ccc\"")),
+        ("notes/b.md", 0, Some("\"bbb\"")),
+        ("notes/a.md", 2, Some("\"aaa\"")),
+        ("notes/a.md", 0, Some("\"aaa\"")),
+        ("notes/a.md", 1, Some("\"aaa\"")),
+        ("notes/mixed.md", 0, Some("\"new\"")),
+        ("notes/mixed.md", 2, Some("\"old\"")),
+        ("notes/mixed.md", 1, Some("\"new\"")),
+        ("notes/untagged.md", 0, Some("\"x\"")),
+        ("notes/untagged.md", 1, None),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(id, (object_key, chunk_index, etag))| {
+        let mut payload = HashMap::<String, Value>::new();
+        payload.insert("object_key".to_string(), (*object_key).to_string().into());
+        payload.insert("chunk_index".to_string(), i64::from(*chunk_index).into());
+        if let Some(etag) = etag {
+            payload.insert("etag".to_string(), (*etag).to_string().into());
+        }
+        payload.insert("text".to_string(), "shared".to_string().into());
+        let vectors = HashMap::from([
+            ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
+            (
+                "sparse_bm25".to_string(),
+                Vector::from(Document::new("shared".to_string(), "qdrant/bm25")),
+            ),
+        ]);
+        PointStruct::new(id as u64 + 1, vectors, payload)
+    })
+    .collect()
+}
+
 /// What each backend reports about which objects it currently holds.
 ///
 /// Seeds its own points rather than reusing [`CORPUS`], because this is the one
@@ -533,37 +581,8 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
         .await
         .expect("create_payload_index");
 
-    // `notes/a.md` deliberately spans three chunks: one object must be reported
-    // once, not once per chunk. Written in an order that is not key order, so an
-    // implementation reporting insertion order fails the ordering assertion below
-    // instead of passing by coincidence.
-    let points: Vec<PointStruct> = [
-        ("other/c.md", 0, "\"ccc\""),
-        ("notes/b.md", 0, "\"bbb\""),
-        ("notes/a.md", 2, "\"aaa\""),
-        ("notes/a.md", 0, "\"aaa\""),
-        ("notes/a.md", 1, "\"aaa\""),
-    ]
-    .iter()
-    .enumerate()
-    .map(|(id, (object_key, chunk_index, etag))| {
-        let mut payload = HashMap::<String, Value>::new();
-        payload.insert("object_key".to_string(), (*object_key).to_string().into());
-        payload.insert("chunk_index".to_string(), i64::from(*chunk_index).into());
-        payload.insert("etag".to_string(), (*etag).to_string().into());
-        payload.insert("text".to_string(), "shared".to_string().into());
-        let vectors = HashMap::from([
-            ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
-            (
-                "sparse_bm25".to_string(),
-                Vector::from(Document::new("shared".to_string(), "qdrant/bm25")),
-            ),
-        ]);
-        PointStruct::new(id as u64 + 1, vectors, payload)
-    })
-    .collect();
     store
-        .upsert_points(kb, points)
+        .upsert_points(kb, indexed_points())
         .await
         .expect("upsert_points");
 
@@ -579,6 +598,26 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
         format!(
             "{:?}",
             store.indexed_etag(kb, "nope.md").await.expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_mixed_object",
+        format!(
+            "{:?}",
+            store
+                .indexed_etag(kb, "notes/mixed.md")
+                .await
+                .expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_untagged_object",
+        format!(
+            "{:?}",
+            store
+                .indexed_etag(kb, "notes/untagged.md")
+                .await
+                .expect("etag")
         ),
     ));
     out.push(("all_objects", render(store.indexed_objects(kb, None).await)));
@@ -824,7 +863,45 @@ async fn both_backends_report_the_same_indexed_objects() {
         assert_ascending(observations, "objects_under_prefix");
     }
 
+    // Both agreeing that a half-written object is indexed would pass `assert_agree`.
+    for observations in [&from_qdrant, &from_memory] {
+        assert_mixed_object_not_indexed(observations);
+    }
+
     assert_agree(&from_qdrant, &from_memory);
+}
+
+/// The in-memory half of the check above, run without a container so it is not only
+/// exercised when someone passes `--ignored`.
+#[tokio::test]
+async fn in_memory_does_not_report_a_mixed_etag_object_indexed() {
+    let observations = observe_indexed(&InMemoryVectorStore::new(), &slug("indexed")).await;
+    assert_mixed_object_not_indexed(&observations);
+}
+
+/// A mixed-`ETag` object, or one with a chunk missing its `ETag`, has no indexed
+/// `ETag`, and is listed with an empty one so reconciliation sees it as changed.
+fn assert_mixed_object_not_indexed(observations: &Observations) {
+    let observed = |name: &str| {
+        let (_, value) = observations
+            .iter()
+            .find(|(observed, _)| *observed == name)
+            .unwrap_or_else(|| panic!("no observation named '{name}'"));
+        value.as_str()
+    };
+    assert_eq!(observed("etag_of_mixed_object"), "None");
+    assert_eq!(observed("etag_of_untagged_object"), "None");
+    for name in ["all_objects", "objects_under_prefix"] {
+        for key in ["notes/mixed.md", "notes/untagged.md"] {
+            assert!(
+                observed(name)
+                    .split(',')
+                    .any(|entry| entry == format!("{key}=")),
+                "{name} must list {key} with an empty ETag: {}",
+                observed(name)
+            );
+        }
+    }
 }
 
 /// Assert one rendered `indexed_objects` observation is in ascending key order.

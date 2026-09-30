@@ -32,6 +32,8 @@
 use async_trait::async_trait;
 use notedthat_core::KbSlug;
 use notedthat_core::search::SearchFilter;
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 // Re-exported rather than merely imported: both appear in this trait's own
 // method signatures, so without them in the public API the trait cannot be
 // implemented outside this crate at all.
@@ -74,8 +76,32 @@ pub enum PointSelector {
 pub struct IndexedObject {
     /// Object key the chunks belong to.
     pub object_key: String,
-    /// `ETag` recorded on those chunks when they were written.
+    /// `ETag` recorded on those chunks when they were written, or `""` when the chunks
+    /// disagree — see [`VectorStore::indexed_objects`].
     pub etag: String,
+}
+
+/// Fold one chunk's `ETag` into the per-object answer [`VectorStore::indexed_objects`]
+/// builds, so both implementations settle a disagreement the same way.
+///
+/// The first chunk seen sets the object's `ETag`; any later chunk carrying a different
+/// one (or none) sets it to `""`, which no storage `ETag` equals.
+pub(crate) fn merge_chunk_etag(
+    by_key: &mut BTreeMap<String, String>,
+    object_key: String,
+    etag: Option<String>,
+) {
+    let etag = etag.unwrap_or_default();
+    match by_key.entry(object_key) {
+        Entry::Vacant(entry) => {
+            entry.insert(etag);
+        }
+        Entry::Occupied(mut entry) => {
+            if *entry.get() != etag {
+                entry.get_mut().clear();
+            }
+        }
+    }
 }
 
 /// One hybrid query: dense nearest-neighbour and sparse BM25 prefetches, fused.
@@ -163,11 +189,18 @@ pub trait VectorStore: Send + Sync {
         selector: PointSelector,
     ) -> Result<(), VectorStoreError>;
 
-    /// The `ETag` recorded on `object_key`'s chunks, or `None` when it has none.
+    /// The `ETag` every one of `object_key`'s chunks carries, or `None` when it has no
+    /// chunks or they disagree.
     ///
     /// Answers "is what I have on disk already indexed?" for one object. That question is
     /// what keeps a re-examined but unchanged object from being embedded again — see
     /// `IndexEvent::Refresh`.
+    ///
+    /// Chunks disagree when a re-index failed part-way: batches already written carry the
+    /// new `ETag`, the rest still hold the old version's text. Reporting any single chunk's
+    /// `ETag` would make that object look indexed whenever the chunk read happened to be a
+    /// rewritten one, and the old text would stay in search with nothing left to repair
+    /// it. So an implementation must check all of them (issue #276).
     ///
     /// # Errors
     ///
@@ -187,6 +220,10 @@ pub trait VectorStore: Send + Sync {
     /// in one round trip — which is what makes reconciliation cost one call rather than
     /// one per object. It also reports keys that storage no longer has, the only way to
     /// discover an object deleted while nothing was watching.
+    ///
+    /// An object whose chunks disagree on their `ETag` is reported with an empty `etag`,
+    /// for the reason given on [`VectorStore::indexed_etag`]: no storage `ETag` equals it,
+    /// so reconciliation sees the object as changed and re-indexes it.
     ///
     /// Reads payloads, never vectors or chunk text. Implementations may apply `prefix`
     /// client-side; `qdrant-client` 1.15 has no keyword prefix matcher (see issue #68).
