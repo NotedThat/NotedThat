@@ -173,12 +173,18 @@ impl ApiError {
         })
     }
 
-    /// The `message` of the JSON body: the error's own text, except for a
-    /// `BucketNotFound` that was built by hand around either wrapper rather than
-    /// through [`Self::bucket_not_found`] — that one still says only what the
-    /// helper would have said. Belt and braces: every `From` funnels the variant
-    /// through the helper, and this keeps a future `ApiError::Core(…)` literal
-    /// from undoing it.
+    /// The `message` of the JSON body: the error's own text, with two exceptions.
+    ///
+    /// A `BucketNotFound` that was built by hand around either wrapper rather than
+    /// through [`Self::bucket_not_found`] still says only what the helper would
+    /// have said. Belt and braces: every `From` funnels the variant through the
+    /// helper, and this keeps a future `ApiError::Core(…)` literal from undoing it.
+    ///
+    /// A `5xx` whose text comes from an adapter says only what kind of failure it
+    /// was. That text is an `io::Error` on a path under the knowledge base's
+    /// directory, an S3 SDK error, a bucket name: exactly what the `404` above
+    /// keeps off the wire, and it would reach any caller who gets as far as
+    /// storage. `ApiErrorResponse` logs the full text under the request id.
     fn message(&self) -> String {
         match self {
             Self::Core(CoreError::Storage(StorageError::BucketNotFound { bucket }))
@@ -186,6 +192,17 @@ impl ApiError {
                 tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
                 "not found: knowledge base storage".to_string()
             }
+            Self::Core(CoreError::Storage(StorageError::BackendUnavailable { .. }))
+            | Self::Storage(StorageError::BackendUnavailable { .. }) => {
+                "backend unavailable".to_string()
+            }
+            Self::EventsUnavailable { .. } => "event backend unavailable".to_string(),
+            Self::Core(
+                CoreError::Storage(StorageError::Other { .. })
+                | CoreError::BucketNameTooLong { .. }
+                | CoreError::Config { .. },
+            )
+            | Self::Storage(StorageError::Other { .. }) => "internal error".to_string(),
             other => other.to_string(),
         }
     }
@@ -635,11 +652,9 @@ impl IntoResponse for ApiErrorResponse {
                 };
                 return Self::retry_later(self.request_id, message.to_string());
             }
-            ApiError::EventsUnavailable { message } => {
-                return Self::retry_later(
-                    self.request_id,
-                    format!("event backend unavailable: {message}"),
-                );
+            ApiError::EventsUnavailable { .. } => {
+                log_server_error(&self.error, &self.request_id);
+                return Self::retry_later(self.request_id, self.error.message());
             }
             ApiError::ReplaceAmbiguous { count } => {
                 let body = ReplaceAmbiguousBody {
@@ -655,6 +670,9 @@ impl IntoResponse for ApiErrorResponse {
 
         // All other variants return a JSON error body.
         let (status, code) = self.error.status_and_code();
+        if status.is_server_error() {
+            log_server_error(&self.error, &self.request_id);
+        }
         let message = self.error.message();
         let body = ErrorBody {
             error: code,
@@ -663,6 +681,12 @@ impl IntoResponse for ApiErrorResponse {
         };
         (status, Json(body)).into_response()
     }
+}
+
+/// The full text of a `5xx` whose body [`ApiError::message`] reduced to its kind,
+/// so the operator can find it by the `request_id` the caller was given.
+fn log_server_error(error: &ApiError, request_id: &str) {
+    tracing::error!(request_id = %request_id, error = %error, "request failed");
 }
 
 impl IntoResponse for ApiError {
@@ -1543,6 +1567,147 @@ mod tests {
             assert_eq!(json["message"], "not found: knowledge base storage");
             assert!(!text.contains("nt-"), "{text}");
             assert!(!text.contains("bucket"), "{text}");
+        }
+    }
+
+    /// Each event's level and fields, captured by a subscriber scoped to one
+    /// test thread, for asserting what a response logged.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+    /// One event: its level and each field's value as it would be printed.
+    type CapturedEvent = (tracing::Level, BTreeMap<String, String>);
+
+    impl CapturedEvents {
+        fn take(&self) -> Vec<CapturedEvent> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(BTreeMap<String, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+            }
+            let mut fields = Fields(BTreeMap::new());
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), fields.0));
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// A `5xx` carries its status and code but none of the adapter's text: no
+    /// bucket, no path, no OS error. The full text goes to the log at `ERROR`,
+    /// under the `request_id` the body carries (#282).
+    #[tokio::test]
+    async fn a_5xx_body_names_no_backend_detail() {
+        const DETAIL: &str = "stat nt-acme-notes: Permission denied (os error 13)";
+        let unavailable = || StorageError::BackendUnavailable {
+            message: DETAIL.to_string(),
+        };
+        let other = || StorageError::Other {
+            source: Box::new(std::io::Error::other(DETAIL)),
+        };
+        let cases = [
+            (
+                ApiError::Storage(unavailable()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_unavailable",
+                "backend unavailable",
+            ),
+            (
+                ApiError::Core(CoreError::Storage(unavailable())),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_unavailable",
+                "backend unavailable",
+            ),
+            (
+                ApiError::EventsUnavailable {
+                    message: DETAIL.to_string(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_unavailable",
+                "event backend unavailable",
+            ),
+            (
+                ApiError::Storage(other()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            ),
+            (
+                ApiError::Core(CoreError::Storage(other())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            ),
+            (
+                ApiError::Core(CoreError::Config {
+                    message: DETAIL.to_string(),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            ),
+            (
+                ApiError::Core(CoreError::BucketNameTooLong {
+                    name: "nt-acme-notes".to_string(),
+                    len: 13,
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            ),
+        ];
+        let captured = CapturedEvents::default();
+        for (error, status, code, message) in cases {
+            let logged_error = error.to_string();
+            let resp = tracing::subscriber::with_default(captured.clone(), || {
+                ApiErrorResponse {
+                    error,
+                    request_id: "req-1".into(),
+                }
+                .into_response()
+            });
+            let errors: Vec<_> = captured
+                .take()
+                .into_iter()
+                .filter(|(level, _)| *level == tracing::Level::ERROR)
+                .map(|(_, fields)| fields)
+                .collect();
+            assert_eq!(errors.len(), 1, "{logged_error}: {errors:?}");
+            assert_eq!(errors[0]["request_id"], "req-1", "{errors:?}");
+            assert_eq!(errors[0]["error"], logged_error, "{errors:?}");
+            assert!(errors[0]["error"].contains("nt-acme-notes"), "{errors:?}");
+            assert_eq!(resp.status(), status);
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["error"], code, "{text}");
+            assert_eq!(json["message"], message, "{text}");
+            assert_eq!(json["request_id"], "req-1", "{text}");
+            assert!(!text.contains("nt-"), "{text}");
+            assert!(!text.contains("Permission denied"), "{text}");
         }
     }
 

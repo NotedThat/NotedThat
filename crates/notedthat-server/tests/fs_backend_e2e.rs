@@ -458,6 +458,57 @@ async fn deleting_through_the_api_tidies_the_tree() {
     );
 }
 
+/// An unreadable knowledge base directory answers `503 backend_unavailable`, and the
+/// body names neither the directory nor the OS error (#282): a caller who reaches storage
+/// learns that it failed, not how buckets are named. Closing the root is what makes the
+/// KB directory's `stat` fail, as in the adapter's own test.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_knowledge_base_answers_503_without_naming_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Reopens the root on the way out, so the tempdir is removable whatever the
+    /// assertions did.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let server = start().await;
+    let client = reqwest::Client::new();
+    let bucket = server
+        .bucket_dir()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("bucket directory name")
+        .to_string();
+
+    std::fs::set_permissions(&server.store_root, std::fs::Permissions::from_mode(0o000))
+        .expect("close the root");
+    let _reopen = Reopen(server.store_root.clone());
+    if std::fs::metadata(server.bucket_dir()).is_ok() {
+        eprintln!("skipped: this process ignores permission bits (root)");
+        return;
+    }
+
+    let response = client
+        .get(object_url(&server, "notes/hello.md"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(response.status(), 503);
+    let text = response.text().await.expect("body");
+    let json: serde_json::Value = serde_json::from_str(&text).expect("JSON error body");
+    assert_eq!(json["error"], "backend_unavailable", "{text}");
+    assert_eq!(json["message"], "backend unavailable", "{text}");
+    assert!(!text.contains(&bucket), "{text}");
+    assert!(!text.contains("nt-"), "{text}");
+    assert!(!text.contains("Permission denied"), "{text}");
+}
+
 /// The store is browsable, which means nothing but objects may appear inside a knowledge
 /// base directory — no sidecars, no lock file, no temp leftovers.
 #[tokio::test]

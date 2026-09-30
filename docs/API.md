@@ -248,7 +248,8 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/knowledgebas
 
 Every response, including errors, carries an `x-request-id` header. The value is a UUIDv7 string
 generated at the start of each request. Error response bodies also include the same value as
-`request_id` so you can correlate logs without inspecting headers.
+`request_id` so you can correlate logs without inspecting headers. For a `5xx`, the server log is
+the only place the underlying error appears: quote the `request_id` to find it.
 
 ```
 x-request-id: 0193f6c5-1234-7890-abcd-1234567890ab
@@ -266,6 +267,11 @@ All error responses use the same JSON envelope:
 }
 ```
 
+A `5xx` `message` is fixed text that names only the kind of failure, never the storage, search or
+event backend's own error text, which can quote a bucket, a path or an endpoint. A backend fault
+reads `backend unavailable`, `event backend unavailable` or `internal error`. The full error is
+logged at `ERROR` level under the response's `request_id` (D43, #282).
+
 | HTTP status | `error` code | When it occurs |
 |-------------|--------------|----------------|
 | 400 | `invalid_request` | Malformed path, invalid KB slug, or other bad input |
@@ -281,8 +287,8 @@ All error responses use the same JSON envelope:
 | 422 | `no_match` | `POST …/replace` found no occurrence of `old_string` |
 | 422 | `ambiguous_match` | `POST …/replace` found more than one occurrence and `replace_all` is false; the body adds `match_count` |
 | 410 | `gone` | `Last-Event-ID` on the events stream names a position the log no longer retains; the message names the oldest retained id |
-| 500 | `internal_error` | Unexpected server error |
-| 503 | `backend_unavailable` | Storage backend unreachable or returned an error; the indexing queue is full (`Retry-After: 5`, object already stored); the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write); or the server is at its limit of requests in flight (`Retry-After: 5`, nothing was done — retry) |
+| 500 | `internal_error` | Unexpected server error. `message` is `internal error`; the detail is in the server log under `request_id` |
+| 503 | `backend_unavailable` | Storage backend unreachable or returned an error (`message` is `backend unavailable`, or `event backend unavailable` on the events route; the detail is in the server log under `request_id`); the indexing queue is full (`Retry-After: 5`, object already stored); the change event could not be published after the write (`Retry-After: 5`, object already stored — retry the idempotent write); or the server is at its limit of requests in flight (`Retry-After: 5`, nothing was done — retry) |
 | 408 | `request_timeout` | The request body stopped arriving for longer than `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). The partial upload is discarded, not stored. A slow but steady upload is not affected: the bound is the gap between frames, not the total |
 | 504 | `request_timeout` | The request did not produce a response within the server's request timeout (`NOTEDTHAT_REQUEST_TIMEOUT_MS`, default 30 s), measured from the moment the request body finished arriving. No `Retry-After`: the same request would take as long again. A write may or may not have been applied — reconcile with `HEAD` before retrying it. The events route is never answered this way ([request bounds](CONFIGURATION.md#request-bounds)) |
 
