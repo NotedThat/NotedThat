@@ -377,6 +377,24 @@ the check the day the advisory stops matching the tree, so a suppression rots lo
 not extend it. `deny.toml` likewise records why the `licenses`, `bans` and `sources` checks are off,
 and why `unsound` covers the whole graph; those are decisions, not defaults.
 
+## Unused dependencies
+
+The `machete` job in `ci.yml` fails when a crate declares a dependency its sources never name.
+Every crate is published, so an unused entry is compiled by every downstream consumer too. Run the
+same check locally:
+
+```sh
+# The version CI pins; it moves by hand here and in ci.yml.
+cargo install --locked cargo-machete@0.9.2
+cargo machete
+```
+
+A finding is fixed by deleting the line from the crate's `Cargo.toml` (and from
+`[workspace.dependencies]` if nothing else uses it), then `cargo update --workspace` to prune
+`Cargo.lock`. If the dependency really is used — only through a macro that does not name it, say —
+list it under `[package.metadata.cargo-machete] ignored` in that crate's `Cargo.toml`, with a
+comment saying why.
+
 ## Dependency Ownership Rules
 
 - S3/Qdrant/WebDAV deps live **only** in their respective crates (`notedthat-storage-s3`, `notedthat-indexer`, `notedthat-webdav`).

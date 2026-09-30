@@ -224,32 +224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "aws-config"
-version = "1.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8d7b388a9fc3a6db15a5ec778c38b354eff1364882c94d08e0252f7a47dcaa4"
-dependencies = [
- "aws-credential-types",
- "aws-runtime",
- "aws-sdk-sts",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http",
- "time",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "aws-credential-types"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,32 +318,6 @@ dependencies = [
  "sha2 0.11.0",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "aws-sdk-sts"
-version = "1.118.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df7572569d018ca72923073494eac3c4671a0daea90b9e3923c2d27a3a02a2c1"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-query",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-smithy-xml",
- "aws-types",
- "fastrand",
- "http",
- "regex-lite",
- "tracing",
 ]
 
 [[package]]
@@ -501,19 +449,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e86338c869539a581bf161247762a6e87f92c5c075060057b5ed6d06632ed0c"
 dependencies = [
  "aws-smithy-runtime-api",
-]
-
-[[package]]
-name = "aws-smithy-query"
-version = "0.62.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d1d71f6562be974caa85442ecd90194c40fdb5df045f182a6c2e872ce95056"
-dependencies = [
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-smithy-xml",
- "urlencoding",
 ]
 
 [[package]]
@@ -2658,7 +2593,6 @@ dependencies = [
  "testcontainers",
  "thiserror",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -2694,7 +2628,6 @@ dependencies = [
 name = "notedthat-mcp"
 version = "0.12.3"
 dependencies = [
- "anyhow",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -2768,7 +2701,6 @@ dependencies = [
  "temp-env",
  "tempfile",
  "testcontainers",
- "thiserror",
  "tokio",
  "tokio-util",
  "tower",
@@ -2806,7 +2738,6 @@ name = "notedthat-storage-s3"
 version = "0.12.3"
 dependencies = [
  "async-trait",
- "aws-config",
  "aws-sdk-s3",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -2841,7 +2772,6 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "serde_json",
- "thiserror",
  "tokio",
  "tower",
  "tower-http 0.5.2",
@@ -4758,12 +4688,6 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
-
-[[package]]
-name = "urlencoding"
-version = "2.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf8-zero"

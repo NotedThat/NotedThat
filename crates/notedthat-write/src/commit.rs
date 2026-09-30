@@ -39,11 +39,6 @@ pub async fn commit<B: Into<StagedBody>>(
     let size = body.len();
     check_size(size, MAX_UPLOAD_BYTES)?;
     crate::manifest::check_staged_manifest(kb, path, &body).await?;
-    let _prefix = body.prefix(512).await.map_err(|source| {
-        WriteError::Storage(StorageError::Other {
-            source: Box::new(source),
-        })
-    })?;
     let mime = sniff_content_type(caller_content_type, path);
     let outcome = storage
         .put_staged_object(kb, path, body, Some(&mime), conditionals)
