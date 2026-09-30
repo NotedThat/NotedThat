@@ -450,7 +450,8 @@ mod tests {
     use super::document;
     use crate::middleware::ANONYMOUS_REACHABLE;
     use crate::router::{API_ROUTES, API_V1_PREFIX, MATCHED_KB_OBJECT, OPENAPI_PATH, build_router};
-    use crate::testing::{InMemoryStorage, test_app_state_with_default_channel};
+    use crate::state::AppState;
+    use crate::testing::InMemoryStorage;
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode};
     use bytes::Bytes;
@@ -527,14 +528,12 @@ mod tests {
             .await
             .expect("seed");
         let kbs = BTreeMap::from([("notes".to_string(), kb)]);
-        let mut state = test_app_state_with_default_channel(
-            Arc::new(storage),
-            Arc::new(kbs.clone()),
-            Arc::new(Authenticator::new(TOKEN)),
-            1024,
-        );
-        state.access_policies = Arc::new(notedthat_core::signed_in_policies(&kbs));
-        build_router(state)
+        build_router(AppState {
+            authenticator: Arc::new(Authenticator::new(TOKEN)),
+            max_body_size: 1024,
+            max_patchable_size: 1024,
+            ..AppState::for_tests(Arc::new(storage), kbs)
+        })
     }
 
     /// The URL a documented path template names, with the test's slug and key.

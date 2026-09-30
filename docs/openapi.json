@@ -2006,7 +2006,7 @@
               "string",
               "null"
             ],
-            "description": "Only return hits with exactly this MIME type (e.g. `\"text/markdown\"`)."
+            "description": "Only return hits with this media type (e.g. `\"text/markdown\"`). Parameters\nsuch as `charset`, and case, are ignored on both sides of the match. A chunk\nindexed before that normalisation (#286) is matched only by its exact raw\ntype, until its object is indexed again."
           },
           "concept_type": {
             "type": [
