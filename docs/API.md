@@ -1373,8 +1373,9 @@ curl -sSf -X POST \
 
 #### Upgrade notes (untyped objects, #278)
 
-> An object stored with no content type — a PUT with an empty `Content-Type:` header, or a file
-> the `fs` backend could not guess a type for — used to be indexed as Markdown whatever its key,
+> An object stored with no content type — a PUT with an empty `Content-Type:` header or one naming
+> no media type, such as `;charset=utf-8`, or a file the `fs` backend could not guess a type for —
+> used to be indexed as Markdown whatever its key,
 > with an empty `mime` on its chunks. It is now judged by its key: `.md`/`.markdown` are indexed as
 > `text/markdown` and `.txt` as `text/plain`, and both the chunks and `object.indexed` carry that
 > type. Anything else is removed from the index. Chunks indexed before this release keep `mime: ""`
@@ -1505,7 +1506,7 @@ own.
 | `object_key` | all | The key, without a leading slash |
 | `etag` | `object.written`, `object.indexed`; `object.index_failed` when known | The `ETag` of the version the event is about, quoted as in `HEAD`. On `object.indexed` it is the version now in the index — the one the indexer read and verified on the bytes it embedded — so it matches the `object.written` for that write |
 | `size` | `object.written` | Size in bytes |
-| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome — or, when `HEAD` reported none, the type the key's suffix names (`.md`/`.markdown` → `text/markdown`, `.txt` → `text/plain`), which is also the `mime` the object's chunks carry in search |
+| `mime` | `object.written`, `object.indexed`; `object.index_failed` when known | Content type: as stored for a write, as the indexer's `HEAD` reported it for an outcome — or, when `HEAD` reported none or one naming no media type, such as `;charset=utf-8`, the type the key's suffix names (`.md`/`.markdown` → `text/markdown`, `.txt` → `text/plain`), which is also the `mime` the object's chunks carry in search |
 | `mtime` | `object.written` | Last-modified Unix timestamp, seconds |
 | `chunks` | `object.indexed` | How many points now represent the object in the index |
 | `summary` | `object.index_failed` | The pipeline's own error, first line, at most 200 characters — the same string [`GET …/index`](#get-apiv1knowledgebaseskb_slugindex) reports as `last_failure.summary`. Present only for a subscriber whose `list` grant covers the whole knowledge base; everyone else receives the frame without it |
