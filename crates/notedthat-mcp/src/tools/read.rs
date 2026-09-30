@@ -1,3 +1,4 @@
+use super::range::{RangeArgs, ReadSpan};
 use crate::client::NotedThatClient;
 use crate::error::{McpToolError, map_response};
 use crate::path::encode_kb_slug;
@@ -9,20 +10,57 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+// The tool's arguments, parsed: the range is one `ReadSpan`, so a call naming
+// an end without its start, or both pairs, is refused while its arguments are
+// deserialized and never reaches `run`. The published schema is
+// `RawReadArgs`'s four flat range fields. Plain comments, not rustdoc: a doc
+// here would become the input schema's description.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(try_from = "RawReadArgs")]
+#[schemars(with = "RawReadArgs")]
 pub struct ReadArgs {
+    pub kb: String,
+    pub path: String,
+    pub span: ReadSpan,
+}
+
+// The tool's arguments as a client sends them. Named `ReadArgs` in the
+// schema, so `schema_for_type::<ReadArgs>()` keeps the title it had before the
+// raw twin existed. The `tools/list` input schema carries no title, since
+// rmcp strips it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "ReadArgs")]
+pub struct RawReadArgs {
     /// Knowledge base slug.
     pub kb: String,
     /// Object path within the knowledge base, e.g. `notes/hello.md`.
     pub path: String,
-    /// Optional first byte to read (0-based inclusive). Use with `byte_end` for a range.
+    /// Optional first byte to read (0-based inclusive). Use with `byte_end` for a range, alone to read to the end; not with `line_*`.
     pub byte_start: Option<u64>,
-    /// Optional end of the byte range, exclusive. Requires `byte_start`.
+    /// Optional end of the byte range, exclusive. Requires `byte_start`, and must exceed it.
     pub byte_end: Option<u64>,
-    /// Optional first line number to read (1-based inclusive). Use with `line_end` for a range.
+    /// Optional first line number to read (1-based inclusive). Use with `line_end` for a range, alone to read to the end; not with `byte_*`.
     pub line_start: Option<u64>,
     /// Optional last line number to read (1-based inclusive). Requires `line_start`. Set to `line_start - 1` to signal an insert point.
     pub line_end: Option<u64>,
+}
+
+impl TryFrom<RawReadArgs> for ReadArgs {
+    type Error = String;
+
+    fn try_from(raw: RawReadArgs) -> Result<Self, Self::Error> {
+        let span = ReadSpan::parse(RangeArgs {
+            line_start: raw.line_start,
+            line_end: raw.line_end,
+            byte_start: raw.byte_start,
+            byte_end: raw.byte_end,
+        })?;
+        Ok(Self {
+            kb: raw.kb,
+            path: raw.path,
+            span,
+        })
+    }
 }
 
 /// The tool's `structuredContent`: the text **and** what the read returned about
@@ -176,71 +214,12 @@ pub(super) async fn run(
     client: &NotedThatClient,
     args: ReadArgs,
 ) -> Result<CallToolResult, McpError> {
-    let byte_range_requested = args.byte_start.is_some() || args.byte_end.is_some();
-    let line_range_requested = args.line_start.is_some() || args.line_end.is_some();
-    if byte_range_requested && line_range_requested {
-        return Err(McpToolError::InvalidRequest(
-            "byte_* and line_* arguments are mutually exclusive; provide one pair or the other"
-                .into(),
-        )
-        .into());
-    }
-    if args.line_end.is_some() && args.line_start.is_none() {
-        return Err(McpToolError::InvalidRequest(
-            "line_end requires line_start; provide both or omit both".into(),
-        )
-        .into());
-    }
-    if args.line_start == Some(0) {
-        return Err(McpToolError::InvalidRequest(
-            "line numbers are 1-based; line_start must be >= 1".into(),
-        )
-        .into());
-    }
-    if let (Some(start), Some(end)) = (args.line_start, args.line_end)
-        && start > end
-        && start != end + 1
-    {
-        return Err(McpToolError::InvalidRequest(
-            "line_start must be <= line_end + 1; see docs for insert-point encoding".into(),
-        )
-        .into());
-    }
-
-    let range_header: Option<String> = match (
-        args.byte_start,
-        args.byte_end,
-        args.line_start,
-        args.line_end,
-    ) {
-        (None, None, None, None) => None,
-        (Some(start), None, None, None) => Some(format!("bytes={start}-")),
-        (Some(start), Some(end), None, None) => {
-            if start >= end {
-                return Err(McpToolError::InvalidRequest(format!(
-                    "byte_start ({start}) must be less than byte_end ({end})"
-                ))
-                .into());
-            }
-            Some(format!("bytes={start}-{}", end - 1))
-        }
-        (None, Some(_), None, None) => {
-            return Err(McpToolError::InvalidRequest(
-                "byte_end requires byte_start; provide both or omit both".into(),
-            )
-            .into());
-        }
-        (None, None, Some(start), None) => Some(format!("lines={start}-")),
-        (None, None, Some(start), Some(end)) => Some(format!("lines={start}-{end}")),
-        _ => unreachable!("range validation rejected mixed or incomplete line ranges"),
-    };
-
     let kb_enc = encode_kb_slug(&args.kb);
     // NOTE: url::push() uses PATH_SEGMENT encoding and leaves : @ [ ] ^ | ! $ & ' ( ) * + , ; = and sub-delims unencoded; ObjectPath accepts these.
     let url = client.api_v1_url(&["knowledgebases", &kb_enc, &args.path]);
 
     let mut req = client.authorized(client.http.get(url));
-    if let Some(range) = range_header {
+    if let Some(range) = args.span.range_header() {
         req = req.header("Range", range);
     }
 
@@ -281,15 +260,22 @@ mod tests {
         NotedThatClient::new(url, "tok").unwrap()
     }
 
+    /// Arguments as a client would send them, through the same parse rmcp runs.
+    fn parse(range: serde_json::Value) -> Result<ReadArgs, String> {
+        let mut value = serde_json::json!({"kb": "kb", "path": "file.md"});
+        let serde_json::Value::Object(range) = range else {
+            panic!("a range is an object: {range}");
+        };
+        value.as_object_mut().unwrap().extend(range);
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
     fn file_args() -> ReadArgs {
-        ReadArgs {
-            kb: "kb".into(),
-            path: "file.md".into(),
-            byte_start: None,
-            byte_end: None,
-            line_start: None,
-            line_end: None,
-        }
+        parse(serde_json::json!({})).unwrap()
+    }
+
+    fn range_args(range: serde_json::Value) -> ReadArgs {
+        parse(range).unwrap()
     }
 
     fn text_of(result: &CallToolResult) -> &str {
@@ -368,11 +354,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let args = ReadArgs {
-            line_start: Some(1),
-            line_end: Some(5),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 1, "line_end": 5}));
         let result = run(&client(&server.uri()), args).await.unwrap();
         assert_eq!(
             meta_of(&result),
@@ -407,11 +389,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let args = ReadArgs {
-            line_start: Some(5),
-            line_end: Some(4),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 5, "line_end": 4}));
         let result = run(&client(&server.uri()), args).await.unwrap();
         assert_eq!(text_of(&result), "");
         assert_eq!(
@@ -445,11 +423,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let args = ReadArgs {
-            byte_start: Some(0),
-            byte_end: Some(10),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"byte_start": 0, "byte_end": 10}));
         let result = run(&client(&server.uri()), args).await.unwrap();
         assert_eq!(text_of(&result), "0123456789");
         assert_eq!(
@@ -481,11 +455,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let args = ReadArgs {
-            line_start: Some(1),
-            line_end: Some(0),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 1, "line_end": 0}));
         let result = run(&client(&server.uri()), args).await.unwrap();
         let meta = meta_of(&result);
         assert_eq!(meta.bytes_returned, 0);
@@ -512,11 +482,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let args = ReadArgs {
-            line_start: Some(5),
-            line_end: Some(4),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 5, "line_end": 4}));
         let result = run(&client(&server.uri()), args).await.unwrap();
         let meta = meta_of(&result);
         assert_eq!(meta.total_bytes, Some(400));
@@ -674,11 +640,7 @@ mod tests {
             .mount(&server)
             .await;
         let c = client(&server.uri());
-        let args = ReadArgs {
-            byte_start: Some(0),
-            byte_end: Some(10),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"byte_start": 0, "byte_end": 10}));
         let result = run(&c, args).await.unwrap();
         assert_eq!(text_of(&result), "0123456789");
         assert_eq!(
@@ -702,38 +664,9 @@ mod tests {
             .mount(&server)
             .await;
         let c = client(&server.uri());
-        let args = ReadArgs {
-            byte_start: Some(1000),
-            byte_end: Some(2000),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"byte_start": 1000, "byte_end": 2000}));
         let result = run(&c, args).await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn byte_end_alone_rejected_no_http_call() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            byte_end: Some(100),
-            ..file_args()
-        };
-        let result = run(&c, args).await;
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn equal_start_end_rejected() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            byte_start: Some(10),
-            byte_end: Some(10),
-            ..file_args()
-        };
-        assert!(run(&c, args).await.is_err());
     }
 
     #[tokio::test]
@@ -747,69 +680,9 @@ mod tests {
             .mount(&server)
             .await;
         let c = client(&server.uri());
-        let args = ReadArgs {
-            line_start: Some(1),
-            line_end: Some(5),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 1, "line_end": 5}));
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn line_end_alone_rejected_no_http_call() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            line_end: Some(10),
-            ..file_args()
-        };
-        let result = run(&c, args).await;
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn byte_and_line_ranges_rejected_no_http_call() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            byte_start: Some(0),
-            byte_end: Some(10),
-            line_start: Some(1),
-            line_end: Some(5),
-            ..file_args()
-        };
-        let result = run(&c, args).await;
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn zero_line_start_rejected_no_http_call() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            line_start: Some(0),
-            ..file_args()
-        };
-        let result = run(&c, args).await;
-        assert!(result.is_err());
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn non_insert_descending_line_range_rejected_no_http_call() {
-        let server = MockServer::start().await;
-        let c = client(&server.uri());
-        let args = ReadArgs {
-            line_start: Some(5),
-            line_end: Some(3),
-            ..file_args()
-        };
-        let result = run(&c, args).await;
-        assert!(result.is_err());
         server.verify().await;
     }
 
@@ -824,10 +697,7 @@ mod tests {
             .mount(&server)
             .await;
         let c = client(&server.uri());
-        let args = ReadArgs {
-            line_start: Some(3),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 3}));
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
         server.verify().await;
@@ -844,11 +714,7 @@ mod tests {
             .mount(&server)
             .await;
         let c = client(&server.uri());
-        let args = ReadArgs {
-            line_start: Some(5),
-            line_end: Some(4),
-            ..file_args()
-        };
+        let args = range_args(serde_json::json!({"line_start": 5, "line_end": 4}));
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
         server.verify().await;
@@ -874,10 +740,7 @@ mod tests {
         let args = ReadArgs {
             kb: "notes".into(),
             path: "docs/rfc/7231.md".into(),
-            byte_start: None,
-            byte_end: None,
-            line_start: None,
-            line_end: None,
+            span: ReadSpan::Whole,
         };
         // Call the tool — before fix this sends the wrong (double-encoded) URL.
         // We ignore the result; what matters is whether the mock was called.
@@ -898,13 +761,62 @@ mod tests {
         let args = ReadArgs {
             kb: "notes".into(),
             path: "docs/rfc/7231.md".into(),
-            byte_start: None,
-            byte_end: None,
-            line_start: None,
-            line_end: None,
+            span: ReadSpan::Whole,
         };
         let result = run(&c, args).await.unwrap();
         assert!(!result.content.is_empty());
         server.verify().await;
+    }
+
+    #[test]
+    fn a_range_that_breaks_a_rule_is_refused_while_parsing_with_that_rule() {
+        let cases = [
+            (
+                serde_json::json!({"byte_start": 0, "byte_end": 10, "line_start": 1, "line_end": 5}),
+                "line_* and byte_* arguments are mutually exclusive; provide one pair or the other",
+            ),
+            (
+                serde_json::json!({"byte_end": 100}),
+                "byte_end requires byte_start; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"line_end": 10}),
+                "line_end requires line_start; provide both or omit both",
+            ),
+            (
+                serde_json::json!({"byte_start": 10, "byte_end": 10}),
+                "byte_start (10) must be less than byte_end (10)",
+            ),
+            (
+                serde_json::json!({"line_start": 0}),
+                "line numbers are 1-based; line_start must be >= 1",
+            ),
+            (
+                serde_json::json!({"line_start": 5, "line_end": 3}),
+                "line_start must be <= line_end + 1 (set line_end = line_start - 1 for insert)",
+            ),
+        ];
+        for (range, message) in cases {
+            assert_eq!(parse(range.clone()).unwrap_err(), message, "{range}");
+        }
+    }
+
+    #[test]
+    fn the_published_schema_is_the_four_flat_range_fields() {
+        let schema = serde_json::Value::Object(
+            rmcp::handler::server::common::schema_for_type::<ReadArgs>()
+                .as_ref()
+                .clone(),
+        );
+        let properties = schema["properties"].as_object().expect("properties");
+        for field in ["line_start", "line_end", "byte_start", "byte_end"] {
+            assert!(properties.contains_key(field), "{field} missing: {schema}");
+        }
+        assert!(!properties.contains_key("span"), "{schema}");
+        assert_eq!(schema["title"], "ReadArgs", "{schema}");
+        assert!(schema.get("description").is_none(), "{schema}");
+        for combinator in ["anyOf", "oneOf", "allOf"] {
+            assert!(schema.get(combinator).is_none(), "{combinator}: {schema}");
+        }
     }
 }

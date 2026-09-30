@@ -7,6 +7,7 @@ mod index_status;
 mod list;
 mod list_kbs;
 mod mv;
+mod range;
 mod read;
 mod replace;
 mod search;

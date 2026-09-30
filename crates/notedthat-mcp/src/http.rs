@@ -1003,6 +1003,47 @@ mod caller_identity {
         api.verify().await;
     }
 
+    /// What a client receives for an `edit` naming both a line and a byte
+    /// range (#299). The range is parsed while rmcp deserializes
+    /// `Parameters<EditArgs>`, so the refusal takes the same shape as an
+    /// unknown `search` key: a tool error stating the rule, and no PATCH.
+    #[tokio::test]
+    async fn an_edit_naming_both_ranges_is_refused_before_the_tool_runs() {
+        // Given — an API that would accept the PATCH. It must never be reached.
+        let api = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&api)
+            .await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "edit", "arguments": {
+                "kb": "notes", "path": "hello.md", "content": "x", "if_match": "\"e\"",
+                "line_start": 1, "line_end": 2, "byte_start": 0, "byte_end": 10
+            } },
+        });
+
+        // When
+        let app = app(&api.uri());
+        let session = open_session(&app, SERVICE_TOKEN).await;
+        let (response, json) = post(&app, SERVICE_TOKEN, Some(&session), body).await;
+
+        // Then — a tool error stating the rule, and the API untouched.
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = json.expect("json-rpc");
+        assert!(json.get("error").is_none(), "not a JSON-RPC error: {json}");
+        assert_eq!(json["result"]["isError"], true, "{json}");
+        let message = json["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(
+            message.contains("line_* and byte_* arguments are mutually exclusive"),
+            "states the rule: {message}"
+        );
+        api.verify().await;
+    }
+
     #[tokio::test]
     async fn a_caller_token_in_the_http_parts_is_forwarded_to_the_api() {
         // Given — the API will only answer alice's own token.
