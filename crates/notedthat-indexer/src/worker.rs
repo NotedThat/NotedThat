@@ -2,7 +2,7 @@
 //!
 //! Behavior: up to `index_concurrency` files at once, started in the order they
 //! became ready; events for one (kb, key) strictly in order; batched embedding;
-//! a panicking file handler recorded as that file's failure; drain on shutdown.
+//! a panic in a file's pipeline recorded as that file's failure; drain on shutdown.
 
 mod chunks;
 mod last_seen;
@@ -142,12 +142,19 @@ impl IndexerWorker {
     }
 
     /// Run until the channel closes or shutdown is requested.
+    ///
+    /// # Panics
+    ///
+    /// A panic inside a file's pipeline is that file's failure and does not
+    /// reach here. A panic outside one — recording or publishing an outcome,
+    /// say from an event publisher that panics — ends the worker and
+    /// propagates, after the health view has been told the worker stopped.
     pub async fn run(mut self) {
+        // Whatever ends the loop, a return or an unwind, nothing drains the
+        // queue from here on, and the health view says so rather than
+        // reporting `indexing` forever (#255).
+        let _stopped = Stopped(Arc::clone(&self.health));
         self.run_loop().await;
-        set_in_flight(0);
-        // Whatever ended the loop, nothing drains the queue from here on, and
-        // the health view says so rather than reporting `indexing` forever.
-        self.health.worker_stopped();
     }
 
     async fn run_loop(&mut self) {
@@ -198,16 +205,9 @@ impl IndexerWorker {
                 // Rebound whole: the block would otherwise capture only
                 // `queued.event` and drop the permit before the handler runs.
                 // Held here, the permit is released once the outcome has been
-                // recorded, however the handler ended.
+                // recorded.
                 let queued = queued;
-                let tombstone = matches!(queued.event, IndexEvent::Tombstone { .. });
-                let handled = AssertUnwindSafe(pipeline.handle(queued.event))
-                    .catch_unwind()
-                    .await;
-                if let Err(payload) = handled {
-                    let detail = panic_detail(&*payload);
-                    pipeline.handler_panicked(&key, tombstone, detail).await;
-                }
+                pipeline.handle(queued.event).await;
                 key
             }));
         }
@@ -224,33 +224,6 @@ impl IndexerWorker {
             if let Some(key) = running.next().await {
                 lanes.finish(key);
             }
-        }
-    }
-
-    /// Record a handler that panicked as that file's failure, so one bad file
-    /// costs one outcome instead of the worker (#255). Its lane is freed by the
-    /// caller, and D73's one-outcome-per-handler still holds, so `pending`
-    /// drains.
-    async fn handler_panicked(&self, (kb, object_key): &Key, tombstone: bool, detail: String) {
-        let message = format!("file handler panicked: {detail}");
-        tracing::error!(
-            target: "notedthat::indexing",
-            kb = %kb.as_str(),
-            path = %object_key.as_str(),
-            error = %message,
-            "INDEXING_FAILED"
-        );
-        self.health
-            .failed(kb.as_str(), object_key.as_str(), &message);
-        if !tombstone {
-            self.publish(ObjectEvent::index_failed(
-                kb.clone(),
-                object_key.clone(),
-                None,
-                None,
-                bound_summary(&message),
-            ))
-            .await;
         }
     }
 
@@ -286,32 +259,49 @@ impl IndexerWorker {
         // no `object.unindexed`, and `object.deleted` already said what
         // happened to the key.
         let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
-        let result = match event {
-            IndexEvent::Upsert {
-                kb,
-                object_key,
-                etag,
-                ..
-            } => {
-                self.remember(&kb, &object_key, Some(etag));
-                self.handle_upsert(kb, object_key, Skip::Never, None).await
-            }
-            IndexEvent::Refresh {
-                kb,
-                object_key,
-                origin,
-            } => {
-                self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
-                    .await
-            }
-            IndexEvent::Tombstone { kb, object_key } => {
-                self.remember(&kb, &object_key, None);
-                self.handle_tombstone(kb, object_key)
-                    .await
-                    .map(|()| PipelineOutcome::Tombstoned)
-                    .map_err(PipelineFailure::before_head)
+        let pipeline = async {
+            match event {
+                IndexEvent::Upsert {
+                    kb,
+                    object_key,
+                    etag,
+                    ..
+                } => {
+                    self.remember(&kb, &object_key, Some(etag));
+                    self.handle_upsert(kb, object_key, Skip::Never, None).await
+                }
+                IndexEvent::Refresh {
+                    kb,
+                    object_key,
+                    origin,
+                } => {
+                    self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
+                        .await
+                }
+                IndexEvent::Tombstone { kb, object_key } => {
+                    self.remember(&kb, &object_key, None);
+                    self.handle_tombstone(kb, object_key)
+                        .await
+                        .map(|()| PipelineOutcome::Tombstoned)
+                        .map_err(PipelineFailure::before_head)
+                }
             }
         };
+        // Only the pipeline is guarded: a panic in it becomes this file's
+        // failure and goes down the one outcome path below, so the file still
+        // gets exactly one outcome (#255). The outcome step itself is not
+        // guarded: a panic there may come after the outcome was recorded, and
+        // recording a second would break D73's one outcome per handler. It
+        // ends the worker instead, which `run` reports as stopped.
+        let result = AssertUnwindSafe(pipeline)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|payload| {
+                Err(PipelineFailure::before_head(format!(
+                    "file handler panicked: {}",
+                    panic_detail(&*payload)
+                )))
+            });
 
         // The health record is stamped before the outcome is published, so a
         // subscriber who reads `object.indexed` and then asks `/index` never
@@ -424,6 +414,17 @@ impl IndexerWorker {
             "tombstoned"
         );
         Ok(())
+    }
+}
+
+/// Marks the worker stopped on the health view when dropped, so the loop's
+/// every exit — a return or an unwind — is reported.
+struct Stopped(Arc<IndexHealth>);
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        set_in_flight(0);
+        self.0.worker_stopped();
     }
 }
 

@@ -1382,10 +1382,6 @@ async fn concurrency_of_eight_indexes_eight_files_at_once() {
     assert_runs_at_most(8, 10).await;
 }
 
-/// Run an upsert of `a.md` that is held mid-embedding, queue `delete` for the
-/// same file behind it and an upsert of `b.md` beside it, then let everything
-/// finish. The delete must wait for the upsert, or the upsert's chunks would
-/// land after it and outlive the file; the unrelated file must not wait.
 #[tokio::test]
 async fn files_start_in_the_order_they_became_ready() {
     let kb = kb();
@@ -1444,18 +1440,22 @@ async fn files_start_in_the_order_they_became_ready() {
     assert_eq!(started, expected, "files start first come, first served");
 }
 
+/// A file whose pipeline panics is that file's failure: the files beside and
+/// after it are indexed, its outcome is counted once, and the worker still
+/// ends cleanly when its queue closes rather than unwinding (#255).
 #[tokio::test]
 async fn a_panicking_file_does_not_stop_the_worker() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
     let storage = Arc::new(MockStorage::new());
-    for (key, body) in [
+    let files = [
         ("boom.md", "# boom"),
         ("good1.md", "# Good one"),
         ("good2.md", "# Good two"),
         ("later.md", "# Later"),
-    ] {
+    ];
+    for (key, body) in files {
         storage.insert("test-kb", key, body, "text/markdown");
     }
     let health = Arc::new(IndexHealth::new());
@@ -1467,47 +1467,14 @@ async fn a_panicking_file_does_not_stop_the_worker() {
         64,
         2,
     );
-    let handle = tokio::spawn(worker.with_health(Arc::clone(&health)).run());
-    let settle = async |tx: &notedthat_indexer::IndexQueueSender| {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while tx.depth() > 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("every accepted event is handled and its permit returned");
-    };
-
-    for key in ["boom.md", "good1.md", "good2.md"] {
+    for (key, _) in files {
         tx.send(upsert(&kb, key)).await.unwrap();
         health.enqueued("test-kb");
     }
-    settle(&tx).await;
-
-    let snapshot = health.snapshot("test-kb");
-    assert!(
-        snapshot.worker_alive,
-        "one bad file does not stop the worker"
-    );
-    assert_eq!(
-        snapshot.pending, 0,
-        "the panic counts as that file's outcome"
-    );
-    let failure = snapshot.last_failure.expect("the panic is on record");
-    assert_eq!(failure.object_key, "boom.md");
-    assert!(
-        failure.summary.contains("panicked") && failure.summary.contains("boom"),
-        "the summary says what happened: {}",
-        failure.summary
-    );
-    assert!(!handle.is_finished(), "the worker is still running");
-
-    tx.send(upsert(&kb, "later.md")).await.unwrap();
-    settle(&tx).await;
     drop(tx);
-    handle
+    tokio::spawn(worker.with_health(Arc::clone(&health)).run())
         .await
-        .expect("the worker ends cleanly when its queue closes");
+        .expect("a panicking file does not unwind the worker");
 
     for key in ["good1.md", "good2.md", "later.md"] {
         assert!(
@@ -1516,8 +1483,24 @@ async fn a_panicking_file_does_not_stop_the_worker() {
         );
     }
     assert_eq!(count_points(&store, &kb, "boom.md").await, 0);
+    let snapshot = health.snapshot("test-kb");
+    assert_eq!(
+        snapshot.pending, 0,
+        "the panic counts as that file's one outcome"
+    );
+    let failure = snapshot.last_failure.expect("the panic is on record");
+    assert_eq!(failure.object_key, "boom.md");
+    assert!(
+        failure.summary.contains("panicked") && failure.summary.contains("boom"),
+        "the summary says what happened: {}",
+        failure.summary
+    );
 }
 
+/// Run an upsert of `a.md` that is held mid-embedding, queue `delete` for the
+/// same file behind it and an upsert of `b.md` beside it, then let everything
+/// finish. The delete must wait for the upsert, or the upsert's chunks would
+/// land after it and outlive the file; the unrelated file must not wait.
 async fn assert_delete_waits_for_update(delete: IndexEvent, remove_object: bool) {
     let kb = kb();
     let (store, provisioner) = make_store();
@@ -2804,6 +2787,252 @@ mod announcing {
             .last_failure
             .expect("the health record saw it too");
         assert_eq!(summary, recorded.summary, "stream and /index agree");
+    }
+
+    /// A panicking pipeline reports like any other failure before `HEAD`:
+    /// one `object.index_failed`, with no `ETag` or content type, carrying
+    /// the summary `/index` reports.
+    #[tokio::test]
+    async fn a_panicking_upsert_publishes_index_failed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "boom.md", "# boom", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let health = Arc::new(IndexHealth::new());
+
+        drive_with(
+            storage,
+            Arc::new(PanickingEmbedder),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![upsert("boom.md", "\"b\"")],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].object_key.as_str(), "boom.md");
+        let ObjectEventKind::IndexFailed {
+            etag,
+            mime,
+            summary,
+        } = &events[0].kind
+        else {
+            panic!("expected object.index_failed, got {:?}", events[0].kind);
+        };
+        assert_eq!(etag.as_deref(), None);
+        assert_eq!(mime.as_deref(), None);
+        let summary = summary.as_deref().expect("the log holds the summary");
+        assert!(summary.contains("panicked"), "{summary}");
+        let recorded = health
+            .snapshot(kb().as_str())
+            .last_failure
+            .expect("the health record saw it too");
+        assert_eq!(summary, recorded.summary, "stream and /index agree");
+    }
+
+    /// A tombstone reports no outcome (D65), and a panicking one is no
+    /// exception: it is on the health record, and on the stream not at all.
+    #[tokio::test]
+    async fn a_panicking_tombstone_publishes_nothing() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let health = Arc::new(IndexHealth::new());
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+
+        drive_with(
+            Arc::new(MockStorage::new()),
+            embedder,
+            Arc::new(PanickingDelete { inner: store }),
+            publisher.clone(),
+            health.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("gone.md"),
+            }],
+        )
+        .await;
+
+        assert!(announced(&publisher).await.is_empty());
+        let failure = health
+            .snapshot(kb().as_str())
+            .last_failure
+            .expect("the panic is on record");
+        assert_eq!(failure.object_key, "gone.md");
+        assert!(failure.summary.contains("panicked"), "{}", failure.summary);
+    }
+
+    /// A panic after the outcome was recorded — here the publisher's, as a
+    /// poisoned lock inside it would raise — is not a second outcome: the
+    /// file stays indexed and counted once. It ends the worker, and the
+    /// health view says the worker stopped rather than `indexing` (#255).
+    #[tokio::test]
+    async fn a_panic_after_success_is_not_a_second_outcome() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let health = Arc::new(IndexHealth::new());
+        let (tx, rx) = index_queue(1);
+        tx.send(upsert("note.md", "\"n\"")).await.unwrap();
+        health.enqueued(kb().as_str());
+        drop(tx);
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+        let worker = make_worker_with_batch(
+            storage,
+            embedder,
+            Arc::new(store.clone()),
+            rx,
+            CancellationToken::new(),
+            32,
+        )
+        .with_event_publisher(Some(Arc::new(PanickingPublisher)))
+        .with_health(health.clone());
+
+        let ended = tokio::spawn(worker.run()).await;
+
+        assert!(ended.is_err_and(|error| error.is_panic()));
+        assert!(count_points(&store, &kb(), "note.md").await > 0);
+        let snapshot = health.snapshot(kb().as_str());
+        assert_eq!(snapshot.pending, 0, "one outcome, not two");
+        assert_eq!(snapshot.last_failure, None, "the file was indexed");
+        assert!(snapshot.last_indexed_at.is_some());
+        assert!(!snapshot.worker_alive);
+        assert_eq!(snapshot.state, IndexState::Failed);
+    }
+
+    /// A publisher that panics while reporting a failure cannot take the
+    /// health view down with the worker: the failure is recorded once, and
+    /// the worker is reported stopped rather than `indexing` forever (#255).
+    #[tokio::test]
+    async fn a_panicking_publisher_still_leaves_the_worker_reported_stopped() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "boom.md", "# boom", "text/markdown");
+        let health = Arc::new(IndexHealth::new());
+        let (tx, rx) = index_queue(1);
+        tx.send(upsert("boom.md", "\"b\"")).await.unwrap();
+        health.enqueued(kb().as_str());
+        drop(tx);
+        let worker = make_worker_with_batch(
+            storage,
+            Arc::new(PanickingEmbedder),
+            Arc::new(store),
+            rx,
+            CancellationToken::new(),
+            32,
+        )
+        .with_event_publisher(Some(Arc::new(PanickingPublisher)))
+        .with_health(health.clone());
+
+        let ended = tokio::spawn(worker.run()).await;
+
+        assert!(ended.is_err_and(|error| error.is_panic()));
+        let snapshot = health.snapshot(kb().as_str());
+        assert!(!snapshot.worker_alive);
+        assert_eq!(snapshot.state, IndexState::Failed);
+        assert_eq!(snapshot.pending, 0, "the failure is counted once");
+        let failure = snapshot.last_failure.expect("the failure is on record");
+        assert_eq!(failure.object_key, "boom.md");
+    }
+
+    /// An event log whose every publish panics, as `MemoryPublisher` does
+    /// once its ring's lock is poisoned.
+    struct PanickingPublisher;
+
+    #[async_trait]
+    impl EventPublisher for PanickingPublisher {
+        async fn publish(
+            &self,
+            _event: ObjectEvent,
+        ) -> Result<EventId, notedthat_core::PublishError> {
+            panic!("event log lock poisoned");
+        }
+
+        async fn subscribe(
+            &self,
+            _kb: &KbSlug,
+            _after: Option<EventId>,
+        ) -> Result<notedthat_core::EventStream, notedthat_core::SubscribeError> {
+            unimplemented!()
+        }
+
+        fn ready(&self) -> bool {
+            true
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "panicking"
+        }
+    }
+
+    /// A store that behaves normally except that deleting points panics.
+    struct PanickingDelete {
+        inner: InMemoryVectorStore,
+    }
+
+    #[async_trait]
+    impl VectorStore for PanickingDelete {
+        async fn probe(&self) -> Result<(), VectorStoreError> {
+            Ok(())
+        }
+        async fn collection_exists(&self, kb: &KbSlug) -> Result<bool, VectorStoreError> {
+            self.inner.collection_exists(kb).await
+        }
+        async fn create_collection(
+            &self,
+            kb: &KbSlug,
+            dense_dim: u64,
+        ) -> Result<(), VectorStoreError> {
+            self.inner.create_collection(kb, dense_dim).await
+        }
+        async fn create_payload_index(
+            &self,
+            kb: &KbSlug,
+            field: &str,
+            kind: PayloadFieldKind,
+        ) -> Result<(), VectorStoreError> {
+            self.inner.create_payload_index(kb, field, kind).await
+        }
+        async fn upsert_points(
+            &self,
+            kb: &KbSlug,
+            points: Vec<qdrant_client::qdrant::PointStruct>,
+        ) -> Result<(), VectorStoreError> {
+            self.inner.upsert_points(kb, points).await
+        }
+        async fn delete_points(
+            &self,
+            _kb: &KbSlug,
+            _selector: PointSelector,
+        ) -> Result<(), VectorStoreError> {
+            panic!("vector store bug on delete");
+        }
+        async fn indexed_etag(
+            &self,
+            kb: &KbSlug,
+            object_key: &str,
+        ) -> Result<Option<String>, VectorStoreError> {
+            self.inner.indexed_etag(kb, object_key).await
+        }
+        async fn indexed_objects(
+            &self,
+            kb: &KbSlug,
+            prefix: Option<&str>,
+        ) -> Result<Vec<IndexedObject>, VectorStoreError> {
+            self.inner.indexed_objects(kb, prefix).await
+        }
+        async fn hybrid_search(
+            &self,
+            kb: &KbSlug,
+            query: HybridQuery,
+        ) -> Result<Vec<qdrant_client::qdrant::ScoredPoint>, VectorStoreError> {
+            self.inner.hybrid_search(kb, query).await
+        }
     }
 
     #[tokio::test]
