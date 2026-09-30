@@ -372,72 +372,52 @@ responses! {
 /// The path parameter every knowledge-base route takes.
 #[derive(IntoParams)]
 #[into_params(parameter_in = Path)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct KbPath {
+pub struct KbPath {
     /// The knowledge base.
-    kb_slug: KbSlug,
+    pub kb_slug: KbSlug,
 }
 
 /// The path parameters of an object route.
 #[derive(IntoParams)]
 #[into_params(parameter_in = Path)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct ObjectPathParams {
+pub struct ObjectPathParams {
     /// The knowledge base.
-    kb_slug: KbSlug,
+    pub kb_slug: KbSlug,
     /// The object's path within the knowledge base, percent-encoded as one segment:
     /// `docs/rfc/7231.md` is sent as `docs%2Frfc%2F7231.md`. The server also accepts
     /// its `/` unencoded, which is how it writes `Location`.
-    object_path: String,
+    pub object_path: String,
 }
 
 /// The conditional request headers a read honours (RFC 9110 §13).
 #[derive(IntoParams)]
 #[into_params(parameter_in = Header)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "named after the headers they declare"
-)]
-pub(crate) struct ReadConditions {
+pub struct ReadConditions {
     /// Answer `412` unless the object's entity tag is one of these, or `*`.
     #[param(rename = "If-Match")]
-    if_match: Option<String>,
+    pub if_match: Option<String>,
     /// Answer `304` if the object's entity tag is one of these, or `*`.
     #[param(rename = "If-None-Match")]
-    if_none_match: Option<String>,
+    pub if_none_match: Option<String>,
     /// Answer `304` unless the object changed after this HTTP date.
     #[param(rename = "If-Modified-Since")]
-    if_modified_since: Option<String>,
+    pub if_modified_since: Option<String>,
     /// Answer `412` if the object changed after this HTTP date.
     #[param(rename = "If-Unmodified-Since")]
-    if_unmodified_since: Option<String>,
+    pub if_unmodified_since: Option<String>,
 }
 
 /// The conditional request headers a write or delete honours.
 #[derive(IntoParams)]
 #[into_params(parameter_in = Header)]
-#[expect(
-    dead_code,
-    reason = "a parameter declaration for the OpenAPI document only"
-)]
-pub(crate) struct WriteConditions {
+pub struct WriteConditions {
     /// Proceed only if the object's current entity tag is one of these, or `*` for any
     /// existing object; otherwise `412`.
     #[param(rename = "If-Match")]
-    if_match: Option<String>,
+    pub if_match: Option<String>,
     /// `*`: proceed only if the object does not exist; otherwise `412`.
     #[param(rename = "If-None-Match")]
-    if_none_match: Option<String>,
+    pub if_none_match: Option<String>,
 }
 
 #[cfg(test)]

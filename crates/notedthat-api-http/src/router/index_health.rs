@@ -26,15 +26,13 @@ struct IndexHealthResponse {
     /// The knowledge base.
     kb_slug: String,
     /// The worst condition that holds, from `healthy` up to `failed`.
-    #[schema(value_type = IndexStateName)]
-    state: &'static str,
+    state: IndexStateName,
     /// Index jobs queued for this knowledge base and not yet taken by the worker.
     pending: usize,
     /// The indexing queue, which every knowledge base shares.
     queue: QueueView,
     /// Whether the indexing worker is running.
-    #[schema(value_type = WorkerState)]
-    worker: &'static str,
+    worker: WorkerState,
     /// When the worker last completed a job for this knowledge base, RFC 3339;
     /// `null` if never.
     last_indexed_at: Option<String>,
@@ -50,12 +48,8 @@ struct IndexHealthResponse {
 /// were refused `503` recently, or the queue is full now. `indexing`: work is
 /// queued or in progress. `healthy`: nothing pending, nothing failed since the
 /// last success, nothing lost.
-#[derive(utoipa::ToSchema)]
-#[schema(rename_all = "snake_case")]
-#[expect(
-    dead_code,
-    reason = "a schema declaration for the OpenAPI document only"
-)]
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 enum IndexStateName {
     Healthy,
     Indexing,
@@ -65,15 +59,23 @@ enum IndexStateName {
 }
 
 /// Whether the indexing worker is running.
-#[derive(utoipa::ToSchema)]
-#[schema(rename_all = "snake_case")]
-#[expect(
-    dead_code,
-    reason = "a schema declaration for the OpenAPI document only"
-)]
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 enum WorkerState {
     Running,
     Stopped,
+}
+
+impl From<IndexState> for IndexStateName {
+    fn from(state: IndexState) -> Self {
+        match state {
+            IndexState::Healthy => Self::Healthy,
+            IndexState::Indexing => Self::Indexing,
+            IndexState::Backpressured => Self::Backpressured,
+            IndexState::Stale => Self::Stale,
+            IndexState::Failed => Self::Failed,
+        }
+    }
 }
 
 /// The shared indexing queue at this moment.
@@ -189,13 +191,13 @@ fn render(
     };
     IndexHealthResponse {
         kb_slug: kb_slug.to_string(),
-        state: state.as_str(),
+        state: state.into(),
         pending: snapshot.pending,
         queue,
         worker: if snapshot.worker_alive {
-            "running"
+            WorkerState::Running
         } else {
-            "stopped"
+            WorkerState::Stopped
         },
         last_indexed_at: snapshot.last_indexed_at.map(unix_to_rfc3339),
         last_failure: snapshot
