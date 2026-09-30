@@ -242,25 +242,23 @@ impl EventPublisher for NatsPublisher {
             .await
             .map_err(|error| unavailable(&error))?;
 
-        let events = messages.map(|message| match message {
-            Ok(message) => {
-                let sequence = message
-                    .info()
-                    .map_err(|error| StreamError::Broker {
+        let events = messages.filter_map(|message| {
+            let item = match message {
+                Ok(message) => match message.info() {
+                    Ok(info) => {
+                        let sequence = info.stream_sequence;
+                        decode(sequence, &message.payload)
+                            .map(|event| Ok((EventId(sequence), event)))
+                    }
+                    Err(error) => Some(Err(StreamError::Broker {
                         message: format!("message without JetStream metadata: {error}"),
-                    })?
-                    .stream_sequence;
-                let event: ObjectEvent =
-                    serde_json::from_slice(&message.payload).map_err(|error| {
-                        StreamError::Broker {
-                            message: format!("event {sequence} is not an ObjectEvent: {error}"),
-                        }
-                    })?;
-                Ok((EventId(sequence), event))
-            }
-            Err(error) => Err(StreamError::Broker {
-                message: error.to_string(),
-            }),
+                    })),
+                },
+                Err(error) => Some(Err(StreamError::Broker {
+                    message: error.to_string(),
+                })),
+            };
+            futures::future::ready(item)
         });
         Ok(events.boxed())
     }
@@ -271,6 +269,25 @@ impl EventPublisher for NatsPublisher {
 
     fn backend_name(&self) -> &'static str {
         "nats"
+    }
+}
+
+/// The event in a message's payload, or `None` for one this build cannot read.
+///
+/// An undecodable message is skipped rather than ending the subscription: the
+/// stream would end on it again after every reconnect, since a reconnect
+/// resumes just before it, and so wedge every subscriber of the knowledge base
+/// until retention drops it. Ids already have gaps, so a skipped one is not a
+/// new shape for a subscriber. One way to get here is an event written before
+/// an upgrade that made its key invalid, such as a key `ObjectPath` now
+/// reserves (#279).
+fn decode(sequence: u64, payload: &[u8]) -> Option<ObjectEvent> {
+    match serde_json::from_slice(payload) {
+        Ok(event) => Some(event),
+        Err(error) => {
+            tracing::warn!(sequence, %error, "skipping an event that is not an ObjectEvent");
+            None
+        }
     }
 }
 
@@ -345,5 +362,24 @@ mod tests {
         // Never-written stream: from the start is fine, a stale position is not.
         assert!(!is_gone(EventId(0), 0, 0));
         assert!(is_gone(EventId(7), 0, 0), "the stream was recreated");
+    }
+
+    #[test]
+    fn an_undecodable_event_is_skipped_not_fatal() {
+        let event = ObjectEvent::deleted(
+            kb(),
+            ObjectPath::try_from("a.md").unwrap(),
+            EventSource::Http,
+        );
+        let payload = serde_json::to_vec(&event).unwrap();
+        assert_eq!(decode(1, &payload), Some(event));
+
+        // The same event for a key that is now reserved no longer decodes.
+        let stale = String::from_utf8(payload)
+            .unwrap()
+            .replace("\"a.md\"", "\"index\"");
+        assert_ne!(stale.find("\"index\""), None, "the key was rewritten");
+        assert_eq!(decode(2, stale.as_bytes()), None);
+        assert_eq!(decode(3, b"not json"), None);
     }
 }
