@@ -616,7 +616,7 @@ pub struct Config {
     pub api_token: String,
     /// Declared knowledge bases, as a sorted map of slug string → [`KbSlug`].
     pub kbs: BTreeMap<String, KbSlug>,
-    /// Tenant slug — hardcoded to `"default"` per Metis directive.
+    /// Tenant slug — always `"default"`: single-tenant in practice (SPECIFICATIONS.md D1, D11).
     pub tenant_slug: TenantSlug,
     /// Socket address the HTTP server binds to (`NOTEDTHAT_LISTEN_ADDR`; default `0.0.0.0:8080`).
     pub listen_addr: SocketAddr,
@@ -919,8 +919,8 @@ impl Config {
             });
         }
 
-        // Tenant slug is hardcoded to "default" per Metis directive.
-        // NOTEDTHAT_TENANT_SLUG intentionally not read.
+        // Single-tenant in practice (SPECIFICATIONS.md D1, D11): there is no
+        // NOTEDTHAT_TENANT_SLUG, so the slug is always "default" (docs/CONFIGURATION.md).
         let tenant_slug = TenantSlug::default();
 
         // Taken, not moved: the backend-rejection check below needs the whole

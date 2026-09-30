@@ -102,7 +102,9 @@ impl TenantSlug {
 }
 
 impl Default for TenantSlug {
-    /// Returns `TenantSlug("default")`. This is the hardcoded tenant for M2 per Metis directive.
+    /// Returns `TenantSlug("default")`, the only tenant: `NotedThat` is single-tenant in
+    /// practice (SPECIFICATIONS.md D1, D11) and has no setting to choose another
+    /// (docs/CONFIGURATION.md).
     ///
     /// # Panics
     ///
