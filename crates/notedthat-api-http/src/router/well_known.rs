@@ -38,7 +38,7 @@ pub(super) async fn protected_resource_metadata(
 mod tests {
     use crate::router::build_router;
     use crate::state::AppState;
-    use crate::testing::{InMemoryStorage, NoopSearcher};
+    use crate::testing::InMemoryStorage;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use notedthat_core::{Authenticator, ProtectedResource};
@@ -47,21 +47,11 @@ mod tests {
     use tower::ServiceExt as _;
 
     fn app(authenticator: Authenticator) -> axum::Router {
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
         build_router(AppState {
-            storage: Arc::new(InMemoryStorage::default()),
-            declared_kbs: Arc::new(BTreeMap::new()),
-            access_policies: Arc::new(BTreeMap::new()),
-            kb_details: Arc::new(BTreeMap::new()),
             authenticator: Arc::new(authenticator),
             max_body_size: 1024,
             max_patchable_size: 1024,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(Arc::new(InMemoryStorage::default()), BTreeMap::new())
         })
     }
 

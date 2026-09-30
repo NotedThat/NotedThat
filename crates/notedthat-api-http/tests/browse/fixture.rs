@@ -94,28 +94,21 @@ async fn app_with_keys_and_searcher(
             .unwrap_or_else(|error| panic!("seed {key}: {error}"));
     }
 
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     build_router(AppState {
-        storage,
-        declared_kbs: Arc::new(BTreeMap::from([
-            ("notes".to_string(), notes),
-            ("private".to_string(), private),
-        ])),
         access_policies: Arc::new(BTreeMap::from([("notes".to_string(), Arc::new(policy))])),
         kb_details: Arc::new(BTreeMap::from([
             ("notes".to_string(), KbDetails::from_slug("notes")),
             ("private".to_string(), KbDetails::from_slug("private")),
         ])),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
-        indexer_tx,
         searcher,
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(
+            storage,
+            BTreeMap::from([
+                ("notes".to_string(), notes),
+                ("private".to_string(), private),
+            ]),
+        )
     })
 }
 

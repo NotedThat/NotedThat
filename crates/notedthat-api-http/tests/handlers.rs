@@ -38,22 +38,13 @@ fn app_with(
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     kbs.insert(KB2.to_string(), KbSlug::try_new(KB2).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage,
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         max_body_size,
         max_patchable_size: max_body_size,
-        indexer_tx,
-        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
         events,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         readiness,
-        reconcile: None,
+        ..AppState::for_tests(storage, kbs)
     };
     build_router(state)
 }
@@ -1239,19 +1230,9 @@ async fn delete_enqueues_tombstone_on_success() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage,
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
-        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(storage, kbs)
     };
     let router = build_router(state);
 
@@ -1300,19 +1281,9 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
     let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let state = AppState {
-        storage,
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
-        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: notedthat_api_http::testing::ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(storage, kbs)
     };
     let router = build_router(state);
 
@@ -1911,19 +1882,9 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
     let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
     let app = build_router(AppState {
-        storage: Arc::new(InMemoryStorage::default()),
-        access_policies: Arc::new(notedthat_core::signed_in_policies(&kbs)),
-        kb_details: Arc::new(notedthat_core::slug_kb_details(&kbs)),
-        declared_kbs: Arc::new(kbs),
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-        max_body_size: 16 * 1024 * 1024,
-        max_patchable_size: 16 * 1024 * 1024,
         indexer_tx,
-        searcher: Arc::new(notedthat_api_http::testing::NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: ready_receiver(),
-        reconcile: None,
+        ..AppState::for_tests(Arc::new(InMemoryStorage::default()), kbs)
     });
 
     for (method, uri, body) in [

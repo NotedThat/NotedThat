@@ -155,21 +155,9 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn test_state(token: &str) -> AppState {
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
         AppState {
-            storage: Arc::new(InMemoryStorage::default()),
-            declared_kbs: Arc::new(BTreeMap::new()),
-            access_policies: Arc::new(BTreeMap::new()),
-            kb_details: Arc::new(BTreeMap::new()),
             authenticator: Arc::new(notedthat_core::Authenticator::new(token)),
-            max_body_size: 16 * 1024 * 1024,
-            max_patchable_size: 16 * 1024 * 1024,
-            indexer_tx: (&indexer_tx).into(),
-            searcher: Arc::new(crate::testing::NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
+            ..AppState::for_tests(Arc::new(InMemoryStorage::default()), BTreeMap::new())
         }
     }
 

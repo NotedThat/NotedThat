@@ -1,17 +1,16 @@
 //! Test helpers for the HTTP API crate.
 //!
-//! The in-memory [`Storage`] fake and the [`compute_etag`] helper live in
+//! The in-memory [`Storage`](notedthat_core::Storage) fake and the [`compute_etag`] helper live in
 //! [`notedthat_core::testing`] and are re-exported here for backward
 //! compatibility with existing test imports. The `Searcher` fakes and the
-//! `AppState` factories stay here because they are `api-http`-shaped.
+//! readiness receivers stay here because they are `api-http`-shaped; a whole
+//! test state comes from [`crate::state::AppState::for_tests`].
 //!
 //! Only available when the `test-support` feature is enabled or under
 //! `cfg(test)`. **Never enable `test-support` in production builds.**
 
 use async_trait::async_trait;
-use notedthat_core::{KbSlug, Storage};
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use notedthat_core::KbSlug;
 
 // Re-export the fake `Storage` implementation and the ETag helper from
 // `notedthat-core` so existing imports (`notedthat_api_http::testing::InMemoryStorage`,
@@ -87,14 +86,6 @@ impl MockSearcher {
         r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
     ) {
         self.responses.lock().unwrap().push_back(r);
-    }
-
-    /// Alias for `push_response` — matches the plan's specified API.
-    pub fn set_response(
-        &self,
-        r: Result<notedthat_core::search::SearchResponse, notedthat_core::search::SearchError>,
-    ) {
-        self.push_response(r);
     }
 }
 
@@ -172,64 +163,4 @@ impl crate::state::ReconcileTrigger for RecordingReconcile {
             .push(kb.as_str().to_string());
         Ok(())
     }
-}
-
-/// Build a test [`crate::state::AppState`] discarding the indexer receiver.
-pub fn test_app_state_with_default_channel(
-    storage: Arc<dyn Storage>,
-    declared_kbs: Arc<BTreeMap<String, KbSlug>>,
-    authenticator: Arc<notedthat_core::Authenticator>,
-    max_body_size: u64,
-) -> crate::state::AppState {
-    let (indexer_tx, _) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
-    let kb_details = Arc::new(notedthat_core::slug_kb_details(&declared_kbs));
-    crate::state::AppState {
-        storage,
-        declared_kbs,
-        access_policies: Arc::new(BTreeMap::new()),
-        kb_details,
-        authenticator,
-        max_body_size,
-        max_patchable_size: max_body_size,
-        indexer_tx,
-        searcher: Arc::new(NoopSearcher),
-        events: None,
-        index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-        readiness: crate::testing::ready_receiver(),
-        reconcile: None,
-    }
-}
-
-/// Build a test [`crate::state::AppState`] returning both the state and the indexer receiver.
-pub fn test_app_state_with_channel(
-    storage: Arc<dyn Storage>,
-    declared_kbs: Arc<BTreeMap<String, KbSlug>>,
-    authenticator: Arc<notedthat_core::Authenticator>,
-    max_body_size: u64,
-) -> (
-    crate::state::AppState,
-    tokio::sync::mpsc::Receiver<notedthat_indexer::IndexEvent>,
-) {
-    let (indexer_tx, rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
-    let kb_details = Arc::new(notedthat_core::slug_kb_details(&declared_kbs));
-    (
-        crate::state::AppState {
-            storage,
-            declared_kbs,
-            access_policies: Arc::new(BTreeMap::new()),
-            kb_details,
-            authenticator,
-            max_body_size,
-            max_patchable_size: max_body_size,
-            indexer_tx,
-            searcher: Arc::new(NoopSearcher),
-            events: None,
-            index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
-            readiness: crate::testing::ready_receiver(),
-            reconcile: None,
-        },
-        rx,
-    )
 }

@@ -30,7 +30,7 @@ fn hit(key: &str) -> SearchHit {
 
 fn searcher_returning(keys: &[&str]) -> Arc<MockSearcher> {
     let searcher = Arc::new(MockSearcher::default());
-    searcher.set_response(Ok(SearchResponse::new(
+    searcher.push_response(Ok(SearchResponse::new(
         keys.iter().map(|key| hit(key)).collect(),
     )));
     searcher
