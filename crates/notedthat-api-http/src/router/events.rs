@@ -23,6 +23,7 @@ use futures::StreamExt;
 use notedthat_core::{
     Error as CoreError, EventId, ObjectEvent, ObjectEventKind, StreamError, SubscribeError, Verb,
 };
+use notedthat_indexer::mime::essence;
 use serde::Deserialize;
 
 use notedthat_core::metrics::{label as metric_label, name as metric};
@@ -53,8 +54,8 @@ pub(super) struct EventsQuery {
     /// Only this kind: `written`, `deleted`, `indexed` or `index_failed`. An
     /// `object.` prefix is accepted.
     event: Option<String>,
-    /// Only events carrying this content type, exactly or as `type/*`. A
-    /// deletion carries none, so never matches.
+    /// Only events carrying this content type, exactly or as `type/*`,
+    /// ignoring parameters and case. A deletion carries none, so never matches.
     mime: Option<String>,
 }
 
@@ -121,8 +122,10 @@ impl EventFilter {
     /// `mime` matches the content type an event carries, exactly or by
     /// `type/*`: a write's, or the one the indexer's `HEAD` reported (or,
     /// when it reported none or one naming no media type, the type the key's
-    /// suffix names). A deletion carries none, nor does an `object.index_failed` whose failure
-    /// came before `HEAD`, so neither ever matches a `mime` filter.
+    /// suffix names). Both sides are compared as media types, parameters and
+    /// case ignored, the way the search filter compares them. A deletion
+    /// carries none, nor does an `object.index_failed` whose failure came
+    /// before `HEAD`, so neither ever matches a `mime` filter.
     pub(crate) fn matches(&self, event: &ObjectEvent) -> bool {
         if let Some(prefix) = &self.prefix
             && !event.object_key.as_str().starts_with(prefix.as_str())
@@ -141,11 +144,12 @@ impl EventFilter {
 }
 
 fn mime_matches(pattern: &str, mime: &str) -> bool {
+    let (pattern, mime) = (essence(pattern), essence(mime));
     match pattern.strip_suffix("/*") {
         Some(kind) => mime
             .split_once('/')
-            .is_some_and(|(actual, _)| actual.eq_ignore_ascii_case(kind)),
-        None => pattern.eq_ignore_ascii_case(mime),
+            .is_some_and(|(actual, _)| actual == kind),
+        None => pattern == mime,
     }
 }
 
@@ -502,6 +506,22 @@ mod tests {
         assert!(wild.matches(&written("a.wav", "audio/wav")));
         assert!(!wild.matches(&written("a.md", "text/markdown")));
         assert!(!wild.matches(&deleted("a.mp3")));
+    }
+
+    #[test]
+    fn mime_matches_the_media_type_whatever_its_parameters() {
+        let exact = filter(None, None, Some("text/markdown"));
+        assert!(exact.matches(&written("a.md", "text/markdown; charset=utf-8")));
+        assert!(exact.matches(&written("a.md", "Text/Markdown ;charset=UTF-8")));
+        assert!(exact.matches(&indexed("a.md", "text/markdown; charset=utf-8")));
+        assert!(!exact.matches(&written("a.txt", "text/plain; charset=utf-8")));
+
+        let wild = filter(None, None, Some("text/*"));
+        assert!(wild.matches(&written("a.md", "text/markdown; charset=utf-8")));
+        assert!(wild.matches(&written("a.md", "Text/Markdown ;charset=UTF-8")));
+
+        let with_params = filter(None, None, Some("text/markdown; charset=utf-8"));
+        assert!(with_params.matches(&written("a.md", "text/markdown")));
     }
 
     #[test]
