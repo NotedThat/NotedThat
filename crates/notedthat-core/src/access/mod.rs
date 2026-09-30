@@ -38,6 +38,7 @@ use crate::error::Error;
 use crate::object_path::is_internal_path;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::SystemTime;
 
 pub use pattern::KeyPattern;
 
@@ -72,6 +73,12 @@ pub struct UserIdentity {
     pub subject: String,
     /// What `group:` rules are matched against.
     pub groups: BTreeSet<String>,
+    /// The first instant the verifier refuses the credential this identity
+    /// came from, or `None` for one that does not expire.
+    ///
+    /// A request is over long before this matters. An event stream is not: it
+    /// outlives the check it was admitted by, and ends here (§6.14).
+    pub valid_until: Option<SystemTime>,
 }
 
 impl Principal {
@@ -85,7 +92,19 @@ impl Principal {
         Self::SignedIn(Identity::User(UserIdentity {
             subject: subject.into(),
             groups: groups.into_iter().collect(),
+            valid_until: None,
         }))
+    }
+
+    /// When this principal's credential stops verifying, if it ever does.
+    ///
+    /// `None` for an anonymous caller and for the service token, neither of
+    /// which expires.
+    pub fn valid_until(&self) -> Option<SystemTime> {
+        match self {
+            Self::SignedIn(Identity::User(user)) => user.valid_until,
+            Self::Anyone | Self::SignedIn(Identity::ServiceToken) => None,
+        }
     }
 
     /// Whether no credential was supplied.

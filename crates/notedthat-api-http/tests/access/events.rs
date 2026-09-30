@@ -4,19 +4,22 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use axum::body::{Body, HttpBody};
 use axum::http::{Request, StatusCode};
 use futures::StreamExt;
+use notedthat_core::testing::StubTokenVerifier;
 use notedthat_core::{
-    AccessPolicy, EventPublisher, EventSource, KbSlug, ObjectEvent, ObjectPath, Verb, Who,
+    AccessPolicy, Authenticator, EventPublisher, EventSource, KbSlug, ObjectEvent, ObjectPath,
+    Verb, Who,
 };
 use notedthat_events::MemoryPublisher;
 use tower::ServiceExt;
 
 use super::fixture::{
-    ALICE_TOKEN, BOB_TOKEN, TOKEN, app, app_with_events, grant, grant_under, json, policy,
+    ALICE_TOKEN, BOB_TOKEN, TOKEN, app, app_with_events, app_with_events_and_authenticator, grant,
+    grant_under, json, policy,
 };
 
 const EVENTS: &str = "/api/v1/knowledgebases/notes/events";
@@ -98,6 +101,32 @@ async fn read_nothing(response: axum::response::Response) {
         .filter(|f| f.data.is_some())
         .collect();
     assert!(events.is_empty(), "expected no events, got {events:?}");
+}
+
+/// Read the stream until it ends or `deadline` passes, whichever is first,
+/// and say which it was.
+async fn read_until(
+    response: axum::response::Response,
+    deadline: tokio::time::Instant,
+) -> (Vec<Frame>, Ended) {
+    let mut body = response.into_body().into_data_stream();
+    let mut text = String::new();
+    let ended = loop {
+        match tokio::time::timeout_at(deadline, body.next()).await {
+            Ok(Some(chunk)) => {
+                text.push_str(std::str::from_utf8(&chunk.expect("chunk")).expect("utf-8"));
+            }
+            Ok(None) => break Ended::ByServer,
+            Err(_) => break Ended::StillOpen,
+        }
+    };
+    (parse_frames(&text), ended)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    ByServer,
+    StillOpen,
 }
 
 fn kb() -> KbSlug {
@@ -620,4 +649,101 @@ async fn a_malformed_last_event_id_is_a_bad_request() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json(response).await["error"], "invalid_request");
+}
+
+/// A bearer the stub verifier accepts as `carol` until [`CAROL_LIFETIME`] from
+/// when the app is built.
+const CAROL_TOKEN: &str = "jwt-carol-expiring";
+const CAROL_LIFETIME: Duration = Duration::from_secs(120);
+
+/// The fixture's credentials plus [`CAROL_TOKEN`], which expires.
+fn authenticator_with_an_expiring_token() -> Authenticator {
+    Authenticator::new(TOKEN).with_token_verifier(Arc::new(
+        StubTokenVerifier::default().accepting_until(
+            CAROL_TOKEN,
+            "carol",
+            [],
+            SystemTime::now() + CAROL_LIFETIME,
+        ),
+    ))
+}
+
+// Paused time auto-advances whenever the test is only waiting, so the two
+// minutes of a credential's life pass without being waited out.
+#[tokio::test(start_paused = true)]
+async fn a_stream_ends_with_a_fixed_frame_when_its_credential_expires() {
+    // Given
+    let publisher = Arc::new(MemoryPublisher::new(16));
+    let router = app_with_events_and_authenticator(
+        everything(),
+        publisher.clone(),
+        authenticator_with_an_expiring_token(),
+    )
+    .await;
+    let opened = tokio::time::Instant::now();
+    let response = router
+        .oneshot(get(EVENTS, Some(CAROL_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // When
+    publish_all(&publisher, vec![written("a.md", "text/markdown")]).await;
+    let (frames, ended) = read_until(response, opened + CAROL_LIFETIME * 10).await;
+
+    // Then — the event before expiry arrives, the stream ends at expiry with
+    // the documented frame, and nothing follows it.
+    assert_eq!(ended, Ended::ByServer, "{frames:?}");
+    let lived = opened.elapsed();
+    assert!(
+        lived + Duration::from_secs(1) >= CAROL_LIFETIME && lived <= CAROL_LIFETIME,
+        "ended after {lived:?}, the credential lived {CAROL_LIFETIME:?}"
+    );
+    let named: Vec<&str> = frames.iter().filter_map(|f| f.event.as_deref()).collect();
+    assert_eq!(named, ["object.written", "auth.expired"], "{frames:?}");
+    assert_eq!(
+        frames.last(),
+        Some(&Frame {
+            id: None,
+            event: Some("auth.expired".into()),
+            data: Some("{}".into()),
+            retry: None,
+            comments: Vec::new(),
+        }),
+        "the last frame is the fixed expiry event, with no id and nothing about the caller"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn streams_on_credentials_that_never_expire_stay_open() {
+    let publisher = Arc::new(MemoryPublisher::new(16));
+    let policies = BTreeMap::from([(
+        "notes".to_string(),
+        policy([
+            grant(Who::SignedIn, Verb::ALL),
+            grant(Who::Anyone, [Verb::List, Verb::Read]),
+        ]),
+    )]);
+    let router = app_with_events_and_authenticator(
+        policies,
+        publisher,
+        authenticator_with_an_expiring_token(),
+    )
+    .await;
+
+    for (who, token) in [("service token", Some(TOKEN)), ("anonymous", None)] {
+        let response = router
+            .clone()
+            .oneshot(get(EVENTS, token, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{who}");
+        let (frames, ended) =
+            read_until(response, tokio::time::Instant::now() + CAROL_LIFETIME * 10).await;
+        assert_eq!(ended, Ended::StillOpen, "{who}: {frames:?}");
+        assert!(
+            frames.iter().all(|f| f.event.is_none()),
+            "{who}: {frames:?}"
+        );
+    }
 }

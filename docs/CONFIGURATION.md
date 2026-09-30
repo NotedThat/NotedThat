@@ -828,6 +828,13 @@ the configured audiences, `exp` is required and `nbf` honoured, both with 60 sec
 an `nbf` that is not a number is refused rather than ignored. A token that fails any of this is
 `401`, never anonymous, and the reason — never the token — is logged at `debug`.
 
+A request is checked once, and that is the end of it, with one exception: an
+[event stream](API.md#get-apiv1knowledgebaseskb_slugevents) outlives the request that opened it,
+so it is closed, with a final `auth.expired` event, 61 seconds after the token's `exp`: validation
+allows the same 60 seconds but compares whole seconds, so the token verifies until then. A
+fractional `exp` is rounded to the nearest second first, as validation rounds it. That is the moment a reconnect with the same token
+would first get `401`.
+
 Keys are fetched at startup and cached by `kid`. A token with an unknown `kid` triggers a refetch,
 at most once every 30 seconds, so a key rotation is picked up without a restart and a flood of
 bogus tokens is not a flood of requests to the issuer. A cached set older than an hour is refreshed

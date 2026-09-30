@@ -119,6 +119,21 @@ pub(super) async fn app_with_events(
     .await
 }
 
+/// The fixture app over an event log, with its own credential rules.
+pub(super) async fn app_with_events_and_authenticator(
+    policies: BTreeMap<String, AccessPolicy>,
+    events: Arc<dyn EventPublisher>,
+    authenticator: Authenticator,
+) -> axum::Router {
+    app_with(
+        policies,
+        Arc::new(NoopSearcher),
+        authenticator,
+        Some(events),
+    )
+    .await
+}
+
 /// What the fixture shares with a test that watches the indexing side: the
 /// health record the app reports, and the queue's receiver so the test can
 /// hold the queue full or let it drain.
