@@ -575,8 +575,10 @@ window, on counts from before the gap. Check the log or `GET …/index` for when
 [NotedThatBucketMissing](#notedthatbucketmissing) has no such arm, so it never pages on an old
 count. The readiness probe checks only the witness bucket, the first knowledge base by slug, and
 repeats every few seconds while it is gone, so the alert fires from the second scrape. Any other
-knowledge base's missing bucket shows up only through requests to it, and fires only once the same
-kind of call fails again within five minutes; a knowledge base nobody uses stays silent.
+knowledge base's missing bucket shows up only through requests to it. The counter has no `kb` label
+and never expires, so the alert fires only once the same kind of call (the same op) fails again
+after Prometheus has scraped an earlier failure, whenever that is; a knowledge base nobody uses
+stays silent.
 
 ### NotedThatDown
 
