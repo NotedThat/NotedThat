@@ -678,41 +678,46 @@ mod tests {
     async fn validation_refuses_a_token_exactly_from_its_valid_until() {
         // jsonwebtoken reads the clock itself, so the clock stays put and
         // `exp` moves: each token is placed so its deadline falls on one side
-        // of the present moment, which stays within half a second of `second`.
-        // Given
-        let second = early_in_a_second().await;
+        // of the present moment, which stays within `second`. A run whose
+        // checks straddle into the next second proves nothing and is retried.
         let leeway = LEEWAY.as_secs();
         #[expect(
             clippy::cast_precision_loss,
             reason = "a timestamp fits an f64 exactly"
         )]
         let exp_at = |whole: u64, fraction: f64| whole as f64 + fraction;
-        // Deadline `second + 1`, so the checks below run at most a second
-        // before it. The `.5` lands there only if it is rounded up.
-        let mut before = claims(ISSUER, "alice", &[]);
-        before["exp"] = serde_json::json!(exp_at(second - leeway - 1, 0.5));
-        // Deadline `second`, so the checks below run at it, or less than half
-        // a second past it.
-        let mut at = claims(ISSUER, "alice", &[]);
-        at["exp"] = serde_json::json!(exp_at(second - leeway - 1, 0.25));
+        let mut attempts = 0;
+        let (second, before, accepted, at, refused) = loop {
+            attempts += 1;
+            assert!(attempts <= 5, "no run fitted within one second");
 
-        // When
-        let accepted = verifier().verify(&mint(&before)).await;
-        let refused = verifier().verify(&mint(&at)).await;
-        let checked_by = SystemTime::now();
+            // Given
+            let second = early_in_a_second().await;
+            // Deadline `second + 1`, so the checks below run less than a
+            // second before it. The `.5` lands there only if it is rounded up.
+            let mut before = claims(ISSUER, "alice", &[]);
+            before["exp"] = serde_json::json!(exp_at(second - leeway - 1, 0.5));
+            // Deadline `second`, so the checks below run at it, or less than
+            // a second past it.
+            let mut at = claims(ISSUER, "alice", &[]);
+            at["exp"] = serde_json::json!(exp_at(second - leeway - 1, 0.25));
+
+            // When
+            let accepted = verifier().verify(&mint(&before)).await;
+            let refused = verifier().verify(&mint(&at)).await;
+            let checked_by = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("after the epoch")
+                .as_secs();
+            if checked_by == second {
+                break (second, before, accepted, at, refused);
+            }
+        };
 
         // Then
         let deadline = |claims: &serde_json::Value| {
             valid_until(claims.as_object().expect("claims are an object")).expect("exp is valid")
         };
-        assert_eq!(
-            checked_by
-                .duration_since(UNIX_EPOCH)
-                .expect("after the epoch")
-                .as_secs(),
-            second,
-            "the checks finished within the second they started in"
-        );
         assert_eq!(
             deadline(&before),
             UNIX_EPOCH + Duration::from_secs(second + 1)

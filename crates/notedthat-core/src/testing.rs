@@ -185,8 +185,9 @@ impl StubTokenVerifier {
         self.accept(token, subject, groups, None)
     }
 
-    /// Accept `token` as `subject`, a member of `groups`, until `valid_until`
-    /// and not after, the way a provider's token with an `exp` is.
+    /// Accept `token` as `subject`, a member of `groups`, before `valid_until`
+    /// and refuse it from that instant on, the way a provider's token with an
+    /// `exp` is: `valid_until` is the first instant the verifier refuses.
     #[must_use]
     pub fn accepting_until(
         self,
@@ -225,7 +226,7 @@ impl crate::TokenVerifier for StubTokenVerifier {
             .filter(|identity| {
                 identity
                     .valid_until
-                    .is_none_or(|until| std::time::SystemTime::now() <= until)
+                    .is_none_or(|until| std::time::SystemTime::now() < until)
             })
             .cloned()
             .ok_or_else(|| crate::TokenRejected::new("not a token the stub knows"))
