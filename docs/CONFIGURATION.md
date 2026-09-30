@@ -824,9 +824,9 @@ The bearer is compared with `NOTEDTHAT_API_TOKEN` first, in constant time; only 
 not the service token is treated as an identity token. It must be a JWT signed with `RS256`,
 `RS384`, `RS512`, `ES256` or `ES384` by a key the issuer publishes — never `HS*`, since the server
 shares no secret with the issuer. `iss` must equal the configured issuer, `aud` must contain one of
-the configured audiences, `exp` is required and `nbf` honoured, both with 60 seconds of leeway. A
-token that fails any of this is `401`, never anonymous, and the reason — never the token — is
-logged at `debug`.
+the configured audiences, `exp` is required and `nbf` honoured, both with 60 seconds of leeway;
+an `nbf` that is not a number is refused rather than ignored. A token that fails any of this is
+`401`, never anonymous, and the reason — never the token — is logged at `debug`.
 
 Keys are fetched at startup and cached by `kid`. A token with an unknown `kid` triggers a refetch,
 at most once every 30 seconds, so a key rotation is picked up without a restart and a flood of

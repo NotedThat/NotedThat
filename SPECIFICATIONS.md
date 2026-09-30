@@ -472,8 +472,9 @@ refuses to start if the issuer is unreachable or spells its `issuer` differently
 (D39). Keys are cached by `kid`; an unknown `kid` refetches at most once per 30 s, and a set older
 than an hour is refreshed before use. Accepted algorithms: `RS256`, `RS384`, `RS512`, `ES256`,
 `ES384` — never `HS*`. Required claims: `iss` (exact), `aud` (any configured audience), `exp`;
-`nbf` is honoured; 60 s leeway. There is no introspection and no session: an opaque access token
-is refused, so Authelia and Zitadel must be configured to issue JWTs (`docs/CONFIGURATION.md`).
+`nbf` is honoured, and one that is not a number is refused; 60 s leeway. There is no
+introspection and no session: an opaque access token is refused, so Authelia and Zitadel must be
+configured to issue JWTs (`docs/CONFIGURATION.md`).
 
 **Identity.** The subject is the configurable username claim (`preferred_username`), falling back
 to `sub`; `user:<name>` rules match it. Groups come from the configurable groups claim (`groups`),
@@ -1054,4 +1055,4 @@ A second starvation mode is the searcher's own: a key filter applied client-side
 - **`serde_yaml_ng` v0.10** — OKF YAML frontmatter parsing
 - **`aws-sdk-s3`** — with `path_style` for Garage/SeaweedFS/MinIO/Ceph/RustFS
 - **`rmcp`** — official Rust MCP SDK
-- **`jsonwebtoken`** (github.com/Keats/jsonwebtoken) — HS256 sign/verify
+- **`jsonwebtoken` v11** (github.com/Keats/jsonwebtoken) — RS*/ES* verification over a JWKS, `aws_lc_rs` backend
