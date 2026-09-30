@@ -1325,7 +1325,7 @@ curl -sSf -X POST \
 
 - **Indexing lag**: Indexing is asynchronous best-effort (D38). A document just written may take a few seconds to appear in search results. **Exception**: if the indexing queue is full, the write returns HTTP 503 `backend_unavailable` with `Retry-After: 5` (not ordinary async lag) — the object is stored but not yet searchable, and the client should retry to re-enqueue the indexing event.
 
-- **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
+- **Preview**: The `preview` field is a UTF-8-safe truncation of the chunk text to at most 500 characters. A truncated preview ends at a word boundary where possible and is marked with `…`. Trailing whitespace is trimmed from every preview, so a preview may differ from the chunk text even when it is not truncated. Use `object_key` with `byte_start`/`byte_end` and a `Range: bytes=<byte_start>-<byte_end - 1>` header on `GET /api/v1/knowledgebases/{kb_slug}/{path}` to fetch the full chunk.
 
 - **OKF metadata and filters**: Concept hits include an optional `okf` object containing `concept_id`, `type`, and available `title`, `description`, `resource`, and `tags`. `concept_type` matches the type exactly; `tags` matches at least one supplied tag. Both are indexed in Qdrant. MCP exposes these through its `filters` argument. See [OKF support and upgrade instructions](OKF.md).
 

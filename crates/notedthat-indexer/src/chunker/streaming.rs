@@ -388,19 +388,36 @@ fn split_byte(text: &str, max_chars: usize, min_tail: usize, complete: bool) -> 
     let mut whitespace = None;
     let mut paragraph = None;
     let preference_start = max_chars.saturating_mul(3) / 4;
-    let mut previous_newline = false;
-    for (byte, character) in text.char_indices() {
+    // A line ends at `\n`, `\r\n` or a lone `\r`; a blank line holds only other whitespace.
+    let mut seen_line_end = false;
+    let mut line_blank = true;
+    let mut characters = text.char_indices().peekable();
+    while let Some((byte, character)) = characters.next() {
         count += 1;
         let end = byte + character.len_utf8();
-        if count >= preference_start && character.is_whitespace() {
+        // A `\r` before `\n`, or at the end of an incomplete read, may be half of a CRLF pair.
+        let cr_pending = character == '\r'
+            && match characters.peek() {
+                Some(&(_, next)) => next == '\n',
+                None => !complete,
+            };
+        let line_end = character == '\n' || (character == '\r' && !cr_pending);
+        if count >= preference_start && character.is_whitespace() && !cr_pending {
             whitespace = Some(end);
-            if character == '\n' && previous_newline {
+            if line_end && seen_line_end && line_blank {
                 paragraph = Some(end);
             }
         }
-        previous_newline = character == '\n';
+        if line_end {
+            seen_line_end = true;
+            line_blank = true;
+        } else if !character.is_whitespace() {
+            line_blank = false;
+        }
         if count == limit {
-            hard = end;
+            // Cutting before a leading `\r` would make an empty chunk and never advance, so
+            // with `max_chars == 1` a CRLF pair (two chars) is split rather than kept whole.
+            hard = if cr_pending && byte > 0 { byte } else { end };
             break;
         }
     }
