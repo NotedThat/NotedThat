@@ -19,7 +19,7 @@ All 12 crates share a single ecosystem-level version:
 release-plz runs automatically on every push to `main`:
 
 1. `release-plz-release` runs first (needs: test, clippy, fmt, docker-build, integration-test). If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
-2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed (see "Adding a crate"), the release PR is the way out, and a job that waited for a green release would never open it.
+2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed, the release PR is the way out, and a job that waited for a green release would never open it.
 3. Merging the release PR into `main` triggers the next cycle.
 
 ## Prerequisites (One-Time Setup)
@@ -76,7 +76,7 @@ If auto-registration failed, add them manually via the crates.io web UI.
 
 ## Adding a Crate to the Workspace
 
-A new publishable crate takes the shared workspace version, which is already on crates.io for every other crate. Trusted Publishing cannot create a crate, so the new crate cannot go out through `release-plz-release` until someone bootstraps it. Until then the job **holds it back** rather than failing: its first step asks crates.io about every publishable crate, and each one that has never been published (`404`), plus every publishable crate that depends on one through a normal or build dependency, is set to `release = false` in a copy of `release-plz.toml` for that run only. It names them in a `::warning::` annotation and in the job summary, then lets release-plz publish everything else. The facade `notedthat` depends on every crate through `notedthat-server`, so it is held back too: no workspace tag and no GitHub Release until the whole workspace is on crates.io. The job stays green in this state, so a red `release-plz-release` still means a real failure.
+A new publishable crate takes the shared workspace version, which is already on crates.io for every other crate. Trusted Publishing cannot create a crate, so the new crate cannot go out through `release-plz-release` until someone bootstraps it. Until then the job **holds it back** rather than failing: its first step asks crates.io about every publishable crate, and each one that has never been published (`404`), plus every publishable crate that depends on one through a normal or build dependency, is set to `release = false` in a copy of `release-plz.toml` for that run only. It names them in a `::warning::` annotation and in the job summary, then lets release-plz publish everything else. The facade `notedthat` is always held back while anything is, whether or not it depends on the missing crate: no workspace tag, no GitHub Release and no `release.yml` dispatch until the whole workspace is on crates.io. If that holds back every publishable crate (a new crate that `notedthat-core` depends on), release-plz has nothing to publish and is skipped for that run, which the job summary says. The job stays green in this state, so a red `release-plz-release` still means a real failure.
 
 What to expect, and what to do:
 
@@ -258,7 +258,7 @@ dev-dependency — CI's `package` job refuses the versioned form since 2026-09-2
 
 **`release-plz-release` warns that a crate has never been published and holds crates back**
 Expected from the merge that adds a crate until it is bootstrapped. The job is green, and the crates
-it names (the new one and everything depending on it, `notedthat` included) are not published,
+it names (the new one, everything depending on it, and always `notedthat`) are not published,
 tagged or released. Follow *Adding a Crate*: merge the release PR, run **Publish crate (initial)**,
 then push to `main` or re-run the job.
 
