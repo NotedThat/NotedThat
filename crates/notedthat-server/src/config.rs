@@ -1474,6 +1474,18 @@ impl EmbedderConfig {
         let endpoint_url = parts.endpoint_url.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_ENDPOINT_URL")),
         })?;
+        // The embedder appends `/embeddings` to this URL's path, so a value it cannot parse
+        // (`api.openai.com`, no scheme) or that has no path (`mailto:…`) could never index
+        // anything. Refuse it here, naming the setting, rather than per write. The value is not
+        // echoed: its query or userinfo may carry a credential.
+        if !url::Url::parse(&endpoint_url).is_ok_and(|url| !url.cannot_be_a_base()) {
+            return Err(Error::Config {
+                message: format!(
+                    "{} must be an absolute URL with a scheme, e.g. https://api.openai.com/v1",
+                    setting("EMBEDDING_ENDPOINT_URL")
+                ),
+            });
+        }
         let model = parts.model.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_MODEL")),
         })?;
@@ -2257,6 +2269,25 @@ pub(crate) mod tests {
             msg.contains("EMBEDDING_ENDPOINT_URL"),
             "error should mention the missing var: {msg}"
         );
+    }
+
+    #[test]
+    fn embedding_endpoint_url_that_is_not_an_absolute_url_is_refused() {
+        for raw in [
+            "api.openai.com",
+            "api.openai.com/v1?api-key=secret",
+            "/v1",
+            "mailto:ops@example.com",
+        ] {
+            let msg = run_with_env(&[("EMBEDDING_ENDPOINT_URL", Some(raw))], Config::from_env)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("EMBEDDING_ENDPOINT_URL") && msg.contains("absolute URL"),
+                "url {raw}: {msg}"
+            );
+            assert!(!msg.contains("secret"), "url {raw} echoed: {msg}");
+        }
     }
 
     #[test]
