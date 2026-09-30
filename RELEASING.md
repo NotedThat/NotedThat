@@ -19,7 +19,7 @@ All 12 crates share a single ecosystem-level version:
 release-plz runs automatically on every push to `main`:
 
 1. `release-plz-release` runs first (needs: test, clippy, fmt, docker-build, integration-test). If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
-2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed (see "Adding a crate"), the release PR is the way out, and a job that waited for a green release would never open it.
+2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed, the release PR is the way out, and a job that waited for a green release would never open it.
 3. Merging the release PR into `main` triggers the next cycle.
 
 ## Prerequisites (One-Time Setup)
@@ -76,19 +76,16 @@ If auto-registration failed, add them manually via the crates.io web UI.
 
 ## Adding a Crate to the Workspace
 
-A new publishable crate takes the shared workspace version, which is already on crates.io for every other crate. Expect the following on the merge that adds it, and do not treat it as a broken release:
+A new publishable crate takes the shared workspace version, which is already on crates.io for every other crate. Trusted Publishing cannot create a crate, so the new crate cannot go out through `release-plz-release` until someone bootstraps it. Until then the job **holds it back** rather than failing: its first step asks crates.io about every publishable crate, and each one that has never been published (`404`), plus every publishable crate that depends on one through a normal or build dependency, is set to `release = false` in a copy of `release-plz.toml` for that run only. It names them in a `::warning::` annotation and in the job summary, then lets release-plz publish everything else. The facade `notedthat` is always held back while anything is, whether or not it depends on the missing crate: no workspace tag, no GitHub Release and no `release.yml` dispatch until the whole workspace is on crates.io. If that holds back every publishable crate (a new crate that `notedthat-core` depends on), release-plz has nothing to publish and is skipped for that run, which the job summary says. The job stays green in this state, so a red `release-plz-release` still means a real failure.
 
-1. `release-plz-release` fails on the merge push. `release_always = true` sees the new crate's version missing from crates.io and tries to publish it; `cargo publish` verifies the tarball against crates.io, where its sibling dependencies are still the *previous* publish and lack whatever the new crate imports from them. This repeats on every push to `main` until the version is bumped.
-2. `release-plz-pr` opens the release PR regardless. Merge it: the bump publishes the siblings first, at the new version, and the new crate builds against them.
-3. That release still stops at the new crate with `HTTP 403` — Trusted Publishing cannot create crates. By then its dependencies are on crates.io at the new version, so run **Publish crate (initial)** for the new crate (see Prerequisites, step 3), then push to `main` again (an empty commit will do, and so does *Re-run failed jobs* on the failed run) — `release_always` publishes the remaining crates, tags, and creates the GitHub Release.
+What to expect, and what to do:
 
-You do not have to wait for step 3 to fail: the bootstrap can run as soon as the new crate's
-*own* dependencies are on crates.io at the workspace version, which `release-plz-release`
-reports (`<crate> <version>: already published`) as it works down the dependency order. The
-release job also names any never-published crate at the top of its log, as a **warning** and
-not a failure — on purpose: release-plz has to run, because publishing the new crate's
-dependencies at the new version is what the bootstrap needs. A pre-flight that failed the job
-would leave them unpublished and the bootstrap with nothing to build against.
+1. On the merge that adds the crate, the job warns that `<crate>` has never been published and holds it back with its dependents. Nothing else needs publishing yet (their version is already on crates.io), so the run is a green no-op. `release-plz-pr` opens or updates the release PR.
+2. Merge the release PR. The bump publishes every crate that is not held back, including the new crate's own dependencies at the new version, which is what it builds against. The job warns again and stays green.
+3. Run **Publish crate (initial)** for the new crate (see Prerequisites, step 3) once its dependencies are on crates.io at the workspace version *with everything it uses from them*. Before the bump they are the previous publish and usually lack what the new crate imports (on the merge of `notedthat-nats`, `notedthat-core` 0.12.3 had no `NATS_CONNECTED`), so bootstrap after step 2 unless the new crate needs nothing new from its siblings.
+4. Push to `main` again (an empty commit will do), or re-run the *Tag and publish crates* job. Nothing is held back any more, so release-plz runs with the checked-in `release-plz.toml`: `release_always` publishes the held-back dependents, then `notedthat`, tags, and creates the GitHub Release.
+
+Only a definite `404` holds a crate back. If crates.io cannot be reached or answers anything else, the crate is left in, the job warns that it could not check it, and release-plz publishes it as usual, so a real publish error still fails the job. Dev-dependencies do not count as dependents because workspace dev-dependencies are path-only and stripped from the published manifest (see Prerequisites, step 3).
 
 **Bootstrapping without the secret.** A crate owner with `cargo login` done can publish from a
 workstation, from a clean checkout of the commit `main` is at (a worktree, not a working tree
@@ -259,10 +256,11 @@ publish time, but release-plz does not order publishes by dev-dependencies, so i
 sibling first. Bootstrap `<crate>` (see *Adding a Crate*), then drop `version` from that
 dev-dependency — CI's `package` job refuses the versioned form since 2026-09-21.
 
-**`release-plz-release` warns at its first step that a crate has never been published**
-Expected on the merge that adds a crate; the job goes on to publish that crate's dependencies and
-then stops at the crate with `HTTP 403`. Bootstrap it (see *Adding a Crate*) and re-run the
-failed jobs.
+**`release-plz-release` warns that a crate has never been published and holds crates back**
+Expected from the merge that adds a crate until it is bootstrapped. The job is green, and the crates
+it names (the new one, everything depending on it, and always `notedthat`) are not published,
+tagged or released. Follow *Adding a Crate*: merge the release PR, run **Publish crate (initial)**,
+then push to `main` or re-run the job.
 
 **TP `HTTP 403` on routine publish**
 The Trusted Publishing config on crates.io may not match the workflow filename or environment name. Verify at `https://crates.io/crates/<crate>/settings` that `ci.yml` + `release` is configured.
