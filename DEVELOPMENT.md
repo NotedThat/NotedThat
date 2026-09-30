@@ -35,6 +35,8 @@ cargo deny --locked check advisories
 
 # Alerting rules: config, syntax and unit tests (mirrors CI; see "Alerting rules")
 docker run --rm --entrypoint promtool -w /etc/prometheus \
+  -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 check config prometheus.yml
+docker run --rm --entrypoint promtool -w /etc/prometheus \
   -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 test rules alerts.test.yml
 
 # Format in place
