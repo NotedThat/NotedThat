@@ -1469,7 +1469,8 @@ impl EmbedderConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Error::Config { .. })` if any required setting is missing or invalid.
+    /// Returns `Err(Error::Config { .. })` if any required setting is missing or invalid,
+    /// including an `EMBEDDING_ENDPOINT_URL` that is not an absolute http(s) URL.
     fn from_parts(parts: EmbedderParts) -> Result<Self, Error> {
         let endpoint_url = parts.endpoint_url.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_ENDPOINT_URL")),
