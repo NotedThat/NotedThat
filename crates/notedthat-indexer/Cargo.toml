@@ -18,6 +18,7 @@ test-support = []
 [dependencies]
 notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
 qdrant-client = { workspace = true }
+tonic = { workspace = true }
 pulldown-cmark = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
