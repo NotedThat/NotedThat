@@ -809,8 +809,8 @@ async fn a_file_seeded_before_startup_is_announced_by_reconcile() {
     })
     .await;
 
-    // `start_seeded` waits for the startup pass, so the event is already in the log;
-    // replay it from the start.
+    // `start_seeded` waits for the startup pass, so the change is already queued and
+    // its event may already be in the log; replay from the start to see it either way.
     let response = reqwest::Client::new()
         .get(server.url(&format!("/api/v1/knowledgebases/{}/events", server.kb)))
         .bearer_auth(TOKEN)
