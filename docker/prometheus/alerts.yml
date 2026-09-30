@@ -15,11 +15,21 @@
 #       (s3: startup, requested; fs with watching on: startup, subtree changed, rescan)
 #   notedthat_fs_watch_lost_total{reason}                           fs with watching on
 # That does not help an event before the first scrape (a startup pass that is
-# skipped usually is one), nor any other series. So every alert that must fire
-# on a single occurrence has a second arm, `x unless x offset <window>`, which
-# catches a series that did not exist a window ago and is above 0 now. A series
-# exported at 0 stays quiet. Nothing uses `absent()`: a healthy server may not
-# export a series at all.
+# skipped usually is one). So the three alerts that must fire on a single
+# occurrence (IndexingFailures, FsWatchLost, ReconcileIncomplete) have a second
+# arm, `x unless x offset <window>`, which catches a series that had no sample
+# a window ago and is above 0 now. A series exported at 0 stays quiet.
+#
+# Trade-off: "no sample a window ago" also holds when Prometheus did not scrape
+# then. After a Prometheus restart or outage, a scrape gap longer than the 5m
+# lookback, a fresh TSDB or a newly added scrape job, those three alerts can
+# fire once, for up to their window, on counts from before the gap. Their
+# annotations therefore claim no count. BucketMissing has no such arm: the
+# readiness probe repeats every few seconds while a bucket is gone, so
+# `increase()` sees it from the second probe on, and a critical alert must not
+# page on an old count.
+#
+# Nothing uses `absent()`: a healthy server may not export a series at all.
 #
 # Checked in CI by `promtool check rules` and `promtool test rules`
 # (alerts.test.yml); a metric renamed in `notedthat_core::metrics` fails
@@ -48,12 +58,8 @@ groups:
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
       - alert: NotedThatBucketMissing
-        expr: |
-          sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
-            or sum by (instance, backend) (
-              notedthat_storage_errors_total{error_kind="bucket_not_found"}
-                unless notedthat_storage_errors_total{error_kind="bucket_not_found"} offset 5m
-            ) > 0
+        # No new-series arm (see the header): the probe repeats while the bucket is gone.
+        expr: sum by (instance, backend) (increase(notedthat_storage_errors_total{error_kind="bucket_not_found"}[5m])) > 0
         labels:
           severity: critical
         annotations:
@@ -134,7 +140,7 @@ groups:
           severity: warning
         annotations:
           summary: "Objects in {{ $labels.kb }} are failing to index"
-          description: "{{ $value | humanize }} indexing events failed in the last 15 minutes (INDEXING_FAILED). Those objects are stored but not searchable."
+          description: "Indexing events for {{ $labels.kb }} failed recently (INDEXING_FAILED). Those objects are stored but not searchable; GET /api/v1/knowledgebases/{{ $labels.kb }}/index names the last failure."
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexingfailures
 
       - alert: NotedThatIndexWorkerStopped

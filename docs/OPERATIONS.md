@@ -563,9 +563,17 @@ step. The server therefore exports, at 0 from startup, the series the one-off al
 `notedthat_index_events_completed_total{outcome="failed"}` for every declared knowledge base,
 `notedthat_reconcile_passes_total{outcome="incomplete"}` for every knowledge base and each pass
 cause its backend can produce, and `notedthat_fs_watch_lost_total` for both reasons when the `fs`
-watcher runs. An event before the first scrape still arrives at 1, so those rules, and
-[NotedThatBucketMissing](#notedthatbucketmissing), also fire on a series that is new within their
-window. An absent series, or one at 0, is quiet, not firing.
+watcher runs. An event before the first scrape still arrives at 1, so those three rules also fire
+on a series that had no sample one window ago. An absent series, or one at 0, is quiet, not firing.
+
+That second arm cannot tell a series new to the process from one new to Prometheus. After a
+Prometheus restart or outage, a scrape gap longer than five minutes, a fresh TSDB or a newly added
+scrape job, [NotedThatIndexingFailures](#notedthatindexingfailures),
+[NotedThatFsWatchLost](#notedthatfswatchlost) and
+[NotedThatReconcileIncomplete](#notedthatreconcileincomplete) can fire once, for up to their
+window, on counts from before the gap. Check the log or `GET …/index` for when it happened.
+[NotedThatBucketMissing](#notedthatbucketmissing) has no such arm: the readiness probe repeats every
+few seconds while a bucket is gone, so it fires from the second probe and never on an old count.
 
 ### NotedThatDown
 

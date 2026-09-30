@@ -61,20 +61,24 @@ tests:
               description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
-  # A missing bucket fires on the first failed call, whose series is born at 1,
-  # and clears once that call has left the window. Other storage errors are
-  # someone else's alert.
+  # A missing bucket fails every readiness probe, so its counter keeps
+  # climbing; the alert fires from the second scrape that sees it, and clears
+  # five minutes after the bucket is back. A single failed call that is never
+  # repeated is not a missing bucket and stays quiet, as do other storage
+  # errors.
   - interval: 1m
     input_series:
       - series: 'notedthat_storage_errors_total{instance="a",backend="s3",op="probe",error_kind="bucket_not_found"}'
-        values: '_ _ 1 1 1 1 1 1 1 1 1 1'
-      - series: 'notedthat_storage_errors_total{instance="b",backend="s3",op="probe",error_kind="backend_unavailable"}'
-        values: '1+1x11'
+        values: '_ _ 12 24 36 48 60 60 60 60 60 60 60 60'
+      - series: 'notedthat_storage_errors_total{instance="b",backend="s3",op="head_object",error_kind="bucket_not_found"}'
+        values: '_ _ 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'notedthat_storage_errors_total{instance="c",backend="s3",op="probe",error_kind="backend_unavailable"}'
+        values: '1+1x13'
     alert_rule_test:
-      - eval_time: 1m
+      - eval_time: 2m
         alertname: NotedThatBucketMissing
         exp_alerts: []
-      - eval_time: 2m
+      - eval_time: 3m
         alertname: NotedThatBucketMissing
         exp_alerts:
           - exp_labels:
@@ -85,7 +89,7 @@ tests:
               summary: "A knowledge base's bucket is gone"
               description: "The s3 backend answered, but a bucket NotedThat was configured with does not exist. /readyz reports storage degraded."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatbucketmissing
-      - eval_time: 8m
+      - eval_time: 13m
         alertname: NotedThatBucketMissing
         exp_alerts: []
 
@@ -259,7 +263,7 @@ tests:
               kb: notes
             exp_annotations:
               summary: "Objects in notes are failing to index"
-              description: "1 indexing events failed in the last 15 minutes (INDEXING_FAILED). Those objects are stored but not searchable."
+              description: "Indexing events for notes failed recently (INDEXING_FAILED). Those objects are stored but not searchable; GET /api/v1/knowledgebases/notes/index names the last failure."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexingfailures
       - eval_time: 18m
         alertname: NotedThatIndexingFailures

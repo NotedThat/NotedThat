@@ -405,11 +405,20 @@ pub(crate) fn install(config: &Config) -> anyhow::Result<()> {
 /// second server in the same process shares the registry, and must not reset
 /// the first one's counts.
 fn register_alerted_counters(config: &Config) {
-    let (causes, watching): (&[&'static str], bool) = match &config.storage {
-        StorageConfig::S3(_) => (
+    let (causes, watching) = alerted_label_sets(&config.storage);
+    zero_alerted_counters(config.kbs.values(), causes, watching);
+}
+
+/// The pass causes this storage configuration can produce, and whether a
+/// filesystem watcher runs. A cause it never runs is not registered: a series
+/// that can never move would claim a pass the operator turned off.
+fn alerted_label_sets(storage: &StorageConfig) -> (&'static [&'static str], bool) {
+    match storage {
+        StorageConfig::S3(s3) if s3.reconcile_on_startup => (
             &[reconcile_cause::STARTUP, reconcile_cause::REQUESTED],
             false,
         ),
+        StorageConfig::S3(_) => (&[reconcile_cause::REQUESTED], false),
         StorageConfig::Fs(fs) if fs.watch => (
             &[
                 reconcile_cause::STARTUP,
@@ -419,8 +428,7 @@ fn register_alerted_counters(config: &Config) {
             true,
         ),
         StorageConfig::Fs(_) => (&[], false),
-    };
-    zero_alerted_counters(config.kbs.values(), causes, watching);
+    }
 }
 
 /// The registration behind [`register_alerted_counters`], apart from `Config`.
@@ -520,7 +528,10 @@ async fn render(State(handle): State<PrometheusHandle>) -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXPOSITION_CONTENT_TYPE, router, shared_handle, zero_alerted_counters};
+    use super::{
+        EXPOSITION_CONTENT_TYPE, alerted_label_sets, router, shared_handle, zero_alerted_counters,
+    };
+    use crate::config::{StorageConfig, unroutable_storage_placeholder};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::util::ServiceExt;
@@ -594,6 +605,25 @@ mod tests {
             let series = format!(r#"notedthat_fs_watch_lost_total{{reason="{reason}"}}"#);
             assert!(rendered.contains(&series), "{series} is not exported");
         }
+    }
+
+    /// `s3` registers `cause="startup"` only when the startup pass runs, so no
+    /// series names a pass this configuration never starts.
+    #[test]
+    fn s3_registers_the_startup_cause_only_when_the_startup_pass_runs() {
+        let StorageConfig::S3(mut s3) = unroutable_storage_placeholder() else {
+            panic!("the placeholder is an s3 config");
+        };
+        s3.reconcile_on_startup = true;
+        assert_eq!(
+            alerted_label_sets(&StorageConfig::S3(s3.clone())),
+            (&["startup", "requested"][..], false)
+        );
+        s3.reconcile_on_startup = false;
+        assert_eq!(
+            alerted_label_sets(&StorageConfig::S3(s3)),
+            (&["requested"][..], false)
+        );
     }
 
     /// The operator socket is not a second product surface.
