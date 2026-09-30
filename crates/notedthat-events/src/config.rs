@@ -393,22 +393,35 @@ mod tests {
 
     #[test]
     fn from_env_reads_exactly_the_inventoried_variables() {
-        temp_env::with_vars(
-            [
-                ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", Some("42")),
-                ("NOTEDTHAT_NATS_URL", Some("nats://u:p@broker:4222")),
-                ("NOTEDTHAT_NATS_STREAM", Some("evt")),
-                ("NOTEDTHAT_NATS_MAX_AGE_SECS", Some("60")),
-            ],
-            || {
-                let memory = MemoryConfig::from_settings(&MemorySettings::from_env()).unwrap();
-                assert_eq!(memory.capacity, 42);
-                let nats = NatsConfig::from_settings(NatsSettings::from_env()).unwrap();
-                assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
-                assert_eq!(nats.stream, "evt");
-                assert_eq!(nats.max_age, Duration::from_secs(60));
-            },
-        );
+        // `temp_env` leaves unlisted variables alone, so unset every inventoried
+        // one: anything missing here would leak in from the developer's shell.
+        let mut vars: Vec<(&str, Option<&str>)> = MEMORY_ENV_VARS
+            .iter()
+            .chain(NATS_ENV_VARS.iter())
+            .chain(notedthat_nats::NATS_CONNECT_ENV_VARS.iter())
+            .map(|key| (*key, None))
+            .collect();
+        for (key, value) in [
+            ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", "42"),
+            ("NOTEDTHAT_NATS_URL", "nats://u:p@broker:4222"),
+            ("NOTEDTHAT_NATS_STREAM", "evt"),
+            ("NOTEDTHAT_NATS_MAX_AGE_SECS", "60"),
+        ] {
+            let (_, slot) = vars
+                .iter_mut()
+                .find(|(existing, _)| *existing == key)
+                .unwrap_or_else(|| panic!("{key} is not inventoried"));
+            *slot = Some(value);
+        }
+
+        temp_env::with_vars(vars, || {
+            let memory = MemoryConfig::from_settings(&MemorySettings::from_env()).unwrap();
+            assert_eq!(memory.capacity, 42);
+            let nats = NatsConfig::from_settings(NatsSettings::from_env()).unwrap();
+            assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
+            assert_eq!(nats.stream, "evt");
+            assert_eq!(nats.max_age, Duration::from_secs(60));
+        });
     }
 
     #[test]
