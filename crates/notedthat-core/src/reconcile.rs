@@ -104,7 +104,7 @@ pub struct Reconciliation {
 /// entirely and leave it in the index forever.
 ///
 /// A key that is not a valid [`ObjectPath`] cannot be re-read, so it is dropped from both
-/// sides before anything is counted — see [`is_actionable`].
+/// sides before anything is counted — see [`actionable_path`].
 ///
 /// A [reserved key](crate::RESERVED_KEYS) is dropped from the storage side only, for the
 /// same reason as `.notedthat/`: no object may be indexed under one (#279), so an object
@@ -116,20 +116,23 @@ pub fn compare(
     indexed: &[IndexedEtag],
     prefix: Option<&str>,
 ) -> Reconciliation {
-    let in_storage: Vec<(String, Option<String>)> = in_storage
+    // Each surviving key keeps the path it parsed to, so the merge below reports it
+    // without parsing it again. The merge itself still compares the keys as reported,
+    // since that is the order both sides arrive in.
+    let in_storage: Vec<(String, ObjectPath, Option<String>)> = in_storage
         .into_iter()
         .filter(|(key, _)| !is_internal_path(key))
-        .filter(|(key, _)| is_actionable(key))
-        .filter(|(key, _)| !is_reserved(key))
+        .filter_map(|(key, etag)| actionable_path(&key).map(|path| (key, path, etag)))
+        .filter(|(key, _, _)| !is_reserved(key))
         .collect();
     debug_assert!(
         in_storage.windows(2).all(|pair| pair[0].0 < pair[1].0),
         "the storage side must be sorted by key"
     );
-    let indexed: Vec<&IndexedEtag> = indexed
+    let indexed: Vec<(&IndexedEtag, ObjectPath)> = indexed
         .iter()
         .filter(|entry| prefix.is_none_or(|prefix| entry.key.starts_with(prefix)))
-        .filter(|entry| is_actionable(&entry.key))
+        .filter_map(|entry| actionable_path(&entry.key).map(|path| (entry, path)))
         .collect();
     // The index side is asserted too. Its order is a property of the vector backend's
     // scroll, not of anything in this crate, so it is the side this function can vouch
@@ -138,7 +141,9 @@ pub fn compare(
     // consumer turns into tombstones. `<=` rather than `<`, since a duplicate key is
     // survivable where a misorder is not.
     debug_assert!(
-        indexed.windows(2).all(|pair| pair[0].key <= pair[1].key),
+        indexed
+            .windows(2)
+            .all(|pair| pair[0].0.key <= pair[1].0.key),
         "the index side must be sorted by key"
     );
 
@@ -149,69 +154,59 @@ pub fn compare(
     let mut keys = Vec::new();
 
     let mut storage = in_storage.iter();
-    let mut index = indexed.into_iter();
+    let mut index = indexed.iter();
     let mut next_storage = storage.next();
     let mut next_index = index.next();
 
     loop {
-        let outcome = match (next_storage, next_index) {
+        let path = match (next_storage, next_index) {
             (None, None) => break,
-            (Some((key, etag)), Some(entry)) => match key.as_str().cmp(entry.key.as_str()) {
-                std::cmp::Ordering::Equal => {
-                    let same = etag.as_deref() == Some(entry.etag.as_str());
-                    next_storage = storage.next();
-                    next_index = index.next();
-                    if same {
-                        report.unchanged += 1;
-                        continue;
+            (Some((key, path, etag)), Some((entry, indexed_path))) => {
+                match key.as_str().cmp(entry.key.as_str()) {
+                    std::cmp::Ordering::Equal => {
+                        let same = etag.as_deref() == Some(entry.etag.as_str());
+                        next_storage = storage.next();
+                        next_index = index.next();
+                        if same {
+                            report.unchanged += 1;
+                            continue;
+                        }
+                        report.changed += 1;
+                        path
                     }
-                    report.changed += 1;
-                    key.clone()
+                    std::cmp::Ordering::Less => {
+                        // In storage, unknown to the index.
+                        report.changed += 1;
+                        next_storage = storage.next();
+                        path
+                    }
+                    std::cmp::Ordering::Greater => {
+                        // Indexed, with no object behind it.
+                        report.orphaned += 1;
+                        next_index = index.next();
+                        indexed_path
+                    }
                 }
-                std::cmp::Ordering::Less => {
-                    // In storage, unknown to the index.
-                    report.changed += 1;
-                    let key = key.clone();
-                    next_storage = storage.next();
-                    key
-                }
-                std::cmp::Ordering::Greater => {
-                    // Indexed, with no object behind it.
-                    report.orphaned += 1;
-                    let key = entry.key.clone();
-                    next_index = index.next();
-                    key
-                }
-            },
-            (Some((key, _)), None) => {
-                report.changed += 1;
-                let key = key.clone();
-                next_storage = storage.next();
-                key
             }
-            (None, Some(entry)) => {
+            (Some((_, path, _)), None) => {
+                report.changed += 1;
+                next_storage = storage.next();
+                path
+            }
+            (None, Some((_, path))) => {
                 report.orphaned += 1;
-                let key = entry.key.clone();
                 next_index = index.next();
-                key
+                path
             }
         };
-
-        if let Ok(key) = ObjectPath::try_from(outcome.as_str()) {
-            keys.push(key);
-        } else {
-            // Both sides were filtered by `is_actionable` above, so this is unreachable.
-            // Dropping the key rather than panicking keeps a pass safe if that ever
-            // stops being true.
-            debug_assert!(false, "an unvalidated key reached the merge: {outcome}");
-            tracing::warn!(key = %outcome, "skipping a key that is not a valid object path");
-        }
+        keys.push(path.clone());
     }
 
     Reconciliation { report, keys }
 }
 
-/// Whether a key either side reported can be acted on at all.
+/// The path a key either side reported parses to, or `None`, logged, when it cannot be
+/// acted on at all.
 ///
 /// A key that is not a valid [`ObjectPath`] cannot be re-read, so an entry for it would
 /// only produce an event nothing can act on — and, counted, it would keep
@@ -226,12 +221,12 @@ pub fn compare(
 /// is written through an [`ObjectPath`] in the first place, so an unactionable one is
 /// already beyond this pass's reach. A reserved key is a valid [`ObjectPath`], so it is
 /// actionable; see [`compare`] for how it is treated.
-fn is_actionable(key: &str) -> bool {
-    if ObjectPath::try_from(key).is_ok() {
-        return true;
-    }
-    tracing::warn!(key = %key, "skipping a key that is not a valid object path");
-    false
+fn actionable_path(key: &str) -> Option<ObjectPath> {
+    ObjectPath::try_from(key)
+        .inspect_err(|_| {
+            tracing::warn!(key = %key, "skipping a key that is not a valid object path");
+        })
+        .ok()
 }
 
 /// Whether `key` is one of the [`RESERVED_KEYS`](crate::RESERVED_KEYS), exactly.
