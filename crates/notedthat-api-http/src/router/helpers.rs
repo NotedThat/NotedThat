@@ -12,7 +12,7 @@ use notedthat_core::{
     parse_line_range_header,
 };
 use notedthat_write::PatchMode;
-use std::fmt::Write;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// The header the MCP server sets on the API calls it makes on a caller's
 /// behalf, so a write's event can say `mcp` rather than `http`. Informational:
@@ -71,19 +71,22 @@ pub(in crate::router) fn object_location(kb_slug: &str, object_path: &str) -> St
     )
 }
 
+/// Bytes [`percent_encode_path`] encodes: everything except the RFC 3986 §2.3
+/// unreserved characters (`A-Z a-z 0-9 - . _ ~`) and `/`.
+///
+/// `/` is kept because the result is a multi-segment path under a route's
+/// wildcard: each `/` of an object key must stay a path separator in the URL,
+/// not collapse the key into one `%2F`-joined segment. Non-ASCII bytes are
+/// always encoded, whatever the set says.
+const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
+
 pub(in crate::router) fn percent_encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for &byte in path.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                encoded.push(char::from(byte));
-            }
-            _ => {
-                let _ = write!(&mut encoded, "%{byte:02X}");
-            }
-        }
-    }
-    encoded
+    utf8_percent_encode(path, PATH_ENCODE_SET).to_string()
 }
 
 pub(super) fn replace_conditionals(req: &Request) -> Result<ConditionalHeaders, ApiError> {
@@ -171,5 +174,35 @@ fn parse_patch_content_range(content_range: &str, body: Bytes) -> Result<PatchMo
         other => Err(format!(
             "Content-Range unit must be 'bytes' or 'lines', got: {other}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_encode_path;
+
+    #[test]
+    fn percent_encode_path_keeps_unreserved_and_slash() {
+        assert_eq!(
+            percent_encode_path("AZaz09-._~/docs/a.md"),
+            "AZaz09-._~/docs/a.md"
+        );
+    }
+
+    #[test]
+    fn percent_encode_path_encodes_punctuation_and_space_as_uppercase_hex() {
+        assert_eq!(
+            percent_encode_path(" !\"#$%&'()*+,:;<=>?@[\\]^`{|}"),
+            "%20%21%22%23%24%25%26%27%28%29%2A%2B%2C%3A%3B%3C%3D%3E%3F%40%5B%5C%5D%5E%60%7B%7C%7D"
+        );
+        assert_eq!(percent_encode_path("\u{0}\t\u{7f}"), "%00%09%7F");
+    }
+
+    #[test]
+    fn percent_encode_path_encodes_every_byte_of_multibyte_utf8() {
+        assert_eq!(
+            percent_encode_path("caf\u{e9}/\u{1f600}"),
+            "caf%C3%A9/%F0%9F%98%80"
+        );
     }
 }
