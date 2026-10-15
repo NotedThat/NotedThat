@@ -4,7 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{KbSlug, ObjectPath};
 
-use super::backpressure::dav_error_body;
+use crate::dav_xml;
 use crate::filesystem::DavTarget;
 
 pub(super) enum TargetError {
@@ -15,9 +15,7 @@ pub(super) enum TargetError {
 impl TargetError {
     pub(super) fn into_response(self) -> Response {
         match self {
-            Self::Collection => {
-                (StatusCode::FORBIDDEN, dav_error_body("no-collection-move")).into_response()
-            }
+            Self::Collection => dav_xml::error(StatusCode::FORBIDDEN, "no-collection-move"),
             Self::Forbidden => StatusCode::FORBIDDEN.into_response(),
         }
     }

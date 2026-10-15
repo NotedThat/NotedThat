@@ -7,11 +7,12 @@ use notedthat_core::{
 };
 use notedthat_write::sniff_content_type;
 
+use crate::dav_xml;
 use crate::if_header::IfHeader;
 use crate::state::WebDavState;
 
 use super::super::backpressure::{
-    copy_destination_backpressure_response, dav_error_body, event_publish_failed_response,
+    copy_destination_backpressure_response, event_publish_failed_response,
     move_destination_backpressure_response, move_source_tombstone_backpressure_response,
 };
 use super::super::helpers::{
@@ -152,22 +153,14 @@ impl Rejection {
     fn into_response(self) -> Response {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST.into_response(),
-            Self::DifferentServer => (
-                StatusCode::BAD_GATEWAY,
-                dav_error_body("destination-different-server"),
-            )
-                .into_response(),
+            Self::DifferentServer => {
+                dav_xml::error(StatusCode::BAD_GATEWAY, "destination-different-server")
+            }
             Self::NotAnObject(error) => error.into_response(),
-            Self::CrossKb => (
-                StatusCode::FORBIDDEN,
-                dav_error_body("cannot-modify-source"),
-            )
-                .into_response(),
-            Self::SelfTarget(transfer) => (
-                StatusCode::FORBIDDEN,
-                dav_error_body(transfer.self_target_condition()),
-            )
-                .into_response(),
+            Self::CrossKb => dav_xml::error(StatusCode::FORBIDDEN, "cannot-modify-source"),
+            Self::SelfTarget(transfer) => {
+                dav_xml::error(StatusCode::FORBIDDEN, transfer.self_target_condition())
+            }
         }
     }
 }

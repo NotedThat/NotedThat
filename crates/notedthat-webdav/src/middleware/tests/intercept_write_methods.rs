@@ -603,6 +603,10 @@ async fn test_move_cross_server_returns_502_destination_different_server() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     assert!(
         response_body(resp)
             .await
@@ -625,6 +629,10 @@ async fn test_move_cross_kb_returns_403_cannot_modify_source() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     assert!(response_body(resp).await.contains("cannot-modify-source"));
 }
 
@@ -872,6 +880,10 @@ async fn test_move_collection_source_returns_403_no_collection_move() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     assert!(response_body(resp).await.contains("no-collection-move"));
 }
 
