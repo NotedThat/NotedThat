@@ -886,6 +886,10 @@ async fn test_collection_move_returns_403_no_collection_move() {
         .expect("MOVE /notes/ (collection)");
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     let body = resp.text().await.expect("body text");
     assert!(
         body.contains("no-collection-move"),
@@ -931,6 +935,10 @@ async fn test_cross_kb_move_returns_403_cannot_modify_source() {
         .expect("MOVE notes → scratch");
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     let body = resp.text().await.expect("body text");
     assert!(
         body.contains("cannot-modify-source"),
