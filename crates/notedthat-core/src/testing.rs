@@ -27,10 +27,6 @@ use crate::{
 /// way an S3 continuation token would be.
 const CURSOR_PREFIX: &str = "ntmem1:";
 
-/// Key the manifest lives at — a real object, exactly as on every other backend, so a
-/// listing sees it and `get_object` can read it.
-const MANIFEST_KEY: &str = ".notedthat/manifest.json";
-
 #[derive(Clone)]
 struct StoredObject {
     bytes: Bytes,
@@ -279,9 +275,9 @@ impl Storage for InMemoryStorage {
         inner.require_bucket(kb)?;
         let stored = inner
             .objects
-            .get(&(kb.as_str().to_string(), MANIFEST_KEY.to_string()))
+            .get(&(kb.as_str().to_string(), KbManifest::KEY.to_string()))
             .ok_or_else(|| StorageError::NotFound {
-                key: MANIFEST_KEY.into(),
+                key: KbManifest::KEY.into(),
             })?;
         // Every failure but "absent" is `BackendUnavailable` here, matching `S3Storage`.
         let manifest: KbManifest = serde_json::from_slice(&stored.bytes).map_err(|error| {
@@ -307,8 +303,10 @@ impl Storage for InMemoryStorage {
         let bytes = Bytes::from(bytes);
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
+        // The manifest is a real object, exactly as on every other backend, so a listing sees
+        // it and `get_object` can read it.
         inner.objects.insert(
-            (kb.as_str().to_string(), MANIFEST_KEY.to_string()),
+            (kb.as_str().to_string(), KbManifest::KEY.to_string()),
             StoredObject {
                 etag: compute_etag(&bytes),
                 bytes,
