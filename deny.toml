@@ -70,4 +70,13 @@ maximum-db-staleness = "P7D"
 # with neither cannot be reviewed and should be refused in review. Suppressing an
 # advisory belongs here, in the tree, and never as a flag on the command line
 # where nobody reads it.
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2024-0449", reason = """
+unsafe-libyaml is unmaintained (informational notice, not a vulnerability) and \
+has no patched version. It is reached only through serde_yaml_ng, which parses \
+OKF frontmatter in notedthat-indexer/src/okf.rs from untrusted note content, \
+bounded by FRONTMATTER_PREFIX_LIMIT (16 MiB; see #79). Stopgap until the \
+parser is replaced: https://github.com/NotedThat/NotedThat/issues/424. \
+Revisit by 2026-12-15; unused-ignored-advisory fails this check once the \
+crate leaves the tree, which is the cue to delete this entry.""" },
+]
