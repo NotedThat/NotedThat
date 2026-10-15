@@ -35,7 +35,7 @@ async fn wait_for_hits(
     filter: Value,
     ready: impl Fn(&[Value]) -> bool,
 ) -> Vec<Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
     loop {
         let hits = search(server, filter.clone()).await;
         if ready(&hits) {

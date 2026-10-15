@@ -871,7 +871,7 @@ mod tests {
             assert_eq!(config.streams.replicas, Some(3));
             assert_eq!(
                 config.streams.duplicate_window,
-                Some(Duration::from_secs(60))
+                Some(Duration::from_mins(1))
             );
         });
     }

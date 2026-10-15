@@ -4,7 +4,7 @@ use tokio::sync::oneshot;
 
 use super::access_env::{DAV_PASS, DAV_USER};
 
-const READY_TIMEOUT: Duration = Duration::from_secs(60);
+const READY_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub struct ServerInstance {
     pub http_url: String,

@@ -31,7 +31,7 @@ const ACCEPTED_ALGORITHMS: [Algorithm; 5] = [
 ];
 
 /// How much clock skew between issuer and server to forgive on `exp`/`nbf`.
-const LEEWAY: Duration = Duration::from_secs(60);
+const LEEWAY: Duration = Duration::from_mins(1);
 
 /// The shortest interval between two JWKS fetches triggered by tokens.
 ///

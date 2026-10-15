@@ -397,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn a_probe_that_outlasts_the_interval_is_a_timeout() {
         let (storage, store) = provisioned().await;
-        store.set_probe_latency(Duration::from_secs(60));
+        store.set_probe_latency(Duration::from_mins(1));
         let (mut rx, shutdown, handle) = start(Arc::new(storage), Arc::new(store));
         let snapshot = wait_for(&mut rx, "search timeout", |s| {
             s.search.outcome == Err(Unready::Timeout)
@@ -450,13 +450,13 @@ mod tests {
         // and a probe that outlasts the test; the first tick is immediate, so
         // the probe is in flight by the time the poller has been polled once.
         let (storage, store) = provisioned().await;
-        store.set_probe_latency(Duration::from_secs(60));
+        store.set_probe_latency(Duration::from_mins(1));
         let (poller, _rx) = ReadinessPoller::new(
             Arc::new(storage),
             Arc::new(store.clone()),
             kb(),
             "fs",
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             None,
         );
         let shutdown = CancellationToken::new();
