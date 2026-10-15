@@ -402,10 +402,7 @@ pub trait EventPublisher: Send + Sync {
 }
 
 fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    unix_to_rfc3339(secs)
+    unix_to_rfc3339(crate::unix_seconds_i64(std::time::SystemTime::now()))
 }
 
 /// Render a Unix timestamp as `YYYY-MM-DDTHH:MM:SSZ`.
