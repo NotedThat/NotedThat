@@ -10,8 +10,8 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-notedthat-core = { path = "../notedthat-core", version = "0.12.3" }
-notedthat-nats = { path = "../notedthat-nats", version = "0.12.3" }
+notedthat-core = { path = "../notedthat-core", version = "0.13.0" }
+notedthat-nats = { path = "../notedthat-nats", version = "0.13.0" }
 async-nats.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
