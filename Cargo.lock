@@ -2448,6 +2448,7 @@ dependencies = [
  "notedthat-events",
  "notedthat-indexer",
  "notedthat-write",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
