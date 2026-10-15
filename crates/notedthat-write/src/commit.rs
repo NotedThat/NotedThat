@@ -178,25 +178,10 @@ impl Drop for EnqueueOnDrop<'_> {
         // else — the reconciliation pass is the backstop. The health view is
         // told exactly what the normal path tells it: this is the one refused
         // event nobody got a 503 for, so it must not go unrecorded.
-        let refused = match self.indexer_tx.try_send(event) {
-            Ok(()) => {
-                if let Some(health) = self.index_health {
-                    health.enqueued(kb.as_str());
-                }
-                return;
-            }
-            Err(TrySendError::Full(_)) => {
-                if let Some(health) = self.index_health {
-                    health.backpressured(kb.as_str());
-                }
-                "full"
-            }
-            Err(TrySendError::Closed(_)) => {
-                if let Some(health) = self.index_health {
-                    health.worker_stopped();
-                }
-                "closed"
-            }
+        let refused = match offer_to_index(&self.indexer_tx, self.index_health, event) {
+            Offered::Queued => return,
+            Offered::Full => "full",
+            Offered::Closed => "closed",
         };
         tracing::warn!(
             target: "notedthat::indexing",
@@ -205,6 +190,41 @@ impl Drop for EnqueueOnDrop<'_> {
              changed and its index event could not be queued; reconciliation will repair it"
         );
     }
+}
+
+/// What became of an event offered to the index queue.
+enum Offered {
+    Queued,
+    Full,
+    Closed,
+}
+
+/// Offer `event` to the index queue without waiting, and tell the health view
+/// what became of it: `enqueued` when queued, `backpressured` when the queue is
+/// full, `worker_stopped` when it is closed.
+///
+/// Every enqueue goes through here — the normal paths and [`EnqueueOnDrop`] —
+/// so the health view hears the same thing whichever one sent the event. The
+/// log line and the error are each caller's own.
+fn offer_to_index(
+    indexer_tx: &IndexQueueSender,
+    index_health: Option<&IndexHealth>,
+    event: IndexEvent,
+) -> Offered {
+    let kb = event.kb().clone();
+    let offered = match indexer_tx.try_send(event) {
+        Ok(()) => Offered::Queued,
+        Err(TrySendError::Full(_)) => Offered::Full,
+        Err(TrySendError::Closed(_)) => Offered::Closed,
+    };
+    if let Some(health) = index_health {
+        match offered {
+            Offered::Queued => health.enqueued(kb.as_str()),
+            Offered::Full => health.backpressured(kb.as_str()),
+            Offered::Closed => health.worker_stopped(),
+        }
+    }
+    offered
 }
 
 /// Report a durable write: publish, then index.
@@ -271,27 +291,14 @@ pub(crate) async fn after_write(
         None => Ok(()),
     };
 
-    let event = enqueue.disarm();
-    match sinks.indexer_tx.try_send(event) {
-        Ok(()) => {
-            if let Some(health) = sinks.index_health {
-                health.enqueued(kb.as_str());
-            }
-        }
-        Err(TrySendError::Full(ev)) => {
+    match offer_to_index(&sinks.indexer_tx, sinks.index_health, enqueue.disarm()) {
+        Offered::Queued => {}
+        Offered::Full => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
-            let _ = ev;
-            if let Some(health) = sinks.index_health {
-                health.backpressured(kb.as_str());
-            }
             return Err(WriteError::IndexerBackpressureUpsert);
         }
-        Err(TrySendError::Closed(ev)) => {
+        Offered::Closed => {
             tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
-            let _ = ev;
-            if let Some(health) = sinks.index_health {
-                health.worker_stopped();
-            }
             // Closed = indexer worker ended (shutdown OR panic). v1 preserves success-with-error-log
             // until post-v1 worker liveness detection is added.
         }
@@ -464,28 +471,15 @@ pub async fn commit_delete(
         None => Ok(()),
     };
 
-    let event = enqueue.disarm();
-    match sinks.indexer_tx.try_send(event) {
-        Ok(()) => {
-            if let Some(health) = sinks.index_health {
-                health.enqueued(kb.as_str());
-            }
-        }
-        Err(TrySendError::Full(ev)) => {
+    match offer_to_index(&sinks.indexer_tx, sinks.index_health, enqueue.disarm()) {
+        Offered::Queued => {}
+        Offered::Full => {
             tracing::warn!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_FULL");
-            let _ = ev;
-            if let Some(health) = sinks.index_health {
-                health.backpressured(kb.as_str());
-            }
             return Err(WriteError::IndexerBackpressureTombstone);
         }
         // Closed means the indexer worker task ended via shutdown OR panic; v1 deliberately preserves success-with-error-log so writes are not blocked by a crashed worker. The health view reports the stopped worker instead (#97).
-        Err(TrySendError::Closed(ev)) => {
+        Offered::Closed => {
             tracing::error!(target: "notedthat::indexing", kb = %kb, path = %path, "INDEX_QUEUE_CLOSED");
-            let _ = ev;
-            if let Some(health) = sinks.index_health {
-                health.worker_stopped();
-            }
         }
     }
     published
