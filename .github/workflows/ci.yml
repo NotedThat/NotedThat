@@ -447,40 +447,148 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       # Trusted Publishing cannot create a crate, so a workspace member that has
-      # never been published makes release-plz fail every push until someone
-      # bootstraps it (RELEASING.md, "Adding a crate"). Say so up front, by
-      # name, instead of letting it surface minutes later as a `cargo publish`
-      # error on whichever sibling release-plz happened to reach first.
+      # never been published cannot go out through this job at all: until
+      # someone bootstraps it (RELEASING.md, "Adding a Crate to the
+      # Workspace"), release-plz fails on it on every push to main — first as a
+      # `cargo publish` verify error against its siblings' previous publish,
+      # after the version bump as an HTTP 403. That is a known, documented
+      # state, and a red main in the meantime hides real failures.
       #
-      # A warning, never a failure: release-plz must still run. It publishes
-      # the new crate's *dependencies* at the new version before it stops at
-      # the crate itself with the 403, and that is what the bootstrap needs —
-      # `cargo publish` verifies the new crate against crates.io. Failing here
-      # would leave those dependencies unpublished and the bootstrap with
-      # nothing to build against, until someone published them by hand.
-      - name: Name any crate that has never been published
+      # So hold it back instead: every crate that 404s on crates.io, plus every
+      # publishable crate that depends on one (normal or build dependencies;
+      # dev-dependencies on workspace crates are path-only and stripped from the
+      # published manifest, see RELEASING.md), is set to `release = false` in a
+      # copy of release-plz.toml for this run only. Everything else still
+      # publishes — including the new crate's own dependencies at the new
+      # version, which is what its bootstrap builds against. The facade
+      # `notedthat` is always held back while anything is, whether or not it
+      # depends on the missing crate: it owns the workspace tag, the GitHub
+      # Release and the release.yml dispatch, so none of those happen until the
+      # whole workspace is on crates.io. The held-back crates are named in a
+      # warning and in the job summary.
+      #
+      # If that holds back every publishable crate (the missing crate is one
+      # that notedthat-core depends on), there is nothing left to publish and
+      # release-plz would fail with "no public packages found", so the step
+      # sets `skip=true` and release-plz does not run at all.
+      #
+      # Only a definite 404 holds a crate back. Any other answer (a timeout, a
+      # 5xx) leaves the crate in, so release-plz publishes it as usual and a
+      # real error still fails the job. When nothing is held back, release-plz
+      # gets the checked-in release-plz.toml unchanged.
+      - name: Hold back crates that have never been published
+        id: preflight
         run: |
           set -euo pipefail
-          for crate in $(cargo metadata --format-version 1 --no-deps \
-                         | jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name'); do
+          meta=$(cargo metadata --format-version 1 --no-deps)
+          publishable=$(jq -r '.packages[] | select(.publish == null or (.publish | length) > 0) | .name' <<<"$meta")
+          version=$(jq -er '[.packages[] | select(.publish != []) | .version] | unique | .[0]' <<<"$meta")
+
+          missing=()
+          while read -r crate; do
+            [ -n "$crate" ] || continue
             # `|| true`: under `set -e` a curl that could not connect would
             # otherwise exit the script here; `--max-time` so a stalled
-            # connection cannot hang the job eleven times over.
+            # connection cannot hang the job once per crate.
             status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
                      -H 'User-Agent: notedthat-ci (https://github.com/NotedThat/NotedThat)' \
                      "https://crates.io/api/v1/crates/${crate}" || true)
             case "${status:-000}" in
               200) ;;
-              404) echo "::warning::${crate} has never been published; Trusted Publishing cannot create it, so release-plz will stop at it with a 403 once its dependencies are up. Bootstrap it then — RELEASING.md, \"Adding a crate\"." ;;
-              *)   echo "::notice::could not check ${crate} on crates.io (HTTP ${status:-000}); continuing" ;;
+              404) missing+=("$crate") ;;
+              *)   echo "::warning::could not check ${crate} on crates.io (HTTP ${status:-000}); not holding it back, release-plz will try to publish it as usual" ;;
             esac
+          done <<<"$publishable"
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "Every publishable crate is on crates.io; running release-plz with release-plz.toml unchanged."
+            {
+              echo "config=release-plz.toml"
+              echo "held-back="
+              echo "skip=false"
+            } >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The never-published crates plus, transitively, every publishable
+          # workspace crate with a normal or build dependency on one of them.
+          # The facade `notedthat` is seeded too, whatever its dependencies, so
+          # no tag or GitHub Release goes out while anything is missing.
+          held=$(jq -r --argjson seeds "$(printf '%s\n' "${missing[@]}" | jq -R . | jq -sc .)" '
+            [.packages[] | select(.publish != [])
+              | {name, deps: [.dependencies[] | select(.path != null and .kind != "dev") | .name]}] as $pkgs
+            | def grow($s):
+                ([$pkgs[] | select(any(.deps[]; IN($s[]))) | .name] + $s | unique) as $n
+                | if ($n | length) == ($s | length) then $s else grow($n) end;
+              grow($seeds + ["notedthat"] | unique)[]' <<<"$meta")
+
+          config="$RUNNER_TEMP/release-plz.toml"
+          cp release-plz.toml "$config"
+          while read -r crate; do
+            if grep -qx "name = \"${crate}\"" "$config"; then
+              # The crate already has a [[package]] table (the facade does):
+              # add the key to it, since a second table for the same name
+              # would be ambiguous.
+              awk -v line="name = \"${crate}\"" '{ print } $0 == line { print "release = false" }' \
+                "$config" >"$config.new"
+              mv "$config.new" "$config"
+            else
+              printf '\n[[package]]\nname = "%s"\nrelease = false\n' "$crate" >>"$config"
+            fi
+          done <<<"$held"
+
+          # Fail on a config that does not say what was intended, rather than
+          # hand release-plz something that publishes a held-back crate anyway.
+          HELD="$held" python3 - "$config" <<'PY'
+          import os, sys, tomllib
+          with open(sys.argv[1], "rb") as f:
+              cfg = tomllib.load(f)
+          held = set(os.environ["HELD"].split())
+          off = {p["name"] for p in cfg.get("package", []) if p.get("release") is False}
+          if off != held:
+              sys.exit(f"generated release-plz config holds back {sorted(off)}, expected {sorted(held)}")
+          PY
+
+          held_list=$(paste -sd, - <<<"$held" | sed 's/,/, /g')
+          for crate in "${missing[@]}"; do
+            echo "::warning title=${crate} is not on crates.io yet::${crate} has never been published, and Trusted Publishing cannot create it. Held back this run: ${held_list}. No tag or GitHub Release until it is bootstrapped. Run \"Publish crate (initial)\" for ${crate} once its dependencies are on crates.io at ${version} with everything it uses (if they lack it, merge the release PR first), then push to main or re-run this job — RELEASING.md, \"Adding a Crate to the Workspace\"."
           done
+          {
+            echo "### Crates held back from this release"
+            echo
+            echo "Never published to crates.io: \`${missing[*]}\`. Trusted Publishing cannot create a crate, so it needs the **Publish crate (initial)** workflow first."
+            echo
+            echo "Held back this run (those crates, everything that depends on them, and the facade \`notedthat\`): \`${held_list}\`. The workspace tag, the GitHub Release and the release.yml dispatch wait until they are all on crates.io."
+            echo
+            echo "Next steps: RELEASING.md, *Adding a Crate to the Workspace*."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          # Every publishable crate held back: release-plz would find no
+          # package to release and fail with "no public packages found".
+          skip=false
+          if [ "$(sort -u <<<"$held")" = "$(sort -u <<<"$publishable")" ]; then
+            skip=true
+            echo "Every publishable crate is held back, so there is nothing to publish; skipping release-plz this run."
+            {
+              echo
+              echo "Every publishable crate is held back, so **release-plz was skipped** this run: nothing to publish, tag or release."
+            } >>"$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "config=${config}"
+            echo "held-back=$(paste -sd' ' - <<<"$held")"
+            echo "skip=${skip}"
+          } >>"$GITHUB_OUTPUT"
       - name: Run release-plz (release)
         id: release-plz
+        # Skipped when the pre-flight held back every publishable crate; its
+        # `releases` output is then empty, so the dispatch and index-wait steps
+        # below are skipped too.
+        if: steps.preflight.outputs.skip != 'true'
         uses: release-plz/action@v0.5
         with:
           command: release
-          config: release-plz.toml
+          config: ${{ steps.preflight.outputs.config }}
           # Pinned because release-plz.toml's `pr_body` is a copy of this
           # version's default template. Re-sync that copy when bumping.
           version: 0.3.169
@@ -523,13 +631,18 @@ jobs:
       - name: Wait for crates.io to index the published version
         if: steps.release-plz.outputs.releases != ''
         timeout-minutes: 10
+        env:
+          # Crates the preflight step held back were not published this run;
+          # waiting for them would only run into the timeout.
+          HELD_BACK: ${{ steps.preflight.outputs.held-back }}
         run: |
           set -euo pipefail
           meta=$(cargo metadata --no-deps --format-version 1)
           version=$(printf '%s' "$meta" \
             | jq -er '[.packages[] | select(.publish != []) | .version] | unique | .[0]')
           crates=$(printf '%s' "$meta" \
-            | jq -er '.packages[] | select(.publish != []) | .name')
+            | jq -er --arg held "$HELD_BACK" \
+                '($held | split(" ")) as $h | .packages[] | select(.publish != []) | .name | select(IN($h[]) | not)')
           echo "Waiting for $version to appear in the crates.io index"
           # Read line by line rather than iterating an unquoted variable: crate
           # names are newline-separated, and relying on IFS word-splitting here
