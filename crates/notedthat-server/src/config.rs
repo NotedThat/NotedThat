@@ -571,8 +571,8 @@ impl Config {
             qdrant: ServerQdrantConfig {
                 url: "http://127.0.0.1:1".to_string(),
                 api_key: None,
-                timeout_ms: 30_000,
-                connect_timeout_ms: 10_000,
+                timeout_ms: ServerQdrantConfig::DEFAULT_TIMEOUT_MS,
+                connect_timeout_ms: ServerQdrantConfig::DEFAULT_CONNECT_TIMEOUT_MS,
             },
             embedder: EmbedderConfig {
                 // The embedder appends only /embeddings, so this is the
@@ -581,10 +581,10 @@ impl Config {
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
                 dimensions: 4,
-                batch_size: 32,
-                timeout_ms: 30_000,
-                max_retries: 3,
-                max_input_tokens: 8192,
+                batch_size: EmbedderConfig::DEFAULT_BATCH_SIZE,
+                timeout_ms: EmbedderConfig::DEFAULT_TIMEOUT_MS,
+                max_retries: EmbedderConfig::DEFAULT_MAX_RETRIES,
+                max_input_tokens: EmbedderConfig::DEFAULT_MAX_INPUT_TOKENS,
             },
             index_concurrency: DEFAULT_INDEX_CONCURRENCY,
             webdav_username: "e2e-webdav-user".to_string(),
@@ -599,7 +599,7 @@ impl Config {
             max_patchable_size: 10 * 1024 * 1024,
             mcp_max_read_bytes: notedthat_mcp::DEFAULT_MAX_READ_BYTES,
             mcp_max_sessions: notedthat_mcp::DEFAULT_MAX_SESSIONS,
-            ready_probe_interval_ms: 5_000,
+            ready_probe_interval_ms: Config::DEFAULT_READY_PROBE_INTERVAL_MS,
             metrics_listen_addr: None,
             request_bounds: RequestBoundsConfig::default(),
             staging: StagingConfig::default(),
@@ -823,6 +823,11 @@ pub enum LogFormat {
 }
 
 impl Config {
+    /// Default for [`Self::max_patchable_size`]: 100 MiB.
+    pub const DEFAULT_MAX_PATCHABLE_SIZE: u64 = 100 * 1024 * 1024;
+    /// Default for [`Self::ready_probe_interval_ms`].
+    pub const DEFAULT_READY_PROBE_INTERVAL_MS: u64 = 5_000;
+
     /// Parse configuration from the environment alone.
     ///
     /// Equivalent to [`Config::from_cli`] over an empty `argv`, which is what a
@@ -1053,7 +1058,7 @@ impl Config {
 
         let max_patchable_size = cli
             .max_patchable_size
-            .unwrap_or_else(|| (100 * 1024 * 1024u64).to_string())
+            .unwrap_or_else(|| Self::DEFAULT_MAX_PATCHABLE_SIZE.to_string())
             .parse::<u64>()
             .map_err(|_e: std::num::ParseIntError| Error::Config {
                 message: format!(
@@ -1094,7 +1099,7 @@ impl Config {
         let ready_probe_interval_ms = parse_positive_u64(
             "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
             cli.ready_probe_interval_ms.as_deref(),
-            5_000,
+            Self::DEFAULT_READY_PROBE_INTERVAL_MS,
         )?;
 
         // Like the session bound, these bound the transport rather than a
@@ -1345,6 +1350,17 @@ pub struct ServerQdrantConfig {
 }
 
 impl ServerQdrantConfig {
+    /// Default for [`Self::timeout_ms`]: the indexer's
+    /// [`DEFAULT_TIMEOUT`](notedthat_indexer::qdrant::DEFAULT_TIMEOUT), which
+    /// is whole seconds.
+    pub const DEFAULT_TIMEOUT_MS: u64 =
+        notedthat_indexer::qdrant::DEFAULT_TIMEOUT.as_secs() * 1_000;
+    /// Default for [`Self::connect_timeout_ms`]: the indexer's
+    /// [`DEFAULT_CONNECT_TIMEOUT`](notedthat_indexer::qdrant::DEFAULT_CONNECT_TIMEOUT),
+    /// which is whole seconds.
+    pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 =
+        notedthat_indexer::qdrant::DEFAULT_CONNECT_TIMEOUT.as_secs() * 1_000;
+
     /// Validate the Qdrant settings this run supplied.
     ///
     /// # Errors
@@ -1363,11 +1379,15 @@ impl ServerQdrantConfig {
         Ok(Self {
             url,
             api_key,
-            timeout_ms: parse_positive_u64("NOTEDTHAT_QDRANT_TIMEOUT_MS", timeout_ms, 30_000)?,
+            timeout_ms: parse_positive_u64(
+                "NOTEDTHAT_QDRANT_TIMEOUT_MS",
+                timeout_ms,
+                Self::DEFAULT_TIMEOUT_MS,
+            )?,
             connect_timeout_ms: parse_positive_u64(
                 "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
                 connect_timeout_ms,
-                10_000,
+                Self::DEFAULT_CONNECT_TIMEOUT_MS,
             )?,
         })
     }
@@ -1428,6 +1448,15 @@ pub struct EmbedderConfig {
 }
 
 impl EmbedderConfig {
+    /// Default for [`Self::batch_size`].
+    pub const DEFAULT_BATCH_SIZE: usize = 32;
+    /// Default for [`Self::timeout_ms`].
+    pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+    /// Default for [`Self::max_retries`].
+    pub const DEFAULT_MAX_RETRIES: u32 = 3;
+    /// Default for [`Self::max_input_tokens`].
+    pub const DEFAULT_MAX_INPUT_TOKENS: usize = 8192;
+
     /// Validate the embedder settings this run supplied.
     ///
     /// # Errors
@@ -1468,16 +1497,16 @@ impl EmbedderConfig {
             api_key,
             dimensions,
             batch_size: parse_number("EMBEDDING_BATCH_SIZE", parts.batch_size.as_deref())?
-                .unwrap_or(32),
+                .unwrap_or(Self::DEFAULT_BATCH_SIZE),
             timeout_ms: parse_number("EMBEDDING_TIMEOUT_MS", parts.timeout_ms.as_deref())?
-                .unwrap_or(30_000),
+                .unwrap_or(Self::DEFAULT_TIMEOUT_MS),
             max_retries: parse_number("EMBEDDING_MAX_RETRIES", parts.max_retries.as_deref())?
-                .unwrap_or(3),
+                .unwrap_or(Self::DEFAULT_MAX_RETRIES),
             max_input_tokens: parse_number(
                 "EMBEDDING_MAX_INPUT_TOKENS",
                 parts.max_input_tokens.as_deref(),
             )?
-            .unwrap_or(8192),
+            .unwrap_or(Self::DEFAULT_MAX_INPUT_TOKENS),
         })
     }
 }
@@ -2224,6 +2253,31 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(cfg.qdrant.url, "http://qdrant.example.com:6334");
+    }
+
+    /// The millisecond defaults are derived from the indexer's `Duration`s in
+    /// whole seconds; this catches a sub-second indexer default, which that
+    /// derivation would truncate, and pins the documented values.
+    #[test]
+    fn qdrant_timeouts_default_to_the_indexer_defaults() {
+        let cfg = run_with_env(
+            &[
+                ("NOTEDTHAT_QDRANT_TIMEOUT_MS", None),
+                ("NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", None),
+            ],
+            Config::from_env,
+        )
+        .unwrap();
+        assert_eq!(cfg.qdrant.timeout_ms, 30_000);
+        assert_eq!(cfg.qdrant.connect_timeout_ms, 10_000);
+        assert_eq!(
+            Duration::from_millis(cfg.qdrant.timeout_ms),
+            notedthat_indexer::qdrant::DEFAULT_TIMEOUT
+        );
+        assert_eq!(
+            Duration::from_millis(cfg.qdrant.connect_timeout_ms),
+            notedthat_indexer::qdrant::DEFAULT_CONNECT_TIMEOUT
+        );
     }
 
     #[test]
