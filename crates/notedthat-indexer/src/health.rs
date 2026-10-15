@@ -13,9 +13,10 @@ use notedthat_core::metrics::{
     index_outcome as metric_index, label as metric_label, name as metric,
     reconcile_class as metric_class,
 };
+use notedthat_core::unix_seconds_i64;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 /// How long after a queue-full rejection a knowledge base still reports
 /// `backpressured`. Backpressure is a moment, not a condition the record can
@@ -277,7 +278,7 @@ impl IndexHealth {
     /// The record for `kb` as it stands now, `now` being Unix seconds.
     #[must_use]
     pub fn snapshot(&self, kb: &str) -> KbHealthSnapshot {
-        let now = now_unix();
+        let now = unix_seconds_i64(SystemTime::now());
         let inner = self.lock();
         let record = inner.kbs.get(kb).cloned().unwrap_or_default();
         let state = derive_state(&record, inner.worker_alive, now);
@@ -294,7 +295,7 @@ impl IndexHealth {
     }
 
     fn record(&self, kb: &str, update: impl FnOnce(&mut KbRecord, i64)) {
-        let now = now_unix();
+        let now = unix_seconds_i64(SystemTime::now());
         let mut inner = self.lock();
         let record = inner.kbs.entry(kb.to_string()).or_default();
         update(record, now);
@@ -349,12 +350,6 @@ pub(crate) fn bound_summary(summary: &str) -> String {
         bounded.push('…');
     }
     bounded
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

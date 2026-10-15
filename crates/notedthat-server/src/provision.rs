@@ -4,12 +4,12 @@
 
 use notedthat_core::{
     AccessPolicy, Error, KbDetails, KbManifest, KbSlug, Storage, TenantSlug, derive_bucket_name,
-    validate_bucket_name,
+    unix_seconds_i64, validate_bucket_name,
 };
 use notedthat_indexer::{ProvisionError, QdrantProvisioner};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use tracing::{info, warn};
 
 /// The startup snapshot of every declared knowledge base's manifest: what the
@@ -71,14 +71,24 @@ pub async fn provision_kbs(
                         manifest_kb = %manifest.kb_slug.as_str(),
                         "manifest kb_slug mismatch — overwriting with fresh manifest"
                     );
-                    let fresh = KbManifest::new_v1(tenant, kb, kb.as_str(), current_unix_ts());
+                    let fresh = KbManifest::new_v1(
+                        tenant,
+                        kb,
+                        kb.as_str(),
+                        unix_seconds_i64(SystemTime::now()),
+                    );
                     storage.write_manifest(kb, &fresh).await?;
                     fresh
                 }
             }
             Err(e) if e.is_not_found() => {
                 info!(kb = %kb.as_str(), "writing initial manifest");
-                let fresh = KbManifest::new_v1(tenant, kb, kb.as_str(), current_unix_ts());
+                let fresh = KbManifest::new_v1(
+                    tenant,
+                    kb,
+                    kb.as_str(),
+                    unix_seconds_i64(SystemTime::now()),
+                );
                 storage.write_manifest(kb, &fresh).await?;
                 fresh
             }
@@ -148,16 +158,6 @@ fn qdrant_provision_error(kb: &KbSlug, err: &ProvisionError) -> Error {
             notedthat_core::setting("NOTEDTHAT_QDRANT_URL"),
         ),
     }
-}
-
-/// Current Unix timestamp in seconds. Used for `created_at` in manifests.
-/// No chrono dependency — [`SystemTime`] from std is sufficient for M2.
-fn current_unix_ts() -> i64 {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    i64::try_from(seconds).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
