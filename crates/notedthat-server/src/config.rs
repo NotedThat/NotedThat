@@ -728,25 +728,14 @@ impl RequestBoundsConfig {
     ) -> Result<Self, Error> {
         let millis = |var: &str, supplied: Option<&String>, default: Duration| {
             let default = u64::try_from(default.as_millis()).unwrap_or(u64::MAX);
-            parse_millis(var, non_blank(supplied), default).map(Duration::from_millis)
+            parse_positive_u64(var, non_blank(supplied), default).map(Duration::from_millis)
         };
-        let max_requests_in_flight = match non_blank(max_requests_in_flight) {
-            None => Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT,
-            Some(value) => value.parse::<usize>().map_err(|_e| Error::Config {
-                message: format!(
-                    "{} must be a valid positive integer",
-                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT")
-                ),
-            })?,
-        };
-        if max_requests_in_flight == 0 {
-            return Err(Error::Config {
-                message: format!(
-                    "{} must be > 0",
-                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT")
-                ),
-            });
-        }
+        let max_requests_in_flight = parse_positive_usize(
+            "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+            non_blank(max_requests_in_flight),
+            const { NonZeroUsize::new(Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT).unwrap() },
+        )?
+        .get();
         // A semaphore holds at most this many permits; asking for more panics
         // at startup rather than refusing it with a name attached.
         if max_requests_in_flight > tokio::sync::Semaphore::MAX_PERMITS {
@@ -1089,47 +1078,20 @@ impl Config {
         // Empty or blank is the default, as for every sibling NOTEDTHAT_MCP_*
         // setting: Compose passes them through as `${VAR-}`, so a deployment
         // that never set this hands the server an empty string.
-        let mcp_max_read_bytes = match cli
-            .mcp_max_read_bytes
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            None => notedthat_mcp::DEFAULT_MAX_READ_BYTES,
-            Some(value) => value.parse::<u64>().map_err(|_e| Error::Config {
-                message: format!(
-                    "{} must be a valid u64 integer",
-                    setting("NOTEDTHAT_MCP_MAX_READ_BYTES")
-                ),
-            })?,
-        };
-        if mcp_max_read_bytes == 0 {
-            return Err(Error::Config {
-                message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_READ_BYTES")),
-            });
-        }
+        let mcp_max_read_bytes = parse_positive_u64(
+            "NOTEDTHAT_MCP_MAX_READ_BYTES",
+            non_blank(cli.mcp_max_read_bytes.as_ref()),
+            notedthat_mcp::DEFAULT_MAX_READ_BYTES,
+        )?;
         // Neither `fs` nor `s3` owns this one, so it is deliberately absent
         // from `backend_owned_settings`: it bounds the transport, not a backend.
-        let mcp_max_sessions = match cli
-            .mcp_max_sessions
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            None => notedthat_mcp::DEFAULT_MAX_SESSIONS,
-            Some(value) => value.parse::<usize>().map_err(|_e| Error::Config {
-                message: format!(
-                    "{} must be a valid positive integer",
-                    setting("NOTEDTHAT_MCP_MAX_SESSIONS")
-                ),
-            })?,
-        };
-        if mcp_max_sessions == 0 {
-            return Err(Error::Config {
-                message: format!("{} must be > 0", setting("NOTEDTHAT_MCP_MAX_SESSIONS")),
-            });
-        }
-        let ready_probe_interval_ms = parse_millis(
+        let mcp_max_sessions = parse_positive_usize(
+            "NOTEDTHAT_MCP_MAX_SESSIONS",
+            non_blank(cli.mcp_max_sessions.as_ref()),
+            const { NonZeroUsize::new(notedthat_mcp::DEFAULT_MAX_SESSIONS).unwrap() },
+        )?
+        .get();
+        let ready_probe_interval_ms = parse_positive_u64(
             "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
             cli.ready_probe_interval_ms.as_deref(),
             5_000,
@@ -1263,7 +1225,7 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         cli.oidc_groups_claim.as_deref(),
         OidcSettings::DEFAULT_GROUPS_CLAIM,
     )?;
-    let http_timeout = Duration::from_millis(parse_millis(
+    let http_timeout = Duration::from_millis(parse_positive_u64(
         "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
         cli.oidc_http_timeout_ms.as_deref(),
         OidcSettings::DEFAULT_HTTP_TIMEOUT_MS,
@@ -1401,8 +1363,8 @@ impl ServerQdrantConfig {
         Ok(Self {
             url,
             api_key,
-            timeout_ms: parse_millis("NOTEDTHAT_QDRANT_TIMEOUT_MS", timeout_ms, 30_000)?,
-            connect_timeout_ms: parse_millis(
+            timeout_ms: parse_positive_u64("NOTEDTHAT_QDRANT_TIMEOUT_MS", timeout_ms, 30_000)?,
+            connect_timeout_ms: parse_positive_u64(
                 "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
                 connect_timeout_ms,
                 10_000,
@@ -1411,8 +1373,9 @@ impl ServerQdrantConfig {
     }
 }
 
-/// Parse a millisecond duration, rejecting zero.
-fn parse_millis(var: &str, supplied: Option<&str>, default: u64) -> Result<u64, Error> {
+/// Parse a positive integer setting — a millisecond duration or a byte count —
+/// falling back to `default` when it is not supplied and rejecting zero.
+fn parse_positive_u64(var: &str, supplied: Option<&str>, default: u64) -> Result<u64, Error> {
     let Some(raw) = supplied else {
         return Ok(default);
     };
