@@ -6,49 +6,20 @@
 //! We encode everything except RFC 3986 §2.3 unreserved characters:
 //! `A-Z a-z 0-9 - . _ ~`
 
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// Characters to percent-encode in object paths.
 ///
-/// Starts from CONTROLS (0x00-0x1F, 0x7F) and adds all characters that
-/// are NOT RFC 3986 §2.3 unreserved (`A-Z a-z 0-9 - . _ ~`).
-///
-/// This includes reserved characters like `/`, `?`, `#`, `@`, `:`, etc.,
-/// as well as space and unicode (handled by `utf8_percent_encode`'s byte-level encoding).
-pub const OBJECT_PATH_ENCODE: &AsciiSet = &CONTROLS
-    // Space
-    .add(b' ')
-    // Delimiters (RFC 3986 §2.2 gen-delims)
-    .add(b':')
-    .add(b'/')
-    .add(b'?')
-    .add(b'#')
-    .add(b'[')
-    .add(b']')
-    .add(b'@')
-    // Sub-delimiters (RFC 3986 §2.2 sub-delims)
-    .add(b'!')
-    .add(b'$')
-    .add(b'&')
-    .add(b'\'')
-    .add(b'(')
-    .add(b')')
-    .add(b'*')
-    .add(b'+')
-    .add(b',')
-    .add(b';')
-    .add(b'=')
-    // Other non-unreserved ASCII
-    .add(b'"')
-    .add(b'%')
-    .add(b'<')
-    .add(b'>')
-    .add(b'\\')
-    .add(b'^')
-    .add(b'`')
-    .add(b'{')
-    .add(b'|')
-    .add(b'}');
+/// Everything except the RFC 3986 §2.3 unreserved characters
+/// (`A-Z a-z 0-9 - . _ ~`): `NON_ALPHANUMERIC` already covers the controls,
+/// space and every other ASCII punctuation mark, including reserved delimiters
+/// like `/`, `?`, `#`, `@` and `:`. Non-ASCII is always encoded byte by byte by
+/// `utf8_percent_encode`, whatever the set says.
+pub const OBJECT_PATH_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 /// Percent-encode an object path for use in HTTP URLs.
 ///
