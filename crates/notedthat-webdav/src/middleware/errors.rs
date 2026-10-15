@@ -5,12 +5,6 @@ use axum::response::{IntoResponse, Response};
 use notedthat_core::{ErrorCode, StorageError};
 use notedthat_write::WriteError;
 
-pub(super) fn dav_error_body(condition: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error"><nt:{condition}/></D:error>"#
-    )
-}
-
 /// What to tell the client when storage did the work but a queue behind it did not.
 #[derive(Clone, Copy)]
 pub(super) struct Retry {
