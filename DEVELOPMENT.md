@@ -33,6 +33,12 @@ cargo fmt --all -- --check
 # Dependency advisories (mirrors CI)
 cargo deny --locked check advisories
 
+# Alerting rules: config, syntax and unit tests (mirrors CI; see "Alerting rules")
+docker run --rm --entrypoint promtool -w /etc/prometheus \
+  -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 check config prometheus.yml
+docker run --rm --entrypoint promtool -w /etc/prometheus \
+  -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 test rules alerts.test.yml
+
 # Format in place
 cargo fmt --all
 
@@ -391,6 +397,35 @@ link — so the next person can tell a considered deferral from an unreviewed on
 the check the day the advisory stops matching the tree, so a suppression rots loudly: delete it, do
 not extend it. `deny.toml` likewise records why the `licenses`, `bans` and `sources` checks are off,
 and why `unsound` covers the whole graph; those are decisions, not defaults.
+
+## Alerting rules
+
+`docker/prometheus/alerts.yml` holds the Prometheus alerting rules, and `alerts.test.yml` next to
+it their unit tests. The `alerting-rules` job in `ci.yml` validates the configuration that loads
+them and runs the tests, with the `promtool` from the image `docker-compose.metrics.yml` runs.
+Locally:
+
+```sh
+# The image CI uses; its tag moves by hand here, in ci.yml and in docker-compose.metrics.yml.
+promtool() {
+  docker run --rm --entrypoint promtool -w /etc/prometheus \
+    -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 "$@"
+}
+promtool check config prometheus.yml
+promtool test rules alerts.test.yml
+```
+
+`notedthat-core`'s `every_metric_the_alerting_rules_name_exists` test fails when a rule names a
+metric that is not in `notedthat_core::metrics`, so renaming a metric means updating the rules in
+the same change. A new alert needs three things: the rule with `severity`, `summary`,
+`description` and a `runbook_url`; a firing and a quiet case in `alerts.test.yml`; and a heading
+in `docs/OPERATIONS.md`'s Monitoring section whose anchor is the `runbook_url`'s.
+
+Write test input the way the exporter produces it: a counter series is absent (`_`) until its
+first increment and appears at 1 or more, not at a leading 0. Only the series
+`register_alerted_counters` (in `crates/notedthat-server/src/run/metrics.rs`) exports at 0 from
+startup may start at 0, and an alert that must fire on a single occurrence needs a case with the
+`_`-prefixed input.
 
 ## Unused dependencies
 

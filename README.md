@@ -234,7 +234,9 @@ open http://127.0.0.1:9090        # Prometheus; the server's own exposition is n
 
 Metrics are off in the default stack, and the exposition is unauthenticated — no credential is
 presented and none could be evaluated — so it lives on a listener of its own, never on the API
-port. See [Metrics](docs/CONFIGURATION.md#metrics).
+port. See [Metrics](docs/CONFIGURATION.md#metrics). The Prometheus loads the alerting rules in
+`docker/prometheus/alerts.yml`; what each alert means and what to do about it is
+[Monitoring](docs/OPERATIONS.md#monitoring).
 
 ### Compose with an S3-compatible store
 

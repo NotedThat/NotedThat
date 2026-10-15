@@ -2,7 +2,8 @@
 #
 # The default stack records nothing and binds no metrics listener. This overlay turns the
 # exporter on and adds a Prometheus that scrapes it, so request rates, search latency and
-# the index queue can be graphed rather than read out of logs (D69):
+# the index queue can be graphed rather than read out of logs (D69), and loads the alerting
+# rules in docker/prometheus/alerts.yml (#186):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up --build -d
 #
@@ -16,6 +17,10 @@
 # deliberately NOT published — the namespace is what keeps the unauthenticated exposition
 # off the host and off the LAN, exactly as loopback does on a bare host. Only Prometheus'
 # own UI is published, and only on loopback.
+#
+# The alerts are evaluated but go nowhere: no Alertmanager is part of this overlay, so
+# they show under Alerts in Prometheus' UI. docs/OPERATIONS.md#monitoring says how to route
+# them and what each one means.
 
 services:
   prometheus:
@@ -29,6 +34,7 @@ services:
       - "127.0.0.1:${NOTEDTHAT_PROMETHEUS_PORT:-9090}:9090"   # Prometheus UI and API
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     # `prom/prometheus` is built on busybox, so it has a shell and `wget`. If it ever
     # moves to a distroless base this probe fails silently — the same trap documented
