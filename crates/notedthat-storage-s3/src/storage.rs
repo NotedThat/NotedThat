@@ -1142,3 +1142,36 @@ where
 {
     matches!(err.code(), Some("NoSuchBucket"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first hex digit flips — `'0'` to `'1'`, anything else to `'0'` — and every
+    /// other character, quotes and multipart suffix included, is kept as it was.
+    #[test]
+    fn altered_etag_changes_only_the_first_hex_digit() {
+        let cases = [
+            (
+                "\"9b2cf535f27731c974343645a3985328\"",
+                "\"0b2cf535f27731c974343645a3985328\"",
+            ),
+            ("\"0b2c\"", "\"1b2c\""),
+            ("\"ABC\"", "\"0BC\""),
+            ("abc-3", "0bc-3"),
+            ("\"xyz-0\"", "\"xyz-1\""),
+        ];
+        for (etag, expected) in cases {
+            assert_eq!(altered_etag(etag), expected, "for {etag}");
+        }
+    }
+
+    /// Without a hex digit to flip there is nothing to alter, so the probe falls back to
+    /// a value that cannot match.
+    #[test]
+    fn altered_etag_without_a_hex_digit_is_the_unmatchable_fallback() {
+        for etag in ["", "\"\"", "\"xyz\"", "W/\"-\""] {
+            assert_eq!(altered_etag(etag), PROBE_UNMATCHABLE_ETAG, "for {etag}");
+        }
+    }
+}
