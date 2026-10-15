@@ -327,21 +327,14 @@ fn record_version(wrote: &mut Vec<String>, version_id: Option<&str>) {
 /// that might, since a value equal to the real `ETag` would be stored and misread as the
 /// backend ignoring the header.
 fn altered_etag(etag: &str) -> String {
-    let mut altered = String::with_capacity(etag.len());
-    let mut changed = false;
-    for c in etag.chars() {
-        if !changed && c.is_ascii_hexdigit() {
-            altered.push(if c == '0' { '1' } else { '0' });
-            changed = true;
-        } else {
-            altered.push(c);
-        }
-    }
-    if changed {
-        altered
-    } else {
-        PROBE_UNMATCHABLE_ETAG.to_string()
-    }
+    let Some((at, digit)) = etag.char_indices().find(|(_, c)| c.is_ascii_hexdigit()) else {
+        return PROBE_UNMATCHABLE_ETAG.to_string();
+    };
+    let flipped = if digit == '0' { "1" } else { "0" };
+    let mut altered = etag.to_owned();
+    // An ASCII hex digit is a single byte, so this replaces exactly that one character.
+    altered.replace_range(at..=at, flipped);
+    altered
 }
 
 /// What a backend does with the preconditions on a conditional `PUT`, as
