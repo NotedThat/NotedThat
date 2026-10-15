@@ -5,6 +5,7 @@
 
 use dav_server::fs::{DavMetaData, FsResult};
 use notedthat_core::kb::ObjectMeta;
+use notedthat_core::unix_seconds;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `WebDAV` metadata for virtual (Root, Kb) and real (Object) resources.
@@ -83,15 +84,11 @@ impl DavMetaData for WebDavMetaData {
     fn etag(&self) -> Option<String> {
         match self {
             Self::Root { server_start } => {
-                let secs = server_start
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs());
+                let secs = unix_seconds(*server_start);
                 Some(format!("nt-root-{secs:x}"))
             }
             Self::Kb { slug, server_start } => {
-                let secs = server_start
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs());
+                let secs = unix_seconds(*server_start);
                 Some(format!("nt-kb-{slug}-{secs:x}"))
             }
             Self::Object { meta } => {
