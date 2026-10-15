@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, ObjectState, StorageError, evaluate_write_preconditions};
 
 use super::super::path_validation::parse_webdav_uri_path;
+use crate::dav_xml;
 use crate::filesystem::DavTarget;
 use crate::if_header::IfHeader;
 use crate::state::WebDavState;
@@ -122,7 +123,7 @@ pub(crate) async fn handle_proppatch(state: WebDavState, req: Request) -> Respon
         .into_response();
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("application/xml; charset=utf-8"),
+        HeaderValue::from_static(dav_xml::CONTENT_TYPE),
     );
     response
 }

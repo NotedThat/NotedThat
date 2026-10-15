@@ -202,6 +202,10 @@ async fn self_copy_or_move(method: &'static str, error_name: &str) {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     assert!(response_body(resp).await.contains(error_name));
     assert!(storage.ops().is_empty());
 }

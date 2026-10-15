@@ -565,6 +565,10 @@ async fn move_with_cross_kb_destination_returns_403() {
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     let body = body_string(resp).await;
     assert!(
         body.contains("cannot-modify-source"),
@@ -622,6 +626,10 @@ async fn move_cross_server_returns_502() {
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "application/xml; charset=utf-8"
+    );
     let body = body_string(resp).await;
     assert!(
         body.contains("destination-different-server"),

@@ -96,7 +96,7 @@ pub(crate) fn depth_infinity_response() -> axum::response::Response {
         axum::http::StatusCode::FORBIDDEN,
         [(
             axum::http::header::CONTENT_TYPE,
-            "application/xml; charset=utf-8",
+            crate::dav_xml::CONTENT_TYPE,
         )],
         r#"<?xml version="1.0" encoding="utf-8"?>
 <D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>"#,

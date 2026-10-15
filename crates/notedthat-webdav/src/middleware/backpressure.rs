@@ -8,12 +8,6 @@ use axum::http::header::{CONTENT_TYPE, HeaderName};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-pub(super) fn dav_error_body(condition: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><D:error xmlns:D="DAV:" xmlns:nt="urn:notedthat:error"><nt:{condition}/></D:error>"#
-    )
-}
-
 /// HTTP 503 `backend_unavailable` JSON response carrying `message`, asking the
 /// client to retry after 5 seconds.
 fn unavailable(message: &str) -> Response {
