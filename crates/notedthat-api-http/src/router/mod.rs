@@ -240,8 +240,8 @@ mod bounded_routes {
         // No permits at all: every bounded route is refused before its
         // handler runs, and anything that answers otherwise was never bounded.
         let bounds = RequestBounds::new(
-            Duration::from_secs(60),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
+            Duration::from_mins(1),
             Arc::new(Semaphore::new(0)),
         );
         let response = build_bounded_router(state(), &bounds)

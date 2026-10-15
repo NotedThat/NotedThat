@@ -57,7 +57,7 @@ use crate::sse::SseParser;
 /// it waits for the answer. Comfortably inside rmcp's five-minute idle
 /// timeout; a client that cannot answer in 30 s has no working notification
 /// leg either.
-const KEEPER_INTERVAL: Duration = Duration::from_secs(60);
+const KEEPER_INTERVAL: Duration = Duration::from_mins(1);
 const KEEPER_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `list_changed` window: one notification at once, at most one more
 /// after this long, however many changes arrived in between.

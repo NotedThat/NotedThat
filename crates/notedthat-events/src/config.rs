@@ -312,7 +312,7 @@ mod tests {
             ..NatsSettings::default()
         })
         .unwrap();
-        assert_eq!(ok.max_age, Duration::from_secs(3600));
+        assert_eq!(ok.max_age, Duration::from_hours(1));
 
         for bad in ["0", "7d", ""] {
             let err = message(
@@ -368,7 +368,7 @@ mod tests {
         let ok = NatsConfig::from_settings(settings("60")).unwrap();
         assert_eq!(
             ok.connect.streams.duplicate_window,
-            Some(Duration::from_secs(60))
+            Some(Duration::from_mins(1))
         );
 
         let err = message(NatsConfig::from_settings(settings("120")).unwrap_err());
@@ -420,7 +420,7 @@ mod tests {
             let nats = NatsConfig::from_settings(NatsSettings::from_env()).unwrap();
             assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
             assert_eq!(nats.stream, "evt");
-            assert_eq!(nats.max_age, Duration::from_secs(60));
+            assert_eq!(nats.max_age, Duration::from_mins(1));
         });
     }
 

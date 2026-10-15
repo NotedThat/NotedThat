@@ -79,7 +79,7 @@ async fn main() -> Result<(), async_nats::Error> {
                 durable_name: Some(consumer_name.clone()),
                 filter_subject: filter.clone(),
                 ack_policy: jetstream::consumer::AckPolicy::Explicit,
-                ack_wait: Duration::from_secs(60),
+                ack_wait: Duration::from_mins(1),
                 max_deliver: 5,
                 ..pull::Config::default()
             },

@@ -37,7 +37,7 @@ use wiremock::{
 /// is still asynchronous — the worker re-reads the object, calls the wiremock
 /// embedder and upserts — and a loaded CI runner can be slow enough that a tight
 /// budget turns into an intermittent failure rather than a real signal.
-const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const INDEX_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 

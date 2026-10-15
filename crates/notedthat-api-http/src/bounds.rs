@@ -344,7 +344,7 @@ mod tests {
 
     const TIMEOUT: Duration = Duration::from_secs(5);
     /// Long enough not to be what any test below is measuring.
-    const IDLE: Duration = Duration::from_secs(300);
+    const IDLE: Duration = Duration::from_mins(5);
 
     /// A router with one bounded route that answers at once and one that
     /// answers only when `release` is notified, plus an unbounded route
@@ -369,7 +369,7 @@ mod tests {
             .route(
                 "/stream",
                 get(|| async {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_mins(1)).await;
                     "stream"
                 }),
             )

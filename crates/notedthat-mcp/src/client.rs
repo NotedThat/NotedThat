@@ -401,7 +401,7 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(1),
             DEFAULT_SERVER_REQUEST_TIMEOUT,
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             Duration::MAX,
         ] {
             assert!(
@@ -412,7 +412,7 @@ mod tests {
         // Saturating at `Duration::MAX` is the one case where the two are
         // equal; every reachable setting has room for the margin.
         assert!(DEFAULT_API_TIMEOUT > DEFAULT_SERVER_REQUEST_TIMEOUT);
-        assert!(api_timeout_from(Duration::from_secs(600)) > Duration::from_secs(600));
+        assert!(api_timeout_from(Duration::from_mins(10)) > Duration::from_mins(10));
     }
 
     /// A client built without [`NotedThatClient::with_api_timeout`] — every

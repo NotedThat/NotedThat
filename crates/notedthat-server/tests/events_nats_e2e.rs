@@ -188,7 +188,7 @@ async fn events_replay_across_replicas_and_a_retained_out_position_is_gone() {
     let nats = NatsConfig {
         connect: notedthat_nats::NatsConnectConfig::plain(broker.url.clone()),
         stream: unique("nt-e2e-"),
-        max_age: Duration::from_secs(3600),
+        max_age: Duration::from_hours(1),
     };
     // One store, two servers: what a multi-replica deployment on the s3
     // backend looks like (D49). Started one after the other so provisioning
@@ -294,7 +294,7 @@ async fn losing_the_broker_fails_readiness_and_writes_answer_503_with_retry_afte
     let nats = NatsConfig {
         connect: notedthat_nats::NatsConnectConfig::plain(broker.url.clone()),
         stream: unique("nt-e2e-"),
-        max_age: Duration::from_secs(3600),
+        max_age: Duration::from_hours(1),
     };
     let replica = start_replica(&kb, Arc::new(InMemoryStorage::default()), &nats).await;
     let client = reqwest::Client::new();
