@@ -58,7 +58,7 @@ const GRPC_PORT: u16 = 6334;
 /// The line Qdrant prints once its gRPC listener is bound.
 const GRPC_READY_LOG: &str = "Qdrant gRPC listening on 6334";
 /// How long to wait for gRPC to answer after the container reports ready.
-const READY_TIMEOUT: Duration = Duration::from_secs(60);
+const READY_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Start Qdrant and return it alongside a client that is ready to use.
 ///

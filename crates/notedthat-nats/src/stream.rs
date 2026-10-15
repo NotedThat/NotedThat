@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn the_spec_carries_every_shared_setting_into_the_stream_config() {
         let spec = spec(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             NatsStreamSettings {
                 replicas: Some(3),
                 storage: Some(NatsStorage::Memory),
@@ -260,27 +260,27 @@ mod tests {
 
     #[test]
     fn unset_settings_create_with_defaults_and_the_window_fits_the_retention() {
-        let config = spec(Duration::from_secs(600), NatsStreamSettings::default()).config();
+        let config = spec(Duration::from_mins(10), NatsStreamSettings::default()).config();
         assert_eq!(config.num_replicas, 1);
         assert_eq!(config.storage, StorageType::File);
-        assert_eq!(config.duplicate_window, Duration::from_secs(120));
+        assert_eq!(config.duplicate_window, Duration::from_mins(2));
 
         // nats-server refuses a window longer than max_age (error 10052).
-        let short = spec(Duration::from_secs(60), NatsStreamSettings::default()).config();
-        assert_eq!(short.duplicate_window, Duration::from_secs(60));
+        let short = spec(Duration::from_mins(1), NatsStreamSettings::default()).config();
+        assert_eq!(short.duplicate_window, Duration::from_mins(1));
     }
 
     #[test]
     fn an_existing_stream_keeps_what_is_not_configured() {
         let found = StreamConfig {
-            max_age: Duration::from_secs(600),
+            max_age: Duration::from_mins(10),
             max_messages: 5_000,
             num_replicas: 3,
             duplicate_window: Duration::from_secs(90),
-            ..spec(Duration::from_secs(600), NatsStreamSettings::default()).config()
+            ..spec(Duration::from_mins(10), NatsStreamSettings::default()).config()
         };
 
-        let unset = spec(Duration::from_secs(600), NatsStreamSettings::default());
+        let unset = spec(Duration::from_mins(10), NatsStreamSettings::default());
         assert_eq!(
             unset.apply_to(&found),
             found,
@@ -305,10 +305,10 @@ mod tests {
         assert_eq!(updated.duplicate_window, Duration::from_secs(30));
 
         // A shortened retention takes an unconfigured window down with it.
-        let shortened = spec(Duration::from_secs(60), NatsStreamSettings::default());
+        let shortened = spec(Duration::from_mins(1), NatsStreamSettings::default());
         assert_eq!(
             shortened.apply_to(&found).duplicate_window,
-            Duration::from_secs(60)
+            Duration::from_mins(1)
         );
     }
 }

@@ -654,7 +654,7 @@ async fn a_malformed_last_event_id_is_a_bad_request() {
 /// A bearer the stub verifier accepts as `carol` until [`CAROL_LIFETIME`] from
 /// when the app is built.
 const CAROL_TOKEN: &str = "jwt-carol-expiring";
-const CAROL_LIFETIME: Duration = Duration::from_secs(120);
+const CAROL_LIFETIME: Duration = Duration::from_mins(2);
 
 /// The fixture's credentials plus [`CAROL_TOKEN`], which expires.
 fn authenticator_with_an_expiring_token() -> Authenticator {

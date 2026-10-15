@@ -259,8 +259,8 @@ async fn only_the_mcp_request_legs_are_bounded() {
     let config = test_config();
     // No permits at all, so every bounded leg is refused before it runs.
     let bounds = notedthat_api_http::bounds::RequestBounds::new(
-        Duration::from_secs(60),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
+        Duration::from_mins(1),
         Arc::new(tokio::sync::Semaphore::new(0)),
     );
     let app = build_router(

@@ -41,7 +41,7 @@ use crate::state::AppState;
 
 /// What a disconnected client should wait before reconnecting, sent as the
 /// stream's first frame so it applies before any event does.
-const RETRY_HINT: Duration = Duration::from_millis(3000);
+const RETRY_HINT: Duration = Duration::from_secs(3);
 /// How often an idle stream sends a comment so proxies and idle timeouts keep
 /// the connection open.
 const HEARTBEAT: Duration = Duration::from_secs(15);
