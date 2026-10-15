@@ -16,7 +16,6 @@ use notedthat_core::{
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::{debug, info, warn};
 
-const MANIFEST_KEY: &str = ".notedthat/manifest.json";
 /// Where [`S3Storage::check_conditional_writes`] puts its scratch object. Under
 /// `.notedthat/` so that a copy left behind by a failed delete is private (D48) and
 /// never indexed.
@@ -602,7 +601,7 @@ impl Storage for S3Storage {
             .client
             .get_object()
             .bucket(&bucket)
-            .key(MANIFEST_KEY)
+            .key(KbManifest::KEY)
             .send()
             .await
             .map_err(|e| {
@@ -610,7 +609,7 @@ impl Storage for S3Storage {
                     bucket_not_found(&bucket)
                 } else if is_not_found_sdk(&e) {
                     StorageError::NotFound {
-                        key: MANIFEST_KEY.into(),
+                        key: KbManifest::KEY.into(),
                     }
                 } else {
                     StorageError::BackendUnavailable {
@@ -652,7 +651,7 @@ impl Storage for S3Storage {
         self.client
             .put_object()
             .bucket(&bucket)
-            .key(MANIFEST_KEY)
+            .key(KbManifest::KEY)
             .content_type("application/json")
             .body(ByteStream::from(Bytes::from(json)))
             .send()
