@@ -1905,6 +1905,8 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `MOVE` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
 | `COPY` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
 
+`PUT`, `DELETE`, `COPY` and `MOVE` answer `503` when the storage backend is unavailable and `404` when the knowledge base's bucket is gone, like the HTTP API.
+
 ### Preconditions on MOVE, COPY and PROPPATCH
 
 `If-Match` and `If-None-Match` are evaluated against the source (or the PROPPATCH target), and a

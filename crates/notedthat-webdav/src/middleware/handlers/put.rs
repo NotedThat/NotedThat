@@ -1,12 +1,12 @@
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{ConditionalHeaders, StageError, StagedBody, StorageError};
+use notedthat_core::{ConditionalHeaders, StageError, StagedBody};
 
 use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
 
-use super::super::backpressure::{backpressure_response, event_publish_failed_response};
+use super::super::errors::{Retry, write_error_response};
 use super::super::helpers::response_with_optional_etag;
 use super::super::path_validation::parse_webdav_uri_path;
 
@@ -93,23 +93,13 @@ pub(crate) async fn handle_put(state: WebDavState, req: Request) -> Response {
             },
             outcome.etag,
         ),
-        Err(notedthat_write::WriteError::TooLarge { .. }) => {
-            StatusCode::PAYLOAD_TOO_LARGE.into_response()
-        }
-        Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
-            StatusCode::PRECONDITION_FAILED.into_response()
-        }
-        Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => backpressure_response(),
-        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
-            event_publish_failed_response(
-                "object stored; change event not published. Retry PUT to publish.",
-            )
-        }
-        // A manifest startup would refuse is refused here, with the reason,
-        // rather than stored and met as a refused boot later (#98).
-        Err(notedthat_write::WriteError::InvalidManifest { message }) => {
-            (StatusCode::BAD_REQUEST, message).into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        // A manifest startup would refuse answers 400 with the reason (#98).
+        Err(error) => write_error_response(
+            error,
+            Retry {
+                queue_full: "object stored; indexer queue full — retry to re-enqueue",
+                publish_failed: "object stored; change event not published. Retry PUT to publish.",
+            },
+        ),
     }
 }

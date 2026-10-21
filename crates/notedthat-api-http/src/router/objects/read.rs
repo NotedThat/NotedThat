@@ -199,13 +199,18 @@ pub(in crate::router) async fn get_object(
     let range = match req.headers().get(axum::http::header::RANGE) {
         None => None,
         Some(raw) => {
-            let raw_str = raw
-                .to_str()
-                .map_err(|_| err(ApiError::MalformedRange("non-UTF-8 Range header".into())))?;
+            let raw_str = raw.to_str().map_err(|_| {
+                err(ApiError::Core(CoreError::MalformedRange(
+                    "non-UTF-8 Range header".into(),
+                )))
+            })?;
             // The parser's reason rides along: a refused range set must say
             // it was the count of ranges, not the syntax (D57).
-            let parsed = parse_range_header(raw_str)
-                .map_err(|e| err(ApiError::MalformedRange(format!("{raw_str}: {e}"))))?;
+            let parsed = parse_range_header(raw_str).map_err(|e| {
+                err(ApiError::Core(CoreError::MalformedRange(format!(
+                    "{raw_str}: {e}"
+                ))))
+            })?;
             if parsed.unit == "lines" {
                 return serve_line_range_read(
                     &state,
@@ -313,8 +318,11 @@ async fn serve_line_range_read(
         request_id: request_id.to_string(),
     };
 
-    let line_range = parse_line_range_header(raw_range)
-        .map_err(|e| err(ApiError::MalformedRange(format!("{raw_range}: {e}"))))?;
+    let line_range = parse_line_range_header(raw_range).map_err(|e| {
+        err(ApiError::Core(CoreError::MalformedRange(format!(
+            "{raw_range}: {e}"
+        ))))
+    })?;
     let read = state
         .storage
         .get_object(kb, path, None, conditionals)
