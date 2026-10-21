@@ -420,7 +420,7 @@ async fn test_put_content_length_over_5gib_returns_413_before_reading_body() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -1143,7 +1143,7 @@ async fn encoded_uri_put_non_utf8_returns_400() {
         "write-method 400 must not include x-request-id"
     );
     // Nothing was stored
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]

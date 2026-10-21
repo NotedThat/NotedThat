@@ -167,7 +167,7 @@ fn an_oidc_setting_without_an_issuer_refuses_startup() {
     assert!(stderr.contains("NOTEDTHAT_OIDC_ISSUER"), "{stderr}");
     assert!(stderr.contains("--oidc-issuer"), "{stderr}");
     assert!(stderr.contains("NOTEDTHAT_OIDC_AUDIENCE"), "{stderr}");
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
 }
 
 /// The removed settings are hidden from `--help` but still parsed, so that

@@ -70,14 +70,14 @@ pub(super) async fn post_index_reconcile(
     // verified identity, including one the manifests grant nothing anywhere.
     // That is no more than `GET …/index` already tells such a caller: it
     // resolves first too and then answers `403` on `require_visible`.
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
-    access.require_service_token().map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    access.require_service_token().map_err(err)?;
 
     let trigger = state
         .reconcile
         .as_ref()
         .ok_or(ApiError::ReconcileUnsupported)
-        .map_err(&err)?;
+        .map_err(err)?;
     trigger
         .trigger(access.kb())
         .map_err(|_busy| err(ApiError::ReconcileInProgress))?;

@@ -68,7 +68,7 @@ mod tests {
         let tenant = TenantSlug::try_new("default").unwrap();
         let kb = KbSlug::try_new("notes").unwrap();
         let name: String = derive_bucket_name(&tenant, &kb);
-        assert!(!name.is_empty());
+        assert_ne!(name.len(), 0);
     }
 
     #[test]

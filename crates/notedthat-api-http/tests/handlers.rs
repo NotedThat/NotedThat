@@ -851,7 +851,7 @@ async fn put_returns_etag() {
         format!("/api/v1/knowledgebases/{KB}/etag.md")
     );
     let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
-    assert!(!etag.is_empty(), "PUT must return a non-empty ETag");
+    assert_ne!(etag.len(), 0, "PUT must return a non-empty ETag");
 }
 
 #[tokio::test]
@@ -959,7 +959,7 @@ async fn put_if_none_match_wildcard_new() {
 
     assert_eq!(resp.status(), StatusCode::CREATED);
     let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
-    assert!(!etag.is_empty(), "PUT must return a non-empty ETag");
+    assert_ne!(etag.len(), 0, "PUT must return a non-empty ETag");
 }
 
 #[tokio::test]
@@ -1041,7 +1041,7 @@ async fn head_returns_content_length_no_body() {
     assert_eq!(head_resp.status(), StatusCode::OK);
     assert_eq!(head_resp.headers().get("content-length").unwrap(), "11");
     let body = to_bytes(head_resp.into_body(), 1024).await.unwrap();
-    assert!(body.is_empty(), "HEAD must return empty body");
+    assert_eq!(body.len(), 0, "HEAD must return empty body");
 }
 
 #[tokio::test]
@@ -1599,7 +1599,7 @@ async fn get_range_416() {
     assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(resp.headers().get("content-range").unwrap(), "bytes */100");
     let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
-    assert!(response_body.is_empty());
+    assert_eq!(response_body.len(), 0);
 }
 
 #[tokio::test]
@@ -1718,7 +1718,7 @@ async fn get_if_none_match_304() {
     assert_eq!(resp.headers()["etag"], etag);
     assert!(resp.headers().get("last-modified").is_none());
     let response_body = to_bytes(resp.into_body(), 1024).await.unwrap();
-    assert!(response_body.is_empty());
+    assert_eq!(response_body.len(), 0);
 }
 
 #[tokio::test]
@@ -2291,7 +2291,7 @@ async fn error_body_contains_request_id() {
         json["request_id"].is_string(),
         "request_id field must be a string"
     );
-    assert!(!json["request_id"].as_str().unwrap().is_empty());
+    assert_ne!(json["request_id"].as_str().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -2413,7 +2413,7 @@ async fn head_returns_etag() {
     );
     assert_eq!(resp.headers().get("content-length").unwrap(), "100");
     let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
-    assert!(body_bytes.is_empty(), "HEAD must return empty body");
+    assert_eq!(body_bytes.len(), 0, "HEAD must return empty body");
 }
 
 #[tokio::test]
@@ -2492,7 +2492,7 @@ async fn head_if_none_match_304() {
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     assert_eq!(resp.headers()["etag"], etag.as_str());
     let body_bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
-    assert!(body_bytes.is_empty(), "304 must return empty body");
+    assert_eq!(body_bytes.len(), 0, "304 must return empty body");
 }
 
 #[tokio::test]
@@ -2548,7 +2548,7 @@ async fn m3_round_trip() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(!e1.is_empty());
+    assert_ne!(e1.len(), 0);
 
     // Step 2: GET → 200, correct body, ETag == E1
     let get_resp = a
@@ -3032,5 +3032,5 @@ async fn list_route_invalid_cursor_is_503() {
         json["request_id"].is_string(),
         "response must include a request_id string, got: {json:?}"
     );
-    assert!(!json["request_id"].as_str().unwrap().is_empty());
+    assert_ne!(json["request_id"].as_str().unwrap().len(), 0);
 }

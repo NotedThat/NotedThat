@@ -53,7 +53,7 @@ async fn put_malformed_content_length_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -72,7 +72,7 @@ async fn put_duplicate_content_length_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -203,7 +203,7 @@ async fn self_copy_or_move(method: &'static str, error_name: &str) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert!(response_body(resp).await.contains(error_name));
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -440,7 +440,7 @@ async fn copy_invalid_overwrite_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -460,7 +460,7 @@ async fn copy_duplicate_overwrite_returns_400_before_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(storage.ops().is_empty());
+    assert_eq!(storage.ops().len(), 0);
 }
 
 #[tokio::test]
@@ -521,7 +521,7 @@ async fn copy_or_move_with(
 async fn copy_with_stale_if_match_returns_412_without_copying() {
     let (status, storage) = copy_or_move_with("COPY", &[("if-match", "\"stale\"")]).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(storage.copy_options().is_empty());
+    assert_eq!(storage.copy_options().len(), 0);
     assert_eq!(
         storage.get_stored("notes", "dst.md").await.unwrap().bytes,
         Bytes::from_static(b"old")
@@ -550,7 +550,7 @@ async fn copy_honours_the_if_header() {
 
     let (status, storage) = copy_or_move_with("COPY", &[("if", "([\"stale\"])")]).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(storage.copy_options().is_empty());
+    assert_eq!(storage.copy_options().len(), 0);
 }
 
 /// There are no locks, so a list asserting a lock token cannot hold.
@@ -590,5 +590,5 @@ async fn copy_evaluates_a_tagged_list_against_the_destination() {
 async fn copy_with_a_malformed_if_header_returns_400() {
     let (status, storage) = copy_or_move_with("COPY", &[("if", "[\"src\"]")]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(storage.copy_options().is_empty());
+    assert_eq!(storage.copy_options().len(), 0);
 }

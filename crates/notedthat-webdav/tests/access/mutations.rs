@@ -52,7 +52,7 @@ async fn anonymous_mutations_are_challenged_before_storage() {
         .await
         .expect("malformed write response");
     assert_eq!(malformed_path.status(), StatusCode::UNAUTHORIZED);
-    assert!(storage.ops().is_empty(), "calls: {:?}", storage.ops());
+    assert_eq!(storage.ops().len(), 0, "calls: {:?}", storage.ops());
 }
 
 #[tokio::test]

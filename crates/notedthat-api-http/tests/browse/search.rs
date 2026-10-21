@@ -81,7 +81,7 @@ async fn browse_search_headers_and_head_match_get() {
         .unwrap();
     assert_eq!(head_response.status(), StatusCode::OK);
     assert_eq!(head_response.headers()["referrer-policy"], "no-referrer");
-    assert!(body(head_response).await.is_empty());
+    assert_eq!(body(head_response).await.len(), 0);
 }
 
 #[tokio::test]

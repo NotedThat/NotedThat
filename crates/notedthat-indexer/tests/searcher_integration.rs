@@ -187,7 +187,7 @@ async fn search_returns_upserted_chunks() {
         .expect("search failed");
     let hits = &response.hits;
 
-    assert!(!hits.is_empty(), "expected at least one hit, got 0");
+    assert_ne!(hits.len(), 0, "expected at least one hit, got 0");
     assert!(
         !hits[0].object_key.as_str().is_empty(),
         "expected non-empty object_key"
@@ -551,7 +551,7 @@ async fn preview_truncates_multi_byte() {
         .await
         .expect("search failed");
 
-    assert!(!response.hits.is_empty(), "expected at least one hit");
+    assert_ne!(response.hits.len(), 0, "expected at least one hit");
     let preview_len = response.hits[0].preview.chars().count();
     assert_eq!(
         preview_len, 500,
@@ -668,7 +668,7 @@ async fn object_key_prefix_post_filter() {
         .await
         .expect("search failed");
 
-    assert!(!response.hits.is_empty(), "expected at least one docs/ hit");
+    assert_ne!(response.hits.len(), 0, "expected at least one docs/ hit");
     for hit in &response.hits {
         assert!(
             hit.object_key.as_str().starts_with("docs/"),

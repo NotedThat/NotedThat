@@ -18,7 +18,7 @@ use notedthat_mcp::testing::McpSession;
 /// against in-process backends rather than containers. A loaded CI runner can
 /// still be slow enough that a tight budget produces an intermittent failure
 /// instead of a real signal, which is what the old 10s budget did.
-const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
 const API_TOKEN: &str = "e2e-test-token";
 fn unique_phrase(prefix: &str) -> String {

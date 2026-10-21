@@ -79,7 +79,7 @@ mod tests {
     fn missing_heading_path_deserializes_as_empty() {
         let json = r#"{"object_key":"notes/a.md","byte_start":0,"byte_end":100,"score":0.5,"preview":"hello"}"#;
         let hit: SearchHit = serde_json::from_str(json).unwrap();
-        assert!(hit.heading_path.is_empty());
+        assert_eq!(hit.heading_path.len(), 0);
         assert!(hit.okf.is_none());
     }
 

@@ -100,7 +100,7 @@ mod tests {
             mime_type: None,
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]
@@ -143,7 +143,7 @@ mod tests {
             mime_type: None,
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]
@@ -172,7 +172,7 @@ mod tests {
             mime_type: Some("text/markdown".into()),
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 

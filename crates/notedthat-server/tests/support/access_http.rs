@@ -90,7 +90,7 @@ async fn verify_public_reads(client: &reqwest::Client, server: &ServerInstance) 
     )
     .await;
     assert_eq!(head.status, StatusCode::OK);
-    assert!(head.body.is_empty());
+    assert_eq!(head.body.len(), 0);
 
     let anonymous_search = search(client, server, "phase-three", None).await;
     assert_eq!(anonymous_search.status, StatusCode::OK);

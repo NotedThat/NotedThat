@@ -163,7 +163,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, edit_args(2, 3)).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -218,7 +218,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, edit_args(5, 4)).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -238,7 +238,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, byte_edit_args(100, 200, "…")).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -257,7 +257,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, byte_edit_args(100, 200, "")).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -275,7 +275,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, byte_edit_args(0, 10, "x")).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 

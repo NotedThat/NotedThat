@@ -157,7 +157,7 @@ async fn a_write_is_announced_then_indexed_with_the_same_etag_and_then_searchabl
 
     let body = search(&server, "alpha beta gamma").await;
     let hits = body["hits"].as_array().unwrap_or_else(|| panic!("{body}"));
-    assert!(!hits.is_empty(), "searchable once indexed: {body}");
+    assert_ne!(hits.len(), 0, "searchable once indexed: {body}");
     assert!(
         hits.iter().any(|hit| hit["object_key"] == "idx/a.md"),
         "{body}"

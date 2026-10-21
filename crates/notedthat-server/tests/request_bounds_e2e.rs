@@ -84,7 +84,7 @@ async fn send_half_a_head(base_url: &str) {
         .await
         .expect("the server should close a connection that never finishes its head");
     if read.is_ok() {
-        assert!(buffer.is_empty(), "{}", String::from_utf8_lossy(&buffer));
+        assert_eq!(buffer.len(), 0, "{}", String::from_utf8_lossy(&buffer));
     }
 }
 

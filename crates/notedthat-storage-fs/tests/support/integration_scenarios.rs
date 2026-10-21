@@ -103,7 +103,7 @@ fn assert_quoted_lower_hex_etag(etag: &str) {
     let Some(hex) = etag.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
         panic!("ETag should match ^\"[0-9a-f]+\"$: {etag}");
     };
-    assert!(!hex.is_empty(), "ETag hex payload should not be empty");
+    assert_ne!(hex.len(), 0, "ETag hex payload should not be empty");
     assert!(
         hex.bytes()
             .all(|byte| byte.is_ascii_hexdigit()

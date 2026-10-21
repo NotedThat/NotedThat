@@ -57,7 +57,7 @@ use crate::sse::SseParser;
 /// it waits for the answer. Comfortably inside rmcp's five-minute idle
 /// timeout; a client that cannot answer in 30 s has no working notification
 /// leg either.
-const KEEPER_INTERVAL: Duration = Duration::from_secs(60);
+const KEEPER_INTERVAL: Duration = Duration::from_mins(1);
 const KEEPER_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `list_changed` window: one notification at once, at most one more
 /// after this long, however many changes arrived in between.
@@ -1184,7 +1184,7 @@ pub(crate) mod tests {
     fn a_change_to_another_key_is_nothing_unless_the_list_is_watched() {
         let other = WRITTEN.replace("a.md", "b.md");
         let w = watch(&[("a.md", "notedthat://notes/a.md")], false);
-        assert!(decide(Some("object.written"), &other, &w).is_empty());
+        assert_eq!(decide(Some("object.written"), &other, &w).len(), 0);
         let w = watch(&[("a.md", "notedthat://notes/a.md")], true);
         assert_eq!(
             decide(Some("object.written"), &other, &w),
@@ -1202,10 +1202,10 @@ pub(crate) mod tests {
     #[test]
     fn the_indexers_verdicts_heartbeats_and_priming_frames_do_nothing() {
         let w = watch(&[("a.md", "notedthat://notes/a.md")], true);
-        assert!(decide(Some("object.indexed"), INDEXED, &w).is_empty());
-        assert!(decide(Some("object.index_failed"), INDEXED, &w).is_empty());
-        assert!(decide(None, "", &w).is_empty());
-        assert!(decide(Some("object.written"), "not json", &w).is_empty());
+        assert_eq!(decide(Some("object.indexed"), INDEXED, &w).len(), 0);
+        assert_eq!(decide(Some("object.index_failed"), INDEXED, &w).len(), 0);
+        assert_eq!(decide(None, "", &w).len(), 0);
+        assert_eq!(decide(Some("object.written"), "not json", &w).len(), 0);
     }
 
     fn key(kb: &str, token: Option<&str>) -> WatchKey {
@@ -1279,7 +1279,7 @@ pub(crate) mod tests {
 
         subs.unsubscribe("notes", "a.md");
 
-        assert!(subs.inner.lock().unwrap().kbs.is_empty());
+        assert_eq!(subs.inner.lock().unwrap().kbs.len(), 0);
         assert!(old_token.cancel.is_cancelled());
         assert!(new_token.cancel.is_cancelled());
         assert!(anonymous.cancel.is_cancelled());
@@ -1395,7 +1395,7 @@ pub(crate) mod tests {
 
         let (uris, list_changed) = subs.strand(&key("notes", Some("t1")), &w, 403);
         assert_eq!((uris, list_changed), (vec!["u".to_owned()], true));
-        assert!(subs.inner.lock().unwrap().stranded.is_empty());
+        assert_eq!(subs.inner.lock().unwrap().stranded.len(), 0);
 
         let (uris, _) = subs.strand(&key("notes", Some("t1")), &w, 401);
         assert_eq!(uris, vec!["u".to_owned()]);
@@ -1421,7 +1421,7 @@ pub(crate) mod tests {
         subs.unsubscribe("notes", "a.md");
 
         assert!(!subs.has_subscriptions());
-        assert!(subs.inner.lock().unwrap().stranded.is_empty());
+        assert_eq!(subs.inner.lock().unwrap().stranded.len(), 0);
     }
 
     /// Presenting the credential the keys were stranded under starts nothing:
@@ -1790,7 +1790,7 @@ pub(crate) mod tests {
                 subs.inner.lock().unwrap().kbs.is_empty()
             })
             .await;
-            assert!(subs.inner.lock().unwrap().stranded.is_empty(), "{status}");
+            assert_eq!(subs.inner.lock().unwrap().stranded.len(), 0, "{status}");
 
             subs.note_caller(&NotedThatClient::new(&api.uri(), "t2").unwrap());
             assert!(!subs.inner.lock().unwrap().rehoming, "{status}");
@@ -1825,7 +1825,7 @@ pub(crate) mod tests {
 
         assert!(!subs.has_subscriptions(), "no longer counted");
         assert!(subs.stand_down_if_idle(), "the keeper stands down");
-        assert!(subs.inner.lock().unwrap().stranded.is_empty(), "pruned");
+        assert_eq!(subs.inner.lock().unwrap().stranded.len(), 0, "pruned");
         subs.note_caller(&NotedThatClient::new("http://127.0.0.1:9", "t2").unwrap());
         assert!(!subs.inner.lock().unwrap().rehoming);
     }
@@ -1880,7 +1880,7 @@ pub(crate) mod tests {
             0,
             "no call as the departed session"
         );
-        assert!(subs.inner.lock().unwrap().kbs.is_empty(), "no watch opened");
+        assert_eq!(subs.inner.lock().unwrap().kbs.len(), 0, "no watch opened");
     }
 
     /// Re-homing is not a way around authorization: the newer credential is
@@ -1913,7 +1913,7 @@ pub(crate) mod tests {
         })
         .await;
         let inner = subs.inner.lock().unwrap();
-        assert!(inner.stranded.is_empty(), "given up on, not kept");
+        assert_eq!(inner.stranded.len(), 0, "given up on, not kept");
         assert!(
             !inner.kbs.contains_key(&key("notes", Some("t2"))),
             "no stream opened for a key the credential cannot list"

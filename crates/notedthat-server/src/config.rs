@@ -711,7 +711,7 @@ impl RequestBoundsConfig {
     pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     /// Default for [`Self::webdav_request_timeout`]: the proxy timeout
     /// `docs/CONFIGURATION.md` has long recommended for a large `PROPFIND`.
-    pub const DEFAULT_WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+    pub const DEFAULT_WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
     /// Default for [`Self::max_requests_in_flight`].
     pub const DEFAULT_MAX_REQUESTS_IN_FLIGHT: usize = 512;
     /// Default for [`Self::header_read_timeout`]: hyper's own, once a timer
@@ -2023,7 +2023,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.request_bounds.request_timeout, Duration::from_secs(30));
         assert_eq!(
             cfg.request_bounds.webdav_request_timeout,
-            Duration::from_secs(120)
+            Duration::from_mins(2)
         );
         assert_eq!(cfg.request_bounds.max_requests_in_flight, 512);
         assert_eq!(
@@ -2048,7 +2048,7 @@ pub(crate) mod tests {
             cfg.request_bounds,
             RequestBoundsConfig {
                 request_timeout: Duration::from_millis(1500),
-                webdav_request_timeout: Duration::from_secs(600),
+                webdav_request_timeout: Duration::from_mins(10),
                 max_requests_in_flight: 64,
                 header_read_timeout: Duration::from_millis(2500),
             }
@@ -3025,7 +3025,7 @@ pub(crate) mod tests {
                         EventsConfig::Nats(nats) => {
                             assert_eq!(nats.connect.url, "nats://broker:4222");
                             assert_eq!(nats.stream, "evt");
-                            assert_eq!(nats.max_age, Duration::from_secs(60));
+                            assert_eq!(nats.max_age, Duration::from_mins(1));
                         }
                         other => panic!("expected nats, got {other:?}"),
                     }
@@ -3323,7 +3323,7 @@ pub(crate) mod tests {
             assert_eq!(oidc.audiences, vec!["notedthat", "mcp-client"]);
             assert_eq!(oidc.username_claim, "preferred_username");
             assert_eq!(oidc.groups_claim, "groups");
-            assert_eq!(oidc.http_timeout, Duration::from_millis(5000));
+            assert_eq!(oidc.http_timeout, Duration::from_secs(5));
             assert_eq!(oidc.resource, None);
             assert_eq!(oidc.ca_cert, None);
             assert_eq!(

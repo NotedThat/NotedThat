@@ -156,10 +156,10 @@ pub(super) async fn get_index_health(
         request_id: request_id.clone(),
     };
 
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // The view is about the knowledge base, not about a key, so it follows the
     // listing rule: whoever would see the base listed may ask how its index is.
-    access.require_visible().map_err(&err)?;
+    access.require_visible().map_err(err)?;
 
     let snapshot = state.index_health.snapshot(access.kb().as_str());
     let queue = QueueView {

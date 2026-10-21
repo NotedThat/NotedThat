@@ -683,7 +683,7 @@ mod tests {
         let c = client(&server.uri());
         let args = range_args(serde_json::json!({"line_start": 1, "line_end": 5}));
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -700,7 +700,7 @@ mod tests {
         let c = client(&server.uri());
         let args = range_args(serde_json::json!({"line_start": 3}));
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -717,7 +717,7 @@ mod tests {
         let c = client(&server.uri());
         let args = range_args(serde_json::json!({"line_start": 5, "line_end": 4}));
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -765,7 +765,7 @@ mod tests {
             span: ReadSpan::Whole,
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 

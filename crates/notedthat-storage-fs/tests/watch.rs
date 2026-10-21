@@ -221,7 +221,7 @@ async fn removing_a_subdirectory_covers_every_object_it_held() {
     std::fs::remove_dir_all(env.path("sub")).expect("remove_dir_all");
 
     let seen = env.signals_covering(&["sub/a.md", "sub/b.md"]).await;
-    assert!(!seen.is_empty());
+    assert_ne!(seen.len(), 0);
 }
 
 /// The gap the kernel leaves. Moving a populated directory in reports the directory and
@@ -253,7 +253,7 @@ async fn renaming_a_directory_reports_both_subtrees() {
     let seen = env
         .signals_until(|seen| seen.contains(&prefix("before/")) && seen.contains(&prefix("after/")))
         .await;
-    assert!(!seen.is_empty());
+    assert_ne!(seen.len(), 0);
 }
 
 // ─── What must stay silent ──────────────────────────────────────────────────

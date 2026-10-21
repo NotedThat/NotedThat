@@ -60,11 +60,11 @@ pub(in crate::router) async fn put_object(
         request_id: request_id.clone(),
     };
 
-    let path = parse_path(&object_path).map_err(&err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // Authorized before the body is read or staged, so a denied write
     // never spools bytes to memory or disk.
-    access.require(Verb::Write, path.as_str()).map_err(&err)?;
+    access.require(Verb::Write, path.as_str()).map_err(err)?;
     let kb = access.kb().clone();
 
     let content_length = req
@@ -171,11 +171,11 @@ pub(in crate::router) async fn delete_object(
         request_id: request_id.clone(),
     };
 
-    let path = parse_path(&object_path).map_err(&err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // Authorized before the body is read or staged, so a denied write
     // never spools bytes to memory or disk.
-    access.require(Verb::Delete, path.as_str()).map_err(&err)?;
+    access.require(Verb::Delete, path.as_str()).map_err(err)?;
     let kb = access.kb().clone();
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 

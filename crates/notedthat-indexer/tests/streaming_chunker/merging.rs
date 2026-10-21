@@ -24,11 +24,11 @@ fn assert_invariants(raw: &str, chunks: &[Chunk], max_chars: usize) {
             index + 1 == chunks.len() || chars >= max_chars / 4,
             "short chunk before the end {chunk:?} in {raw:?}"
         );
-        assert!(!chunk.text.trim().is_empty(), "blank chunk {chunk:?}");
-        assert!(raw[covered..chunk.byte_start].trim().is_empty(), "{raw:?}");
+        assert_ne!(chunk.text.trim().len(), 0, "blank chunk {chunk:?}");
+        assert_eq!(raw[covered..chunk.byte_start].trim().len(), 0, "{raw:?}");
         covered = chunk.byte_end;
     }
-    assert!(raw[covered..].trim().is_empty(), "{raw:?}");
+    assert_eq!(raw[covered..].trim().len(), 0, "{raw:?}");
 }
 
 fn paragraph(prefix: &str, chars: usize) -> String {
@@ -206,7 +206,7 @@ fn blank_documents_yield_nothing_and_a_lone_heading_is_kept() {
     let heading_chunks = merged(heading, 3_000);
 
     // Then
-    assert!(blank_chunks.is_empty());
+    assert_eq!(blank_chunks.len(), 0);
     assert_eq!(heading_chunks.len(), 1);
     assert_eq!(heading_chunks[0].text, heading);
 }
