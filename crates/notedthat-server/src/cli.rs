@@ -19,10 +19,14 @@ use std::ffi::OsString;
 /// off, and the environment keeps its strict `true`/`false` parse either way.
 const BOOL_FLAG: &str = "true";
 
+/// The Qdrant endpoint, named by provisioning errors as well as parsed here.
+pub(crate) const QDRANT_URL_ENV: &str = "NOTEDTHAT_QDRANT_URL";
+/// The OIDC issuer's CA bundle, named by discovery errors as well as parsed here.
+pub(crate) const OIDC_CA_CERT_ENV: &str = "NOTEDTHAT_OIDC_CA_CERT";
+
 /// Command-line arguments, each mirroring one environment variable.
 ///
-/// Construct it with [`clap::Parser::parse`] in a binary, or with
-/// [`ServerCli::from_env`] to read the environment alone.
+/// Construct it with [`clap::Parser::parse`] in a binary.
 // Every doc comment below is rendered verbatim by `--help`, so it is written for
 // a terminal rather than for rustdoc: backticks around `WebDAV` or `SeaweedFS`
 // would reach the operator as literal characters.
@@ -116,7 +120,7 @@ pub struct ServerCli {
 
     /// Private staging directory for uploads and index snapshots [default: the
     /// platform temporary directory].
-    #[arg(long, env = "NOTEDTHAT_UPLOAD_TMP_DIR", value_name = "DIR")]
+    #[arg(long, env = notedthat_core::UPLOAD_TMP_DIR_ENV, value_name = "DIR")]
     pub upload_tmp_dir: Option<OsString>,
 
     /// HTTP Basic auth username for WebDAV.
@@ -186,7 +190,7 @@ pub struct ServerCli {
 
     /// PEM bundle of extra CA certificates to trust when reaching the issuer —
     /// for an internal or self-signed CA.
-    #[arg(long, env = "NOTEDTHAT_OIDC_CA_CERT", value_name = "FILE")]
+    #[arg(long, env = OIDC_CA_CERT_ENV, value_name = "FILE")]
     pub oidc_ca_cert: Option<OsString>,
 
     /// Object store to run on: `s3` or `fs` [default: s3].
@@ -194,13 +198,13 @@ pub struct ServerCli {
     pub storage_backend: Option<OsString>,
 
     /// S3 region. Required with the `s3` backend, even behind a custom endpoint.
-    #[arg(long, env = "NOTEDTHAT_S3_REGION", value_name = "REGION")]
+    #[arg(long, env = notedthat_storage_s3::S3_REGION_ENV, value_name = "REGION")]
     pub s3_region: Option<String>,
 
     /// S3 access key ID. No ambient credential chain is consulted.
     #[arg(
         long,
-        env = "NOTEDTHAT_S3_ACCESS_KEY_ID",
+        env = notedthat_storage_s3::S3_ACCESS_KEY_ID_ENV,
         value_name = "KEY_ID",
         hide_env_values = true
     )]
@@ -209,20 +213,20 @@ pub struct ServerCli {
     /// S3 secret access key.
     #[arg(
         long,
-        env = "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
+        env = notedthat_storage_s3::S3_SECRET_ACCESS_KEY_ENV,
         value_name = "SECRET",
         hide_env_values = true
     )]
     pub s3_secret_access_key: Option<String>,
 
     /// Custom S3-compatible endpoint, for SeaweedFS, MinIO, Ceph, Garage or R2.
-    #[arg(long, env = "NOTEDTHAT_S3_ENDPOINT_URL", value_name = "URL")]
+    #[arg(long, env = notedthat_storage_s3::S3_ENDPOINT_URL_ENV, value_name = "URL")]
     pub s3_endpoint_url: Option<String>,
 
     /// Use path-style addressing, `endpoint/bucket/key` [default: false].
     #[arg(
         long,
-        env = "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+        env = notedthat_storage_s3::S3_FORCE_PATH_STYLE_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -233,7 +237,7 @@ pub struct ServerCli {
     /// re-indexing what changed outside NotedThat [default: true].
     #[arg(
         long,
-        env = "NOTEDTHAT_S3_RECONCILE",
+        env = notedthat_storage_s3::S3_RECONCILE_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -244,7 +248,7 @@ pub struct ServerCli {
     /// not hold, reporting it instead of refusing [default: false].
     #[arg(
         long,
-        env = "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
+        env = notedthat_storage_s3::S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -252,26 +256,26 @@ pub struct ServerCli {
     pub s3_allow_unenforced_conditional_writes: Option<String>,
 
     /// Absolute path of the storage root. Required with the `fs` backend.
-    #[arg(long, env = "NOTEDTHAT_FS_ROOT", value_name = "DIR")]
+    #[arg(long, env = notedthat_storage_fs::FS_ROOT_ENV, value_name = "DIR")]
     pub fs_root: Option<OsString>,
 
     /// Where per-object metadata is kept [default: sidecar].
-    #[arg(long, env = "NOTEDTHAT_FS_METADATA", value_name = "MODE")]
+    #[arg(long, env = notedthat_storage_fs::FS_METADATA_ENV, value_name = "MODE")]
     pub fs_metadata: Option<OsString>,
 
     /// Octal mode for created object files [default: 0644].
-    #[arg(long, env = "NOTEDTHAT_FS_FILE_MODE", value_name = "MODE")]
+    #[arg(long, env = notedthat_storage_fs::FS_FILE_MODE_ENV, value_name = "MODE")]
     pub fs_file_mode: Option<OsString>,
 
     /// Octal mode for created directories [default: 0755].
-    #[arg(long, env = "NOTEDTHAT_FS_DIR_MODE", value_name = "MODE")]
+    #[arg(long, env = notedthat_storage_fs::FS_DIR_MODE_ENV, value_name = "MODE")]
     pub fs_dir_mode: Option<OsString>,
 
     /// Start even on a filesystem that folds case or normalizes Unicode
     /// [default: false].
     #[arg(
         long,
-        env = "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
+        env = notedthat_storage_fs::FS_ALLOW_LOSSY_NAMES_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -282,7 +286,7 @@ pub struct ServerCli {
     /// [default: true].
     #[arg(
         long,
-        env = "NOTEDTHAT_FS_WATCH",
+        env = notedthat_storage_fs::FS_WATCH_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -291,7 +295,7 @@ pub struct ServerCli {
 
     /// How long a file must go quiet before a change to it is acted on, in
     /// milliseconds [default: 500].
-    #[arg(long, env = "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", value_name = "MS")]
+    #[arg(long, env = notedthat_storage_fs::FS_WATCH_DEBOUNCE_MS_ENV, value_name = "MS")]
     pub fs_watch_debounce_ms: Option<OsString>,
 
     /// Object change event log: `none`, `memory` or `nats` [default: none].
@@ -299,14 +303,14 @@ pub struct ServerCli {
     pub events_backend: Option<OsString>,
 
     /// Events the `memory` log retains for replay [default: 10000].
-    #[arg(long, env = "NOTEDTHAT_EVENTS_MEMORY_CAPACITY", value_name = "COUNT")]
+    #[arg(long, env = notedthat_events::EVENTS_MEMORY_CAPACITY_ENV, value_name = "COUNT")]
     pub events_memory_capacity: Option<OsString>,
 
     /// NATS server URL, `nats://[user:pass@]host:4222` or `tls://…`. Required
     /// whenever a backend selects NATS; credentials may travel in the URL.
     #[arg(
         long,
-        env = "NOTEDTHAT_NATS_URL",
+        env = notedthat_nats::NATS_URL_ENV,
         value_name = "URL",
         hide_env_values = true
     )]
@@ -314,18 +318,18 @@ pub struct ServerCli {
 
     /// NATS decentralised-auth credentials file (`.creds`). At most one of
     /// this, `--nats-nkey-seed-file` and `--nats-token`.
-    #[arg(long, env = "NOTEDTHAT_NATS_CREDS_FILE", value_name = "PATH")]
+    #[arg(long, env = notedthat_nats::NATS_CREDS_FILE_ENV, value_name = "PATH")]
     pub nats_creds_file: Option<OsString>,
 
     /// File holding a NATS NKey seed.
-    #[arg(long, env = "NOTEDTHAT_NATS_NKEY_SEED_FILE", value_name = "PATH")]
+    #[arg(long, env = notedthat_nats::NATS_NKEY_SEED_FILE_ENV, value_name = "PATH")]
     pub nats_nkey_seed_file: Option<OsString>,
 
     /// NATS server token. Visible in `ps` when passed as a flag; prefer the
     /// environment variable.
     #[arg(
         long,
-        env = "NOTEDTHAT_NATS_TOKEN",
+        env = notedthat_nats::NATS_TOKEN_ENV,
         value_name = "TOKEN",
         hide_env_values = true
     )]
@@ -333,30 +337,30 @@ pub struct ServerCli {
 
     /// Root certificates (PEM) trusted instead of the system roots: include every
     /// CA the broker's certificates chain to. Setting it requires TLS.
-    #[arg(long, env = "NOTEDTHAT_NATS_TLS_CA_FILE", value_name = "PATH")]
+    #[arg(long, env = notedthat_nats::NATS_TLS_CA_FILE_ENV, value_name = "PATH")]
     pub nats_tls_ca_file: Option<OsString>,
 
     /// Client certificate (PEM) for mutual TLS; needs `--nats-tls-key-file`.
     /// Setting it requires TLS.
-    #[arg(long, env = "NOTEDTHAT_NATS_TLS_CERT_FILE", value_name = "PATH")]
+    #[arg(long, env = notedthat_nats::NATS_TLS_CERT_FILE_ENV, value_name = "PATH")]
     pub nats_tls_cert_file: Option<OsString>,
 
     /// Client certificate key (PEM) for mutual TLS; needs `--nats-tls-cert-file`.
-    #[arg(long, env = "NOTEDTHAT_NATS_TLS_KEY_FILE", value_name = "PATH")]
+    #[arg(long, env = notedthat_nats::NATS_TLS_KEY_FILE_ENV, value_name = "PATH")]
     pub nats_tls_key_file: Option<OsString>,
 
     /// Refuse a plaintext NATS connection: `true` or `false` [default: false].
-    #[arg(long, env = "NOTEDTHAT_NATS_TLS_REQUIRED", value_name = "BOOL")]
+    #[arg(long, env = notedthat_nats::NATS_TLS_REQUIRED_ENV, value_name = "BOOL")]
     pub nats_tls_required: Option<OsString>,
 
     /// Replicas of every NotedThat-owned `JetStream` stream, 1 to 5. Unset, a new
     /// stream gets 1 and an existing one keeps its own.
-    #[arg(long, env = "NOTEDTHAT_NATS_REPLICAS", value_name = "COUNT")]
+    #[arg(long, env = notedthat_nats::NATS_REPLICAS_ENV, value_name = "COUNT")]
     pub nats_replicas: Option<OsString>,
 
     /// Where `JetStream` keeps NotedThat's streams: `file` or `memory`. Unset, a new
     /// stream gets `file` and an existing one is accepted as found.
-    #[arg(long, env = "NOTEDTHAT_NATS_STORAGE", value_name = "STORAGE")]
+    #[arg(long, env = notedthat_nats::NATS_STORAGE_ENV, value_name = "STORAGE")]
     pub nats_storage: Option<OsString>,
 
     /// How long the broker drops a repeated publish, in seconds; at least 10 and
@@ -364,22 +368,22 @@ pub struct ServerCli {
     /// shorter) and an existing one keeps its own.
     #[arg(
         long,
-        env = "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+        env = notedthat_nats::NATS_DUPLICATE_WINDOW_SECS_ENV,
         value_name = "SECS"
     )]
     pub nats_duplicate_window_secs: Option<OsString>,
 
     /// `JetStream` stream holding the event log [default: notedthat-events].
-    #[arg(long, env = "NOTEDTHAT_NATS_STREAM", value_name = "NAME")]
+    #[arg(long, env = notedthat_events::NATS_STREAM_ENV, value_name = "NAME")]
     pub nats_stream: Option<String>,
 
     /// How long the stream retains an event, in seconds; at least 10
     /// [default: 604800].
-    #[arg(long, env = "NOTEDTHAT_NATS_MAX_AGE_SECS", value_name = "SECS")]
+    #[arg(long, env = notedthat_events::NATS_MAX_AGE_SECS_ENV, value_name = "SECS")]
     pub nats_max_age_secs: Option<OsString>,
 
     /// Qdrant gRPC endpoint, e.g. `http://127.0.0.1:6334`.
-    #[arg(long, env = "NOTEDTHAT_QDRANT_URL", value_name = "URL")]
+    #[arg(long, env = QDRANT_URL_ENV, value_name = "URL")]
     pub qdrant_url: Option<String>,
 
     /// API key for an authenticated Qdrant instance.
@@ -462,15 +466,26 @@ pub struct ServerCli {
     pub mcp_http_enabled: Option<OsString>,
 }
 
+#[cfg(test)]
 impl ServerCli {
-    /// Read every setting from the environment alone, ignoring `argv`.
+    /// Parse `argv` alone, with every `env = "..."` binding cleared.
+    ///
+    /// `clap` snapshots each variable's value while the command is built, so
+    /// without this a developer's shell would leak into a test (#285).
     ///
     /// # Errors
     ///
-    /// Returns a `clap` error if a variable holds a value this parser cannot
-    /// accept — in practice, non-UTF-8 in a setting typed as `String`.
-    pub fn from_env() -> Result<Self, clap::Error> {
-        Self::try_parse_from(["notedthat-server"])
+    /// As [`clap::Parser::try_parse_from`].
+    pub(crate) fn parse_without_env<I, T>(argv: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        use clap::{CommandFactory as _, FromArgMatches as _};
+        let matches = Self::command()
+            .mut_args(|arg| arg.env(None))
+            .try_get_matches_from(argv)?;
+        Self::from_arg_matches(&matches)
     }
 }
 
@@ -478,11 +493,11 @@ impl ServerCli {
 mod tests {
     use super::ServerCli;
     use clap::{CommandFactory as _, Parser as _};
-    use std::collections::BTreeSet;
     use std::ffi::OsString;
 
     /// Parse `args` with `vars` in the environment, as a real invocation would see
-    /// both. The binary name is prepended, matching `argv`.
+    /// both. Only the precedence tests need a real environment; everything else
+    /// goes through [`parse_args`].
     fn parse(vars: &[(&str, Option<&str>)], args: &[&str]) -> ServerCli {
         let command_line: Vec<&str> = std::iter::once("notedthat-server")
             .chain(args.iter().copied())
@@ -490,6 +505,14 @@ mod tests {
         temp_env::with_vars(vars, || {
             ServerCli::try_parse_from(&command_line).expect("arguments must parse")
         })
+    }
+
+    /// Parse `args` with the environment out of the picture.
+    fn parse_args(args: &[&str]) -> ServerCli {
+        let command_line: Vec<&str> = std::iter::once("notedthat-server")
+            .chain(args.iter().copied())
+            .collect();
+        ServerCli::parse_without_env(&command_line).expect("arguments must parse")
     }
 
     #[test]
@@ -509,16 +532,14 @@ mod tests {
 
     #[test]
     fn a_flag_alone_is_enough_with_the_environment_empty() {
-        let cli = parse(
-            &[("NOTEDTHAT_API_TOKEN", None)],
-            &["--api-token", "flag-only"],
-        );
+        // `parse_args` is what empties the environment: this proves the flag alone carries.
+        let cli = parse_args(&["--api-token", "flag-only"]);
         assert_eq!(cli.api_token.as_deref(), Some("flag-only"));
     }
 
     #[test]
     fn a_setting_neither_source_supplied_stays_absent() {
-        let cli = parse(&[("NOTEDTHAT_LISTEN_ADDR", None)], &[]);
+        let cli = parse_args(&[]);
         assert!(cli.listen_addr.is_none());
     }
 
@@ -526,7 +547,7 @@ mod tests {
     /// offender in the cross-backend check, exactly as `NOTEDTHAT_S3_REGION=` does.
     #[test]
     fn an_empty_flag_value_is_still_a_supplied_value() {
-        let cli = parse(&[("NOTEDTHAT_S3_REGION", None)], &["--s3-region", ""]);
+        let cli = parse_args(&["--s3-region", ""]);
         assert_eq!(cli.s3_region.as_deref(), Some(""));
     }
 
@@ -534,25 +555,19 @@ mod tests {
     /// that loses one.
     #[test]
     fn a_path_setting_keeps_its_value_unmangled() {
-        let cli = parse(
-            &[("NOTEDTHAT_FS_ROOT", None)],
-            &["--fs-root", "/srv/notedthat"],
-        );
+        let cli = parse_args(&["--fs-root", "/srv/notedthat"]);
         assert_eq!(cli.fs_root, Some(OsString::from("/srv/notedthat")));
     }
 
     #[test]
     fn a_comma_separated_setting_arrives_whole_for_the_validator_to_split() {
-        let cli = parse(&[("NOTEDTHAT_KBS", None)], &["--kbs", "notes,scratch"]);
+        let cli = parse_args(&["--kbs", "notes,scratch"]);
         assert_eq!(cli.kbs.as_deref(), Some("notes,scratch"));
     }
 
     #[test]
     fn a_bare_boolean_flag_means_true() {
-        let cli = parse(
-            &[("NOTEDTHAT_S3_FORCE_PATH_STYLE", None)],
-            &["--s3-force-path-style"],
-        );
+        let cli = parse_args(&["--s3-force-path-style"]);
         assert_eq!(cli.s3_force_path_style.as_deref(), Some("true"));
     }
 
@@ -572,38 +587,28 @@ mod tests {
     /// than clap's bare "unexpected argument".
     #[test]
     fn a_removed_setting_is_accepted_by_the_parser_so_startup_can_explain_it() {
-        let cli = parse(
-            &[("NOTEDTHAT_MCP_HTTP_ENABLED", None)],
-            &["--mcp-http-enabled", "false"],
-        );
+        let cli = parse_args(&["--mcp-http-enabled", "false"]);
         assert_eq!(cli.mcp_http_enabled, Some(OsString::from("false")));
     }
 
     #[test]
     fn an_unknown_flag_is_refused() {
-        assert!(ServerCli::try_parse_from(["notedthat-server", "--nope"]).is_err());
+        assert!(ServerCli::parse_without_env(["notedthat-server", "--nope"]).is_err());
     }
 
-    /// Every setting the server reads is reachable from the command line.
-    ///
-    /// The list of variables lives in `config::tests::ALL_ENV_KEYS`, which already
-    /// guards the storage adapters' own inventories; tying the parser to it means a
-    /// setting added later without a flag fails the build rather than quietly
-    /// staying environment-only.
+    /// Every setting the server reads is reachable both ways. A setting added
+    /// later without a flag, or without a variable, fails this test rather than
+    /// quietly staying single-source.
     #[test]
     fn every_setting_has_both_a_flag_and_a_variable() {
-        let command = ServerCli::command();
-        let wired: BTreeSet<String> = command
-            .get_arguments()
-            .filter_map(|arg| Some(arg.get_env()?.to_string_lossy().into_owned()))
-            .collect();
-
-        let expected: BTreeSet<String> = crate::config::tests::ALL_ENV_KEYS
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect();
-
-        assert_eq!(wired, expected);
+        for arg in ServerCli::command().get_arguments() {
+            let id = arg.get_id().as_str();
+            if matches!(id, "help" | "version") {
+                continue;
+            }
+            assert!(arg.get_env().is_some(), "{id} has no environment variable");
+            assert!(arg.get_long().is_some(), "{id} has no long flag");
+        }
     }
 
     /// The flag name is derived from the variable name by one mechanical rule, and

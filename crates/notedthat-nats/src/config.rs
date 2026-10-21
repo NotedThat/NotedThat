@@ -11,19 +11,42 @@ use std::time::Duration;
 
 use notedthat_core::{Error, setting};
 
+/// The broker URL, which may carry `user:pass@` or `token@`. Required.
+pub const NATS_URL_ENV: &str = "NOTEDTHAT_NATS_URL";
+/// A `.creds` file to authenticate with.
+pub const NATS_CREDS_FILE_ENV: &str = "NOTEDTHAT_NATS_CREDS_FILE";
+/// An `NKey` seed file to authenticate with.
+pub const NATS_NKEY_SEED_FILE_ENV: &str = "NOTEDTHAT_NATS_NKEY_SEED_FILE";
+/// A bare token to authenticate with.
+pub const NATS_TOKEN_ENV: &str = "NOTEDTHAT_NATS_TOKEN";
+/// A CA certificate to trust beyond the system roots.
+pub const NATS_TLS_CA_FILE_ENV: &str = "NOTEDTHAT_NATS_TLS_CA_FILE";
+/// The client certificate, set together with its key.
+pub const NATS_TLS_CERT_FILE_ENV: &str = "NOTEDTHAT_NATS_TLS_CERT_FILE";
+/// The client certificate's key, set together with the certificate.
+pub const NATS_TLS_KEY_FILE_ENV: &str = "NOTEDTHAT_NATS_TLS_KEY_FILE";
+/// Refuse a connection the broker does not upgrade to TLS. `"true"` or `"false"`.
+pub const NATS_TLS_REQUIRED_ENV: &str = "NOTEDTHAT_NATS_TLS_REQUIRED";
+/// Replicas of every stream this process creates.
+pub const NATS_REPLICAS_ENV: &str = "NOTEDTHAT_NATS_REPLICAS";
+/// `file` or `memory` storage for every stream this process creates.
+pub const NATS_STORAGE_ENV: &str = "NOTEDTHAT_NATS_STORAGE";
+/// The `JetStream` publish deduplication window of every stream this process creates.
+pub const NATS_DUPLICATE_WINDOW_SECS_ENV: &str = "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS";
+
 /// Every environment variable the NATS connection reads.
 pub const NATS_CONNECT_ENV_VARS: [&str; 11] = [
-    "NOTEDTHAT_NATS_URL",
-    "NOTEDTHAT_NATS_CREDS_FILE",
-    "NOTEDTHAT_NATS_NKEY_SEED_FILE",
-    "NOTEDTHAT_NATS_TOKEN",
-    "NOTEDTHAT_NATS_TLS_CA_FILE",
-    "NOTEDTHAT_NATS_TLS_CERT_FILE",
-    "NOTEDTHAT_NATS_TLS_KEY_FILE",
-    "NOTEDTHAT_NATS_TLS_REQUIRED",
-    "NOTEDTHAT_NATS_REPLICAS",
-    "NOTEDTHAT_NATS_STORAGE",
-    "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+    NATS_URL_ENV,
+    NATS_CREDS_FILE_ENV,
+    NATS_NKEY_SEED_FILE_ENV,
+    NATS_TOKEN_ENV,
+    NATS_TLS_CA_FILE_ENV,
+    NATS_TLS_CERT_FILE_ENV,
+    NATS_TLS_KEY_FILE_ENV,
+    NATS_TLS_REQUIRED_ENV,
+    NATS_REPLICAS_ENV,
+    NATS_STORAGE_ENV,
+    NATS_DUPLICATE_WINDOW_SECS_ENV,
 ];
 
 /// Replicas of a stream created while `NOTEDTHAT_NATS_REPLICAS` is unset.
@@ -68,26 +91,6 @@ pub struct NatsConnectSettings {
     pub storage: Option<OsString>,
     /// `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS`.
     pub duplicate_window_secs: Option<OsString>,
-}
-
-impl NatsConnectSettings {
-    /// Collect every setting from the process environment.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            url: std::env::var("NOTEDTHAT_NATS_URL").ok(),
-            creds_file: std::env::var_os("NOTEDTHAT_NATS_CREDS_FILE"),
-            nkey_seed_file: std::env::var_os("NOTEDTHAT_NATS_NKEY_SEED_FILE"),
-            token: std::env::var("NOTEDTHAT_NATS_TOKEN").ok(),
-            tls_ca_file: std::env::var_os("NOTEDTHAT_NATS_TLS_CA_FILE"),
-            tls_cert_file: std::env::var_os("NOTEDTHAT_NATS_TLS_CERT_FILE"),
-            tls_key_file: std::env::var_os("NOTEDTHAT_NATS_TLS_KEY_FILE"),
-            tls_required: std::env::var_os("NOTEDTHAT_NATS_TLS_REQUIRED"),
-            replicas: std::env::var_os("NOTEDTHAT_NATS_REPLICAS"),
-            storage: std::env::var_os("NOTEDTHAT_NATS_STORAGE"),
-            duplicate_window_secs: std::env::var_os("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"),
-        }
-    }
 }
 
 /// How the connection authenticates beyond what the URL carries.
@@ -238,9 +241,10 @@ impl NatsConnectConfig {
     /// client certificate pair is supplied, a number or choice is invalid, or
     /// the duplicate window is shorter than [`MIN_NATS_DUPLICATE_WINDOW_SECS`].
     pub fn from_settings(settings: NatsConnectSettings) -> Result<Self, Error> {
-        let url = settings.url.filter(|url| !url.is_empty()).ok_or_else(|| {
-            config_error(format!("{} is required", setting("NOTEDTHAT_NATS_URL")))
-        })?;
+        let url = settings
+            .url
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| config_error(format!("{} is required", setting(NATS_URL_ENV))))?;
         let auth = parse_auth(
             &url,
             settings.creds_file,
@@ -248,28 +252,28 @@ impl NatsConnectConfig {
             settings.token,
         )?;
 
-        let ca_file = parse_path("NOTEDTHAT_NATS_TLS_CA_FILE", settings.tls_ca_file)?;
-        let cert = parse_path("NOTEDTHAT_NATS_TLS_CERT_FILE", settings.tls_cert_file)?;
-        let key = parse_path("NOTEDTHAT_NATS_TLS_KEY_FILE", settings.tls_key_file)?;
+        let ca_file = parse_path(NATS_TLS_CA_FILE_ENV, settings.tls_ca_file)?;
+        let cert = parse_path(NATS_TLS_CERT_FILE_ENV, settings.tls_cert_file)?;
+        let key = parse_path(NATS_TLS_KEY_FILE_ENV, settings.tls_key_file)?;
         let client_cert = match (cert, key) {
             (Some(cert), Some(key)) => Some((cert, key)),
             (None, None) => None,
             (Some(_), None) | (None, Some(_)) => {
                 return Err(config_error(format!(
                     "{} and {} must be set together",
-                    setting("NOTEDTHAT_NATS_TLS_CERT_FILE"),
-                    setting("NOTEDTHAT_NATS_TLS_KEY_FILE")
+                    setting(NATS_TLS_CERT_FILE_ENV),
+                    setting(NATS_TLS_KEY_FILE_ENV)
                 )));
             }
         };
         let required = parse_bool(
-            "NOTEDTHAT_NATS_TLS_REQUIRED",
+            NATS_TLS_REQUIRED_ENV,
             settings.tls_required.as_deref(),
             false,
         )?;
 
         let replicas = parse_optional_positive(
-            "NOTEDTHAT_NATS_REPLICAS",
+            NATS_REPLICAS_ENV,
             settings.replicas.as_deref(),
             "a number of replicas from 1 to 5",
         )?;
@@ -278,22 +282,22 @@ impl NatsConnectConfig {
         {
             return Err(config_error(format!(
                 "{} is invalid: expected a number of replicas from 1 to 5, got \"{replicas}\"",
-                setting("NOTEDTHAT_NATS_REPLICAS")
+                setting(NATS_REPLICAS_ENV)
             )));
         }
-        let storage = match utf8("NOTEDTHAT_NATS_STORAGE", settings.storage.as_deref())? {
+        let storage = match utf8(NATS_STORAGE_ENV, settings.storage.as_deref())? {
             None => None,
             Some("file") => Some(NatsStorage::File),
             Some("memory") => Some(NatsStorage::Memory),
             Some(other) => {
                 return Err(config_error(format!(
                     "{} is invalid: expected \"file\" or \"memory\", got \"{other}\"",
-                    setting("NOTEDTHAT_NATS_STORAGE")
+                    setting(NATS_STORAGE_ENV)
                 )));
             }
         };
         let duplicate_window = parse_optional_positive(
-            "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+            NATS_DUPLICATE_WINDOW_SECS_ENV,
             settings.duplicate_window_secs.as_deref(),
             "a positive number of seconds",
         )?;
@@ -304,7 +308,7 @@ impl NatsConnectConfig {
                 "{} is invalid: expected at least {MIN_NATS_DUPLICATE_WINDOW_SECS} seconds, got \
                  \"{window}\"; a publish retried after its acknowledgement timed out must still \
                  find the first copy inside the window",
-                setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS")
+                setting(NATS_DUPLICATE_WINDOW_SECS_ENV)
             )));
         }
 
@@ -334,13 +338,13 @@ fn parse_auth(
     nkey_seed_file: Option<OsString>,
     token: Option<String>,
 ) -> Result<NatsAuth, Error> {
-    let creds = parse_path("NOTEDTHAT_NATS_CREDS_FILE", creds_file)?;
-    let nkey = parse_path("NOTEDTHAT_NATS_NKEY_SEED_FILE", nkey_seed_file)?;
+    let creds = parse_path(NATS_CREDS_FILE_ENV, creds_file)?;
+    let nkey = parse_path(NATS_NKEY_SEED_FILE_ENV, nkey_seed_file)?;
     let token = match token {
         Some(token) if token.is_empty() => {
             return Err(config_error(format!(
                 "{} must not be empty",
-                setting("NOTEDTHAT_NATS_TOKEN")
+                setting(NATS_TOKEN_ENV)
             )));
         }
         other => other,
@@ -348,13 +352,10 @@ fn parse_auth(
     let supplied: Vec<String> = [
         split_url_credentials(url)
             .is_some()
-            .then(|| format!("credentials in {}", setting("NOTEDTHAT_NATS_URL"))),
-        creds
-            .is_some()
-            .then(|| setting("NOTEDTHAT_NATS_CREDS_FILE")),
-        nkey.is_some()
-            .then(|| setting("NOTEDTHAT_NATS_NKEY_SEED_FILE")),
-        token.is_some().then(|| setting("NOTEDTHAT_NATS_TOKEN")),
+            .then(|| format!("credentials in {}", setting(NATS_URL_ENV))),
+        creds.is_some().then(|| setting(NATS_CREDS_FILE_ENV)),
+        nkey.is_some().then(|| setting(NATS_NKEY_SEED_FILE_ENV)),
+        token.is_some().then(|| setting(NATS_TOKEN_ENV)),
     ]
     .into_iter()
     .flatten()
@@ -772,28 +773,28 @@ mod tests {
                     replicas: Some("0".into()),
                     ..with_url()
                 },
-                "NOTEDTHAT_NATS_REPLICAS",
+                NATS_REPLICAS_ENV,
             ),
             (
                 NatsConnectSettings {
                     replicas: Some("6".into()),
                     ..with_url()
                 },
-                "NOTEDTHAT_NATS_REPLICAS",
+                NATS_REPLICAS_ENV,
             ),
             (
                 NatsConnectSettings {
                     storage: Some("disk".into()),
                     ..with_url()
                 },
-                "NOTEDTHAT_NATS_STORAGE",
+                NATS_STORAGE_ENV,
             ),
             (
                 NatsConnectSettings {
                     duplicate_window_secs: Some("0".into()),
                     ..with_url()
                 },
-                "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+                NATS_DUPLICATE_WINDOW_SECS_ENV,
             ),
         ] {
             let err = message(NatsConnectConfig::from_settings(settings).unwrap_err());
@@ -845,34 +846,27 @@ mod tests {
     }
 
     #[test]
-    fn from_env_reads_exactly_the_inventoried_variables() {
-        let vars: Vec<(&str, Option<&str>)> = vec![
-            ("NOTEDTHAT_NATS_URL", Some("tls://broker:4222")),
-            ("NOTEDTHAT_NATS_CREDS_FILE", None),
-            ("NOTEDTHAT_NATS_NKEY_SEED_FILE", Some("/seed")),
-            ("NOTEDTHAT_NATS_TOKEN", None),
-            ("NOTEDTHAT_NATS_TLS_CA_FILE", Some("/ca.pem")),
-            ("NOTEDTHAT_NATS_TLS_CERT_FILE", Some("/c.pem")),
-            ("NOTEDTHAT_NATS_TLS_KEY_FILE", Some("/k.pem")),
-            ("NOTEDTHAT_NATS_TLS_REQUIRED", Some("true")),
-            ("NOTEDTHAT_NATS_REPLICAS", Some("3")),
-            ("NOTEDTHAT_NATS_STORAGE", Some("file")),
-            ("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS", Some("60")),
-        ];
+    fn every_setting_lands_in_the_config() {
+        let config = NatsConnectConfig::from_settings(NatsConnectSettings {
+            url: Some("tls://broker:4222".into()),
+            nkey_seed_file: Some("/seed".into()),
+            tls_ca_file: Some("/ca.pem".into()),
+            tls_cert_file: Some("/c.pem".into()),
+            tls_key_file: Some("/k.pem".into()),
+            tls_required: Some("true".into()),
+            replicas: Some("3".into()),
+            storage: Some("file".into()),
+            duplicate_window_secs: Some("60".into()),
+            ..NatsConnectSettings::default()
+        })
+        .unwrap();
+        assert_eq!(config.url, "tls://broker:4222");
+        assert_eq!(config.auth, NatsAuth::NkeySeedFile("/seed".into()));
+        assert!(config.tls.required);
+        assert_eq!(config.streams.replicas, Some(3));
         assert_eq!(
-            vars.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            NATS_CONNECT_ENV_VARS.to_vec()
+            config.streams.duplicate_window,
+            Some(Duration::from_mins(1))
         );
-        temp_env::with_vars(vars, || {
-            let config = NatsConnectConfig::from_settings(NatsConnectSettings::from_env()).unwrap();
-            assert_eq!(config.url, "tls://broker:4222");
-            assert_eq!(config.auth, NatsAuth::NkeySeedFile("/seed".into()));
-            assert!(config.tls.required);
-            assert_eq!(config.streams.replicas, Some(3));
-            assert_eq!(
-                config.streams.duplicate_window,
-                Some(Duration::from_mins(1))
-            );
-        });
     }
 }

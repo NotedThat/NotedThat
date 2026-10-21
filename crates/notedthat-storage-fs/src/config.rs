@@ -113,9 +113,9 @@ pub struct FsConfig {
 ///
 /// One field per entry in [`FS_ENV_VARS`], in the same order. Holding the values
 /// before they are checked is what lets one validator serve both configuration
-/// sources: [`FsSettings::from_env`] fills this from the environment, and a
-/// caller with command-line arguments fills it from those instead. `None` means
-/// the setting was not supplied at all — an empty value is a supplied value.
+/// sources: `notedthat-server` fills this from its command line and the
+/// environment. `None` means the setting was not supplied at all — an empty
+/// value is a supplied value.
 ///
 /// `OsString` rather than `String` throughout, because the root is read with
 /// `var_os` today and a path is not obliged to be UTF-8; the enumerated settings
@@ -138,32 +138,7 @@ pub struct FsSettings {
     pub watch_debounce_ms: Option<OsString>,
 }
 
-impl FsSettings {
-    /// Collect every setting from the process environment.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            root: std::env::var_os(FS_ROOT_ENV),
-            metadata: std::env::var_os(FS_METADATA_ENV),
-            file_mode: std::env::var_os(FS_FILE_MODE_ENV),
-            dir_mode: std::env::var_os(FS_DIR_MODE_ENV),
-            allow_lossy_names: std::env::var_os(FS_ALLOW_LOSSY_NAMES_ENV),
-            watch: std::env::var_os(FS_WATCH_ENV),
-            watch_debounce_ms: std::env::var_os(FS_WATCH_DEBOUNCE_MS_ENV),
-        }
-    }
-}
-
 impl FsConfig {
-    /// Parse the configuration from the environment.
-    ///
-    /// # Errors
-    ///
-    /// See [`FsConfig::from_settings`].
-    pub fn from_env() -> Result<Self, Error> {
-        Self::from_settings(FsSettings::from_env())
-    }
-
     /// Validate already-collected settings, whatever supplied them.
     ///
     /// # Errors
@@ -338,104 +313,83 @@ fn config_error(message: String) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{FsConfig, MetadataMode};
+    use super::{FsConfig, FsSettings, MetadataMode};
 
-    fn with<R>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> R) -> R {
-        let baseline = [
-            ("NOTEDTHAT_FS_ROOT", None),
-            ("NOTEDTHAT_FS_METADATA", None),
-            ("NOTEDTHAT_FS_FILE_MODE", None),
-            ("NOTEDTHAT_FS_DIR_MODE", None),
-            ("NOTEDTHAT_FS_ALLOW_LOSSY_NAMES", None),
-            ("NOTEDTHAT_FS_WATCH", None),
-            ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", None),
-        ];
-        let mut merged: Vec<(&str, Option<&str>)> = baseline.to_vec();
-        for (key, value) in vars {
-            if let Some(slot) = merged.iter_mut().find(|(name, _)| name == key) {
-                slot.1 = *value;
-            } else {
-                merged.push((key, *value));
-            }
+    fn rooted() -> FsSettings {
+        FsSettings {
+            root: Some("/srv/nt".into()),
+            ..FsSettings::default()
         }
-        temp_env::with_vars(merged, f)
+    }
+
+    fn error_of(settings: FsSettings) -> String {
+        FsConfig::from_settings(settings).unwrap_err().to_string()
     }
 
     /// The diagnostic names both ways the root can be supplied, because which
     /// one the operator reached for is not knowable from here.
     #[test]
     fn root_is_required_and_the_error_names_both_forms() {
-        with(&[], || {
-            let error = FsConfig::from_env().unwrap_err().to_string();
-            assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
-            assert!(error.contains("--fs-root"), "{error}");
-            assert!(error.contains("is required"), "{error}");
-        });
+        let error = error_of(FsSettings::default());
+        assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
+        assert!(error.contains("--fs-root"), "{error}");
+        assert!(error.contains("is required"), "{error}");
     }
 
     #[test]
     fn root_must_be_absolute() {
-        with(&[("NOTEDTHAT_FS_ROOT", Some("relative/path"))], || {
-            let error = FsConfig::from_env().unwrap_err().to_string();
-            assert!(error.contains("must be an absolute path"), "{error}");
+        let error = error_of(FsSettings {
+            root: Some("relative/path".into()),
+            ..FsSettings::default()
         });
+        assert!(error.contains("must be an absolute path"), "{error}");
     }
 
     #[test]
     fn root_must_not_be_empty() {
-        with(&[("NOTEDTHAT_FS_ROOT", Some(""))], || {
-            let error = FsConfig::from_env().unwrap_err().to_string();
-            assert!(error.contains("must not be empty"), "{error}");
+        let error = error_of(FsSettings {
+            root: Some(String::new().into()),
+            ..FsSettings::default()
         });
+        assert!(error.contains("must not be empty"), "{error}");
     }
 
     #[test]
     fn defaults_are_sidecar_and_browsable_modes() {
-        with(&[("NOTEDTHAT_FS_ROOT", Some("/srv/nt"))], || {
-            let config = FsConfig::from_env().expect("valid");
-            assert_eq!(config.metadata, MetadataMode::Sidecar);
-            assert_eq!(config.file_mode, 0o644);
-            assert_eq!(config.dir_mode, 0o755);
-            assert!(!config.allow_lossy_names);
-        });
+        let config = FsConfig::from_settings(rooted()).expect("valid");
+        assert_eq!(config.metadata, MetadataMode::Sidecar);
+        assert_eq!(config.file_mode, 0o644);
+        assert_eq!(config.dir_mode, 0o755);
+        assert!(!config.allow_lossy_names);
     }
 
     /// Watching is on unless an operator turns it off. The gap it closes is the one thing
     /// a browsable store would otherwise get silently wrong.
     #[test]
     fn watching_is_on_by_default() {
-        with(&[("NOTEDTHAT_FS_ROOT", Some("/srv/nt"))], || {
-            let config = FsConfig::from_env().expect("valid");
-            assert!(config.watch);
-            assert_eq!(config.watch_debounce.as_millis(), 500);
-        });
+        let config = FsConfig::from_settings(rooted()).expect("valid");
+        assert!(config.watch);
+        assert_eq!(config.watch_debounce.as_millis(), 500);
     }
 
     #[test]
     fn watching_can_be_turned_off() {
-        with(
-            &[
-                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                ("NOTEDTHAT_FS_WATCH", Some("false")),
-            ],
-            || {
-                assert!(!FsConfig::from_env().expect("valid").watch);
-            },
-        );
+        let config = FsConfig::from_settings(FsSettings {
+            watch: Some("false".into()),
+            ..rooted()
+        })
+        .expect("valid");
+        assert!(!config.watch);
     }
 
     #[test]
     fn a_debounce_within_range_is_accepted() {
-        with(
-            &[
-                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", Some("1200")),
-            ],
-            || {
-                let config = FsConfig::from_env().expect("valid");
-                assert_eq!(config.watch_debounce.as_millis(), 1200);
-            },
-        );
+        let config = FsConfig::from_settings(FsSettings {
+            watch_debounce_ms: Some("1200".into()),
+            ..rooted()
+        })
+        .expect("valid");
+        assert_eq!(config.watch_debounce.as_millis(), 1200);
     }
 
     /// Refused rather than clamped: a settle window too short to outlast a rename would
@@ -444,61 +398,42 @@ mod tests {
     #[test]
     fn a_debounce_outside_the_accepted_range_is_refused() {
         for value in ["0", "10", "60001", "soon"] {
-            with(
-                &[
-                    ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                    ("NOTEDTHAT_FS_WATCH_DEBOUNCE_MS", Some(value)),
-                ],
-                || {
-                    let error = FsConfig::from_env().unwrap_err().to_string();
-                    assert!(error.contains("milliseconds"), "{value}: {error}");
-                    assert!(error.contains("--fs-watch-debounce-ms"), "{value}: {error}");
-                },
-            );
+            let error = error_of(FsSettings {
+                watch_debounce_ms: Some(value.into()),
+                ..rooted()
+            });
+            assert!(error.contains("milliseconds"), "{value}: {error}");
+            assert!(error.contains("--fs-watch-debounce-ms"), "{value}: {error}");
         }
     }
 
     #[test]
     fn an_unknown_metadata_mode_is_refused_rather_than_defaulted() {
-        with(
-            &[
-                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                ("NOTEDTHAT_FS_METADATA", Some("xattr")),
-            ],
-            || {
-                let error = FsConfig::from_env().unwrap_err().to_string();
-                assert!(error.contains("expected \"sidecar\""), "{error}");
-            },
-        );
+        let error = error_of(FsSettings {
+            metadata: Some("xattr".into()),
+            ..rooted()
+        });
+        assert!(error.contains("expected \"sidecar\""), "{error}");
     }
 
     #[test]
     fn mode_bits_accept_octal_with_or_without_a_prefix() {
-        with(
-            &[
-                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                ("NOTEDTHAT_FS_FILE_MODE", Some("0640")),
-                ("NOTEDTHAT_FS_DIR_MODE", Some("0o750")),
-            ],
-            || {
-                let config = FsConfig::from_env().expect("valid");
-                assert_eq!(config.file_mode, 0o640);
-                assert_eq!(config.dir_mode, 0o750);
-            },
-        );
+        let config = FsConfig::from_settings(FsSettings {
+            file_mode: Some("0640".into()),
+            dir_mode: Some("0o750".into()),
+            ..rooted()
+        })
+        .expect("valid");
+        assert_eq!(config.file_mode, 0o640);
+        assert_eq!(config.dir_mode, 0o750);
     }
 
     #[test]
     fn a_non_octal_mode_is_refused() {
-        with(
-            &[
-                ("NOTEDTHAT_FS_ROOT", Some("/srv/nt")),
-                ("NOTEDTHAT_FS_FILE_MODE", Some("rw-r--r--")),
-            ],
-            || {
-                let error = FsConfig::from_env().unwrap_err().to_string();
-                assert!(error.contains("octal mode bits"), "{error}");
-            },
-        );
+        let error = error_of(FsSettings {
+            file_mode: Some("rw-r--r--".into()),
+            ..rooted()
+        });
+        assert!(error.contains("octal mode bits"), "{error}");
     }
 }

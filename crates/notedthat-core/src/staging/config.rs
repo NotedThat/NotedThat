@@ -25,15 +25,6 @@ impl StagingConfig {
         Self { directory }
     }
 
-    /// Read the optional staging directory override from the environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StageError::Config`] when the variable is set but empty.
-    pub fn from_env() -> Result<Self, StageError> {
-        Self::from_setting(std::env::var_os(UPLOAD_TMP_DIR_ENV))
-    }
-
     /// Build from an already-resolved staging directory override.
     ///
     /// The value arrives here from whichever source supplied it — a command-line
