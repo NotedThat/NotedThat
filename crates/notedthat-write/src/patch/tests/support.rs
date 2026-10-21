@@ -57,7 +57,7 @@ impl TestStorage {
             storage.before(StorageOp::PutObject, move |store| {
                 let advances = Arc::clone(&advances);
                 async move {
-                    // shortcut: `try_update` is unstable on the 1.94.1 MSRV, swap when the MSRV reaches 1.99.
+                    // shortcut: `try_update` is unstable on the 1.94.1 MSRV, swap when the workspace `rust-version` reaches 1.95.
                     #[allow(deprecated)]
                     let due = advances
                         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
