@@ -185,45 +185,69 @@ impl EventsConfig {
 fn backend_owned_settings(cli: &ServerCli) -> Vec<(&'static str, StorageBackendKind, bool)> {
     use StorageBackendKind::{Fs, S3};
     vec![
-        ("NOTEDTHAT_S3_REGION", S3, cli.s3_region.is_some()),
         (
-            "NOTEDTHAT_S3_ACCESS_KEY_ID",
+            notedthat_storage_s3::S3_REGION_ENV,
+            S3,
+            cli.s3_region.is_some(),
+        ),
+        (
+            notedthat_storage_s3::S3_ACCESS_KEY_ID_ENV,
             S3,
             cli.s3_access_key_id.is_some(),
         ),
         (
-            "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
+            notedthat_storage_s3::S3_SECRET_ACCESS_KEY_ENV,
             S3,
             cli.s3_secret_access_key.is_some(),
         ),
         (
-            "NOTEDTHAT_S3_ENDPOINT_URL",
+            notedthat_storage_s3::S3_ENDPOINT_URL_ENV,
             S3,
             cli.s3_endpoint_url.is_some(),
         ),
         (
-            "NOTEDTHAT_S3_FORCE_PATH_STYLE",
+            notedthat_storage_s3::S3_FORCE_PATH_STYLE_ENV,
             S3,
             cli.s3_force_path_style.is_some(),
         ),
-        ("NOTEDTHAT_S3_RECONCILE", S3, cli.s3_reconcile.is_some()),
         (
-            "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
+            notedthat_storage_s3::S3_RECONCILE_ENV,
+            S3,
+            cli.s3_reconcile.is_some(),
+        ),
+        (
+            notedthat_storage_s3::S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV,
             S3,
             cli.s3_allow_unenforced_conditional_writes.is_some(),
         ),
-        ("NOTEDTHAT_FS_ROOT", Fs, cli.fs_root.is_some()),
-        ("NOTEDTHAT_FS_METADATA", Fs, cli.fs_metadata.is_some()),
-        ("NOTEDTHAT_FS_FILE_MODE", Fs, cli.fs_file_mode.is_some()),
-        ("NOTEDTHAT_FS_DIR_MODE", Fs, cli.fs_dir_mode.is_some()),
+        (notedthat_storage_fs::FS_ROOT_ENV, Fs, cli.fs_root.is_some()),
         (
-            "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
+            notedthat_storage_fs::FS_METADATA_ENV,
+            Fs,
+            cli.fs_metadata.is_some(),
+        ),
+        (
+            notedthat_storage_fs::FS_FILE_MODE_ENV,
+            Fs,
+            cli.fs_file_mode.is_some(),
+        ),
+        (
+            notedthat_storage_fs::FS_DIR_MODE_ENV,
+            Fs,
+            cli.fs_dir_mode.is_some(),
+        ),
+        (
+            notedthat_storage_fs::FS_ALLOW_LOSSY_NAMES_ENV,
             Fs,
             cli.fs_allow_lossy_names.is_some(),
         ),
-        ("NOTEDTHAT_FS_WATCH", Fs, cli.fs_watch.is_some()),
         (
-            "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS",
+            notedthat_storage_fs::FS_WATCH_ENV,
+            Fs,
+            cli.fs_watch.is_some(),
+        ),
+        (
+            notedthat_storage_fs::FS_WATCH_DEBOUNCE_MS_ENV,
             Fs,
             cli.fs_watch_debounce_ms.is_some(),
         ),
@@ -236,52 +260,68 @@ fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKin
     use EventsBackendKind::{Memory, Nats};
     vec![
         (
-            "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
+            notedthat_events::EVENTS_MEMORY_CAPACITY_ENV,
             Memory,
             cli.events_memory_capacity.is_some(),
         ),
-        ("NOTEDTHAT_NATS_URL", Nats, cli.nats_url.is_some()),
+        (notedthat_nats::NATS_URL_ENV, Nats, cli.nats_url.is_some()),
         (
-            "NOTEDTHAT_NATS_CREDS_FILE",
+            notedthat_nats::NATS_CREDS_FILE_ENV,
             Nats,
             cli.nats_creds_file.is_some(),
         ),
         (
-            "NOTEDTHAT_NATS_NKEY_SEED_FILE",
+            notedthat_nats::NATS_NKEY_SEED_FILE_ENV,
             Nats,
             cli.nats_nkey_seed_file.is_some(),
         ),
-        ("NOTEDTHAT_NATS_TOKEN", Nats, cli.nats_token.is_some()),
         (
-            "NOTEDTHAT_NATS_TLS_CA_FILE",
+            notedthat_nats::NATS_TOKEN_ENV,
+            Nats,
+            cli.nats_token.is_some(),
+        ),
+        (
+            notedthat_nats::NATS_TLS_CA_FILE_ENV,
             Nats,
             cli.nats_tls_ca_file.is_some(),
         ),
         (
-            "NOTEDTHAT_NATS_TLS_CERT_FILE",
+            notedthat_nats::NATS_TLS_CERT_FILE_ENV,
             Nats,
             cli.nats_tls_cert_file.is_some(),
         ),
         (
-            "NOTEDTHAT_NATS_TLS_KEY_FILE",
+            notedthat_nats::NATS_TLS_KEY_FILE_ENV,
             Nats,
             cli.nats_tls_key_file.is_some(),
         ),
         (
-            "NOTEDTHAT_NATS_TLS_REQUIRED",
+            notedthat_nats::NATS_TLS_REQUIRED_ENV,
             Nats,
             cli.nats_tls_required.is_some(),
         ),
-        ("NOTEDTHAT_NATS_REPLICAS", Nats, cli.nats_replicas.is_some()),
-        ("NOTEDTHAT_NATS_STORAGE", Nats, cli.nats_storage.is_some()),
         (
-            "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
+            notedthat_nats::NATS_REPLICAS_ENV,
+            Nats,
+            cli.nats_replicas.is_some(),
+        ),
+        (
+            notedthat_nats::NATS_STORAGE_ENV,
+            Nats,
+            cli.nats_storage.is_some(),
+        ),
+        (
+            notedthat_nats::NATS_DUPLICATE_WINDOW_SECS_ENV,
             Nats,
             cli.nats_duplicate_window_secs.is_some(),
         ),
-        ("NOTEDTHAT_NATS_STREAM", Nats, cli.nats_stream.is_some()),
         (
-            "NOTEDTHAT_NATS_MAX_AGE_SECS",
+            notedthat_events::NATS_STREAM_ENV,
+            Nats,
+            cli.nats_stream.is_some(),
+        ),
+        (
+            notedthat_events::NATS_MAX_AGE_SECS_ENV,
             Nats,
             cli.nats_max_age_secs.is_some(),
         ),
@@ -834,22 +874,6 @@ pub enum LogFormat {
 }
 
 impl Config {
-    /// Parse configuration from the environment alone.
-    ///
-    /// Equivalent to [`Config::from_cli`] over an empty `argv`, which is what a
-    /// container that passes no arguments gets.
-    ///
-    /// # Errors
-    ///
-    /// As [`Config::from_cli`], plus `Err(Error::Config { .. })` if a variable holds a
-    /// value the parser cannot accept at all.
-    pub fn from_env() -> Result<Self, Error> {
-        let cli = ServerCli::from_env().map_err(|error| Error::Config {
-            message: error.to_string(),
-        })?;
-        Self::from_cli(cli)
-    }
-
     /// Validate the settings this run supplied, from either source.
     ///
     /// # Errors
@@ -1582,84 +1606,10 @@ fn parse_positive_usize(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    pub(crate) const ALL_ENV_KEYS: [&str; 73] = [
-        "NOTEDTHAT_API_TOKEN",
-        "NOTEDTHAT_KBS",
-        "NOTEDTHAT_STORAGE_BACKEND",
-        "NOTEDTHAT_FS_ROOT",
-        "NOTEDTHAT_FS_METADATA",
-        "NOTEDTHAT_FS_FILE_MODE",
-        "NOTEDTHAT_FS_DIR_MODE",
-        "NOTEDTHAT_FS_ALLOW_LOSSY_NAMES",
-        "NOTEDTHAT_FS_WATCH",
-        "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS",
-        "NOTEDTHAT_S3_REGION",
-        "NOTEDTHAT_S3_ACCESS_KEY_ID",
-        "NOTEDTHAT_S3_SECRET_ACCESS_KEY",
-        "NOTEDTHAT_LISTEN_ADDR",
-        "NOTEDTHAT_METRICS_ENABLED",
-        "NOTEDTHAT_METRICS_LISTEN_ADDR",
-        "NOTEDTHAT_LOG_FORMAT",
-        "NOTEDTHAT_S3_ENDPOINT_URL",
-        "NOTEDTHAT_S3_FORCE_PATH_STYLE",
-        "NOTEDTHAT_S3_RECONCILE",
-        "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
-        "NOTEDTHAT_EVENTS_BACKEND",
-        "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
-        "NOTEDTHAT_NATS_URL",
-        "NOTEDTHAT_NATS_CREDS_FILE",
-        "NOTEDTHAT_NATS_NKEY_SEED_FILE",
-        "NOTEDTHAT_NATS_TOKEN",
-        "NOTEDTHAT_NATS_TLS_CA_FILE",
-        "NOTEDTHAT_NATS_TLS_CERT_FILE",
-        "NOTEDTHAT_NATS_TLS_KEY_FILE",
-        "NOTEDTHAT_NATS_TLS_REQUIRED",
-        "NOTEDTHAT_NATS_REPLICAS",
-        "NOTEDTHAT_NATS_STORAGE",
-        "NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS",
-        "NOTEDTHAT_NATS_STREAM",
-        "NOTEDTHAT_NATS_MAX_AGE_SECS",
-        "NOTEDTHAT_QDRANT_URL",
-        "NOTEDTHAT_QDRANT_API_KEY",
-        "NOTEDTHAT_QDRANT_TIMEOUT_MS",
-        "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
-        "NOTEDTHAT_WEBDAV_USERNAME",
-        "NOTEDTHAT_WEBDAV_PASSWORD",
-        "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
-        "NOTEDTHAT_MCP_HTTP_BIND",
-        "NOTEDTHAT_MCP_HTTP_ENABLED",
-        "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
-        "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
-        "NOTEDTHAT_MCP_ANONYMOUS",
-        "NOTEDTHAT_MCP_MAX_READ_BYTES",
-        "NOTEDTHAT_MCP_MAX_SESSIONS",
-        "NOTEDTHAT_MAX_PATCHABLE_SIZE",
-        "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
-        "NOTEDTHAT_REQUEST_TIMEOUT_MS",
-        "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
-        "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
-        "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
-        "NOTEDTHAT_INDEX_CONCURRENCY",
-        "NOTEDTHAT_UPLOAD_TMP_DIR",
-        "NOTEDTHAT_OIDC_ISSUER",
-        "NOTEDTHAT_OIDC_AUDIENCE",
-        "NOTEDTHAT_OIDC_USERNAME_CLAIM",
-        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
-        "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
-        "NOTEDTHAT_OIDC_RESOURCE",
-        "NOTEDTHAT_OIDC_CA_CERT",
-        "EMBEDDING_ENDPOINT_URL",
-        "EMBEDDING_MODEL",
-        "EMBEDDING_API_KEY",
-        "EMBEDDING_DIMENSIONS",
-        "EMBEDDING_BATCH_SIZE",
-        "EMBEDDING_TIMEOUT_MS",
-        "EMBEDDING_MAX_RETRIES",
-        "EMBEDDING_MAX_INPUT_TOKENS",
-    ];
+    use clap::CommandFactory as _;
+    use std::collections::BTreeSet;
 
     /// A configuration diagnostic has to be actionable from either direction, so
     /// it names the environment variable, the flag that overrides it, and what is
@@ -1671,9 +1621,9 @@ pub(crate) mod tests {
             && message.contains(complaint)
     }
 
-    /// What every test starts from: enough for `Config::from_env` to succeed.
-    /// Everything else in `ALL_ENV_KEYS` is unset.
-    const DEFAULT_ENV: [(&str, &str); 12] = [
+    /// What every test starts from: enough for `Config::from_cli` to succeed.
+    /// Every other setting is absent.
+    const DEFAULT_SETTINGS: [(&str, &str); 12] = [
         ("NOTEDTHAT_API_TOKEN", "test-token"),
         ("NOTEDTHAT_KBS", "notes,docs"),
         ("NOTEDTHAT_S3_REGION", "us-east-1"),
@@ -1688,29 +1638,44 @@ pub(crate) mod tests {
         ("EMBEDDING_DIMENSIONS", "1536"),
     ];
 
-    /// Run `f` with every variable in `ALL_ENV_KEYS` controlled: `DEFAULT_ENV`,
-    /// then `overrides`, and all others unset. `temp_env` leaves unlisted
-    /// variables alone, so anything missing here would leak in from the
-    /// developer's shell.
-    fn run_with_env<F: FnOnce() -> R, R>(overrides: &[(&str, Option<&str>)], f: F) -> R {
-        let mut vars: Vec<(&str, Option<&str>)> =
-            ALL_ENV_KEYS.iter().map(|key| (*key, None)).collect();
-
-        let defaults = DEFAULT_ENV.iter().map(|(key, value)| (*key, Some(*value)));
-        for (key, value) in defaults.chain(overrides.iter().copied()) {
-            let (_, slot) = vars
-                .iter_mut()
-                .find(|(existing, _)| *existing == key)
-                .unwrap_or_else(|| panic!("{key} is not in ALL_ENV_KEYS"));
-            *slot = value;
+    /// Parse `DEFAULT_SETTINGS` with `overrides` applied (`None` unsets one), as
+    /// flags on a command line the environment cannot reach. Each setting is
+    /// named by its variable so a test reads like the deployment it describes;
+    /// `flag_for` turns that into the flag, and `--flag=` keeps an empty value.
+    ///
+    /// A name the parser does not know panics rather than erring, so a typo
+    /// cannot satisfy an `is_err()` test.
+    fn parse_config(overrides: &[(&str, Option<&str>)]) -> Result<Config, Error> {
+        let mut settings: Vec<(&str, Option<&str>)> = DEFAULT_SETTINGS
+            .iter()
+            .map(|(key, value)| (*key, Some(*value)))
+            .collect();
+        for (key, value) in overrides {
+            match settings.iter_mut().find(|(existing, _)| existing == key) {
+                Some(slot) => slot.1 = *value,
+                None => settings.push((key, *value)),
+            }
         }
+        let argv =
+            std::iter::once("notedthat-server".to_owned()).chain(settings.iter().filter_map(
+                |(key, value)| Some(format!("{}={}", notedthat_core::flag_for(key), (*value)?)),
+            ));
+        let cli = ServerCli::parse_without_env(argv)
+            .expect("every override names a setting the parser knows");
+        Config::from_cli(cli)
+    }
 
-        temp_env::with_vars(vars, f)
+    /// Every variable the command line is wired to.
+    fn cli_env_names() -> BTreeSet<String> {
+        ServerCli::command()
+            .get_arguments()
+            .filter_map(|arg| Some(arg.get_env()?.to_string_lossy().into_owned()))
+            .collect()
     }
 
     #[test]
     fn test_empty_kbs_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_KBS", Some(""))], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_KBS", Some(""))]);
         assert!(result.is_err());
         assert!(
             result
@@ -1722,7 +1687,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_duplicate_slug_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_KBS", Some("notes,notes"))], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_KBS", Some("notes,notes"))]);
         assert!(result.is_err(), "duplicate slugs should fail");
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1733,47 +1698,43 @@ pub(crate) mod tests {
 
     #[test]
     fn test_no_tenant_slug_env_var() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.tenant_slug.as_str(), "default");
     }
 
     #[test]
     fn test_log_format_json() {
-        let cfg =
-            run_with_env(&[("NOTEDTHAT_LOG_FORMAT", Some("json"))], Config::from_env).unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_LOG_FORMAT", Some("json"))]).unwrap();
         assert_eq!(cfg.log_format, LogFormat::Json);
     }
 
     #[test]
     fn test_log_format_default_pretty() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.log_format, LogFormat::Pretty);
     }
 
     #[test]
     fn test_default_listen_addr() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.listen_addr.to_string(), "0.0.0.0:8080");
     }
 
     #[test]
     fn test_default_staging_directory() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.staging.directory(), std::env::temp_dir());
     }
 
     #[test]
     fn test_invalid_listen_addr() {
-        let result = run_with_env(
-            &[("NOTEDTHAT_LISTEN_ADDR", Some("not-a-socket-addr"))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_LISTEN_ADDR", Some("not-a-socket-addr"))]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_kbs_parsed_correctly() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.kbs.len(), 2);
         assert!(cfg.kbs.contains_key("notes"));
         assert!(cfg.kbs.contains_key("docs"));
@@ -1781,7 +1742,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_missing_api_token_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", None)], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_API_TOKEN", None)]);
         assert!(result.is_err());
         assert!(
             result
@@ -1793,7 +1754,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_missing_webdav_username_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_USERNAME", None)], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_WEBDAV_USERNAME", None)]);
         assert!(result.is_err());
         assert!(
             result
@@ -1805,7 +1766,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_empty_webdav_username_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_USERNAME", Some(""))], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_WEBDAV_USERNAME", Some(""))]);
         assert!(result.is_err());
         assert!(
             result
@@ -1817,7 +1778,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_missing_webdav_password_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_PASSWORD", None)], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_WEBDAV_PASSWORD", None)]);
         assert!(result.is_err());
         assert!(
             result
@@ -1829,7 +1790,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_empty_webdav_password_rejected() {
-        let result = run_with_env(&[("NOTEDTHAT_WEBDAV_PASSWORD", Some(""))], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_WEBDAV_PASSWORD", Some(""))]);
         assert!(result.is_err());
         assert!(
             result
@@ -1842,7 +1803,7 @@ pub(crate) mod tests {
     #[test]
     fn removed_listener_variables_are_rejected_with_their_replacement() {
         for (key, replacement) in REMOVED_LISTENER_ENV_VARS {
-            let result = run_with_env(&[(key, Some("some-stale-value"))], Config::from_env);
+            let result = parse_config(&[(key, Some("some-stale-value"))]);
             let message = result.map_or_else(
                 |e| e.to_string(),
                 |_| panic!("{key} must be rejected at startup"),
@@ -1858,10 +1819,7 @@ pub(crate) mod tests {
 
     #[test]
     fn removed_listener_variables_are_rejected_even_when_empty() {
-        let result = run_with_env(
-            &[("NOTEDTHAT_MCP_HTTP_ENABLED", Some(""))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_MCP_HTTP_ENABLED", Some(""))]);
 
         assert!(
             result.is_err(),
@@ -1871,21 +1829,18 @@ pub(crate) mod tests {
 
     #[test]
     fn unset_removed_listener_variables_leave_the_default_listener() {
-        let config = run_with_env(&[], Config::from_env)
-            .expect("configuration must parse when no removed variable is set");
+        let config =
+            parse_config(&[]).expect("configuration must parse when no removed variable is set");
 
         assert_eq!(config.listen_addr.to_string(), "0.0.0.0:8080");
     }
 
     #[test]
     fn test_webdav_credentials_propagated() {
-        let cfg = run_with_env(
-            &[
-                ("NOTEDTHAT_WEBDAV_USERNAME", Some("myuser")),
-                ("NOTEDTHAT_WEBDAV_PASSWORD", Some("mypass")),
-            ],
-            Config::from_env,
-        )
+        let cfg = parse_config(&[
+            ("NOTEDTHAT_WEBDAV_USERNAME", Some("myuser")),
+            ("NOTEDTHAT_WEBDAV_PASSWORD", Some("mypass")),
+        ])
         .unwrap();
         assert_eq!(cfg.webdav_username, "myuser");
         assert_eq!(cfg.webdav_password, "mypass");
@@ -1893,29 +1848,20 @@ pub(crate) mod tests {
 
     #[test]
     fn mcp_max_read_bytes_defaults_to_the_api_body_cap() {
-        let cfg =
-            run_with_env(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", None)]).unwrap();
         assert_eq!(cfg.mcp_max_read_bytes, 16 * 1024 * 1024);
     }
 
     #[test]
     fn mcp_max_read_bytes_accepts_explicit_bytes() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some("4096"))],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some("4096"))]).unwrap();
         assert_eq!(cfg.mcp_max_read_bytes, 4096);
     }
 
     #[test]
     fn mcp_max_read_bytes_empty_or_blank_is_the_default_like_its_siblings() {
         for value in ["", "   "] {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))]).unwrap();
             assert_eq!(
                 cfg.mcp_max_read_bytes,
                 notedthat_mcp::DEFAULT_MAX_READ_BYTES,
@@ -1927,10 +1873,7 @@ pub(crate) mod tests {
     #[test]
     fn mcp_max_read_bytes_rejects_zero_and_non_numbers() {
         for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
-            let result = run_with_env(
-                &[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))],
-                Config::from_env,
-            );
+            let result = parse_config(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))]);
             assert!(matches!(result, Err(Error::Config { .. })));
             assert!(names_setting(
                 &result.unwrap_err().to_string(),
@@ -1942,29 +1885,21 @@ pub(crate) mod tests {
 
     #[test]
     fn mcp_max_sessions_defaults_to_the_documented_bound() {
-        let cfg = run_with_env(&[("NOTEDTHAT_MCP_MAX_SESSIONS", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_SESSIONS", None)]).unwrap();
         assert_eq!(cfg.mcp_max_sessions, notedthat_mcp::DEFAULT_MAX_SESSIONS);
         assert_eq!(cfg.mcp_max_sessions, 256);
     }
 
     #[test]
     fn mcp_max_sessions_accepts_an_explicit_count() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some("1024"))],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_SESSIONS", Some("1024"))]).unwrap();
         assert_eq!(cfg.mcp_max_sessions, 1024);
     }
 
     #[test]
     fn mcp_max_sessions_empty_or_blank_is_the_default_like_its_siblings() {
         for value in ["", "   "] {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))]).unwrap();
             assert_eq!(
                 cfg.mcp_max_sessions,
                 notedthat_mcp::DEFAULT_MAX_SESSIONS,
@@ -1981,10 +1916,7 @@ pub(crate) mod tests {
             ("many", "must be a valid positive integer"),
             ("1.5", "must be a valid positive integer"),
         ] {
-            let result = run_with_env(
-                &[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))],
-                Config::from_env,
-            );
+            let result = parse_config(&[("NOTEDTHAT_MCP_MAX_SESSIONS", Some(value))]);
             assert!(matches!(result, Err(Error::Config { .. })), "{value:?}");
             assert!(
                 names_setting(
@@ -2018,7 +1950,7 @@ pub(crate) mod tests {
 
     #[test]
     fn request_bounds_default_to_the_documented_values() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.request_bounds, RequestBoundsConfig::default());
         assert_eq!(cfg.request_bounds.request_timeout, Duration::from_secs(30));
         assert_eq!(
@@ -2034,15 +1966,12 @@ pub(crate) mod tests {
 
     #[test]
     fn request_bounds_accept_explicit_values() {
-        let cfg = run_with_env(
-            &[
-                ("NOTEDTHAT_REQUEST_TIMEOUT_MS", Some("1500")),
-                ("NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", Some("600000")),
-                ("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some("64")),
-                ("NOTEDTHAT_HEADER_READ_TIMEOUT_MS", Some("2500")),
-            ],
-            Config::from_env,
-        )
+        let cfg = parse_config(&[
+            ("NOTEDTHAT_REQUEST_TIMEOUT_MS", Some("1500")),
+            ("NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", Some("600000")),
+            ("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some("64")),
+            ("NOTEDTHAT_HEADER_READ_TIMEOUT_MS", Some("2500")),
+        ])
         .unwrap();
         assert_eq!(
             cfg.request_bounds,
@@ -2062,7 +1991,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|name| (*name, Some(value)))
                 .collect();
-            let cfg = run_with_env(&overrides, Config::from_env).unwrap();
+            let cfg = parse_config(&overrides).unwrap();
             assert_eq!(
                 cfg.request_bounds,
                 RequestBoundsConfig::default(),
@@ -2085,7 +2014,7 @@ pub(crate) mod tests {
                 ("soon", not_a_number),
                 ("1.5", not_a_number),
             ] {
-                let result = run_with_env(&[(name, Some(value))], Config::from_env);
+                let result = parse_config(&[(name, Some(value))]);
                 assert!(
                     matches!(result, Err(Error::Config { .. })),
                     "{name}={value:?}"
@@ -2101,10 +2030,7 @@ pub(crate) mod tests {
     #[test]
     fn max_requests_in_flight_refuses_more_than_a_semaphore_holds() {
         let too_many = (tokio::sync::Semaphore::MAX_PERMITS + 1).to_string();
-        let result = run_with_env(
-            &[("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some(too_many.as_str()))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", Some(too_many.as_str()))]);
         assert!(names_setting(
             &result.unwrap_err().to_string(),
             "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
@@ -2124,32 +2050,21 @@ pub(crate) mod tests {
 
     #[test]
     fn ready_probe_interval_defaults_to_five_seconds() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None)],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", None)]).unwrap();
         assert_eq!(cfg.ready_probe_interval_ms, 5_000);
     }
 
     #[test]
     fn ready_probe_interval_is_parsed() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some("250"))],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some("250"))]).unwrap();
         assert_eq!(cfg.ready_probe_interval_ms, 250);
     }
 
     #[test]
     fn ready_probe_interval_rejects_zero_and_nonsense() {
         for (value, complaint) in [("0", "must be > 0"), ("soon", "must be a valid u64")] {
-            let error = run_with_env(
-                &[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some(value))],
-                Config::from_env,
-            )
-            .unwrap_err();
+            let error =
+                parse_config(&[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some(value))]).unwrap_err();
             assert!(
                 names_setting(
                     &error.to_string(),
@@ -2163,27 +2078,19 @@ pub(crate) mod tests {
 
     #[test]
     fn max_patchable_size_defaults_to_100_mib() {
-        let cfg =
-            run_with_env(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", None)]).unwrap();
         assert_eq!(cfg.max_patchable_size, 100 * 1024 * 1024);
     }
 
     #[test]
     fn max_patchable_size_accepts_explicit_bytes() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("52428800"))],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("52428800"))]).unwrap();
         assert_eq!(cfg.max_patchable_size, 50 * 1024 * 1024);
     }
 
     #[test]
     fn max_patchable_size_rejects_zero() {
-        let result = run_with_env(
-            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("0"))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("0"))]);
         assert!(matches!(result, Err(Error::Config { .. })));
         assert!(names_setting(
             &result.unwrap_err().to_string(),
@@ -2194,10 +2101,7 @@ pub(crate) mod tests {
 
     #[test]
     fn max_patchable_size_rejects_values_over_max_upload_bytes() {
-        let result = run_with_env(
-            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("6442450944"))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("6442450944"))]);
         assert!(matches!(result, Err(Error::Config { .. })));
         assert!(names_setting(
             &result.unwrap_err().to_string(),
@@ -2208,10 +2112,7 @@ pub(crate) mod tests {
 
     #[test]
     fn max_patchable_size_rejects_non_numeric_values() {
-        let result = run_with_env(
-            &[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("not-a-number"))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("NOTEDTHAT_MAX_PATCHABLE_SIZE", Some("not-a-number"))]);
         assert!(matches!(result, Err(Error::Config { .. })));
         assert!(names_setting(
             &result.unwrap_err().to_string(),
@@ -2222,7 +2123,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qdrant_url_missing_returns_error() {
-        let result = run_with_env(&[("NOTEDTHAT_QDRANT_URL", None)], Config::from_env);
+        let result = parse_config(&[("NOTEDTHAT_QDRANT_URL", None)]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2233,7 +2134,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qdrant_api_key_optional() {
-        let cfg = run_with_env(&[("NOTEDTHAT_QDRANT_API_KEY", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_QDRANT_API_KEY", None)]).unwrap();
         assert!(
             cfg.qdrant.api_key.is_none(),
             "api_key should be None when env var is unset"
@@ -2242,30 +2143,23 @@ pub(crate) mod tests {
 
     #[test]
     fn qdrant_api_key_set_when_present() {
-        let cfg = run_with_env(
-            &[("NOTEDTHAT_QDRANT_API_KEY", Some("my-secret-key"))],
-            Config::from_env,
-        )
-        .unwrap();
+        let cfg = parse_config(&[("NOTEDTHAT_QDRANT_API_KEY", Some("my-secret-key"))]).unwrap();
         assert_eq!(cfg.qdrant.api_key.as_deref(), Some("my-secret-key"));
     }
 
     #[test]
     fn qdrant_url_propagated_to_config() {
-        let cfg = run_with_env(
-            &[(
-                "NOTEDTHAT_QDRANT_URL",
-                Some("http://qdrant.example.com:6334"),
-            )],
-            Config::from_env,
-        )
+        let cfg = parse_config(&[(
+            "NOTEDTHAT_QDRANT_URL",
+            Some("http://qdrant.example.com:6334"),
+        )])
         .unwrap();
         assert_eq!(cfg.qdrant.url, "http://qdrant.example.com:6334");
     }
 
     #[test]
     fn embedding_endpoint_url_missing() {
-        let result = run_with_env(&[("EMBEDDING_ENDPOINT_URL", None)], Config::from_env);
+        let result = parse_config(&[("EMBEDDING_ENDPOINT_URL", None)]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2285,7 +2179,7 @@ pub(crate) mod tests {
             "ftp://api.openai.com/v1",
             "file:///v1",
         ] {
-            let msg = run_with_env(&[("EMBEDDING_ENDPOINT_URL", Some(raw))], Config::from_env)
+            let msg = parse_config(&[("EMBEDDING_ENDPOINT_URL", Some(raw))])
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -2298,7 +2192,7 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_model_missing() {
-        let result = run_with_env(&[("EMBEDDING_MODEL", None)], Config::from_env);
+        let result = parse_config(&[("EMBEDDING_MODEL", None)]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2309,7 +2203,7 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_api_key_missing() {
-        let result = run_with_env(&[("EMBEDDING_API_KEY", None)], Config::from_env);
+        let result = parse_config(&[("EMBEDDING_API_KEY", None)]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2320,7 +2214,7 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_dimensions_missing() {
-        let result = run_with_env(&[("EMBEDDING_DIMENSIONS", None)], Config::from_env);
+        let result = parse_config(&[("EMBEDDING_DIMENSIONS", None)]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2331,10 +2225,7 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_dimensions_invalid() {
-        let result = run_with_env(
-            &[("EMBEDDING_DIMENSIONS", Some("not-a-number"))],
-            Config::from_env,
-        );
+        let result = parse_config(&[("EMBEDDING_DIMENSIONS", Some("not-a-number"))]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -2345,13 +2236,12 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_batch_size_default() {
-        let cfg = run_with_env(&[("EMBEDDING_BATCH_SIZE", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("EMBEDDING_BATCH_SIZE", None)]).unwrap();
         assert_eq!(cfg.embedder.batch_size, 32);
     }
 
     fn index_concurrency_from(value: Option<&str>) -> Result<NonZeroUsize, Error> {
-        run_with_env(&[("NOTEDTHAT_INDEX_CONCURRENCY", value)], Config::from_env)
-            .map(|cfg| cfg.index_concurrency)
+        parse_config(&[("NOTEDTHAT_INDEX_CONCURRENCY", value)]).map(|cfg| cfg.index_concurrency)
     }
 
     #[test]
@@ -2394,14 +2284,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn index_concurrency_flag_overrides_the_variable() {
-        use clap::Parser as _;
-        let cfg = run_with_env(&[("NOTEDTHAT_INDEX_CONCURRENCY", Some("16"))], || {
-            let cli = ServerCli::try_parse_from(["notedthat-server", "--index-concurrency", "3"])
-                .expect("arguments must parse");
-            Config::from_cli(cli)
-        })
-        .unwrap();
+    fn index_concurrency_leaves_batch_size_alone() {
+        let cfg = parse_config(&[("NOTEDTHAT_INDEX_CONCURRENCY", Some("3"))]).unwrap();
         assert_eq!(cfg.index_concurrency.get(), 3);
         assert_eq!(
             cfg.embedder.batch_size, 32,
@@ -2411,19 +2295,19 @@ pub(crate) mod tests {
 
     #[test]
     fn embedding_timeout_ms_default() {
-        let cfg = run_with_env(&[("EMBEDDING_TIMEOUT_MS", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("EMBEDDING_TIMEOUT_MS", None)]).unwrap();
         assert_eq!(cfg.embedder.timeout_ms, 30_000);
     }
 
     #[test]
     fn embedding_max_retries_default() {
-        let cfg = run_with_env(&[("EMBEDDING_MAX_RETRIES", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("EMBEDDING_MAX_RETRIES", None)]).unwrap();
         assert_eq!(cfg.embedder.max_retries, 3);
     }
 
     #[test]
     fn embedding_max_input_tokens_default() {
-        let cfg = run_with_env(&[("EMBEDDING_MAX_INPUT_TOKENS", None)], Config::from_env).unwrap();
+        let cfg = parse_config(&[("EMBEDDING_MAX_INPUT_TOKENS", None)]).unwrap();
         assert_eq!(cfg.embedder.max_input_tokens, 8192);
     }
 
@@ -2492,7 +2376,7 @@ pub(crate) mod tests {
 
     #[test]
     fn embedder_fields_propagated_to_config() {
-        let cfg = run_with_env(&[], Config::from_env).unwrap();
+        let cfg = parse_config(&[]).unwrap();
         assert_eq!(cfg.embedder.endpoint_url, "https://api.openai.com/v1");
         assert_eq!(cfg.embedder.model, "text-embedding-3-small");
         assert_eq!(cfg.embedder.api_key, "sk-test");
@@ -2504,7 +2388,7 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_defaults() {
-            let cfg = run_with_env(&[], Config::from_env).unwrap();
+            let cfg = parse_config(&[]).unwrap();
             assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
             assert_eq!(
                 cfg.mcp_http_allowed_hosts,
@@ -2514,46 +2398,32 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_empty_origins_defaults_to_null() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some(""))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some(""))]).unwrap();
             assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
         }
 
         #[test]
         fn mcp_http_whitespace_origins_defaults_to_null() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some("   "))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS", Some("   "))]).unwrap();
             assert_eq!(cfg.mcp_http_allowed_origins, vec!["null"]);
         }
 
         #[test]
         fn mcp_http_single_origin() {
-            let cfg = run_with_env(
-                &[(
-                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
-                    Some("https://example.com"),
-                )],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[(
+                "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                Some("https://example.com"),
+            )])
             .unwrap();
             assert_eq!(cfg.mcp_http_allowed_origins, vec!["https://example.com"]);
         }
 
         #[test]
         fn mcp_http_multiple_origins_comma_separated() {
-            let cfg = run_with_env(
-                &[(
-                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
-                    Some("https://example.com,https://other.com"),
-                )],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[(
+                "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                Some("https://example.com,https://other.com"),
+            )])
             .unwrap();
             assert_eq!(
                 cfg.mcp_http_allowed_origins,
@@ -2563,13 +2433,10 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_origins_with_whitespace_trimmed() {
-            let cfg = run_with_env(
-                &[(
-                    "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
-                    Some("  https://example.com  ,  https://other.com  "),
-                )],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[(
+                "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+                Some("  https://example.com  ,  https://other.com  "),
+            )])
             .unwrap();
             assert_eq!(
                 cfg.mcp_http_allowed_origins,
@@ -2579,11 +2446,7 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_empty_hosts_defaults_to_loopback() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some(""))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some(""))]).unwrap();
             assert_eq!(
                 cfg.mcp_http_allowed_hosts,
                 vec!["127.0.0.1", "localhost", "::1"]
@@ -2592,11 +2455,7 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_whitespace_hosts_defaults_to_loopback() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("   "))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("   "))]).unwrap();
             assert_eq!(
                 cfg.mcp_http_allowed_hosts,
                 vec!["127.0.0.1", "localhost", "::1"]
@@ -2605,43 +2464,34 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_single_host() {
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("example.com"))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg =
+                parse_config(&[("NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", Some("example.com"))]).unwrap();
             assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com"]);
         }
 
         #[test]
         fn mcp_http_multiple_hosts_comma_separated() {
-            let cfg = run_with_env(
-                &[(
-                    "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
-                    Some("example.com,other.com"),
-                )],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[(
+                "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+                Some("example.com,other.com"),
+            )])
             .unwrap();
             assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com", "other.com"]);
         }
 
         #[test]
         fn mcp_http_hosts_with_whitespace_trimmed() {
-            let cfg = run_with_env(
-                &[(
-                    "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
-                    Some("  example.com  ,  other.com  "),
-                )],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[(
+                "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS",
+                Some("  example.com  ,  other.com  "),
+            )])
             .unwrap();
             assert_eq!(cfg.mcp_http_allowed_hosts, vec!["example.com", "other.com"]);
         }
 
         #[test]
         fn mcp_anonymous_defaults_to_auto() {
-            let cfg = run_with_env(&[], Config::from_env).unwrap();
+            let cfg = parse_config(&[]).unwrap();
             assert_eq!(cfg.mcp_anonymous, McpAnonymous::Auto);
         }
 
@@ -2650,11 +2500,7 @@ pub(crate) mod tests {
             // Compose hands every MCP variable through as `${VAR-}`, so an
             // unset variable arrives as an empty string.
             for value in ["", "   "] {
-                let cfg = run_with_env(
-                    &[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))],
-                    Config::from_env,
-                )
-                .unwrap();
+                let cfg = parse_config(&[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))]).unwrap();
                 assert_eq!(cfg.mcp_anonymous, McpAnonymous::Auto, "{value:?}");
             }
         }
@@ -2662,23 +2508,16 @@ pub(crate) mod tests {
         #[test]
         fn mcp_anonymous_never_in_any_case() {
             for value in ["never", "NEVER", " Never "] {
-                let cfg = run_with_env(
-                    &[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))],
-                    Config::from_env,
-                )
-                .unwrap();
+                let cfg = parse_config(&[("NOTEDTHAT_MCP_ANONYMOUS", Some(value))]).unwrap();
                 assert_eq!(cfg.mcp_anonymous, McpAnonymous::Never, "{value:?}");
             }
         }
 
         #[test]
         fn an_unknown_mcp_anonymous_mode_is_refused_rather_than_defaulted() {
-            let err = run_with_env(
-                &[("NOTEDTHAT_MCP_ANONYMOUS", Some("nevr"))],
-                Config::from_env,
-            )
-            .unwrap_err()
-            .to_string();
+            let err = parse_config(&[("NOTEDTHAT_MCP_ANONYMOUS", Some("nevr"))])
+                .unwrap_err()
+                .to_string();
             assert!(
                 err.contains("NOTEDTHAT_MCP_ANONYMOUS") && err.contains("nevr"),
                 "names the setting and the value: {err}"
@@ -2687,7 +2526,7 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_with_empty_token_fails() {
-            let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", Some(""))], Config::from_env);
+            let result = parse_config(&[("NOTEDTHAT_API_TOKEN", Some(""))]);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -2698,7 +2537,7 @@ pub(crate) mod tests {
 
         #[test]
         fn mcp_http_with_whitespace_token_fails() {
-            let result = run_with_env(&[("NOTEDTHAT_API_TOKEN", Some("   "))], Config::from_env);
+            let result = parse_config(&[("NOTEDTHAT_API_TOKEN", Some("   "))]);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -2713,110 +2552,100 @@ pub(crate) mod tests {
 
         #[test]
         fn the_default_is_s3_so_existing_deployments_are_unaffected() {
-            run_with_env(&[], || {
-                let config = Config::from_env().expect("valid");
+            {
+                let parsed = parse_config(&[]);
+                let config = parsed.expect("valid");
                 assert_eq!(config.storage.kind(), StorageBackendKind::S3);
-            });
+            };
         }
 
         #[test]
         fn selecting_fs_reads_the_fs_variables_and_stops_requiring_s3() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
                     ("NOTEDTHAT_S3_REGION", None),
                     ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
                     ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
-                ],
-                || {
-                    let config = Config::from_env().expect("valid");
-                    assert_eq!(config.storage.kind(), StorageBackendKind::Fs);
-                },
-            );
+                ]);
+                let config = parsed.expect("valid");
+                assert_eq!(config.storage.kind(), StorageBackendKind::Fs);
+            };
         }
 
         /// Unlike `NOTEDTHAT_LOG_FORMAT`, a typo here must not fall back — it would
         /// silently point the server at a different store.
         #[test]
         fn an_unknown_backend_is_refused_rather_than_defaulted() {
-            run_with_env(&[("NOTEDTHAT_STORAGE_BACKEND", Some("filesystem"))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_STORAGE_BACKEND", Some("filesystem"))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(error.contains("expected \"s3\" or \"fs\""), "{error}");
                 assert!(error.contains("filesystem"), "{error}");
-            });
+            };
         }
 
         #[test]
         fn an_empty_backend_selector_is_refused() {
-            run_with_env(&[("NOTEDTHAT_STORAGE_BACKEND", Some(""))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_STORAGE_BACKEND", Some(""))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(error.contains("must not be empty"), "{error}");
-            });
+            };
         }
 
         #[test]
         fn selecting_fs_without_a_root_names_the_variable() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_S3_REGION", None),
                     ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
                     ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(
-                        names_setting(&error, "NOTEDTHAT_FS_ROOT", "is required"),
-                        "{error}"
-                    );
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(
+                    names_setting(&error, "NOTEDTHAT_FS_ROOT", "is required"),
+                    "{error}"
+                );
+            };
         }
 
         #[test]
         fn leftover_s3_variables_under_fs_are_reported_together() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("belong to the s3 backend"), "{error}");
-                    // All of them at once, not one per restart.
-                    assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_S3_ACCESS_KEY_ID"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_S3_SECRET_ACCESS_KEY"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=s3"), "{error}");
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(error.contains("belong to the s3 backend"), "{error}");
+                // All of them at once, not one per restart.
+                assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
+                assert!(error.contains("NOTEDTHAT_S3_ACCESS_KEY_ID"), "{error}");
+                assert!(error.contains("NOTEDTHAT_S3_SECRET_ACCESS_KEY"), "{error}");
+                assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=s3"), "{error}");
+            };
         }
 
         #[test]
         fn s3_reconcile_defaults_on_and_is_parsed() {
-            let cfg = run_with_env(&[("NOTEDTHAT_S3_RECONCILE", None)], Config::from_env).unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_S3_RECONCILE", None)]).unwrap();
             let StorageConfig::S3(s3) = &cfg.storage else {
                 panic!("the placeholder selects s3")
             };
             assert!(s3.reconcile_on_startup);
 
-            let cfg = run_with_env(
-                &[("NOTEDTHAT_S3_RECONCILE", Some("false"))],
-                Config::from_env,
-            )
-            .unwrap();
+            let cfg = parse_config(&[("NOTEDTHAT_S3_RECONCILE", Some("false"))]).unwrap();
             let StorageConfig::S3(s3) = &cfg.storage else {
                 panic!("the placeholder selects s3")
             };
             assert!(!s3.reconcile_on_startup);
 
-            let error = run_with_env(
-                &[("NOTEDTHAT_S3_RECONCILE", Some("sometimes"))],
-                Config::from_env,
-            )
-            .unwrap_err()
-            .to_string();
+            let error = parse_config(&[("NOTEDTHAT_S3_RECONCILE", Some("sometimes"))])
+                .unwrap_err()
+                .to_string();
             assert!(
                 names_setting(
                     &error,
@@ -2829,39 +2658,37 @@ pub(crate) mod tests {
 
         #[test]
         fn s3_reconcile_under_fs_is_refused() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
                     ("NOTEDTHAT_S3_REGION", None),
                     ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
                     ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
                     ("NOTEDTHAT_S3_RECONCILE", Some("true")),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("belong to the s3 backend"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_S3_RECONCILE"), "{error}");
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(error.contains("belong to the s3 backend"), "{error}");
+                assert!(error.contains("NOTEDTHAT_S3_RECONCILE"), "{error}");
+            };
         }
 
         #[test]
         fn s3_allow_unenforced_conditional_writes_defaults_off_and_is_parsed() {
             const VAR: &str = "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES";
-            let cfg = run_with_env(&[(VAR, None)], Config::from_env).unwrap();
+            let cfg = parse_config(&[(VAR, None)]).unwrap();
             let StorageConfig::S3(s3) = &cfg.storage else {
                 panic!("the placeholder selects s3")
             };
             assert!(!s3.allow_unenforced_conditional_writes);
 
-            let cfg = run_with_env(&[(VAR, Some("true"))], Config::from_env).unwrap();
+            let cfg = parse_config(&[(VAR, Some("true"))]).unwrap();
             let StorageConfig::S3(s3) = &cfg.storage else {
                 panic!("the placeholder selects s3")
             };
             assert!(s3.allow_unenforced_conditional_writes);
 
-            let error = run_with_env(&[(VAR, Some("maybe"))], Config::from_env)
+            let error = parse_config(&[(VAR, Some("maybe"))])
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -2872,8 +2699,8 @@ pub(crate) mod tests {
 
         #[test]
         fn s3_allow_unenforced_conditional_writes_under_fs_is_refused() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
                     ("NOTEDTHAT_S3_REGION", None),
@@ -2883,49 +2710,46 @@ pub(crate) mod tests {
                         "NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES",
                         Some("true"),
                     ),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("belong to the s3 backend"), "{error}");
-                    assert!(
-                        error.contains("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES"),
-                        "{error}"
-                    );
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(error.contains("belong to the s3 backend"), "{error}");
+                assert!(
+                    error.contains("NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES"),
+                    "{error}"
+                );
+            };
         }
 
         /// The case this check exists for: the operator sets a root and forgets the
         /// selector, and would otherwise get a healthy S3 deployment with an unread root.
         #[test]
         fn an_fs_root_without_the_selector_is_refused_and_says_why() {
-            run_with_env(&[("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat"))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat"))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(
                     names_setting(&error, "NOTEDTHAT_STORAGE_BACKEND", "is unset"),
                     "{error}"
                 );
                 assert!(error.contains("NOTEDTHAT_FS_ROOT"), "{error}");
                 assert!(error.contains("NOTEDTHAT_STORAGE_BACKEND=fs"), "{error}");
-            });
+            };
         }
 
         /// An empty value is still a value — matching how removed variables are checked.
         #[test]
         fn an_empty_cross_backend_variable_still_counts() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_STORAGE_BACKEND", Some("fs")),
                     ("NOTEDTHAT_FS_ROOT", Some("/srv/notedthat")),
                     ("NOTEDTHAT_S3_REGION", Some("")),
                     ("NOTEDTHAT_S3_ACCESS_KEY_ID", None),
                     ("NOTEDTHAT_S3_SECRET_ACCESS_KEY", None),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(error.contains("NOTEDTHAT_S3_REGION"), "{error}");
+            };
         }
 
         /// The rejection table is checked against each adapter's own inventory, so it
@@ -2946,11 +2770,9 @@ pub(crate) mod tests {
             assert_eq!(s3, notedthat_storage_s3::S3_ENV_VARS.to_vec());
             assert_eq!(fs, notedthat_storage_fs::FS_ENV_VARS.to_vec());
 
+            let wired = cli_env_names();
             for (name, _, _) in &table {
-                assert!(
-                    ALL_ENV_KEYS.contains(name),
-                    "{name} is read but missing from ALL_ENV_KEYS"
-                );
+                assert!(wired.contains(*name), "{name} is read but has no flag");
             }
         }
 
@@ -2971,150 +2793,145 @@ pub(crate) mod tests {
 
         #[test]
         fn the_default_is_none_so_existing_deployments_publish_nothing() {
-            run_with_env(&[], || {
-                let config = Config::from_env().expect("valid");
+            {
+                let parsed = parse_config(&[]);
+                let config = parsed.expect("valid");
                 assert_eq!(config.events.kind(), EventsBackendKind::None);
-            });
+            };
         }
 
         #[test]
         fn memory_reads_its_capacity_and_defaults_it() {
-            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("memory"))], || {
-                let config = Config::from_env().expect("valid");
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_EVENTS_BACKEND", Some("memory"))]);
+                let config = parsed.expect("valid");
                 match config.events {
                     EventsConfig::Memory(memory) => {
                         assert_eq!(memory.capacity, notedthat_events::DEFAULT_MEMORY_CAPACITY);
                     }
                     other => panic!("expected memory, got {other:?}"),
                 }
-            });
-            run_with_env(
-                &[
+            };
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_EVENTS_BACKEND", Some("memory")),
                     ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", Some("250")),
-                ],
-                || {
-                    let config = Config::from_env().expect("valid");
-                    match config.events {
-                        EventsConfig::Memory(memory) => assert_eq!(memory.capacity, 250),
-                        other => panic!("expected memory, got {other:?}"),
-                    }
-                },
-            );
+                ]);
+                let config = parsed.expect("valid");
+                match config.events {
+                    EventsConfig::Memory(memory) => assert_eq!(memory.capacity, 250),
+                    other => panic!("expected memory, got {other:?}"),
+                }
+            };
         }
 
         #[test]
         fn nats_requires_its_url_and_names_the_variable() {
-            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("nats"))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_EVENTS_BACKEND", Some("nats"))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(
                     names_setting(&error, "NOTEDTHAT_NATS_URL", "is required"),
                     "{error}"
                 );
-            });
-            run_with_env(
-                &[
+            };
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_EVENTS_BACKEND", Some("nats")),
                     ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
                     ("NOTEDTHAT_NATS_STREAM", Some("evt")),
                     ("NOTEDTHAT_NATS_MAX_AGE_SECS", Some("60")),
-                ],
-                || {
-                    let config = Config::from_env().expect("valid");
-                    match config.events {
-                        EventsConfig::Nats(nats) => {
-                            assert_eq!(nats.connect.url, "nats://broker:4222");
-                            assert_eq!(nats.stream, "evt");
-                            assert_eq!(nats.max_age, Duration::from_mins(1));
-                        }
-                        other => panic!("expected nats, got {other:?}"),
+                ]);
+                let config = parsed.expect("valid");
+                match config.events {
+                    EventsConfig::Nats(nats) => {
+                        assert_eq!(nats.connect.url, "nats://broker:4222");
+                        assert_eq!(nats.stream, "evt");
+                        assert_eq!(nats.max_age, Duration::from_mins(1));
                     }
-                },
-            );
+                    other => panic!("expected nats, got {other:?}"),
+                }
+            };
         }
 
         /// A typo must not fall back to `none`: the server would start and simply
         /// never announce a change.
         #[test]
         fn an_unknown_events_backend_is_refused_rather_than_defaulted() {
-            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some("kafka"))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_EVENTS_BACKEND", Some("kafka"))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(
                     error.contains("expected \"none\", \"memory\" or \"nats\""),
                     "{error}"
                 );
                 assert!(error.contains("kafka"), "{error}");
-            });
-            run_with_env(&[("NOTEDTHAT_EVENTS_BACKEND", Some(""))], || {
-                let error = Config::from_env().unwrap_err().to_string();
+            };
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_EVENTS_BACKEND", Some(""))]);
+                let error = parsed.unwrap_err().to_string();
                 assert!(
                     names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "must not be empty"),
                     "{error}"
                 );
-            });
+            };
         }
 
         #[test]
         fn nats_variables_under_memory_are_reported_together_with_the_fix() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_EVENTS_BACKEND", Some("memory")),
                     ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
                     ("NOTEDTHAT_NATS_STREAM", Some("evt")),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(
-                        names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is memory"),
-                        "{error}"
-                    );
-                    assert!(error.contains("belong to the nats backend"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_NATS_URL"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_NATS_STREAM"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(
+                    names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is memory"),
+                    "{error}"
+                );
+                assert!(error.contains("belong to the nats backend"), "{error}");
+                assert!(error.contains("NOTEDTHAT_NATS_URL"), "{error}");
+                assert!(error.contains("NOTEDTHAT_NATS_STREAM"), "{error}");
+                assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
+            };
         }
 
         /// The operator configures a broker and forgets the selector: the highest-value
         /// case, since the server would otherwise start healthy and silent.
         #[test]
         fn a_nats_url_without_the_selector_is_refused_and_says_why() {
-            run_with_env(
-                &[("NOTEDTHAT_NATS_URL", Some("nats://broker:4222"))],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(
-                        names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is unset"),
-                        "{error}"
-                    );
-                    assert!(error.contains("default none backend"), "{error}");
-                    assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
-                },
-            );
+            {
+                let parsed = parse_config(&[("NOTEDTHAT_NATS_URL", Some("nats://broker:4222"))]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(
+                    names_setting(&error, "NOTEDTHAT_EVENTS_BACKEND", "is unset"),
+                    "{error}"
+                );
+                assert!(error.contains("default none backend"), "{error}");
+                assert!(error.contains("NOTEDTHAT_EVENTS_BACKEND=nats"), "{error}");
+            };
         }
 
         /// Both unselected backends' variables at once: each owner is named, and
         /// each fix is offered.
         #[test]
         fn offenders_from_two_backends_are_grouped_by_owner() {
-            run_with_env(
-                &[
+            {
+                let parsed = parse_config(&[
                     ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", Some("10")),
                     ("NOTEDTHAT_NATS_URL", Some("nats://broker:4222")),
-                ],
-                || {
-                    let error = Config::from_env().unwrap_err().to_string();
-                    assert!(error.contains("belong to the memory backend"), "{error}");
-                    assert!(error.contains("belong to the nats backend"), "{error}");
-                    assert!(
-                        error.contains(
-                            "NOTEDTHAT_EVENTS_BACKEND=memory or NOTEDTHAT_EVENTS_BACKEND=nats"
-                        ),
-                        "{error}"
-                    );
-                },
-            );
+                ]);
+                let error = parsed.unwrap_err().to_string();
+                assert!(error.contains("belong to the memory backend"), "{error}");
+                assert!(error.contains("belong to the nats backend"), "{error}");
+                assert!(
+                    error.contains(
+                        "NOTEDTHAT_EVENTS_BACKEND=memory or NOTEDTHAT_EVENTS_BACKEND=nats"
+                    ),
+                    "{error}"
+                );
+            };
         }
 
         #[test]
@@ -3142,11 +2959,9 @@ pub(crate) mod tests {
             expected_sorted.sort_unstable();
             assert_eq!(nats_sorted, expected_sorted);
 
+            let wired = cli_env_names();
             for (name, _, _) in &table {
-                assert!(
-                    ALL_ENV_KEYS.contains(name),
-                    "{name} is read but missing from ALL_ENV_KEYS"
-                );
+                assert!(wired.contains(*name), "{name} is read but has no flag");
             }
             assert!(
                 table.iter().all(|(_, _, supplied)| !supplied),
@@ -3162,7 +2977,7 @@ pub(crate) mod tests {
         fn config_with(
             overrides: &[(&str, Option<&str>)],
         ) -> Result<super::super::Config, super::super::Error> {
-            run_with_env(overrides, Config::from_env)
+            parse_config(overrides)
         }
 
         #[test]
@@ -3304,19 +3119,16 @@ pub(crate) mod tests {
 
         #[test]
         fn no_oidc_settings_means_no_verifier() {
-            let cfg = run_with_env(&[], Config::from_env).expect("valid config");
+            let cfg = parse_config(&[]).expect("valid config");
             assert!(cfg.oidc.is_none());
         }
 
         #[test]
         fn an_issuer_with_an_audience_enables_oidc_with_the_defaults() {
-            let cfg = run_with_env(
-                &[
-                    ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
-                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat, mcp-client")),
-                ],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[
+                ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
+                ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat, mcp-client")),
+            ])
             .expect("valid config");
             let oidc = cfg.oidc.expect("configured");
             assert_eq!(oidc.issuer, ISSUER, "the operator's spelling is kept");
@@ -3334,23 +3146,20 @@ pub(crate) mod tests {
 
         #[test]
         fn every_oidc_setting_is_read() {
-            let cfg = run_with_env(
-                &[
-                    ("NOTEDTHAT_OIDC_ISSUER", Some("https://auth.example.com")),
-                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
-                    ("NOTEDTHAT_OIDC_USERNAME_CLAIM", Some("email")),
-                    (
-                        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
-                        Some("urn:zitadel:iam:org:project:roles"),
-                    ),
-                    ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", Some("250")),
-                    (
-                        "NOTEDTHAT_OIDC_RESOURCE",
-                        Some("https://notes.example.com/"),
-                    ),
-                ],
-                Config::from_env,
-            )
+            let cfg = parse_config(&[
+                ("NOTEDTHAT_OIDC_ISSUER", Some("https://auth.example.com")),
+                ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                ("NOTEDTHAT_OIDC_USERNAME_CLAIM", Some("email")),
+                (
+                    "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+                    Some("urn:zitadel:iam:org:project:roles"),
+                ),
+                ("NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", Some("250")),
+                (
+                    "NOTEDTHAT_OIDC_RESOURCE",
+                    Some("https://notes.example.com/"),
+                ),
+            ])
             .expect("valid config");
             let oidc = cfg.oidc.expect("configured");
             assert_eq!(oidc.username_claim, "email");
@@ -3365,13 +3174,10 @@ pub(crate) mod tests {
 
         #[test]
         fn oidc_settings_without_an_issuer_are_rejected() {
-            let error = run_with_env(
-                &[
-                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
-                    ("NOTEDTHAT_OIDC_GROUPS_CLAIM", Some("roles")),
-                ],
-                Config::from_env,
-            )
+            let error = parse_config(&[
+                ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                ("NOTEDTHAT_OIDC_GROUPS_CLAIM", Some("roles")),
+            ])
             .expect_err("refused");
             let message = error.to_string();
             assert!(
@@ -3384,8 +3190,8 @@ pub(crate) mod tests {
 
         #[test]
         fn an_issuer_without_an_audience_is_rejected() {
-            let error = run_with_env(&[("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER))], Config::from_env)
-                .expect_err("refused");
+            let error =
+                parse_config(&[("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER))]).expect_err("refused");
             assert!(
                 names_setting(&error.to_string(), "NOTEDTHAT_OIDC_AUDIENCE", "required"),
                 "{error}"
@@ -3395,13 +3201,10 @@ pub(crate) mod tests {
         #[test]
         fn an_issuer_that_is_not_an_http_url_is_rejected() {
             for bad in ["auth.example.com", "ldap://auth.example.com", ""] {
-                let error = run_with_env(
-                    &[
-                        ("NOTEDTHAT_OIDC_ISSUER", Some(bad)),
-                        ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
-                    ],
-                    Config::from_env,
-                )
+                let error = parse_config(&[
+                    ("NOTEDTHAT_OIDC_ISSUER", Some(bad)),
+                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                ])
                 .expect_err("refused");
                 assert!(
                     error.to_string().contains("NOTEDTHAT_OIDC_ISSUER"),
@@ -3427,14 +3230,11 @@ pub(crate) mod tests {
                 ),
                 ("NOTEDTHAT_OIDC_CA_CERT", "/nonexistent/ca.pem"),
             ] {
-                let error = run_with_env(
-                    &[
-                        ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
-                        ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
-                        (var, Some(value)),
-                    ],
-                    Config::from_env,
-                )
+                let error = parse_config(&[
+                    ("NOTEDTHAT_OIDC_ISSUER", Some(ISSUER)),
+                    ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+                    (var, Some(value)),
+                ])
                 .expect_err("refused");
                 assert!(error.to_string().contains(var), "{var}: {error}");
             }

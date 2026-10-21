@@ -27,7 +27,6 @@ tracing.workspace = true
 [dev-dependencies]
 notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
 notedthat-storage-s3 = { path = "../notedthat-storage-s3" }
-temp-env = "0.3"
 httpdate.workspace = true
 testcontainers.workspace = true
 serde_json.workspace = true

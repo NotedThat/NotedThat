@@ -70,7 +70,7 @@ pub async fn connect(config: &NatsConnectConfig, name: &str) -> Result<Client, N
                 .credentials_file(path)
                 .await
                 .map_err(|error| NatsConnectError::File {
-                    setting: notedthat_core::setting("NOTEDTHAT_NATS_CREDS_FILE"),
+                    setting: notedthat_core::setting(crate::config::NATS_CREDS_FILE_ENV),
                     message: error.to_string(),
                 })?
         }
@@ -79,7 +79,7 @@ pub async fn connect(config: &NatsConnectConfig, name: &str) -> Result<Client, N
                 tokio::fs::read_to_string(path)
                     .await
                     .map_err(|error| NatsConnectError::File {
-                        setting: notedthat_core::setting("NOTEDTHAT_NATS_NKEY_SEED_FILE"),
+                        setting: notedthat_core::setting(crate::config::NATS_NKEY_SEED_FILE_ENV),
                         message: error.to_string(),
                     })?;
             options.nkey(seed.trim().to_string())

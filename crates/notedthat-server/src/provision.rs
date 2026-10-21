@@ -145,7 +145,7 @@ fn qdrant_provision_error(kb: &KbSlug, err: &ProvisionError) -> Error {
         message: format!(
             "failed to provision the qdrant collection for knowledge base '{}' via {}: {err}",
             kb.as_str(),
-            notedthat_core::setting("NOTEDTHAT_QDRANT_URL"),
+            notedthat_core::setting(crate::cli::QDRANT_URL_ENV),
         ),
     }
 }

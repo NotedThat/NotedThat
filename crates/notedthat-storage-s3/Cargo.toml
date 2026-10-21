@@ -26,7 +26,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-temp-env = "0.3"
 tempfile.workspace = true
 wiremock.workspace = true
 
