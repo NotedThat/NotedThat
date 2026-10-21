@@ -128,7 +128,7 @@ pub async fn intercept_propfind_too_large(
             StatusCode::INSUFFICIENT_STORAGE,
             [(
                 axum::http::header::CONTENT_TYPE,
-                "application/xml; charset=utf-8",
+                crate::dav_xml::CONTENT_TYPE,
             )],
             PROPFIND_TOO_LARGE_DAV_XML,
         )
