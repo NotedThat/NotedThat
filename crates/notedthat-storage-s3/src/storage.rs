@@ -327,21 +327,14 @@ fn record_version(wrote: &mut Vec<String>, version_id: Option<&str>) {
 /// that might, since a value equal to the real `ETag` would be stored and misread as the
 /// backend ignoring the header.
 fn altered_etag(etag: &str) -> String {
-    let mut altered = String::with_capacity(etag.len());
-    let mut changed = false;
-    for c in etag.chars() {
-        if !changed && c.is_ascii_hexdigit() {
-            altered.push(if c == '0' { '1' } else { '0' });
-            changed = true;
-        } else {
-            altered.push(c);
-        }
-    }
-    if changed {
-        altered
-    } else {
-        PROBE_UNMATCHABLE_ETAG.to_string()
-    }
+    let Some((at, digit)) = etag.char_indices().find(|(_, c)| c.is_ascii_hexdigit()) else {
+        return PROBE_UNMATCHABLE_ETAG.to_string();
+    };
+    let flipped = if digit == '0' { "1" } else { "0" };
+    let mut altered = etag.to_owned();
+    // An ASCII hex digit is a single byte, so this replaces exactly that one character.
+    altered.replace_range(at..=at, flipped);
+    altered
 }
 
 /// What a backend does with the preconditions on a conditional `PUT`, as
@@ -1141,4 +1134,37 @@ where
     R: std::fmt::Debug,
 {
     matches!(err.code(), Some("NoSuchBucket"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first hex digit flips — `'0'` to `'1'`, anything else to `'0'` — and every
+    /// other character, quotes and multipart suffix included, is kept as it was.
+    #[test]
+    fn altered_etag_changes_only_the_first_hex_digit() {
+        let cases = [
+            (
+                "\"9b2cf535f27731c974343645a3985328\"",
+                "\"0b2cf535f27731c974343645a3985328\"",
+            ),
+            ("\"0b2c\"", "\"1b2c\""),
+            ("\"ABC\"", "\"0BC\""),
+            ("abc-3", "0bc-3"),
+            ("\"xyz-0\"", "\"xyz-1\""),
+        ];
+        for (etag, expected) in cases {
+            assert_eq!(altered_etag(etag), expected, "for {etag}");
+        }
+    }
+
+    /// Without a hex digit to flip there is nothing to alter, so the probe falls back to
+    /// a value that cannot match.
+    #[test]
+    fn altered_etag_without_a_hex_digit_is_the_unmatchable_fallback() {
+        for etag in ["", "\"\"", "\"xyz\"", "W/\"-\""] {
+            assert_eq!(altered_etag(etag), PROBE_UNMATCHABLE_ETAG, "for {etag}");
+        }
+    }
 }
