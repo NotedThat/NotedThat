@@ -352,6 +352,9 @@ rate(notedthat_storage_operations_total{outcome="unavailable"}[5m]) > 0
 rate(notedthat_vector_store_operations_total{outcome="unavailable"}[5m]) > 0
 ```
 
+Both ship as rules in `docker/prometheus/alerts.yml`, with the other alerts and a runbook for each
+in [`docs/OPERATIONS.md`](OPERATIONS.md#monitoring).
+
 `outcome="cancelled"` is the third kind: the caller gave up before the call answered — an
 abandoned search, a connection dropped mid-`GET`. It is recorded because the alternative is
 losing those calls entirely, and losing them selectively: a dropped future records nothing after
@@ -373,7 +376,8 @@ One storage gauge is set once, at startup, and never again:
 `notedthat_storage_conditional_writes_enforced{kb}` is `1` for each knowledge base whose bucket
 enforced conditional writes and `0` for one that did not and was accepted with
 `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES` ([S3 conditional writes](#s3-conditional-writes)).
-It exists on `s3` only. `min(notedthat_storage_conditional_writes_enforced) == 0` is the alert.
+It exists on `s3` only. `min(notedthat_storage_conditional_writes_enforced) == 0` is the alert
+([NotedThatConditionalWritesNotEnforced](OPERATIONS.md#notedthatconditionalwritesnotenforced)).
 
 ### Scraping it
 
@@ -391,7 +395,8 @@ histogram_quantile(0.95, sum by (le) (rate(notedthat_search_duration_seconds_buc
 ```
 
 `sum by (le, kb)` breaks it down per knowledge base. `docker-compose.metrics.yml` runs a Prometheus
-with this scrape config already pointed at the server.
+with this scrape config already pointed at the server, and with the alerting rules in
+`docker/prometheus/alerts.yml` loaded ([Monitoring](OPERATIONS.md#monitoring)).
 
 ## Filesystem storage backend
 
@@ -476,6 +481,8 @@ Two log codes on the `notedthat::watch` target are worth alerting on:
 Both are also visible without the log: while a rescan is pending the knowledge base reports
 `"state": "stale"` at `GET /api/v1/knowledgebases/{kb}/index`, and every completed pass is
 its `last_reconcile` (see [the API's state model](API.md#get-apiv1knowledgebaseskb_slugindex)).
+`notedthat_fs_watch_lost_total` counts the first, and the shipped rules alert on it
+([NotedThatFsWatchLost](OPERATIONS.md#notedthatfswatchlost)).
 
 Turning watching off with `NOTEDTHAT_FS_WATCH=false` restores the older behaviour, where only
 writes through the API, WebDAV or MCP update the search index.
@@ -589,6 +596,9 @@ Two log codes on the `notedthat::reconcile` target are worth alerting on:
 |------|---------|
 | `S3_RECONCILE_SKIPPED` | The index could not be read for this knowledge base, so nothing was compared and nothing enqueued; it stays `stale`. Usually the search collection is gone (provisioned at startup and dropped since — restart to re-provision it). |
 | `S3_RECONCILE_INCOMPLETE` | The bucket could not be listed, so the pass stopped before comparing; nothing enqueued, the knowledge base stays `stale`. Fix the bucket or the credentials, then request a pass. |
+
+Both count as `notedthat_reconcile_passes_total{outcome="incomplete"}`, which the shipped rules
+alert on ([NotedThatReconcileIncomplete](OPERATIONS.md#notedthatreconcileincomplete)).
 
 With `NOTEDTHAT_S3_RECONCILE=false`, only writes through the API, WebDAV or MCP update the
 search index until the operator asks for a pass.

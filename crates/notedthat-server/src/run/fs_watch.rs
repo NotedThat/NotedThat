@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use notedthat_core::KbSlug;
+use notedthat_core::metrics::reconcile_cause;
 use notedthat_indexer::{
     IndexEvent, IndexHealth, IndexQueueSender, ReconcileSummary, RefreshOrigin, VectorStore,
 };
@@ -113,7 +114,15 @@ async fn run_bridge(
     // what has not been observed yet (#97).
     for kb in &kbs {
         sink.health.mark_stale(kb.as_str());
-        reconcile_into(&storage, store.as_ref(), &sink, kb, None, "startup").await;
+        reconcile_into(
+            &storage,
+            store.as_ref(),
+            &sink,
+            kb,
+            None,
+            reconcile_cause::STARTUP,
+        )
+        .await;
     }
 
     while let Some(signal) = signals.recv().await {
@@ -138,7 +147,7 @@ async fn run_bridge(
                     &sink,
                     &kb,
                     Some(prefix.as_str()),
-                    "subtree changed",
+                    reconcile_cause::SUBTREE_CHANGED,
                 )
                 .await;
             }
@@ -148,7 +157,15 @@ async fn run_bridge(
                 // completes, changes may have gone unobserved, and the health view
                 // says so (#97).
                 sink.health.mark_stale(kb.as_str());
-                reconcile_into(&storage, store.as_ref(), &sink, &kb, None, "rescan").await;
+                reconcile_into(
+                    &storage,
+                    store.as_ref(),
+                    &sink,
+                    &kb,
+                    None,
+                    reconcile_cause::RESCAN,
+                )
+                .await;
             }
         }
     }

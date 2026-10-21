@@ -308,6 +308,33 @@ jobs:
           done
           [ "$recorded" = 1 ] || echo "::warning::$dbs exists but holds no git checkout to record"
 
+  # The Prometheus alerting rules in docker/prometheus (#186): the config that
+  # loads them, the rules themselves, and their unit tests in alerts.test.yml.
+  # promtool comes from the same image docker-compose.metrics.yml runs, so the
+  # rules are judged by the Prometheus that will evaluate them; the tag moves
+  # in step with that file's `image:` and DEVELOPMENT.md. Nothing `needs:`
+  # this job: a broken rules file is caught here on the pull request, and it
+  # ships no code a release could be held back for.
+  alerting-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Mounted where docker-compose.metrics.yml mounts it, so `rule_files`
+      # resolves exactly as it does in the stack.
+      - run: |
+          set -euo pipefail
+          promtool() {
+            docker run --rm --entrypoint promtool -w /etc/prometheus \
+              -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 "$@"
+          }
+          promtool check config prometheus.yml
+          promtool test rules alerts.test.yml
+
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
   # push=false — no GHCR login, no cosign, no secrets required (safe for
