@@ -120,7 +120,7 @@ impl NatsPublisher {
             &js,
             &StreamSpec {
                 name: config.stream.clone(),
-                name_setting: "NOTEDTHAT_NATS_STREAM",
+                name_setting: crate::config::NATS_STREAM_ENV,
                 subject: stream_subject(),
                 retention: RetentionPolicy::Limits,
                 discard: DiscardPolicy::Old,

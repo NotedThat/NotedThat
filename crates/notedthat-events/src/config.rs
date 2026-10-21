@@ -14,12 +14,19 @@ use notedthat_nats::{
     parse_stream_name,
 };
 
+/// Events the `memory` ring keeps before the oldest is dropped.
+pub const EVENTS_MEMORY_CAPACITY_ENV: &str = "NOTEDTHAT_EVENTS_MEMORY_CAPACITY";
+/// The `JetStream` stream that holds the log.
+pub const NATS_STREAM_ENV: &str = "NOTEDTHAT_NATS_STREAM";
+/// How long the stream keeps an event, in seconds.
+pub const NATS_MAX_AGE_SECS_ENV: &str = "NOTEDTHAT_NATS_MAX_AGE_SECS";
+
 /// Every environment variable the `memory` adapter reads.
-pub const MEMORY_ENV_VARS: [&str; 1] = ["NOTEDTHAT_EVENTS_MEMORY_CAPACITY"];
+pub const MEMORY_ENV_VARS: [&str; 1] = [EVENTS_MEMORY_CAPACITY_ENV];
 
 /// Every environment variable the `nats` adapter reads beyond the shared
 /// connection settings ([`notedthat_nats::NATS_CONNECT_ENV_VARS`]).
-pub const NATS_ENV_VARS: [&str; 2] = ["NOTEDTHAT_NATS_STREAM", "NOTEDTHAT_NATS_MAX_AGE_SECS"];
+pub const NATS_ENV_VARS: [&str; 2] = [NATS_STREAM_ENV, NATS_MAX_AGE_SECS_ENV];
 
 /// Events the ring keeps before the oldest is dropped, unless configured.
 pub const DEFAULT_MEMORY_CAPACITY: usize = 10_000;
@@ -35,16 +42,6 @@ pub const DEFAULT_NATS_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 pub struct MemorySettings {
     /// `NOTEDTHAT_EVENTS_MEMORY_CAPACITY`.
     pub capacity: Option<OsString>,
-}
-
-impl MemorySettings {
-    /// Collect every setting from the process environment.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            capacity: std::env::var_os("NOTEDTHAT_EVENTS_MEMORY_CAPACITY"),
-        }
-    }
 }
 
 /// The `memory` adapter's validated configuration.
@@ -70,7 +67,7 @@ impl MemoryConfig {
     /// `Error::Config` when the capacity is not a positive integer.
     pub fn from_settings(settings: &MemorySettings) -> Result<Self, Error> {
         let capacity = parse_positive(
-            "NOTEDTHAT_EVENTS_MEMORY_CAPACITY",
+            EVENTS_MEMORY_CAPACITY_ENV,
             settings.capacity.as_deref(),
             DEFAULT_MEMORY_CAPACITY as u64,
             "a positive number of events",
@@ -79,7 +76,7 @@ impl MemoryConfig {
             capacity: usize::try_from(capacity).map_err(|_| {
                 config_error(format!(
                     "{} is invalid: {capacity} does not fit this platform",
-                    setting("NOTEDTHAT_EVENTS_MEMORY_CAPACITY")
+                    setting(EVENTS_MEMORY_CAPACITY_ENV)
                 ))
             })?,
         })
@@ -95,18 +92,6 @@ pub struct NatsSettings {
     pub stream: Option<String>,
     /// `NOTEDTHAT_NATS_MAX_AGE_SECS`.
     pub max_age_secs: Option<OsString>,
-}
-
-impl NatsSettings {
-    /// Collect every setting from the process environment.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            connect: NatsConnectSettings::from_env(),
-            stream: std::env::var("NOTEDTHAT_NATS_STREAM").ok(),
-            max_age_secs: std::env::var_os("NOTEDTHAT_NATS_MAX_AGE_SECS"),
-        }
-    }
 }
 
 /// The `nats` adapter's validated configuration.
@@ -156,9 +141,9 @@ impl NatsConfig {
         stream: Option<String>,
         max_age_secs: Option<&OsStr>,
     ) -> Result<Self, Error> {
-        let stream = parse_stream_name("NOTEDTHAT_NATS_STREAM", stream, DEFAULT_NATS_STREAM)?;
+        let stream = parse_stream_name(NATS_STREAM_ENV, stream, DEFAULT_NATS_STREAM)?;
         let max_age_secs = parse_positive(
-            "NOTEDTHAT_NATS_MAX_AGE_SECS",
+            NATS_MAX_AGE_SECS_ENV,
             max_age_secs,
             DEFAULT_NATS_MAX_AGE_SECS,
             "a positive number of seconds",
@@ -170,7 +155,7 @@ impl NatsConfig {
             return Err(config_error(format!(
                 "{} is {max_age_secs} seconds, shorter than the {MIN_NATS_DUPLICATE_WINDOW_SECS}-second \
                  duplicate window a publish retried after a timed-out acknowledgement needs",
-                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+                setting(NATS_MAX_AGE_SECS_ENV),
             )));
         }
         // nats-server refuses a duplicate window longer than the retention; an
@@ -183,7 +168,7 @@ impl NatsConfig {
                  duplicate window longer than the retention",
                 setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"),
                 window.as_secs(),
-                setting("NOTEDTHAT_NATS_MAX_AGE_SECS"),
+                setting(NATS_MAX_AGE_SECS_ENV),
             )));
         }
         Ok(Self {
@@ -392,36 +377,21 @@ mod tests {
     }
 
     #[test]
-    fn from_env_reads_exactly_the_inventoried_variables() {
-        // `temp_env` leaves unlisted variables alone, so unset every inventoried
-        // one: anything missing here would leak in from the developer's shell.
-        let mut vars: Vec<(&str, Option<&str>)> = MEMORY_ENV_VARS
-            .iter()
-            .chain(NATS_ENV_VARS.iter())
-            .chain(notedthat_nats::NATS_CONNECT_ENV_VARS.iter())
-            .map(|key| (*key, None))
-            .collect();
-        for (key, value) in [
-            ("NOTEDTHAT_EVENTS_MEMORY_CAPACITY", "42"),
-            ("NOTEDTHAT_NATS_URL", "nats://u:p@broker:4222"),
-            ("NOTEDTHAT_NATS_STREAM", "evt"),
-            ("NOTEDTHAT_NATS_MAX_AGE_SECS", "60"),
-        ] {
-            let (_, slot) = vars
-                .iter_mut()
-                .find(|(existing, _)| *existing == key)
-                .unwrap_or_else(|| panic!("{key} is not inventoried"));
-            *slot = Some(value);
-        }
-
-        temp_env::with_vars(vars, || {
-            let memory = MemoryConfig::from_settings(&MemorySettings::from_env()).unwrap();
-            assert_eq!(memory.capacity, 42);
-            let nats = NatsConfig::from_settings(NatsSettings::from_env()).unwrap();
-            assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
-            assert_eq!(nats.stream, "evt");
-            assert_eq!(nats.max_age, Duration::from_mins(1));
-        });
+    fn every_setting_lands_in_the_config() {
+        let memory = MemoryConfig::from_settings(&MemorySettings {
+            capacity: Some("42".into()),
+        })
+        .unwrap();
+        assert_eq!(memory.capacity, 42);
+        let nats = NatsConfig::from_settings(NatsSettings {
+            connect: url("nats://u:p@broker:4222"),
+            stream: Some("evt".into()),
+            max_age_secs: Some("60".into()),
+        })
+        .unwrap();
+        assert_eq!(nats.connect.url, "nats://u:p@broker:4222");
+        assert_eq!(nats.stream, "evt");
+        assert_eq!(nats.max_age, Duration::from_mins(1));
     }
 
     #[test]
