@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use notedthat_api_http::state::{ReconcileBusy, ReconcileTrigger};
 use notedthat_core::reconcile::{IndexedEtag, compare, walk_etags};
-use notedthat_core::{KbSlug, Storage};
+use notedthat_core::{KbSlug, Storage, unix_seconds_i64};
 use notedthat_indexer::{
     IndexEvent, IndexHealth, IndexQueueSender, ReconcileSummary, RefreshOrigin, VectorStore,
 };
@@ -47,12 +47,6 @@ impl IndexSink {
         self.health.enqueued(&kb);
         Ok(())
     }
-}
-
-pub(super) fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Runs reconciliation passes for the `s3` backend, one per knowledge base at a time.
@@ -254,7 +248,7 @@ async fn run_pass(inner: &Inner, kb: &KbSlug, cause: &str) {
     inner.sink.health.reconciled(
         kb.as_str(),
         ReconcileSummary {
-            at: now_unix(),
+            at: unix_seconds_i64(std::time::SystemTime::now()),
             scope: None,
             objects_on_disk: report.objects_on_disk,
             unchanged: report.unchanged,

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use notedthat_core::KbSlug;
+use notedthat_core::{KbSlug, unix_seconds_i64};
 use notedthat_indexer::{
     IndexEvent, IndexHealth, IndexQueueSender, ReconcileSummary, RefreshOrigin, VectorStore,
 };
@@ -21,7 +21,7 @@ use notedthat_storage_fs::{
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use super::reconcile::{IndexSink, now_unix};
+use super::reconcile::IndexSink;
 
 /// How many changes one reconciliation pass holds while they are forwarded.
 const RECONCILE_BUFFER: usize = 256;
@@ -275,7 +275,7 @@ fn record_pass(
     sink.health.reconciled(
         kb.as_str(),
         ReconcileSummary {
-            at: now_unix(),
+            at: unix_seconds_i64(std::time::SystemTime::now()),
             scope: prefix.map(str::to_string),
             objects_on_disk: report.objects_on_disk,
             unchanged: report.unchanged,
