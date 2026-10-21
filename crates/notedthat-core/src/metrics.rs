@@ -466,7 +466,7 @@ mod tests {
                 ALL_NAMES.contains(metric),
                 "{metric} has buckets but is not in the catalogue"
             );
-            assert!(!buckets.is_empty(), "{metric} has an empty bucket set");
+            assert_ne!(buckets.len(), 0, "{metric} has an empty bucket set");
             assert!(
                 buckets.windows(2).all(|w| w[0] < w[1]),
                 "{metric}'s buckets must be strictly ascending"

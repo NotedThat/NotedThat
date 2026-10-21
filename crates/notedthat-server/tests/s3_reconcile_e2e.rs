@@ -321,7 +321,7 @@ async fn with_the_switch_off_only_a_request_runs_a_pass() {
     let health = server.index_health().await;
     assert!(health["last_reconcile"].is_null(), "{health}");
     assert_eq!(health["state"], "healthy", "{health}");
-    assert!(server.indexed().await.is_empty());
+    assert_eq!(server.indexed().await.len(), 0);
 
     let response = server.post_reconcile(Some(TOKEN), KB).await;
     assert_eq!(response.status(), 202);

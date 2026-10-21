@@ -100,7 +100,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, append_args(Some("\"abc\"".into()))).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -121,7 +121,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, append_args(None)).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -210,7 +210,7 @@ mod tests {
         };
         let result = run(&c, args).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 }

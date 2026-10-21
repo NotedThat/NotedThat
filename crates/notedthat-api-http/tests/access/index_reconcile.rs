@@ -71,7 +71,7 @@ async fn an_identity_is_refused_whatever_the_rules_grant_it() {
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{token}");
         assert_eq!(json(response).await["error"], "forbidden", "{token}");
     }
-    assert!(recording.triggered.lock().unwrap().is_empty());
+    assert_eq!(recording.triggered.lock().unwrap().len(), 0);
 }
 
 #[tokio::test]

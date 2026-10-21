@@ -141,7 +141,7 @@ mod tests {
         let c = client(&server.uri());
         let result = run(&c, replace_args()).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -167,7 +167,7 @@ mod tests {
         };
         let result = run(&c, args).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 
@@ -266,7 +266,7 @@ mod tests {
         };
         let result = run(&c, args).await.unwrap();
 
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 

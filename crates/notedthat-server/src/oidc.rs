@@ -1082,7 +1082,7 @@ mod tests {
         }
 
         // Then — the issuer was not asked.
-        assert!(server.received_requests().await.unwrap().is_empty());
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
     }
 
     #[tokio::test]

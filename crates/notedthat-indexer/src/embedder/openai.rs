@@ -358,7 +358,7 @@ mod tests {
         let server = MockServer::start().await;
         let embedder = OpenAiCompatibleEmbedder::new(make_config(&server.uri())).unwrap();
         let result = embedder.embed(&[]).await.unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
         let reqs = server.received_requests().await.unwrap();
         assert_eq!(reqs.len(), 0, "should make zero HTTP calls for empty input");
     }
@@ -410,7 +410,7 @@ mod tests {
             .await;
         let embedder = OpenAiCompatibleEmbedder::new(make_config(&server.uri())).unwrap();
         let result = embedder.embed(&["y".to_string()]).await.unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -593,7 +593,7 @@ mod tests {
         config.endpoint_url = format!("{}/v1/", server.uri());
         let embedder = OpenAiCompatibleEmbedder::new(config).unwrap();
         let result = embedder.embed(&["x".to_string()]).await.unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
     }
 
     /// A base URL that is not under `/v1` (Gemini's is `/v1beta/openai`) is used as given:

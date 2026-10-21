@@ -48,21 +48,21 @@ mod tests {
     #[test]
     fn empty_deserializes_from_empty_hits() {
         let r: SearchResponse = serde_json::from_str(r#"{"hits":[]}"#).unwrap();
-        assert!(r.hits.is_empty());
+        assert_eq!(r.hits.len(), 0);
     }
 
     #[test]
     fn deserializes_from_empty_object() {
         // #[serde(default)] on hits allows {} to deserialize as empty
         let r: SearchResponse = serde_json::from_str("{}").unwrap();
-        assert!(r.hits.is_empty());
+        assert_eq!(r.hits.len(), 0);
     }
 
     #[test]
     fn new_constructor_sets_hits() {
         // We can't construct SearchHit without ObjectKey, but we can test the constructor path
         let r = SearchResponse::new(vec![]);
-        assert!(r.hits.is_empty());
+        assert_eq!(r.hits.len(), 0);
         let r2 = SearchResponse::empty();
         assert_eq!(r, r2);
     }

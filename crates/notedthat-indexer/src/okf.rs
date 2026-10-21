@@ -161,8 +161,8 @@ mod tests {
         let (metadata, body_start) = concept_prefix("metric.md", raw).expect("minimal concept");
         assert_eq!(metadata.concept_type, "Metric");
         assert!(metadata.title.is_none());
-        assert!(metadata.tags.is_empty());
-        assert!(body_chunks(raw, body_start).is_empty());
+        assert_eq!(metadata.tags.len(), 0);
+        assert_eq!(body_chunks(raw, body_start).len(), 0);
     }
 
     #[test]

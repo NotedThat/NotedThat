@@ -100,7 +100,7 @@ async fn read_nothing(response: axum::response::Response) {
         .into_iter()
         .filter(|f| f.data.is_some())
         .collect();
-    assert!(events.is_empty(), "expected no events, got {events:?}");
+    assert_eq!(events.len(), 0, "expected no events, got {events:?}");
 }
 
 /// Read the stream until it ends or `deadline` passes, whichever is first,

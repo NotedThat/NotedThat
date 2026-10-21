@@ -67,7 +67,7 @@ mod tests {
             .await;
         let c = client(&server.uri());
         let result = run(&c).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         let json_str = match &result.content[0] {
             ContentBlock::Text(t) => t.text.clone(),
             _ => panic!("expected text content"),

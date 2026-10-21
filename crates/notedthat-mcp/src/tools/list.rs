@@ -80,7 +80,7 @@ mod tests {
             cursor: None,
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]
@@ -103,7 +103,7 @@ mod tests {
             cursor: Some("opaque-token-xyz".into()),
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]

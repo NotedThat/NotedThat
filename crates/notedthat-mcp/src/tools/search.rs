@@ -753,7 +753,7 @@ mod tests {
             ..SearchFilter::default()
         });
         let result = run(&client(&server.uri()), args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]

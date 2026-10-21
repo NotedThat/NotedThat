@@ -776,6 +776,6 @@ mod tests {
         assert!(staged_file.is_some());
         assert_eq!(*len, 7);
         let stored = storage.inner().object("test-kb", "big.bin").await.unwrap();
-        assert!(stored.bytes.is_empty());
+        assert_eq!(stored.bytes.len(), 0);
     }
 }

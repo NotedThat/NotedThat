@@ -90,11 +90,11 @@ pub(in crate::router) async fn head_object(
         request_id: request_id.clone(),
     };
 
-    let path = parse_path(&object_path).map_err(&err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // Authorize before any storage call, so a denial costs nothing and reads
     // identically whether or not the object exists.
-    access.require(Verb::Read, path.as_str()).map_err(&err)?;
+    access.require(Verb::Read, path.as_str()).map_err(err)?;
     let kb = access.kb().clone();
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
@@ -183,11 +183,11 @@ pub(in crate::router) async fn get_object(
         request_id: request_id.clone(),
     };
 
-    let path = parse_path(&object_path).map_err(&err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // Authorize before any storage call, so a denial costs nothing and reads
     // identically whether or not the object exists.
-    access.require(Verb::Read, path.as_str()).map_err(&err)?;
+    access.require(Verb::Read, path.as_str()).map_err(err)?;
     let kb = access.kb().clone();
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
     // A non-UTF-8 `If-Range` can match nothing, so it reads as a stale validator.

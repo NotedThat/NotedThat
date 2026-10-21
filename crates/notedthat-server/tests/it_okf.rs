@@ -103,7 +103,7 @@ async fn okf_upload_preserves_source_and_exposes_metadata_through_http_and_mcp()
         json!({"concept_type": "Metric", "tags": ["missing"]}),
         json!({"concept_type": "Metric", "mime": "text/plain"}),
     ] {
-        assert!(search(&server, excluded).await.is_empty());
+        assert_eq!(search(&server, excluded).await.len(), 0);
     }
 
     let initialized = mcp_request(
@@ -180,6 +180,6 @@ async fn replacing_okf_with_fewer_chunks_and_metadata_only_removes_stale_search_
     .await;
 
     // Then: processing a later event proves metadata-only indexing finished and removed all hits.
-    assert!(search(&server, filter).await.is_empty());
+    assert_eq!(search(&server, filter).await.len(), 0);
     assert_eq!(server.get_text(PATH).await, changed);
 }

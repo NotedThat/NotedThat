@@ -238,7 +238,7 @@ mod tests {
         let mut pending = Pending::new(64);
         pending.key(&kb(), key("a.md"), now);
 
-        assert!(pending.take_settled(now, settle()).is_empty());
+        assert_eq!(pending.take_settled(now, settle()).len(), 0);
         assert_eq!(pending.take_settled(later(now), settle()).len(), 1);
     }
 

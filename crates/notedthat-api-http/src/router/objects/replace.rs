@@ -116,11 +116,11 @@ async fn replace_object(
         request_id: request_id.clone(),
     };
 
-    let path = parse_path(&object_path).map_err(&err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
+    let path = parse_path(&object_path).map_err(err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
     // Authorized before the body is read or staged, so a denied write
     // never spools bytes to memory or disk.
-    access.require(Verb::Write, path.as_str()).map_err(&err)?;
+    access.require(Verb::Write, path.as_str()).map_err(err)?;
     let kb = access.kb().clone();
     let json_cap_u64 = state
         .max_patchable_size
@@ -141,7 +141,7 @@ async fn replace_object(
         })));
     }
 
-    let conditionals = replace_conditionals(&req).map_err(&err)?;
+    let conditionals = replace_conditionals(&req).map_err(err)?;
     let body_bytes: Bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(json_cap_u64))
         .await
         .map_err(|_| {

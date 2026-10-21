@@ -62,7 +62,7 @@ mod tests {
             if_match: None,
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
     }
 
     #[tokio::test]
@@ -100,7 +100,7 @@ mod tests {
             if_match: Some("\"etag1\"".into()),
         };
         let result = run(&c, args).await.unwrap();
-        assert!(!result.content.is_empty());
+        assert_ne!(result.content.len(), 0);
         server.verify().await;
     }
 

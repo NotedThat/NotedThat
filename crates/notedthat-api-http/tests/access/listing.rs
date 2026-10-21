@@ -75,7 +75,7 @@ async fn a_listing_drops_the_internal_namespace_for_an_anonymous_caller() {
     let keys = keys_for(app, "/api/v1/knowledgebases/notes", None).await;
 
     // Then
-    assert!(!keys.is_empty());
+    assert_ne!(keys.len(), 0);
     assert!(
         !keys.iter().any(|key| key.starts_with(".notedthat")),
         "{keys:?}"

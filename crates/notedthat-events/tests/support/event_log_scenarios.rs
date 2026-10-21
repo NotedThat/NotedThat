@@ -487,5 +487,5 @@ pub async fn a_subscription_outlives_its_siblings(fx: &dyn EventLogFixture) {
 pub async fn the_log_is_ready_and_named(fx: &dyn EventLogFixture) {
     let log = fx.log();
     assert!(log.ready(), "a freshly built log is ready");
-    assert!(!log.backend_name().is_empty());
+    assert_ne!(log.backend_name().len(), 0);
 }

@@ -65,7 +65,7 @@ async fn out_of_range_line_returns_416_with_dual_headers() {
     assert_eq!(response.headers()["content-range"], "lines */20");
     assert_content_range_bytes(&response, &format!("*/{}", TWENTY_LINE_FIXTURE.len()));
     let body = response.text().await.expect("416 body should read");
-    assert!(body.is_empty(), "416 body should be empty, got {body:?}");
+    assert_eq!(body.len(), 0, "416 body should be empty, got {body:?}");
 }
 
 #[tokio::test]

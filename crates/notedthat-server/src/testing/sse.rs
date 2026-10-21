@@ -218,7 +218,7 @@ impl Subscription {
             .filter(|f| f.data.is_some())
             .collect();
         let unread: Vec<&Frame> = all[self.consumed..].iter().filter(|f| keep(f)).collect();
-        assert!(unread.is_empty(), "expected no events, got {unread:?}");
+        assert_eq!(unread.len(), 0, "expected no events, got {unread:?}");
         self.consumed = all.len();
     }
 

@@ -415,7 +415,7 @@ mod tests {
                 orphaned: 0
             }
         );
-        assert!(r.keys.is_empty());
+        assert_eq!(r.keys.len(), 0);
     }
 
     #[test]
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(r.report.changed, 0);
         assert_eq!(r.report.orphaned, 0);
         assert!(r.report.is_clean());
-        assert!(keys(&r).is_empty());
+        assert_eq!(keys(&r).len(), 0);
     }
 
     fn kb() -> KbSlug {

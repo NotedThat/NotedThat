@@ -113,7 +113,7 @@ fn point_to_hit_missing_text_yields_empty_preview() {
 
     let hit = point_to_hit(scored_point(payload, 0.5)).expect("valid hit");
 
-    assert!(hit.preview.is_empty());
+    assert_eq!(hit.preview.len(), 0);
     assert_eq!(hit.object_key.as_str(), "docs/a.md");
     assert!((hit.score - 0.5).abs() < f32::EPSILON);
 }
@@ -142,7 +142,7 @@ fn point_to_hit_missing_heading_path_yields_empty_vec() {
 
     let hit = point_to_hit(scored_point(payload, 0.1)).expect("valid hit");
 
-    assert!(hit.heading_path.is_empty());
+    assert_eq!(hit.heading_path.len(), 0);
 }
 
 #[test]
@@ -559,6 +559,6 @@ mod search {
             .await
             .unwrap();
 
-        assert!(response.hits.is_empty());
+        assert_eq!(response.hits.len(), 0);
     }
 }

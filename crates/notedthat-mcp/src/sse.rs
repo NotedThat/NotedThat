@@ -190,7 +190,7 @@ mod tests {
             .expect("the é is two bytes")
             + 1;
         let mut parser = SseParser::new();
-        assert!(parser.feed(&frame[..split]).is_empty());
+        assert_eq!(parser.feed(&frame[..split]).len(), 0);
         let events = parser.feed(&frame[split..]);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "{\"object_key\":\"notes/café.md\"}");
@@ -235,7 +235,7 @@ mod tests {
     fn a_frame_that_never_ends_is_dropped_rather_than_buffered_forever() {
         let mut parser = SseParser::new();
         for _ in 0..3 {
-            assert!(parser.feed(&vec![b'x'; 512 * 1024]).is_empty());
+            assert_eq!(parser.feed(&vec![b'x'; 512 * 1024]).len(), 0);
         }
         assert!(
             parser.feed(b"data: after\n\n").len() <= 1,
@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn a_frame_split_across_chunks_arrives_once_complete() {
         let mut parser = SseParser::new();
-        assert!(parser.feed(b"id: 7\nevent: object.wri").is_empty());
-        assert!(parser.feed(b"tten\ndata: {\"a\":1}\n").is_empty());
+        assert_eq!(parser.feed(b"id: 7\nevent: object.wri").len(), 0);
+        assert_eq!(parser.feed(b"tten\ndata: {\"a\":1}\n").len(), 0);
         let events = parser.feed(b"\n");
         assert_eq!(
             events,
@@ -276,8 +276,8 @@ mod tests {
     fn comments_are_dropped_and_a_comment_only_block_dispatches_nothing() {
         let mut parser = SseParser::new();
         // The API's heartbeat, and rmcp's ping.
-        assert!(parser.feed(b": keep-alive\n\n").is_empty());
-        assert!(parser.feed(b": ping\n\n").is_empty());
+        assert_eq!(parser.feed(b": keep-alive\n\n").len(), 0);
+        assert_eq!(parser.feed(b": ping\n\n").len(), 0);
         let events = parser.feed(b": subscribed\ndata: x\n\n");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "x");

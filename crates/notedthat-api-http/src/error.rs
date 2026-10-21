@@ -1398,7 +1398,7 @@ mod tests {
         let resp = ApiError::NotModified(Validators::default()).into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert!(body.is_empty(), "304 must have an empty body");
+        assert_eq!(body.len(), 0, "304 must have an empty body");
     }
 
     /// RFC 9110 §15.4.5: a 304 carries the `ETag` a 200 would, and `Last-Modified`
@@ -1445,7 +1445,7 @@ mod tests {
             .expect("content-range header must be present on 416");
         assert_eq!(cr.to_str().unwrap(), "bytes */100");
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert!(body.is_empty(), "416 body must be empty per RFC 7233 §4.4");
+        assert_eq!(body.len(), 0, "416 body must be empty per RFC 7233 §4.4");
     }
 
     /// Same 416 check via the `ApiError::Storage(...)` wrapper (e.g. from router.rs
@@ -1476,7 +1476,7 @@ mod tests {
         assert_eq!(resp.headers()["etag"], "\"v2\"");
         assert!(resp.headers().get("last-modified").is_none());
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert!(body.is_empty(), "304 must have an empty body");
+        assert_eq!(body.len(), 0, "304 must have an empty body");
     }
 
     /// `From<StorageError>` promotes `NotModified` to `ApiError::NotModified`.
@@ -1794,7 +1794,7 @@ mod tests {
                 "*/100"
             );
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            assert!(body.is_empty());
+            assert_eq!(body.len(), 0);
         }
 
         #[tokio::test]
@@ -1825,7 +1825,7 @@ mod tests {
                 "*/160"
             );
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            assert!(body.is_empty());
+            assert_eq!(body.len(), 0);
         }
 
         #[tokio::test]

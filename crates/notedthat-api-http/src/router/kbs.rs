@@ -160,8 +160,8 @@ pub(super) async fn list_objects(
         request_id: request_id.clone(),
     };
 
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
-    access.require_any(Verb::List).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    access.require_any(Verb::List).map_err(err)?;
     let limit = q.limit.filter(|&limit| limit > 0).unwrap_or(100).min(1000);
 
     let result = list_filtered_objects(

@@ -38,7 +38,7 @@ async fn test_options_body_empty() {
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert!(body.is_empty());
+    assert_eq!(body.len(), 0);
 }
 
 #[tokio::test]

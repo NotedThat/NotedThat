@@ -984,7 +984,7 @@ async fn parameterised_content_type_is_found_by_its_media_type() {
     .await;
 
     let points = scroll_points(&store, &kb, "hello.md", false).await;
-    assert!(!points.is_empty(), "hello.md was not indexed");
+    assert_ne!(points.len(), 0, "hello.md was not indexed");
     for point in &points {
         assert_eq!(string_payload(point, "mime"), "text/markdown");
     }
@@ -1005,7 +1005,7 @@ async fn parameterised_content_type_is_found_by_its_media_type() {
         )
         .await
         .unwrap();
-    assert!(!hits.is_empty(), "mime filter text/markdown found nothing");
+    assert_ne!(hits.len(), 0, "mime filter text/markdown found nothing");
 }
 
 #[tokio::test]
@@ -1599,7 +1599,7 @@ async fn updates_of_the_same_file_run_in_order_and_keep_the_last_content() {
     drop(tx);
     handle.await.unwrap();
     let points = scroll_points(&store, &kb, "serial.md", false).await;
-    assert!(!points.is_empty());
+    assert_ne!(points.len(), 0);
     for point in &points {
         let text = string_payload(point, "text");
         assert!(
@@ -2136,7 +2136,7 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
         2,
     )
     .await;
-    assert!(unused_embedder.batch_sizes().is_empty());
+    assert_eq!(unused_embedder.batch_sizes().len(), 0);
     let preserved = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(preserved.len(), 1);
     assert_eq!(string_payload(&preserved[0], "text"), "old stable");
@@ -2604,7 +2604,7 @@ mod announcing {
         };
         assert_eq!(mime, "text/markdown");
         let points = scroll_points(&store, &kb(), "notes/Draft.MD", false).await;
-        assert!(!points.is_empty());
+        assert_ne!(points.len(), 0);
         for point in &points {
             assert_eq!(
                 string_payload(point, "mime"),
@@ -2745,7 +2745,7 @@ mod announcing {
         .await;
 
         let events = announced(&publisher).await;
-        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(events.len(), 0, "{events:?}");
     }
 
     /// `object.deleted` already said what happened to the key; there is no
@@ -2803,7 +2803,7 @@ mod announcing {
 
         let events = announced(&publisher).await;
         assert_eq!(events.len(), 1, "{events:?}");
-        assert!(indexed_events(&events).is_empty());
+        assert_eq!(indexed_events(&events).len(), 0);
         assert_eq!(events[0].object_key.as_str(), "broken.md");
         assert_eq!(events[0].source, EventSource::Indexer);
         let ObjectEventKind::IndexFailed {
@@ -2899,7 +2899,7 @@ mod announcing {
         )
         .await;
 
-        assert!(announced(&publisher).await.is_empty());
+        assert_eq!(announced(&publisher).await.len(), 0);
         let failure = health
             .snapshot(kb().as_str())
             .last_failure
@@ -3213,7 +3213,7 @@ mod announcing {
         )
         .await;
 
-        assert!(announced(&publisher).await.is_empty());
+        assert_eq!(announced(&publisher).await.len(), 0);
     }
 
     #[tokio::test]
@@ -3526,7 +3526,7 @@ async fn an_untyped_markdown_key_is_still_indexed_when_declared(declared: Option
     .await;
 
     let points = scroll_points(&store, &kb, "notes/Draft.MD", false).await;
-    assert!(!points.is_empty(), "{declared:?}: indexed");
+    assert_ne!(points.len(), 0, "{declared:?}: indexed");
     for point in &points {
         assert_eq!(
             string_payload(point, "mime"),

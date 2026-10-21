@@ -280,8 +280,8 @@ pub(super) async fn subscribe_events(
         request_id: request_id.clone(),
     };
 
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(&err)?;
-    access.require_any(Verb::List).map_err(&err)?;
+    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    access.require_any(Verb::List).map_err(err)?;
     let Some(events) = state.events.clone() else {
         return Err(err(ApiError::Core(CoreError::NotFound {
             resource: "object change events are not enabled on this server; \
@@ -290,8 +290,8 @@ pub(super) async fn subscribe_events(
         })));
     };
     let kb_label = access.kb().as_str().to_string();
-    let filter = EventFilter::parse(query).map_err(&err)?;
-    let after = parse_last_event_id(&req).map_err(&err)?;
+    let filter = EventFilter::parse(query).map_err(err)?;
+    let after = parse_last_event_id(&req).map_err(err)?;
     // Taken before `subscribe` is awaited, so the time it takes does not
     // stretch the credential.
     let expired = expiry(access.valid_until());

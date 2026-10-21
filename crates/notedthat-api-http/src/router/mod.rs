@@ -369,7 +369,7 @@ mod route_constants {
             .filter(|route| **route != ROUTE_KB_OBJECT)
             .filter_map(|route| route.strip_prefix(kb_prefix.as_str()))
             .collect();
-        assert!(!shadowing.is_empty(), "the filter found no routes");
+        assert_ne!(shadowing.len(), 0, "the filter found no routes");
         for key in &shadowing {
             assert!(
                 notedthat_core::RESERVED_KEYS.contains(key),
@@ -941,7 +941,7 @@ mod patch_route {
                 "*/24"
             );
             let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-            assert!(body.is_empty());
+            assert_eq!(body.len(), 0);
         }
 
         #[tokio::test]
@@ -1110,7 +1110,7 @@ mod line_range_get {
 
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-        assert!(body.is_empty());
+        assert_eq!(body.len(), 0);
     }
 
     #[tokio::test]

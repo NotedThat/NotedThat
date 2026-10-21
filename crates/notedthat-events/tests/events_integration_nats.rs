@@ -214,7 +214,7 @@ async fn every_message_carries_the_public_contract() {
         .get("Nats-Msg-Id")
         .map(|value| value.as_str().to_string())
         .expect("every message carries a Nats-Msg-Id");
-    assert!(!message_id.is_empty());
+    assert_ne!(message_id.len(), 0);
 
     let payload: serde_json::Value = serde_json::from_slice(&raw.payload).unwrap();
     assert_eq!(payload, serde_json::to_value(&event).unwrap());

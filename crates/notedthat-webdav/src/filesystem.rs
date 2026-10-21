@@ -961,7 +961,7 @@ mod tests {
             .await
             .expect_err("non-declared KB is forbidden");
         assert_eq!(err, FsError::Forbidden);
-        assert!(storage.ops().is_empty());
+        assert_eq!(storage.ops().len(), 0);
     }
 
     #[test]
@@ -990,7 +990,7 @@ mod tests {
             assert!(entry.is_dir().await.expect("entry dir check succeeds"));
         }
         assert_eq!(entry_names(entries), vec!["notes", "scratch"]);
-        assert!(storage.ops().is_empty());
+        assert_eq!(storage.ops().len(), 0);
     }
 
     #[tokio::test]
@@ -1294,7 +1294,7 @@ mod tests {
         .expect("UTF-8 body");
 
         assert!(body.contains("<D:propfind-finite-depth/>"));
-        assert!(list_calls(&storage).is_empty());
+        assert_eq!(list_calls(&storage).len(), 0);
     }
 
     #[tokio::test]
@@ -1335,7 +1335,7 @@ mod tests {
             .expect("PROPFIND request succeeds");
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(list_calls(&storage).is_empty());
+        assert_eq!(list_calls(&storage).len(), 0);
     }
 
     #[tokio::test]
@@ -1360,7 +1360,7 @@ mod tests {
             .expect("PROPFIND request succeeds");
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(list_calls(&storage).is_empty());
+        assert_eq!(list_calls(&storage).len(), 0);
     }
 
     #[tokio::test]
@@ -1562,7 +1562,7 @@ mod tests {
 
         let bytes = file.read_bytes(8).await.expect("EOF read succeeds");
 
-        assert!(bytes.is_empty());
+        assert_eq!(bytes.len(), 0);
         assert_eq!(file.read_offset, 42);
         assert_eq!(
             get_ranges(&storage),
@@ -1625,7 +1625,7 @@ mod tests {
 
         let bytes = file.read_bytes(1).await.expect("EOF read succeeds");
 
-        assert!(bytes.is_empty());
+        assert_eq!(bytes.len(), 0);
     }
 
     #[tokio::test]
@@ -1637,7 +1637,7 @@ mod tests {
             .await
             .expect("MKCOL succeeds as a no-op");
 
-        assert!(storage.ops().is_empty());
+        assert_eq!(storage.ops().len(), 0);
     }
 
     #[tokio::test]
