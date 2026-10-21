@@ -1,7 +1,7 @@
 //! `WebDAV` middleware: basic-auth and method-interception layers.
 
 mod access;
-mod backpressure;
+mod errors;
 mod handlers;
 mod helpers;
 mod path_validation;
@@ -22,7 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use handlers::{handle_copy, handle_delete, handle_move, handle_proppatch, handle_put};
-use notedthat_core::{ConditionalHeaders, StorageError};
+use notedthat_core::ConditionalHeaders;
 pub(crate) use path_validation::WEBDAV_PREFIX;
 use path_validation::{parse_webdav_uri_path, validate_webdav_read_uri_path};
 
@@ -148,11 +148,7 @@ pub async fn intercept_propfind_too_large(
                 error = %error,
                 "PROPFIND_LISTING_FAILED"
             );
-            match error {
-                StorageError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .into_response()
+            errors::storage_status(&error).into_response()
         }
         Ok(Some(listing)) => {
             req.extensions_mut().insert(listing);

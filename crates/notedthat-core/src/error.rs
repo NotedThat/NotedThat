@@ -1,6 +1,7 @@
-//! Domain error types: `Error` and `StorageError`.
+//! Domain error types: `Error`, `StorageError` and the wire `ErrorCode`.
 
 use crate::search::SearchError;
+use serde::Serialize;
 use thiserror::Error;
 
 /// Domain error mapped to §6.12 HTTP status codes.
@@ -46,30 +47,14 @@ pub enum Error {
         message: String,
     },
 
-    /// A storage-layer error (see [`StorageError`]).
+    /// A storage-layer error (see [`StorageError`]). The one spelling of every
+    /// storage condition, 304/412/416 included.
     #[error(transparent)]
-    Storage(StorageError),
+    Storage(#[from] StorageError),
 
     /// Malformed `Range: bytes=` header — unparseable syntax. Maps to HTTP 400.
     #[error("malformed Range header: {0}")]
     MalformedRange(String),
-
-    /// Backend returned 304 Not Modified (conditional request). Maps to HTTP 304,
-    /// carrying the validators a 200 would have (RFC 9110 §15.4.5).
-    #[error("not modified")]
-    NotModified(Validators),
-
-    /// Backend returned 412 Precondition Failed (conditional request). Maps to HTTP 412.
-    #[error("precondition failed")]
-    PreconditionFailed,
-
-    /// Backend returned 416 Range Not Satisfiable. `complete_length` is the total object size.
-    /// Maps to HTTP 416 with `Content-Range: bytes */complete_length`.
-    #[error("range not satisfiable (object size: {complete_length})")]
-    RangeNotSatisfiable {
-        /// The total size of the object in bytes.
-        complete_length: u64,
-    },
 }
 
 /// The validators of the object a 304 Not Modified refers to.
@@ -157,19 +142,6 @@ impl StorageError {
     /// Returns `true` if this error represents a missing object or bucket.
     pub fn is_not_found(&self) -> bool {
         matches!(self, Self::NotFound { .. } | Self::BucketNotFound { .. })
-    }
-}
-
-impl From<StorageError> for Error {
-    fn from(err: StorageError) -> Self {
-        match err {
-            StorageError::NotModified(validators) => Error::NotModified(validators),
-            StorageError::PreconditionFailed => Error::PreconditionFailed,
-            StorageError::RangeNotSatisfiable { complete_length } => {
-                Error::RangeNotSatisfiable { complete_length }
-            }
-            other => Error::Storage(other),
-        }
     }
 }
 
@@ -295,35 +267,115 @@ mod tests {
             panic!("Wrong variant");
         }
     }
+}
 
-    #[test]
-    fn storage_error_range_not_satisfiable_converts_to_error() {
-        let storage_err = StorageError::RangeNotSatisfiable {
-            complete_length: 100,
-        };
-        let err: Error = Error::from(storage_err);
-        assert!(matches!(
-            err,
-            Error::RangeNotSatisfiable {
-                complete_length: 100
-            }
-        ));
+/// The machine-readable `error` of the JSON envelope (D43, §6.12), shared by every
+/// surface so the codes are spelled once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(
+        as = ErrorCode,
+        description = "Machine-readable error code. Clients branch on this, never on `message`."
+    )
+)]
+pub enum ErrorCode {
+    /// The request is malformed: a bad path, body, header or parameter.
+    InvalidRequest,
+    /// The `Range` header could not be parsed.
+    MalformedRange,
+    /// No credential, or one that did not verify.
+    Unauthorized,
+    /// The credential is valid and the access policy says no.
+    Forbidden,
+    /// No such knowledge base, object or action — or one the caller may not see.
+    NotFound,
+    /// The request conflicts with work in progress.
+    Conflict,
+    /// The events requested are no longer retained.
+    Gone,
+    /// The body exceeds the route's limit.
+    PayloadTooLarge,
+    /// A conditional request's precondition did not hold.
+    PreconditionFailed,
+    /// A replace found no occurrence of `old_string`.
+    NoMatch,
+    /// A replace found more than one occurrence of `old_string`.
+    AmbiguousMatch,
+    /// A write that must be conditional arrived without `If-Match`.
+    PreconditionRequired,
+    /// The server failed.
+    InternalError,
+    /// A backend or queue is unavailable or full; retry after `Retry-After`.
+    BackendUnavailable,
+    /// The request body stalled, or the request exceeded the server's timeout.
+    RequestTimeout,
+    /// Internal only: a `416` is answered with an empty body, so this code is
+    /// never written. Skipped so the published enum lists only what is sent.
+    #[serde(skip)]
+    RangeNotSatisfiable,
+    /// Internal only: a `304` has no body, so this code is never written.
+    #[serde(skip)]
+    NotModified,
+}
+
+impl ErrorCode {
+    /// Every code, the internal ones included.
+    pub const ALL: [Self; 17] = [
+        Self::InvalidRequest,
+        Self::MalformedRange,
+        Self::Unauthorized,
+        Self::Forbidden,
+        Self::NotFound,
+        Self::Conflict,
+        Self::Gone,
+        Self::PayloadTooLarge,
+        Self::PreconditionFailed,
+        Self::NoMatch,
+        Self::AmbiguousMatch,
+        Self::PreconditionRequired,
+        Self::InternalError,
+        Self::BackendUnavailable,
+        Self::RequestTimeout,
+        Self::RangeNotSatisfiable,
+        Self::NotModified,
+    ];
+
+    /// The spelling, for the internal codes as well as the ones on the wire.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::MalformedRange => "malformed_range",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::Gone => "gone",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::PreconditionFailed => "precondition_failed",
+            Self::NoMatch => "no_match",
+            Self::AmbiguousMatch => "ambiguous_match",
+            Self::PreconditionRequired => "precondition_required",
+            Self::InternalError => "internal_error",
+            Self::BackendUnavailable => "backend_unavailable",
+            Self::RequestTimeout => "request_timeout",
+            Self::RangeNotSatisfiable => "range_not_satisfiable",
+            Self::NotModified => "not_modified",
+        }
     }
 
-    #[test]
-    fn storage_error_not_modified_converts_to_error() {
-        let validators = Validators {
-            etag: Some("\"v1\"".into()),
-            last_modified: Some(1_000),
-        };
-        let err: Error = Error::from(StorageError::NotModified(validators.clone()));
-        assert!(matches!(err, Error::NotModified(carried) if carried == validators));
+    /// Whether the code is ever written into a body.
+    #[must_use]
+    pub fn is_sent(self) -> bool {
+        !matches!(self, Self::RangeNotSatisfiable | Self::NotModified)
     }
+}
 
-    #[test]
-    fn storage_error_precondition_failed_converts_to_error() {
-        let storage_err = StorageError::PreconditionFailed;
-        let err: Error = Error::from(storage_err);
-        assert!(matches!(err, Error::PreconditionFailed));
+impl PartialEq<&str> for ErrorCode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
     }
 }
