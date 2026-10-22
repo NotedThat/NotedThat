@@ -22,9 +22,6 @@ use crate::listing::{OrderedWalk, decode_cursor, encode_cursor};
 use crate::locks::KeyLocks;
 use crate::meta::{MetaStore, ObjectAttrs};
 
-/// Key the KB manifest lives at, matching the S3 adapter exactly.
-const MANIFEST_KEY: &str = ".notedthat/manifest.json";
-
 /// Bytes read per chunk when streaming an object body.
 const STREAM_CHUNK: usize = 64 * 1024;
 
@@ -388,11 +385,11 @@ impl Storage for FsStorage {
         let bucket = self.bucket(kb);
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
-            let path = inner.layout.object_path(&bucket, MANIFEST_KEY)?;
+            let path = inner.layout.object_path(&bucket, KbManifest::KEY)?;
             let bytes = std::fs::read(&path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     StorageError::NotFound {
-                        key: MANIFEST_KEY.to_string(),
+                        key: KbManifest::KEY.to_string(),
                     }
                 } else {
                     // Every non-missing manifest failure is `BackendUnavailable`, matching
@@ -427,13 +424,13 @@ impl Storage for FsStorage {
         // half-written manifest; the lock is what stops two writers interleaving their
         // rename and their sidecar write, which would leave one writer's `ETag` recorded
         // against the other's file — a stamp that matches, and so reads as fresh.
-        let _guard = self.inner.locks.key(&bucket, MANIFEST_KEY).await;
+        let _guard = self.inner.locks.key(&bucket, KbManifest::KEY).await;
         self.blocking(move |inner| {
             inner.require_bucket(&bucket)?;
             inner
                 .store(
                     &bucket,
-                    MANIFEST_KEY,
+                    KbManifest::KEY,
                     Some("application/json"),
                     |file, hasher| {
                         hasher.update(&bytes);
