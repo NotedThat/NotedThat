@@ -1900,7 +1900,7 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `PROPFIND` | 207 | Depth 0 and 1 supported. **Depth: infinity, and a missing Depth header, return 403** with `<D:propfind-finite-depth/>` on a collection (see below); a file answers them as `Depth: 0`. A `Depth: 1` listing the backend cannot complete answers **503** when the backend is unavailable and **500** for any other storage error, rather than a `207` showing the collection empty; the body is empty and the cause is logged at `ERROR` under the response's `x-request-id`. One past the object cap answers `507` (see below). |
 | `PUT` | 201 (create), 204 (overwrite) | Returns `ETag`. Supports `If-Match` / `If-None-Match`. MIME sniff applies. |
 | `PROPPATCH` | 207 | Stores nothing: every property is refused with `403` and `<D:cannot-modify-protected-property/>`, except the Windows `Win32*` timestamps (`urn:schemas-microsoft-com:`), which answer `200` so Explorer's copies succeed — or `424` alongside a refused property, since PROPPATCH is atomic (RFC 4918 §9.2). `404` for a missing target, `400` for a body that is not a `propertyupdate`. |
-| `DELETE` | 204 | Idempotent — deleting a non-existent object returns 204. |
+| `DELETE` | 204 | Idempotent — deleting a non-existent object returns 204. A folder answers `403` with `<nt:no-collection-delete/>`; a missing path spelled with a trailing `/` answers `404`. |
 | `MKCOL` | 201 | Creates a virtual folder. See v1 quirks below. |
 | `MOVE` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
 | `COPY` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
@@ -1929,7 +1929,8 @@ after the check still ends in `412`.
 |--------|--------|--------|
 | `LOCK` | 405 | No lock system in v1 (D17). Finder and Office require LOCK to save — see Known-broken clients. |
 | `UNLOCK` | 405 | Same as LOCK. |
-| Collection `MOVE` / `COPY` | 403 + `<nt:no-collection-move/>` | S3 has no atomic collection rename. |
+| Collection `DELETE` | 403 + `<nt:no-collection-delete/>` | A folder is a key prefix; deleting one would be a bulk delete. |
+| Collection `MOVE` / `COPY` | 403 + `<nt:no-collection-move/>` | As source or `Destination`, with or without a trailing `/`. S3 has no atomic collection rename. |
 | Cross-KB `MOVE` / `COPY` | 403 + `<nt:cannot-modify-source/>` | KBs are isolated storage namespaces. |
 | Cross-server `MOVE` / `COPY` | 502 + `<nt:destination-different-server/>` | Per RFC 4918 §9.9.2. |
 
@@ -1943,7 +1944,8 @@ Current custom conditions:
 |-----------|-------------|---------|
 | `nt:destination-different-server` | 502 | MOVE/COPY Destination header points to a different server |
 | `nt:cannot-modify-source` | 403 | MOVE/COPY would modify the source KB, which is read-only |
-| `nt:no-collection-move` | 403 | MOVE of a collection (directory) is not supported |
+| `nt:no-collection-delete` | 403 | DELETE of a collection (directory) is not supported |
+| `nt:no-collection-move` | 403 | MOVE or COPY whose source or Destination is a collection (directory) is not supported |
 | `nt:propfind-too-large` | 507 | PROPFIND enumeration would exceed the 10 000-object v1 cap, counted over every object under the listed collection |
 
 ### v1 quirks

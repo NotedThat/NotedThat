@@ -896,6 +896,57 @@ async fn test_collection_move_returns_403_no_collection_move() {
 }
 
 // ---------------------------------------------------------------------------
+// 17b. DELETE and MOVE of a folder (a key prefix) are refused with 403 (#281)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_folder_delete_and_move_are_refused_with_403() {
+    let (handle, url, username, password) = start_webdav_server().await;
+    let client = reqwest::Client::new();
+    let auth = basic_auth(&username, &password);
+
+    let put = client
+        .put(format!("{url}/webdav/notes/folder/a.md"))
+        .header("Authorization", &auth)
+        .body("a")
+        .send()
+        .await
+        .expect("PUT folder/a.md");
+    assert_eq!(put.status(), StatusCode::CREATED);
+
+    let resp = client
+        .delete(format!("{url}/webdav/notes/folder/"))
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .expect("DELETE folder/");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = resp.text().await.expect("body text");
+    assert!(body.contains("no-collection-delete"), "body: {body}");
+
+    let resp = client
+        .request(webdav_method(b"MOVE"), format!("{url}/webdav/notes/folder"))
+        .header("Authorization", &auth)
+        .header("Destination", format!("{url}/webdav/notes/other"))
+        .send()
+        .await
+        .expect("MOVE folder");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = resp.text().await.expect("body text");
+    assert!(body.contains("no-collection-move"), "body: {body}");
+
+    let still_there = client
+        .get(format!("{url}/webdav/notes/folder/a.md"))
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .expect("GET folder/a.md");
+    assert_eq!(still_there.status(), StatusCode::OK);
+
+    handle.abort();
+}
+
+// ---------------------------------------------------------------------------
 // 18. MOVE across KBs returns 403 + <nt:cannot-modify-source/>
 // ---------------------------------------------------------------------------
 
