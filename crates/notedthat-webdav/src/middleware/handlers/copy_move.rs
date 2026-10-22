@@ -32,7 +32,8 @@ const MOVE_SOURCE: Retry = Retry {
 use super::super::helpers::{
     TargetError, object_target_or_collection_error, response_with_optional_etag,
 };
-use super::super::path_validation::parse_webdav_uri_path;
+use super::super::path_validation::{parse_webdav_uri_path, parse_webdav_write_target};
+use crate::filesystem::{Named, name_in_storage};
 
 fn single_header(headers: &HeaderMap, name: &'static str) -> Result<Option<String>, ()> {
     let mut values = headers.get_all(name).iter();
@@ -90,6 +91,9 @@ struct Targets {
     destination: ObjectPath,
     /// Whether an existing destination may be replaced (`Overwrite: T`, the default).
     overwrite: bool,
+    /// Whether the client spelled each path with a trailing `/`, as a collection.
+    source_as_collection: bool,
+    destination_as_collection: bool,
 }
 
 /// The source as its preconditions were judged against it. The copy and the MOVE's
@@ -208,10 +212,14 @@ fn resolve_targets(
     transfer: Transfer,
 ) -> Result<Targets, Rejection> {
     let (dest_uri, overwrite) = parse_destination_headers(headers)?;
-    let Ok(src_target) = parse_webdav_uri_path(source_path, &state.declared_kbs) else {
+    let Ok((src_target, source_as_collection)) =
+        parse_webdav_write_target(source_path, &state.declared_kbs)
+    else {
         return Err(Rejection::BadRequest);
     };
-    let Ok(dst_target) = parse_webdav_uri_path(dest_uri.path(), &state.declared_kbs) else {
+    let Ok((dst_target, destination_as_collection)) =
+        parse_webdav_write_target(dest_uri.path(), &state.declared_kbs)
+    else {
         return Err(Rejection::BadRequest);
     };
     let (src_kb, src_obj) =
@@ -234,6 +242,8 @@ fn resolve_targets(
         source: src_obj,
         destination: dst_obj,
         overwrite,
+        source_as_collection,
+        destination_as_collection,
     })
 }
 
@@ -249,16 +259,39 @@ async fn check_source_preconditions(
     let Ok(if_header) = IfHeader::from_headers(headers) else {
         return Err(StatusCode::BAD_REQUEST.into_response());
     };
-    let src_meta = match state
-        .storage
-        .head_object(&targets.kb, &targets.source, ConditionalHeaders::default())
-        .await
+    let src_meta = match name_in_storage(
+        state.storage.as_ref(),
+        &targets.kb,
+        &targets.source,
+        targets.source_as_collection,
+    )
+    .await
     {
-        Ok(meta) => meta,
+        Ok(Named::Object(meta)) => meta,
+        // A folder is a key prefix; there is no atomic prefix rename (#281).
+        Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
         // Without its preconditions this request would be a 404, so they are ignored
         // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
+        Ok(Named::Nothing) => return Err(StatusCode::NOT_FOUND.into_response()),
         Err(error) => return Err(storage_status(&error).into_response()),
     };
+    // Only the prefix is asked about: a file at the destination is the overwrite
+    // `commit_copy` judges. A destination spelled as a collection must be one.
+    match name_in_storage(
+        state.storage.as_ref(),
+        &targets.kb,
+        &targets.destination,
+        true,
+    )
+    .await
+    {
+        Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
+        Ok(Named::Nothing) if targets.destination_as_collection => {
+            return Err(StatusCode::BAD_REQUEST.into_response());
+        }
+        Ok(Named::Nothing | Named::Object(_)) => {}
+        Err(error) => return Err(storage_status(&error).into_response()),
+    }
     let Some(source_etag) = src_meta.etag else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
     };

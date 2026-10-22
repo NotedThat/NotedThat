@@ -23,6 +23,21 @@ pub(super) fn parse_webdav_uri_path(
     parse_uri_path(strip_webdav_prefix(uri_path)?, declared_kbs)
 }
 
+/// `parse_webdav_uri_path` for DELETE, MOVE and COPY: tolerates exactly one
+/// trailing `/`, as the read side does, and says whether one was there — the
+/// client then asserted a collection. A second trailing `/` is still an error.
+pub(super) fn parse_webdav_write_target(
+    uri_path: &str,
+    declared_kbs: &BTreeMap<String, KbSlug>,
+) -> Result<(DavTarget, bool), ()> {
+    let path = strip_webdav_prefix(uri_path)?;
+    match path.strip_suffix('/') {
+        None | Some("") => parse_uri_path(path, declared_kbs).map(|target| (target, false)),
+        Some(stripped) if stripped.ends_with('/') => Err(()),
+        Some(stripped) => parse_uri_path(stripped, declared_kbs).map(|target| (target, true)),
+    }
+}
+
 pub(super) fn decode_uri_segment(raw_segment: &str) -> Result<Cow<'_, str>, ()> {
     percent_encoding::percent_decode_str(raw_segment)
         .decode_utf8()
