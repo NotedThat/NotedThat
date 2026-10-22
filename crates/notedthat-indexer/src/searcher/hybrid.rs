@@ -256,8 +256,8 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
 
 pub(crate) fn search_error_from_store(err: VectorStoreError) -> SearchError {
     match err {
-        VectorStoreError::CollectionNotFound { kb } => SearchError::UnknownKb { slug: kb },
-        VectorStoreError::Backend { message } => SearchError::BackendUnavailable { message },
+        VectorStoreError::CollectionNotFound { kb } => SearchError::unknown_kb(kb),
+        VectorStoreError::Backend { message } => SearchError::backend_unavailable(message),
     }
 }
 
@@ -266,9 +266,7 @@ pub(crate) fn search_error_from_store(err: VectorStoreError) -> SearchError {
     reason = "written as a `map_err` callback, which hands the error over by value"
 )]
 pub(crate) fn search_error_from_embedder(err: crate::embedder::EmbedderError) -> SearchError {
-    SearchError::BackendUnavailable {
-        message: err.to_string(),
-    }
+    SearchError::backend_unavailable(err.to_string())
 }
 
 #[cfg(test)]
