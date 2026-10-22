@@ -3334,6 +3334,65 @@ mod announcing {
         assert_eq!(announced(&publisher).await.len(), 0);
     }
 
+    /// Someone else removed the file between the write and its `Upsert`: no
+    /// `object.deleted` was ever published, so the watcher's report of the
+    /// removal is news, not the echo of a tombstone.
+    #[tokio::test]
+    async fn an_upsert_that_finds_the_key_gone_leaves_the_deletion_for_the_watcher() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("gone.md"), refresh("gone.md", RefreshOrigin::Watch)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.deleted");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+    }
+
+    /// Someone else re-created the file between the delete and its `Tombstone`:
+    /// the log says deleted, so the watcher's report of the live file is news.
+    #[tokio::test]
+    async fn a_tombstone_that_finds_the_key_live_leaves_the_write_for_the_watcher() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert_bytes(
+            kb().as_str(),
+            "memo.mp3",
+            Bytes::from_static(b"ID3\x03"),
+            "audio/mpeg",
+        );
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                IndexEvent::Tombstone {
+                    kb: kb(),
+                    object_key: opath("memo.mp3"),
+                },
+                refresh("memo.mp3", RefreshOrigin::Watch),
+            ],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.written");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+    }
+
     #[tokio::test]
     async fn a_refused_publish_does_not_stop_indexing() {
         struct Refusing;

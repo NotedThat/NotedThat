@@ -830,7 +830,9 @@ newer, and so the worker's `object.indexed` for that `ETag` always follows the w
 carries its origin (the `fs` watch, or either backend's reconciliation pass) and the indexer worker publishes from the `HEAD` it
 already performs, before the indexability check, so an mp3 dropped into the tree is announced
 though it is never indexed; a missing key on re-read is `object.deleted`. The worker keeps a
-bounded last-seen stamp per key, fed by the `HEAD` every event performs, and
+bounded last-seen stamp per key — the version a write's `Upsert` finds on its `HEAD`, or
+gone once a `Tombstone` confirms the absence; a state `HEAD` finds that nothing announced is
+left unstamped, so the watcher still announces it — and
 announces a `Refresh` only when the stamp differs — that is what keeps the watcher's echo of the
 server's own write (D50) from being announced twice for objects the index does not hold.
 
