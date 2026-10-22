@@ -64,7 +64,8 @@ impl IndexerWorker {
     /// `announce` names the source to publish a change event under, for
     /// changes this worker detected rather than was told about. It fires from
     /// the `HEAD` result, before any indexability check, so an mp3 dropped into
-    /// the tree is announced even though it is never indexed.
+    /// the tree is announced even though it is never indexed. The last-seen
+    /// stamp comes from this `HEAD`, whatever event brought us here.
     pub(super) async fn handle_upsert(
         &self,
         kb: KbSlug,
@@ -104,9 +105,12 @@ impl IndexerWorker {
                     path = %object_key.as_str(),
                     "object not found on re-read; treating as tombstone"
                 );
-                if let Some(source) = announce {
-                    self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
-                        .await;
+                match announce {
+                    Some(source) => {
+                        self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
+                            .await;
+                    }
+                    None => self.remember(&kb, &object_key, None),
                 }
                 return self
                     .handle_tombstone(kb, object_key)
@@ -120,14 +124,17 @@ impl IndexerWorker {
                 )));
             }
         };
-        if let Some(source) = announce {
-            self.announce(ObjectEvent::from_meta(
-                kb.clone(),
-                object_key.clone(),
-                &head,
-                source,
-            ))
-            .await;
+        match announce {
+            Some(source) => {
+                self.announce(ObjectEvent::from_meta(
+                    kb.clone(),
+                    object_key.clone(),
+                    &head,
+                    source,
+                ))
+                .await;
+            }
+            None => self.remember(&kb, &object_key, head.etag.clone()),
         }
 
         // An object with no declared type — a file the fs backend could not

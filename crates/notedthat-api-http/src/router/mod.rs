@@ -989,8 +989,6 @@ mod patch_route {
                 .try_send(IndexEvent::Upsert {
                     kb: kb.clone(),
                     object_key: ObjectPath::try_from_str("queued.md").unwrap(),
-                    etag: "queued".to_string(),
-                    mtime: 0,
                 })
                 .unwrap();
             let router = router_with_storage(Arc::new(storage), kb, MAX_BODY_BYTES, indexer_tx);
@@ -1484,8 +1482,6 @@ mod tests {
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
                 object_key: ObjectPath::try_from_str("queued.md").unwrap(),
-                etag: "etag".to_string(),
-                mtime: 0,
             })
             .unwrap();
 
@@ -1571,8 +1567,6 @@ mod tests {
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
                 object_key: ObjectPath::try_from_str("queued.md").unwrap(),
-                etag: "etag".to_string(),
-                mtime: 0,
             })
             .unwrap();
 

@@ -257,17 +257,12 @@ impl IndexerWorker {
 
         // A tombstone reports no outcome, success or failure (D65): there is
         // no `object.unindexed`, and `object.deleted` already said what
-        // happened to the key.
+        // happened to the key. One whose re-read finds the object live and
+        // changed indexes it, and that is published like any other index.
         let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
         let pipeline = async {
             match event {
-                IndexEvent::Upsert {
-                    kb,
-                    object_key,
-                    etag,
-                    ..
-                } => {
-                    self.remember(&kb, &object_key, Some(etag));
+                IndexEvent::Upsert { kb, object_key } => {
                     self.handle_upsert(kb, object_key, Skip::Never, None).await
                 }
                 IndexEvent::Refresh {
@@ -278,12 +273,10 @@ impl IndexerWorker {
                     self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
                         .await
                 }
+                // Storage decides (#350): gone, tombstone; live, skip or index.
                 IndexEvent::Tombstone { kb, object_key } => {
-                    self.remember(&kb, &object_key, None);
-                    self.handle_tombstone(kb, object_key)
+                    self.handle_upsert(kb, object_key, Skip::IfUnchanged, None)
                         .await
-                        .map(|()| PipelineOutcome::Tombstoned)
-                        .map_err(PipelineFailure::before_head)
                 }
             }
         };

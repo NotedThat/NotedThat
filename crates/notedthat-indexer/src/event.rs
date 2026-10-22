@@ -37,22 +37,18 @@ impl RefreshOrigin {
 /// surfaced by the write path as `WriteError::IndexerBackpressureUpsert` / `WriteError::IndexerBackpressureTombstone` / HTTP 503, while downstream embedder/Qdrant failures remain async best-effort.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexEvent {
-    /// Object was written to S3; re-read and upsert into Qdrant.
+    /// Object was written; re-read and index whatever is there now.
     Upsert {
         /// Knowledge-base slug for routing.
         kb: KbSlug,
         /// Object key in the KB bucket.
         object_key: ObjectPath,
-        /// S3 `ETag` for cache validation.
-        etag: String,
-        /// Modification time (Unix timestamp).
-        mtime: i64,
     },
     /// An object may have changed on disk — re-derive its index entry from current state.
     ///
-    /// Carries no `ETag` or mtime on purpose. By the time the worker acts, the bytes may
-    /// already differ from the ones that raised this, so it reads the object's current
-    /// state rather than trusting a stamp taken earlier.
+    /// No variant carries an `ETag` or mtime. By the time the worker acts, the bytes may
+    /// already differ from the ones that raised the event, so it reads the object's
+    /// current state rather than trusting a stamp taken earlier.
     ///
     /// It is also why there is no *detected deletion* variant: a deletion is a `Refresh`
     /// whose re-read reports the object missing, which the worker already turns into a
@@ -71,7 +67,8 @@ pub enum IndexEvent {
         /// What noticed the change.
         origin: RefreshOrigin,
     },
-    /// Object was deleted from S3; delete matching points from Qdrant.
+    /// Object was deleted; re-read. Gone: delete its points. Still there: keep or
+    /// refresh them, so a delayed tombstone never removes a live object (#350).
     Tombstone {
         /// Knowledge-base slug for routing.
         kb: KbSlug,
@@ -126,8 +123,6 @@ mod tests {
         let ev = IndexEvent::Upsert {
             kb: make_kb(),
             object_key: make_path(),
-            etag: "abc".into(),
-            mtime: 0,
         };
         assert_eq!(ev.kb().as_str(), "test-kb");
     }
@@ -146,8 +141,6 @@ mod tests {
         let ev = IndexEvent::Upsert {
             kb: make_kb(),
             object_key: make_path(),
-            etag: "e".into(),
-            mtime: 1,
         };
         assert_eq!(ev.object_key().as_str(), "hello.md");
     }
@@ -157,8 +150,6 @@ mod tests {
         let upsert = IndexEvent::Upsert {
             kb: make_kb(),
             object_key: make_path(),
-            etag: "e".into(),
-            mtime: 0,
         };
         let tomb = IndexEvent::Tombstone {
             kb: make_kb(),
@@ -173,8 +164,6 @@ mod tests {
         let ev = IndexEvent::Upsert {
             kb: make_kb(),
             object_key: make_path(),
-            etag: "e".into(),
-            mtime: 42,
         };
         assert_eq!(ev.clone(), ev);
     }
