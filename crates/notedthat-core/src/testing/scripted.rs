@@ -13,8 +13,9 @@ use tokio::io::AsyncReadExt;
 
 use super::InMemoryStorage;
 use crate::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
+    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
+    Storage, StorageError,
 };
 
 /// One [`Storage`] method, for scripting and counting calls to it.
@@ -509,7 +510,7 @@ impl Storage for ScriptedStorage {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         self.enter(StorageCall::DeleteObject {
             kb: kb.as_str().to_string(),
             path: path.as_str().to_string(),

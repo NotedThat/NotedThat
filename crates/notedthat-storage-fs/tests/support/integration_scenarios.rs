@@ -229,7 +229,8 @@ pub async fn missing_bucket_is_bucket_not_found(store: &dyn Storage, kb: &KbSlug
     assert_bucket_not_found(
         store
             .delete_object(kb, &path("a.md"), ConditionalHeaders::default())
-            .await,
+            .await
+            .map(drop),
         "delete_object",
     );
     assert_bucket_not_found(

@@ -62,6 +62,6 @@ pub use staging::{
     AsyncReadSeek, ReadSeek, StageError, StagedBody, StagingConfig, UPLOAD_TMP_DIR_ENV,
 };
 pub use storage::{
-    CopyObjectOptions, ListResponse, ObjectChunkStream, ObjectRead, ObjectStream, PutOutcome,
-    Storage,
+    CopyObjectOptions, DeleteOutcome, ListResponse, ObjectChunkStream, ObjectRead, ObjectStream,
+    PutOutcome, Storage,
 };

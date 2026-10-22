@@ -29,9 +29,9 @@ use bytes::Bytes;
 use notedthat_core::events::{EventId, PublishError, SubscribeError};
 use notedthat_core::metrics::{label, name, outcome, storage_error_kind, storage_outcome};
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, EventPublisher, EventStream, KbManifest,
-    KbSlug, ListResponse, ObjectEvent, ObjectMeta, ObjectPath, ObjectRead, ObjectStream,
-    PutOutcome, StagedBody, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, EventPublisher, EventStream,
+    KbManifest, KbSlug, ListResponse, ObjectEvent, ObjectMeta, ObjectPath, ObjectRead,
+    ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
 };
 use notedthat_indexer::embedder::{Embedder, EmbedderError};
 use notedthat_indexer::{
@@ -244,7 +244,7 @@ impl Storage for MeteredStorage {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         metered_storage!(
             self,
             "delete_object",

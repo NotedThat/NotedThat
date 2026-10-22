@@ -2,8 +2,8 @@
 
 use bytes::Bytes;
 use notedthat_core::{
-    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
-    Storage, StorageError,
+    ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbSlug, ObjectEvent, ObjectPath,
+    PutOutcome, StagedBody, Storage, StorageError,
 };
 use notedthat_indexer::{IndexEvent, IndexHealth, IndexQueueSender};
 use tokio::sync::mpsc::error::TrySendError;
@@ -436,7 +436,12 @@ pub async fn commit_delete(
     conditionals: ConditionalHeaders,
 ) -> Result<(), WriteError> {
     match storage.delete_object(kb, path, conditionals).await {
-        Ok(()) | Err(StorageError::NotFound { .. }) => {}
+        Ok(DeleteOutcome::Deleted) => {}
+        // A missing key still publishes and enqueues below: that is the retry
+        // path after a refused publish or a full queue (docs/CONFIGURATION.md).
+        Ok(DeleteOutcome::NotFound) | Err(StorageError::NotFound { .. }) => {
+            tracing::debug!(target: "notedthat::write", kb = %kb, path = %path, "delete of a missing key");
+        }
         Err(e) => return Err(WriteError::Storage(e)),
     }
 
@@ -1189,6 +1194,39 @@ mod tests {
             matches!(rx.try_recv(), Ok(IndexEvent::Upsert { .. })),
             "the index work was enqueued regardless: the broker is optional, the index is not"
         );
+    }
+
+    /// The documented recovery after a refused publish or a full queue is to
+    /// send `DELETE` again, by which time the object is already gone (#385).
+    #[tokio::test]
+    async fn a_delete_of_a_missing_key_still_publishes_and_enqueues() {
+        let storage = storage();
+        let events = RecordingPublisher::recording();
+        let (indexer_tx, mut rx) = mpsc::channel(8);
+
+        assert_eq!(
+            storage
+                .delete_object(
+                    &kb(),
+                    &path_named("never.md"),
+                    ConditionalHeaders::default()
+                )
+                .await
+                .unwrap(),
+            DeleteOutcome::NotFound
+        );
+        commit_delete(
+            &storage,
+            &sinks(&indexer_tx, &events, notedthat_core::EventSource::Http),
+            &kb(),
+            &path_named("never.md"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("a missing key is not an error");
+
+        assert_eq!(events.events().len(), 1);
+        assert!(matches!(rx.try_recv(), Ok(IndexEvent::Tombstone { .. })));
     }
 
     #[tokio::test]
