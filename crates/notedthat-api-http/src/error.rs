@@ -5,7 +5,7 @@ use axum::Json;
 use axum::http::header::{CONTENT_RANGE, RETRY_AFTER};
 use axum::http::{HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{Error as CoreError, StorageError, Validators};
+use notedthat_core::{Error as CoreError, ErrorCode, StorageError, Validators};
 use serde::Serialize;
 
 /// HTTP-layer error — maps domain and storage errors to HTTP status codes.
@@ -58,36 +58,14 @@ pub enum ApiError {
         /// What the adapter reported.
         message: String,
     },
-    /// A domain error from `notedthat-core`.
+    /// A domain error from `notedthat-core`, storage errors included: the one
+    /// spelling of every storage condition at this edge.
     ///
     /// Built through the manual `From<CoreError>` rather than `#[from]`, so a
-    /// `CoreError::Storage(BucketNotFound)` — which core's own `From<StorageError>`
-    /// produces — is caught on the way in and answered like every other missing
+    /// `CoreError::Storage(BucketNotFound)` is answered like every other missing
     /// bucket, with no bucket name on the wire.
     #[error(transparent)]
     Core(CoreError),
-    /// A storage-layer error not otherwise promoted to a top-level variant.
-    ///
-    /// Note: `StorageError::NotModified`, `StorageError::PreconditionFailed`, and
-    /// `StorageError::RangeNotSatisfiable` are promoted via the manual `From<StorageError>`
-    /// impl to top-level `ApiError` variants so that `IntoResponse` can emit the
-    /// RFC-required headers (e.g. `Content-Range: bytes */N` for 416).
-    #[error(transparent)]
-    Storage(StorageError),
-    /// A conditional PUT/DELETE failed because a precondition was not met.
-    ///
-    /// Maps to HTTP 412 Precondition Failed.
-    #[error("precondition failed")]
-    PreconditionFailed,
-    /// The requested byte range could not be satisfied.
-    ///
-    /// `complete_length` is the total object size in bytes.  The `IntoResponse`
-    /// impl emits `Content-Range: bytes */complete_length` per RFC 7233 §4.4.
-    #[error("range not satisfiable")]
-    RangeNotSatisfiable {
-        /// Total object size in bytes.
-        complete_length: u64,
-    },
     /// A write that must be conditional arrived without `If-Match`.
     ///
     /// Maps to HTTP 428 Precondition Required (RFC 6585 §3).
@@ -96,17 +74,6 @@ pub enum ApiError {
         /// Human-readable reason.
         message: String,
     },
-    /// The backend returned 304 Not Modified for a conditional GET/HEAD.
-    ///
-    /// Maps to HTTP 304 with no body, as required by RFC 7232 §4.1, carrying the
-    /// validators a 200 would have (RFC 9110 §15.4.5).
-    #[error("not modified")]
-    NotModified(Validators),
-    /// The `Range:` header value could not be parsed per RFC 7233.
-    ///
-    /// Maps to HTTP 400 Bad Request.
-    #[error("malformed range: {0}")]
-    MalformedRange(String),
     /// A `Range: lines=…` header specified a range that exceeds the object's line count.
     ///
     /// Maps to HTTP 416 with `Content-Range: lines */<line_total>` and
@@ -129,8 +96,7 @@ pub enum ApiError {
     },
 }
 
-/// Promote specific `StorageError` variants to top-level `ApiError` variants so
-/// that `IntoResponse` can emit the RFC-mandated response headers.
+/// The one place a missing bucket is sanitised (D43).
 impl From<CoreError> for ApiError {
     fn from(e: CoreError) -> Self {
         match e {
@@ -144,15 +110,7 @@ impl From<CoreError> for ApiError {
 
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
-        match e {
-            StorageError::NotModified(validators) => Self::NotModified(validators),
-            StorageError::PreconditionFailed => Self::PreconditionFailed,
-            StorageError::RangeNotSatisfiable { complete_length } => {
-                Self::RangeNotSatisfiable { complete_length }
-            }
-            StorageError::BucketNotFound { bucket } => Self::bucket_not_found(&bucket),
-            other => Self::Storage(other),
-        }
+        Self::from(CoreError::from(e))
     }
 }
 
@@ -187,13 +145,11 @@ impl ApiError {
     /// storage. `ApiErrorResponse` logs the full text under the request id.
     fn message(&self) -> String {
         match self {
-            Self::Core(CoreError::Storage(StorageError::BucketNotFound { bucket }))
-            | Self::Storage(StorageError::BucketNotFound { bucket }) => {
+            Self::Core(CoreError::Storage(StorageError::BucketNotFound { bucket })) => {
                 tracing::warn!(bucket = %bucket, "BUCKET_NOT_FOUND: knowledge base storage is missing");
                 "not found: knowledge base storage".to_string()
             }
-            Self::Core(CoreError::Storage(StorageError::BackendUnavailable { .. }))
-            | Self::Storage(StorageError::BackendUnavailable { .. }) => {
+            Self::Core(CoreError::Storage(StorageError::BackendUnavailable { .. })) => {
                 "backend unavailable".to_string()
             }
             Self::EventsUnavailable { .. } => "event backend unavailable".to_string(),
@@ -201,8 +157,7 @@ impl ApiError {
                 CoreError::Storage(StorageError::Other { .. })
                 | CoreError::BucketNameTooLong { .. }
                 | CoreError::Config { .. },
-            )
-            | Self::Storage(StorageError::Other { .. }) => "internal error".to_string(),
+            ) => "internal error".to_string(),
             other => other.to_string(),
         }
     }
@@ -216,7 +171,6 @@ impl From<notedthat_write::WriteError> for ApiError {
             | notedthat_write::WriteError::PatchTooLarge { size, limit } => {
                 Self::Core(CoreError::PayloadTooLarge { size, limit })
             }
-            notedthat_write::WriteError::Path(e) => Self::Core(e),
             notedthat_write::WriteError::IndexerBackpressureUpsert => {
                 Self::IndexerBackpressureUpsert
             }
@@ -246,115 +200,6 @@ impl From<notedthat_write::WriteError> for ApiError {
                 Self::ReplaceAmbiguous { count }
             }
         }
-    }
-}
-
-/// The machine-readable `error` of the JSON envelope (D43, §6.12).
-///
-/// One type for every code the server writes, so the `OpenAPI` document's enum
-/// of codes is this enum and cannot miss one a handler starts sending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-#[schema(
-    as = ErrorCode,
-    description = "Machine-readable error code. Clients branch on this, never on `message`."
-)]
-pub enum ErrorCode {
-    /// The request is malformed: a bad path, body, header or parameter.
-    InvalidRequest,
-    /// The `Range` header could not be parsed.
-    MalformedRange,
-    /// No credential, or one that did not verify.
-    Unauthorized,
-    /// The credential is valid and the access policy says no.
-    Forbidden,
-    /// No such knowledge base, object or action — or one the caller may not see.
-    NotFound,
-    /// The request conflicts with work in progress.
-    Conflict,
-    /// The events requested are no longer retained.
-    Gone,
-    /// The body exceeds the route's limit.
-    PayloadTooLarge,
-    /// A conditional request's precondition did not hold.
-    PreconditionFailed,
-    /// A replace found no occurrence of `old_string`.
-    NoMatch,
-    /// A replace found more than one occurrence of `old_string`.
-    AmbiguousMatch,
-    /// A write that must be conditional arrived without `If-Match`.
-    PreconditionRequired,
-    /// The server failed.
-    InternalError,
-    /// A backend or queue is unavailable or full; retry after `Retry-After`.
-    BackendUnavailable,
-    /// The request body stalled, or the request exceeded the server's timeout.
-    RequestTimeout,
-    /// Internal only: a `416` is answered with an empty body, so this code is
-    /// never written. Skipped so the published enum lists only what is sent.
-    #[serde(skip)]
-    RangeNotSatisfiable,
-    /// Internal only: a `304` has no body, so this code is never written.
-    #[serde(skip)]
-    NotModified,
-}
-
-impl ErrorCode {
-    /// Every code, the internal ones included.
-    pub const ALL: [Self; 17] = [
-        Self::InvalidRequest,
-        Self::MalformedRange,
-        Self::Unauthorized,
-        Self::Forbidden,
-        Self::NotFound,
-        Self::Conflict,
-        Self::Gone,
-        Self::PayloadTooLarge,
-        Self::PreconditionFailed,
-        Self::NoMatch,
-        Self::AmbiguousMatch,
-        Self::PreconditionRequired,
-        Self::InternalError,
-        Self::BackendUnavailable,
-        Self::RequestTimeout,
-        Self::RangeNotSatisfiable,
-        Self::NotModified,
-    ];
-
-    /// The spelling, for the internal codes as well as the ones on the wire.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidRequest => "invalid_request",
-            Self::MalformedRange => "malformed_range",
-            Self::Unauthorized => "unauthorized",
-            Self::Forbidden => "forbidden",
-            Self::NotFound => "not_found",
-            Self::Conflict => "conflict",
-            Self::Gone => "gone",
-            Self::PayloadTooLarge => "payload_too_large",
-            Self::PreconditionFailed => "precondition_failed",
-            Self::NoMatch => "no_match",
-            Self::AmbiguousMatch => "ambiguous_match",
-            Self::PreconditionRequired => "precondition_required",
-            Self::InternalError => "internal_error",
-            Self::BackendUnavailable => "backend_unavailable",
-            Self::RequestTimeout => "request_timeout",
-            Self::RangeNotSatisfiable => "range_not_satisfiable",
-            Self::NotModified => "not_modified",
-        }
-    }
-
-    /// Whether the code is ever written into a body.
-    #[must_use]
-    pub fn is_sent(self) -> bool {
-        !matches!(self, Self::RangeNotSatisfiable | Self::NotModified)
-    }
-}
-
-impl PartialEq<&str> for ErrorCode {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
     }
 }
 
@@ -474,25 +319,16 @@ impl ApiError {
             Self::Core(CoreError::PayloadTooLarge { .. }) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge)
             }
-            Self::Core(CoreError::MalformedRange(_)) | Self::MalformedRange(_) => {
+            Self::Core(CoreError::MalformedRange(_)) => {
                 (StatusCode::BAD_REQUEST, ErrorCode::MalformedRange)
             }
-            Self::LineRangeNotSatisfiable { .. }
-            | Self::Core(CoreError::RangeNotSatisfiable { .. })
-            | Self::RangeNotSatisfiable { .. } => (
+            Self::LineRangeNotSatisfiable { .. } => (
                 StatusCode::RANGE_NOT_SATISFIABLE,
                 ErrorCode::RangeNotSatisfiable,
             ),
-            Self::Core(CoreError::NotModified(_)) | Self::NotModified(_) => {
-                (StatusCode::NOT_MODIFIED, ErrorCode::NotModified)
-            }
             Self::PreconditionRequired { .. } => (
                 StatusCode::PRECONDITION_REQUIRED,
                 ErrorCode::PreconditionRequired,
-            ),
-            Self::Core(CoreError::PreconditionFailed) | Self::PreconditionFailed => (
-                StatusCode::PRECONDITION_FAILED,
-                ErrorCode::PreconditionFailed,
             ),
             Self::ReplaceNoMatch => (StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::NoMatch),
             Self::ReplaceAmbiguous { .. } => {
@@ -501,7 +337,7 @@ impl ApiError {
             Self::Core(CoreError::BucketNameTooLong { .. } | CoreError::Config { .. }) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::InternalError)
             }
-            Self::Core(CoreError::Storage(e)) | Self::Storage(e) => Self::storage_status(e),
+            Self::Core(CoreError::Storage(e)) => Self::storage_status(e),
         }
     }
 
@@ -529,25 +365,22 @@ impl ApiError {
         }
     }
 
-    /// Extract the `complete_length` for a 416 response, regardless of which
-    /// wrapper the `RangeNotSatisfiable` error arrived in.
+    /// The `complete_length` of a 416.
     fn range_not_satisfiable_length(&self) -> Option<u64> {
         match self {
-            Self::RangeNotSatisfiable { complete_length }
-            | Self::Storage(StorageError::RangeNotSatisfiable { complete_length })
-            | Self::Core(CoreError::RangeNotSatisfiable { complete_length }) => {
-                Some(*complete_length)
-            }
+            Self::Core(CoreError::Storage(StorageError::RangeNotSatisfiable {
+                complete_length,
+            })) => Some(*complete_length),
             _ => None,
         }
     }
 
-    /// The validators of every variant that maps to HTTP 304 (empty body required).
+    /// The validators of a 304 (empty body required).
     fn not_modified_validators(&self) -> Option<&Validators> {
         match self {
-            Self::NotModified(validators)
-            | Self::Storage(StorageError::NotModified(validators))
-            | Self::Core(CoreError::NotModified(validators)) => Some(validators),
+            Self::Core(CoreError::Storage(StorageError::NotModified(validators))) => {
+                Some(validators)
+            }
             _ => None,
         }
     }
@@ -1370,7 +1203,7 @@ mod tests {
     #[tokio::test]
     async fn test_precondition_failed_body_shape_unchanged() {
         let resp = ApiErrorResponse {
-            error: ApiError::PreconditionFailed,
+            error: ApiError::from(StorageError::PreconditionFailed),
             request_id: "req-1".into(),
         }
         .into_response();
@@ -1389,13 +1222,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_precondition_failed_412() {
-        let resp = ApiError::PreconditionFailed.into_response();
+        let resp = ApiError::from(StorageError::PreconditionFailed).into_response();
         assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
     }
 
     #[tokio::test]
     async fn test_not_modified_304_empty_body() {
-        let resp = ApiError::NotModified(Validators::default()).into_response();
+        let resp = ApiError::from(StorageError::NotModified(Validators::default())).into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.len(), 0, "304 must have an empty body");
@@ -1405,19 +1238,19 @@ mod tests {
     /// only when there is no `ETag` to validate by.
     #[tokio::test]
     async fn test_not_modified_304_carries_validators() {
-        let resp = ApiError::NotModified(Validators {
+        let resp = ApiError::from(StorageError::NotModified(Validators {
             etag: Some("\"v1\"".into()),
             last_modified: Some(784_111_777),
-        })
+        }))
         .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["etag"], "\"v1\"");
         assert!(resp.headers().get("last-modified").is_none());
 
-        let resp = ApiError::NotModified(Validators {
+        let resp = ApiError::from(StorageError::NotModified(Validators {
             etag: None,
             last_modified: Some(784_111_777),
-        })
+        }))
         .into_response();
         assert_eq!(
             resp.headers()["last-modified"],
@@ -1427,16 +1260,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_range_400() {
-        let resp = ApiError::MalformedRange("bytes=abc".to_string()).into_response();
+        let resp =
+            ApiError::Core(CoreError::MalformedRange("bytes=abc".to_string())).into_response();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// RFC 7233 §4.4: a 416 response MUST include `Content-Range: bytes */N`.
     #[tokio::test]
     async fn test_range_not_satisfiable_416_content_range_header() {
-        let resp = ApiError::RangeNotSatisfiable {
+        let resp = ApiError::from(StorageError::RangeNotSatisfiable {
             complete_length: 100,
-        }
+        })
         .into_response();
         assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         let cr = resp
@@ -1448,13 +1282,12 @@ mod tests {
         assert_eq!(body.len(), 0, "416 body must be empty per RFC 7233 §4.4");
     }
 
-    /// Same 416 check via the `ApiError::Storage(...)` wrapper (e.g. from router.rs
-    /// call sites that use explicit wrapping instead of `Into::into`).
+    /// The same 416 when the storage error arrives wrapped in a `CoreError`.
     #[tokio::test]
     async fn test_storage_range_not_satisfiable_416_content_range_header() {
-        let resp = ApiError::Storage(StorageError::RangeNotSatisfiable {
+        let resp = ApiError::from(CoreError::from(StorageError::RangeNotSatisfiable {
             complete_length: 42,
-        })
+        }))
         .into_response();
         assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         let cr = resp
@@ -1464,13 +1297,13 @@ mod tests {
         assert_eq!(cr.to_str().unwrap(), "bytes */42");
     }
 
-    /// 304 from a wrapped `StorageError::NotModified` (explicit wrapping in router.rs).
+    /// The same 304 when the storage error arrives wrapped in a `CoreError`.
     #[tokio::test]
     async fn test_storage_not_modified_304_empty_body() {
-        let resp = ApiError::Storage(StorageError::NotModified(Validators {
+        let resp = ApiError::from(CoreError::from(StorageError::NotModified(Validators {
             etag: Some("\"v2\"".into()),
             last_modified: None,
-        }))
+        })))
         .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["etag"], "\"v2\"");
@@ -1479,44 +1312,13 @@ mod tests {
         assert_eq!(body.len(), 0, "304 must have an empty body");
     }
 
-    /// `From<StorageError>` promotes `NotModified` to `ApiError::NotModified`.
-    #[test]
-    fn test_from_storage_error_not_modified() {
-        let api_err = ApiError::from(StorageError::NotModified(Validators::default()));
-        assert!(matches!(api_err, ApiError::NotModified(_)));
-    }
-
-    /// `From<StorageError>` promotes `PreconditionFailed` to `ApiError::PreconditionFailed`.
-    #[test]
-    fn test_from_storage_error_precondition_failed() {
-        let api_err = ApiError::from(StorageError::PreconditionFailed);
-        assert!(matches!(api_err, ApiError::PreconditionFailed));
-    }
-
-    /// `From<StorageError>` promotes `RangeNotSatisfiable` with the correct length.
-    #[test]
-    fn test_from_storage_error_range_not_satisfiable() {
-        let api_err = ApiError::from(StorageError::RangeNotSatisfiable {
-            complete_length: 999,
-        });
-        assert!(
-            matches!(
-                api_err,
-                ApiError::RangeNotSatisfiable {
-                    complete_length: 999
-                }
-            ),
-            "expected RangeNotSatisfiable with complete_length=999, got {api_err:?}"
-        );
-    }
-
-    /// Other `StorageError` variants must still be wrapped in `ApiError::Storage`.
+    /// A storage error has one spelling at this edge.
     #[test]
     fn test_from_storage_error_other_wrapped() {
         let api_err = ApiError::from(StorageError::NotFound {
             key: "foo".to_string(),
         });
-        assert!(matches!(api_err, ApiError::Storage(_)));
+        assert!(matches!(api_err, ApiError::Core(CoreError::Storage(_))));
     }
 
     /// Core's own `From<StorageError>` yields `CoreError::Storage(BucketNotFound)`;
@@ -1550,7 +1352,7 @@ mod tests {
             ApiError::Core(CoreError::Storage(StorageError::BucketNotFound {
                 bucket: "nt-acme-notes".to_string(),
             })),
-            ApiError::Storage(StorageError::BucketNotFound {
+            ApiError::from(StorageError::BucketNotFound {
                 bucket: "nt-acme-notes".to_string(),
             }),
         ] {
@@ -1630,12 +1432,6 @@ mod tests {
         };
         let cases = [
             (
-                ApiError::Storage(unavailable()),
-                StatusCode::SERVICE_UNAVAILABLE,
-                "backend_unavailable",
-                "backend unavailable",
-            ),
-            (
                 ApiError::Core(CoreError::Storage(unavailable())),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "backend_unavailable",
@@ -1648,12 +1444,6 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "backend_unavailable",
                 "event backend unavailable",
-            ),
-            (
-                ApiError::Storage(other()),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "internal error",
             ),
             (
                 ApiError::Core(CoreError::Storage(other())),
@@ -1768,7 +1558,8 @@ mod tests {
 
         #[tokio::test]
         async fn malformed_line_range_returns_json_400() {
-            let response = ApiError::MalformedRange("lines=abc".into()).into_response();
+            let response =
+                ApiError::Core(CoreError::MalformedRange("lines=abc".into())).into_response();
 
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -1830,9 +1621,9 @@ mod tests {
 
         #[tokio::test]
         async fn byte_range_not_satisfiable_omits_line_byte_header() {
-            let response = ApiError::RangeNotSatisfiable {
+            let response = ApiError::from(StorageError::RangeNotSatisfiable {
                 complete_length: 100,
-            }
+            })
             .into_response();
 
             assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);

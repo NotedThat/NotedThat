@@ -149,7 +149,7 @@ pub async fn authenticate_caller(
             let mut response = (
                 StatusCode::UNAUTHORIZED,
                 Json(UnauthorizedBody {
-                    error: "unauthorized",
+                    error: notedthat_core::ErrorCode::Unauthorized.as_str(),
                     message: "missing or invalid Authorization header",
                 }),
             )

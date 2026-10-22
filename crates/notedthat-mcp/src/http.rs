@@ -481,7 +481,8 @@ fn capacity_refusal(max_sessions: usize) -> Response {
             (header::RETRY_AFTER, HeaderValue::from_static("5")),
         ],
         Body::from(format!(
-            r#"{{"error":"backend_unavailable","message":"this server holds its maximum of {max_sessions} MCP sessions; retry when one ends"}}"#
+            r#"{{"error":"{}","message":"this server holds its maximum of {max_sessions} MCP sessions; retry when one ends"}}"#,
+            notedthat_core::ErrorCode::BackendUnavailable.as_str()
         )),
     )
         .into_response()

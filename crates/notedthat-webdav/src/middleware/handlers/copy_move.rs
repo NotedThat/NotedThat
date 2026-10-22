@@ -9,9 +9,19 @@ use notedthat_write::sniff_content_type;
 use crate::if_header::IfHeader;
 use crate::state::WebDavState;
 
-use super::super::backpressure::{
-    copy_destination_backpressure_response, dav_error_body, event_publish_failed_response,
-    move_destination_backpressure_response, move_source_tombstone_backpressure_response,
+use super::super::errors::{Retry, dav_error_body, storage_status, write_error_response};
+
+const COPY: Retry = Retry {
+    queue_full: "destination write succeeded but destination index event failed. Retry COPY to re-enqueue destination index event.",
+    publish_failed: "destination copied; its change event not published. Retry COPY to publish.",
+};
+const MOVE_DEST: Retry = Retry {
+    queue_full: "destination write succeeded but destination index event failed; source unchanged. Retry MOVE to re-enqueue destination index event.",
+    publish_failed: "destination copied; its change event not published; source unchanged. Retry MOVE to publish.",
+};
+const MOVE_SOURCE: Retry = Retry {
+    queue_full: "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source.",
+    publish_failed: "destination copied and source deleted; the source's change event not published. Send DELETE for the source to publish it — DELETE of a missing key is idempotent and still publishes, whereas a retried MOVE would find no source.",
 };
 use super::super::helpers::{object_target_or_collection_error, response_with_optional_etag};
 use super::super::path_validation::parse_webdav_uri_path;
@@ -136,10 +146,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         Ok(meta) => meta,
         // Without its preconditions this request would be a 404, so they are ignored
         // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
-        Err(StorageError::NotFound { .. } | StorageError::BucketNotFound { .. }) => {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(error) => return storage_status(&error).into_response(),
     };
     let Some(source_etag) = src_meta.etag else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -199,29 +206,10 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     .await
     {
         Ok(outcome) => outcome,
-        Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => {
-            return if delete_source {
-                move_destination_backpressure_response("")
-            } else {
-                copy_destination_backpressure_response()
-            };
+        // Nothing was copied and, on MOVE, the source is untouched (#98).
+        Err(error) => {
+            return write_error_response(error, if delete_source { MOVE_DEST } else { COPY });
         }
-        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
-            return event_publish_failed_response(if delete_source {
-                "destination copied; its change event not published; source unchanged. Retry MOVE to publish."
-            } else {
-                "destination copied; its change event not published. Retry COPY to publish."
-            });
-        }
-        Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
-            return StatusCode::PRECONDITION_FAILED.into_response();
-        }
-        // The source is not a manifest startup would accept; nothing was
-        // copied and, on MOVE, the source is untouched (#98).
-        Err(notedthat_write::WriteError::InvalidManifest { message }) => {
-            return (StatusCode::BAD_REQUEST, message).into_response();
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if delete_source {
         match notedthat_write::commit_delete(
@@ -237,14 +225,6 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         .await
         {
             Ok(()) => {}
-            Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
-                return move_source_tombstone_backpressure_response("");
-            }
-            Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
-                return event_publish_failed_response(
-                    "destination copied and source deleted; the source's change event not published. Send DELETE for the source to publish it — DELETE of a missing key is idempotent and still publishes, whereas a retried MOVE would find no source.",
-                );
-            }
             Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
                 return (
                     StatusCode::PRECONDITION_FAILED,
@@ -252,7 +232,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
                 )
                     .into_response();
             }
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(error) => return write_error_response(error, MOVE_SOURCE),
         }
     }
     response_with_optional_etag(

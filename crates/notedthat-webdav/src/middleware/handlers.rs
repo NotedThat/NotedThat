@@ -3,9 +3,9 @@
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{ConditionalHeaders, StorageError};
+use notedthat_core::ConditionalHeaders;
 
-use super::backpressure::{delete_backpressure_response, event_publish_failed_response};
+use super::errors::{Retry, write_error_response};
 use super::path_validation::parse_webdav_uri_path;
 use crate::filesystem::DavTarget;
 use crate::state::WebDavState;
@@ -40,17 +40,12 @@ pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response 
     .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(notedthat_write::WriteError::Storage(StorageError::PreconditionFailed)) => {
-            StatusCode::PRECONDITION_FAILED.into_response()
-        }
-        Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
-            delete_backpressure_response()
-        }
-        Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
-            event_publish_failed_response(
-                "deleted from storage; change event not published. Retry DELETE to publish.",
-            )
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(error) => write_error_response(
+            error,
+            Retry {
+                queue_full: "deleted from storage; retry to clear from search index",
+                publish_failed: "deleted from storage; change event not published. Retry DELETE to publish.",
+            },
+        ),
     }
 }

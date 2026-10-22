@@ -31,7 +31,7 @@
 //! answered at once, with the same `503` and `Retry-After` every other capacity
 //! refusal on this server gives (D38).
 
-use crate::error::{ErrorCode, refusal};
+use crate::error::refusal;
 use crate::metrics::route_and_surface;
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -39,6 +39,7 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use futures::StreamExt as _;
+use notedthat_core::ErrorCode;
 use notedthat_core::metrics::{label, name, refused_reason};
 use std::sync::Arc;
 use std::time::Duration;

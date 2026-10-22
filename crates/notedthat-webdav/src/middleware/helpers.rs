@@ -4,7 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{KbSlug, ObjectPath};
 
-use super::backpressure::dav_error_body;
+use super::errors::dav_error_body;
 use crate::filesystem::DavTarget;
 
 pub(super) enum TargetError {

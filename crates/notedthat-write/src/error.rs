@@ -1,6 +1,6 @@
 //! Error types for the shared write path.
 
-use notedthat_core::{Error as CoreError, StorageError};
+use notedthat_core::StorageError;
 
 /// What a write had already done to storage when a later step failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,9 +34,6 @@ pub enum WriteError {
         /// Maximum allowed byte size.
         limit: u64,
     },
-    /// Path/domain validation failure.
-    #[error(transparent)]
-    Path(CoreError),
     /// Indexer queue was full while enqueueing an upsert.
     #[error("indexer queue full during upsert")]
     IndexerBackpressureUpsert,
