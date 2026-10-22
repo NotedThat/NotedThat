@@ -2840,7 +2840,7 @@ mod announcing {
         assert_eq!(last.kind.name(), "object.indexed");
         assert_eq!(last.kind.etag(), Some(new_etag.as_str()));
         let points = scroll_points(&store, &kb(), "note.md", false).await;
-        assert!(!points.is_empty());
+        assert_ne!(points.len(), 0);
         assert!(
             points
                 .iter()
