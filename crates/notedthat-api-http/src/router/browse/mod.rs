@@ -66,7 +66,7 @@ pub(super) async fn browse_root(State(state): State<AppState>, mut req: Request)
         return redirect(StatusCode::PERMANENT_REDIRECT, &links::root_href());
     }
 
-    let request_id = extract_request_id(&req);
+    let request_id = extract_request_id(req.extensions());
     let Ok(principal) = state
         .authenticator
         .resolve(req.headers(), notedthat_core::Schemes::Bearer)
@@ -140,7 +140,7 @@ pub(super) async fn browse_path(
     path: Result<Path<String>, PathRejection>,
     mut req: Request,
 ) -> Response {
-    let request_id = extract_request_id(&req);
+    let request_id = extract_request_id(req.extensions());
 
     let Ok(Path(captured)) = path else {
         // Invalid percent-escapes. Without taking the `Result` form this would
@@ -170,7 +170,7 @@ pub(super) async fn browse_path(
         None => (captured.as_str(), ""),
     };
 
-    let Ok(access) = KbAccess::resolve(&state, kb_slug, &req) else {
+    let Ok(access) = KbAccess::resolve(&state, kb_slug, req.extensions()) else {
         return not_found(&request_id);
     };
     if !crate::authz::visible_in_listing(&state, kb_slug, &principal) {

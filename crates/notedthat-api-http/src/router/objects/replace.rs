@@ -1,7 +1,5 @@
-use super::super::helpers::{
-    body_limit_usize, event_source, object_location, parse_path, replace_conditionals,
-};
-use crate::authz::KbAccess;
+use super::super::extract::{ObjectRequest, Write};
+use super::super::helpers::{object_location, read_bounded_body, replace_conditionals};
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
@@ -9,8 +7,7 @@ use axum::Json;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
+use notedthat_core::{ConditionalHeaders, Error as CoreError};
 use serde::{Deserialize, Serialize};
 
 use super::super::openapi::{
@@ -86,7 +83,7 @@ pub(in crate::router) async fn post_object(
     Path((kb_slug, object_path)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
+    let request_id = extract_request_id(req.extensions());
     let err = |error: ApiError| ApiErrorResponse {
         error,
         request_id: request_id.clone(),
@@ -100,63 +97,31 @@ pub(in crate::router) async fn post_object(
         })));
     };
 
-    replace_object(State(state), kb_slug, target_path.to_string(), req).await
+    let object = ObjectRequest::<Write>::resolve(
+        &state,
+        req.headers(),
+        req.extensions(),
+        &kb_slug,
+        target_path,
+    )?;
+    replace_object(&state, object, req).await
 }
 
 async fn replace_object(
-    State(state): State<AppState>,
-    kb_slug: String,
-    object_path: String,
-    req: Request,
+    state: &AppState,
+    req: ObjectRequest<Write>,
+    body: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let source = event_source(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let path = parse_path(&object_path).map_err(err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
-    // Authorized before the body is read or staged, so a denied write
-    // never spools bytes to memory or disk.
-    access.require(Verb::Write, path.as_str()).map_err(err)?;
-    let kb = access.kb().clone();
+    let err = &req.err();
+    let kb = req.access.kb();
+    let path = &req.path;
     let json_cap_u64 = state
         .max_patchable_size
         .saturating_mul(2)
         .saturating_add(4096);
 
-    let content_length = req
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    if let Some(content_length) = content_length
-        && content_length > json_cap_u64
-    {
-        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
-            size: content_length,
-            limit: json_cap_u64,
-        })));
-    }
-
-    let conditionals = replace_conditionals(&req).map_err(err)?;
-    let body_bytes: Bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(json_cap_u64))
-        .await
-        .map_err(|_| {
-            err(ApiError::Core(CoreError::PayloadTooLarge {
-                size: json_cap_u64.saturating_add(1),
-                limit: json_cap_u64,
-            }))
-        })?;
-
-    if body_bytes.len() as u64 > json_cap_u64 {
-        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
-            size: body_bytes.len() as u64,
-            limit: json_cap_u64,
-        })));
-    }
+    let conditionals = replace_conditionals(&body).map_err(err)?;
+    let body_bytes = read_bounded_body(body, json_cap_u64).await.map_err(err)?;
 
     let body = serde_json::from_slice::<ReplaceBody>(&body_bytes).map_err(|error| {
         err(ApiError::Core(CoreError::InvalidInput {
@@ -171,10 +136,10 @@ async fn replace_object(
 
     let outcome = notedthat_write::replace(
         state.storage.as_ref(),
-        &state.sinks(source),
+        &state.sinks(req.source),
         notedthat_write::ReplaceRequest {
-            kb: &kb,
-            path: &path,
+            kb,
+            path,
             old_string: &body.old_string,
             new_string: &body.new_string,
             replace_all: body.replace_all,
@@ -188,7 +153,7 @@ async fn replace_object(
 
     let meta = state
         .storage
-        .head_object(&kb, &path, ConditionalHeaders::default())
+        .head_object(kb, path, ConditionalHeaders::default())
         .await
         .map_err(|e| err(ApiError::from(e)))?;
     let etag = outcome.put_outcome.etag.or(meta.etag).unwrap_or_default();
@@ -197,7 +162,7 @@ async fn replace_object(
         match_count: outcome.match_count,
         total_bytes: meta.size,
     };
-    let content_location = object_location(&kb_slug, path.as_str());
+    let content_location = object_location(kb.as_str(), path.as_str());
 
     Ok((
         StatusCode::OK,

@@ -1,17 +1,15 @@
-use super::super::helpers::parse_path;
-use crate::authz::KbAccess;
+use super::super::extract::{ObjectRequest, Read};
 use crate::error::{ApiError, ApiErrorResponse};
-use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use crate::validators::with_validators;
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::http::header::{ACCEPT_RANGES, IF_RANGE};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
     ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, ObjectRead,
-    StorageError, Verb, if_range_matches, parse_line_range_header, parse_range_header,
+    StorageError, if_range_matches, parse_line_range_header, parse_range_header,
 };
 use std::borrow::Cow;
 
@@ -81,21 +79,9 @@ fn response_content_type(stored: Option<&str>) -> Cow<'_, str> {
 )]
 pub(in crate::router) async fn head_object(
     State(state): State<AppState>,
-    Path((kb_slug, object_path)): Path<(String, String)>,
-    req: Request,
+    req: ObjectRequest<Read>,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let path = parse_path(&object_path).map_err(err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
-    // Authorize before any storage call, so a denial costs nothing and reads
-    // identically whether or not the object exists.
-    access.require(Verb::Read, path.as_str()).map_err(err)?;
-    let kb = access.kb().clone();
+    let err = &req.err();
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
     // Scope-OUT: Conditional writes (`If-Match`, `If-None-Match`) that succeed at
@@ -105,11 +91,9 @@ pub(in crate::router) async fn head_object(
     // either accept the ghost state or use a stronger consistency mechanism. v1
     // does not provide automatic replay/repair for conditional-write ghost
     // states.
-    let conditionals = ConditionalHeaders::from_header_map(req.headers());
-
     let meta = state
         .storage
-        .head_object(&kb, &path, conditionals)
+        .head_object(req.access.kb(), &req.path, req.conditionals)
         .await
         .map_err(|e| err(ApiError::from(e)))?;
 
@@ -174,29 +158,25 @@ pub(in crate::router) async fn head_object(
 )]
 pub(in crate::router) async fn get_object(
     State(state): State<AppState>,
-    Path((kb_slug, object_path)): Path<(String, String)>,
-    req: Request,
+    req: ObjectRequest<Read>,
+    raw: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let path = parse_path(&object_path).map_err(err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
-    // Authorize before any storage call, so a denial costs nothing and reads
-    // identically whether or not the object exists.
-    access.require(Verb::Read, path.as_str()).map_err(err)?;
-    let kb = access.kb().clone();
-    let conditionals = ConditionalHeaders::from_header_map(req.headers());
+    let err = &req.err();
+    let ObjectRequest {
+        path,
+        access,
+        conditionals,
+        request_id,
+        ..
+    } = req;
+    let kb = access.kb();
     // A non-UTF-8 `If-Range` can match nothing, so it reads as a stale validator.
-    let if_range = req
+    let if_range = raw
         .headers()
         .get(IF_RANGE)
         .map(|value| value.to_str().unwrap_or_default().to_owned());
 
-    let range = match req.headers().get(axum::http::header::RANGE) {
+    let range = match raw.headers().get(axum::http::header::RANGE) {
         None => None,
         Some(raw) => {
             let raw_str = raw.to_str().map_err(|_| {
@@ -214,7 +194,7 @@ pub(in crate::router) async fn get_object(
             if parsed.unit == "lines" {
                 return serve_line_range_read(
                     &state,
-                    &kb,
+                    kb,
                     &path,
                     raw_str,
                     conditionals,
@@ -236,7 +216,7 @@ pub(in crate::router) async fn get_object(
     let ranged = range.is_some();
     let read = state
         .storage
-        .get_object(&kb, &path, range, conditionals.clone())
+        .get_object(kb, &path, range, conditionals.clone())
         .await;
 
     // RFC 9110 §13.1.5: `If-Range` makes the range conditional on the validator still
@@ -263,7 +243,7 @@ pub(in crate::router) async fn get_object(
     };
     let full = state
         .storage
-        .get_object(&kb, &path, None, conditionals)
+        .get_object(kb, &path, None, conditionals)
         .await
         .map_err(not_found)?;
     if let Some(error) = unsatisfiable

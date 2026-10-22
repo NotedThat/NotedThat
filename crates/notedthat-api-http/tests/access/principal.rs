@@ -24,7 +24,7 @@ fn a_request_that_never_reached_the_auth_layer_is_anonymous() {
     // Given / When / Then — failing closed matters more here than anywhere: a
     // handler reached by an unexpected route must not inherit a credential.
     let request = Request::new(Body::empty());
-    assert_eq!(principal(&request), Principal::Anyone);
+    assert_eq!(principal(request.extensions()), Principal::Anyone);
 }
 
 #[tokio::test]
