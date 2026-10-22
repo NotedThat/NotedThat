@@ -1,11 +1,12 @@
 //! Knowledgebase-level routes: list KBs and list objects within a KB.
 
-use crate::authz::{KbAccess, ScanScope, effective_prefix, visible_in_listing};
+use super::extract::KbRequest;
+use crate::authz::{ScanScope, effective_prefix, visible_in_listing};
 use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Query, Request, State};
 use axum::response::IntoResponse;
 use notedthat_core::{
     KbDetails, KbSlug, KeyFilter, ListResponse, ObjectMeta, Storage, StorageError, Verb,
@@ -106,7 +107,7 @@ pub(super) async fn list_kbs(
     // credential no longer implies reach into every declared knowledge base.
     // The description rides on the same rule: a knowledge base the caller
     // cannot see contributes no entry, so nothing about it is described.
-    let principal = crate::middleware::principal(&req);
+    let principal = crate::middleware::principal(req.extensions());
     let knowledgebases: Vec<KbListEntry> = state
         .declared_kbs
         .keys()
@@ -121,7 +122,7 @@ pub(super) async fn list_kbs(
     if knowledgebases.is_empty() && principal.is_anonymous() {
         return Err(ApiErrorResponse {
             error: ApiError::Unauthorized,
-            request_id: extract_request_id(&req),
+            request_id: extract_request_id(req.extensions()),
         });
     }
 
@@ -150,17 +151,11 @@ pub(super) async fn list_kbs(
 )]
 pub(super) async fn list_objects(
     State(state): State<AppState>,
-    Path(kb_slug): Path<String>,
     Query(q): Query<ListQuery>,
-    req: Request,
+    kb: KbRequest,
 ) -> Result<impl IntoResponse, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    let err = &kb.err();
+    let access = kb.access;
     access.require_any(Verb::List).map_err(err)?;
     let limit = q.limit.filter(|&limit| limit > 0).unwrap_or(100).min(1000);
 

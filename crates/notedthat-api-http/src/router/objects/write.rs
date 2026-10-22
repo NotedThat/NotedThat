@@ -1,14 +1,11 @@
-use super::super::helpers::{body_limit_usize, event_source, object_location, parse_path};
-use crate::authz::KbAccess;
+use super::super::extract::{Delete, ObjectRequest, Write};
+use super::super::helpers::{object_location, read_bounded_body};
 use crate::error::{ApiError, ApiErrorResponse};
-use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use bytes::Bytes;
-use notedthat_core::{ConditionalHeaders, Error as CoreError, Verb};
 
 use super::super::openapi::{
     BackendUnavailable, BadRequest, Forbidden, InternalError, NotFound, ObjectPathParams,
@@ -50,60 +47,18 @@ use super::super::openapi::{
 )]
 pub(in crate::router) async fn put_object(
     State(state): State<AppState>,
-    Path((kb_slug, object_path)): Path<(String, String)>,
-    req: Request,
+    req: ObjectRequest<Write>,
+    body: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let source = event_source(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let path = parse_path(&object_path).map_err(err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
-    // Authorized before the body is read or staged, so a denied write
-    // never spools bytes to memory or disk.
-    access.require(Verb::Write, path.as_str()).map_err(err)?;
-    let kb = access.kb().clone();
-
-    let content_length = req
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    if let Some(content_length) = content_length
-        && content_length > state.max_body_size
-    {
-        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
-            size: content_length,
-            limit: state.max_body_size,
-        })));
-    }
-
-    let content_type = req
+    let err = &req.err();
+    let content_type = body
         .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let conditionals = ConditionalHeaders::from_header_map(req.headers());
-
-    let body_bytes: Bytes =
-        axum::body::to_bytes(req.into_body(), body_limit_usize(state.max_body_size))
-            .await
-            .map_err(|_| {
-                err(ApiError::Core(CoreError::PayloadTooLarge {
-                    size: state.max_body_size + 1,
-                    limit: state.max_body_size,
-                }))
-            })?;
-
-    if body_bytes.len() as u64 > state.max_body_size {
-        return Err(err(ApiError::Core(CoreError::PayloadTooLarge {
-            size: body_bytes.len() as u64,
-            limit: state.max_body_size,
-        })));
-    }
+    let body_bytes = read_bounded_body(body, state.max_body_size)
+        .await
+        .map_err(err)?;
 
     // A body for `.notedthat/manifest.json` is checked against what startup
     // would accept inside `notedthat_write::commit`, where every surface's
@@ -111,21 +66,22 @@ pub(in crate::router) async fn put_object(
     // mapped like any other write refusal.
     let outcome = notedthat_write::commit(
         state.storage.as_ref(),
-        &state.sinks(source),
-        &kb,
-        &path,
+        &state.sinks(req.source),
+        req.access.kb(),
+        &req.path,
         body_bytes,
         content_type.as_deref(),
-        conditionals,
+        req.conditionals,
     )
     .await
     .map_err(|e| err(ApiError::from(e)))?;
 
     // RFC 9110 §9.3.4: 201 with a Location for a new object, 204 for a replacement.
     let mut builder = if outcome.created {
-        Response::builder()
-            .status(StatusCode::CREATED)
-            .header("location", object_location(&kb_slug, path.as_str()))
+        Response::builder().status(StatusCode::CREATED).header(
+            "location",
+            object_location(req.access.kb().as_str(), req.path.as_str()),
+        )
     } else {
         Response::builder().status(StatusCode::NO_CONTENT)
     };
@@ -161,30 +117,15 @@ pub(in crate::router) async fn put_object(
 )]
 pub(in crate::router) async fn delete_object(
     State(state): State<AppState>,
-    Path((kb_slug, object_path)): Path<(String, String)>,
-    req: Request,
+    req: ObjectRequest<Delete>,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let source = event_source(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let path = parse_path(&object_path).map_err(err)?;
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
-    // Authorized before the body is read or staged, so a denied write
-    // never spools bytes to memory or disk.
-    access.require(Verb::Delete, path.as_str()).map_err(err)?;
-    let kb = access.kb().clone();
-    let conditionals = ConditionalHeaders::from_header_map(req.headers());
-
+    let err = &req.err();
     notedthat_write::commit_delete(
         state.storage.as_ref(),
-        &state.sinks(source),
-        &kb,
-        &path,
-        conditionals,
+        &state.sinks(req.source),
+        req.access.kb(),
+        &req.path,
+        req.conditionals,
     )
     .await
     .map_err(|e| err(ApiError::from(e)))?;

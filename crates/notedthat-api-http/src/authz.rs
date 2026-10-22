@@ -11,7 +11,7 @@
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use axum::extract::Request;
+use axum::http::Extensions;
 use notedthat_core::{AccessPolicy, KbSlug, KeyFilter, Principal, Verb};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -32,7 +32,11 @@ impl KbAccess {
     /// [`CoreError::NotFound`] when the slug is not declared. That is not an
     /// authorization answer and must stay a `404`: an undeclared knowledge base
     /// does not exist for anyone, whatever they hold.
-    pub(crate) fn resolve(state: &AppState, slug: &str, req: &Request) -> Result<Self, ApiError> {
+    pub(crate) fn resolve(
+        state: &AppState,
+        slug: &str,
+        extensions: &Extensions,
+    ) -> Result<Self, ApiError> {
         let kb = crate::router::lookup_kb(state, slug)?;
 
         // A declared knowledge base with no policy entry cannot happen —
@@ -48,7 +52,7 @@ impl KbAccess {
 
         Ok(Self {
             kb,
-            principal: crate::middleware::principal(req),
+            principal: crate::middleware::principal(extensions),
             policy,
         })
     }

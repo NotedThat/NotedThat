@@ -6,12 +6,12 @@
 //! bridge stamped on [`notedthat_indexer::IndexHealth`]; the one live fact
 //! added here is whether the queue is full at this moment.
 
+use super::extract::KbRequest;
 use crate::authz::KbAccess;
-use crate::error::{ApiError, ApiErrorResponse};
-use crate::middleware::extract_request_id;
+use crate::error::ApiErrorResponse;
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, Request, State};
+use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{Verb, unix_to_rfc3339};
@@ -147,16 +147,10 @@ struct ReconcileView {
 )]
 pub(super) async fn get_index_health(
     State(state): State<AppState>,
-    Path(kb_slug): Path<String>,
-    req: Request,
+    kb: KbRequest,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    let err = &kb.err();
+    let access = kb.access;
     // The view is about the knowledge base, not about a key, so it follows the
     // listing rule: whoever would see the base listed may ask how its index is.
     access.require_visible().map_err(err)?;
@@ -169,7 +163,7 @@ pub(super) async fn get_index_health(
             .max_capacity()
             .saturating_sub(state.indexer_tx.capacity()),
     };
-    let body = render(&access, &kb_slug, snapshot, queue);
+    let body = render(&access, access.kb().as_str(), snapshot, queue);
 
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())
 }
