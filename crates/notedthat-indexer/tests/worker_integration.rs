@@ -15,8 +15,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
+    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
+    Storage, StorageError,
 };
 use notedthat_indexer::chunker::stream_chunks;
 use notedthat_indexer::testing::InMemoryVectorStore;
@@ -474,12 +475,16 @@ impl Storage for MockStorage {
         kb: &KbSlug,
         path: &ObjectPath,
         _conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
-        self.objects
+    ) -> Result<DeleteOutcome, StorageError> {
+        let removed = self
+            .objects
             .lock()
             .unwrap()
             .remove(&(kb.as_str().to_string(), path.as_str().to_string()));
-        Ok(())
+        Ok(match removed {
+            Some(_) => DeleteOutcome::Deleted,
+            None => DeleteOutcome::NotFound,
+        })
     }
 
     async fn list_objects(

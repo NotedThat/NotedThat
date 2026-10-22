@@ -398,8 +398,8 @@ mod patch_route {
     use axum::response::Response;
     use bytes::Bytes;
     use notedthat_core::{
-        ByteRange, ConditionalHeaders, KbManifest, KbSlug, ListResponse, ObjectMeta, ObjectPath,
-        ObjectRead, PutOutcome, Storage, StorageError,
+        ByteRange, ConditionalHeaders, DeleteOutcome, KbManifest, KbSlug, ListResponse, ObjectMeta,
+        ObjectPath, ObjectRead, PutOutcome, Storage, StorageError,
     };
     use notedthat_indexer::IndexEvent;
     use std::collections::BTreeMap;
@@ -833,7 +833,7 @@ mod patch_route {
                 kb: &KbSlug,
                 path: &ObjectPath,
                 conditionals: ConditionalHeaders,
-            ) -> Result<(), StorageError> {
+            ) -> Result<DeleteOutcome, StorageError> {
                 self.inner.delete_object(kb, path, conditionals).await
             }
 

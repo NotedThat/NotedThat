@@ -19,8 +19,9 @@ use crate::preconditions::{
 };
 
 use crate::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
+    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
+    Storage, StorageError,
 };
 
 /// Marks a cursor as one this backend issued, so a client-invented string is refused the
@@ -510,7 +511,7 @@ impl Storage for InMemoryStorage {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         self.check_reachable()?;
         let mut inner = self.inner.write().await;
         inner.require_bucket(kb)?;
@@ -524,8 +525,10 @@ impl Storage for InMemoryStorage {
             return Err(StorageError::PreconditionFailed);
         }
 
-        inner.objects.remove(&key);
-        Ok(())
+        Ok(match inner.objects.remove(&key) {
+            Some(_) => DeleteOutcome::Deleted,
+            None => DeleteOutcome::NotFound,
+        })
     }
 
     async fn list_objects(
