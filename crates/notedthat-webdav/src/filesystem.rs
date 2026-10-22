@@ -10,8 +10,8 @@ use dav_server::{
 };
 use futures::StreamExt as _;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, KbSlug, ObjectMeta, ObjectPath, Principal, StorageError, Verb,
-    roll_up,
+    ByteRange, ConditionalHeaders, KbSlug, ObjectMeta, ObjectPath, Principal, Storage,
+    StorageError, Verb, roll_up,
 };
 use std::{
     collections::BTreeMap,
@@ -378,33 +378,53 @@ pub(crate) async fn collect_propfind_objects(
     Ok(all_objects)
 }
 
+/// What a path names in storage.
+pub(crate) enum Named {
+    Object(ObjectMeta),
+    /// Objects exist under `path/`: a virtual folder.
+    Folder,
+    Nothing,
+}
+
+/// `as_collection` is the client's trailing `/`: the path then names a folder or
+/// nothing, never the object spelled the same way.
+pub(crate) async fn name_in_storage(
+    storage: &dyn Storage,
+    kb: &KbSlug,
+    path: &ObjectPath,
+    as_collection: bool,
+) -> Result<Named, StorageError> {
+    if !as_collection {
+        match storage
+            .head_object(kb, path, ConditionalHeaders::default())
+            .await
+        {
+            Ok(meta) => return Ok(Named::Object(meta)),
+            Err(err) if err.is_not_found() => {}
+            Err(err) => return Err(err),
+        }
+    }
+    let prefix = format!("{}/", path.as_str());
+    let listed = storage.list_objects(kb, Some(&prefix), 1, None).await?;
+    Ok(if listed.objects.is_empty() {
+        Named::Nothing
+    } else {
+        Named::Folder
+    })
+}
+
 async fn metadata_for_object_or_prefix(
     state: Arc<WebDavState>,
     kb: KbSlug,
     path: ObjectPath,
 ) -> FsResult<Box<dyn DavMetaData>> {
-    match state
-        .storage
-        .head_object(&kb, &path, ConditionalHeaders::default())
-        .await
-    {
-        Ok(meta) => Ok(WebDavMetaData::object(meta)),
-        Err(err) if err.is_not_found() => {
-            let prefix = format!("{}/", path.as_str());
-            let response = state
-                .storage
-                .list_objects(&kb, Some(&prefix), 1, None)
-                .await
-                .map_err(|err| storage_error_to_fs(&err))?;
-            if response.objects.is_empty() {
-                Err(FsError::NotFound)
-            } else {
-                Ok(WebDavMetaData::kb(
-                    format!("virtual-{}", path.as_str()),
-                    virtual_mtime(),
-                ))
-            }
-        }
+    match name_in_storage(state.storage.as_ref(), &kb, &path, false).await {
+        Ok(Named::Object(meta)) => Ok(WebDavMetaData::object(meta)),
+        Ok(Named::Folder) => Ok(WebDavMetaData::kb(
+            format!("virtual-{}", path.as_str()),
+            virtual_mtime(),
+        )),
+        Ok(Named::Nothing) => Err(FsError::NotFound),
         Err(err) => Err(storage_error_to_fs(&err)),
     }
 }

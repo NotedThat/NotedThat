@@ -231,6 +231,160 @@ async fn response_body(resp: Response) -> String {
 
 mod mutation_safety;
 
+/// A folder is a key prefix (#281): `notes/folder/a.md` makes `folder` one.
+async fn storage_with_folder() -> ScriptedStorage {
+    let storage = empty_storage();
+    storage
+        .insert("notes", "folder/a.md", Bytes::from_static(b"a"), "\"a\"")
+        .await;
+    storage
+}
+
+async fn send(
+    storage: ScriptedStorage,
+    method: &str,
+    uri: &str,
+    destination: Option<&str>,
+) -> Response {
+    let mut builder = HttpRequest::builder().method(method).uri(uri);
+    if let Some(destination) = destination {
+        builder = builder.header("destination", destination);
+    }
+    app(storage)
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn delete_of_a_folder_is_refused_with_no_collection_delete() {
+    for uri in ["/webdav/notes/folder", "/webdav/notes/folder/"] {
+        let storage = storage_with_folder().await;
+        let resp = send(storage.clone(), "DELETE", uri, None).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+        assert!(response_body(resp).await.contains("no-collection-delete"));
+        assert!(storage.get_stored("notes", "folder/a.md").await.is_some());
+        assert_eq!(
+            storage.count(StorageOp::DeleteObject),
+            0,
+            "nothing reached storage"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delete_of_a_missing_path_spelled_as_a_collection_is_404() {
+    let storage = empty_storage();
+    let resp = send(storage.clone(), "DELETE", "/webdav/notes/missing/", None).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(storage.count(StorageOp::DeleteObject), 0);
+}
+
+#[tokio::test]
+async fn delete_of_a_file_spelled_as_a_collection_is_404_and_leaves_it() {
+    let storage = empty_storage();
+    storage
+        .insert("notes", "a.md", Bytes::from_static(b"a"), "\"a\"")
+        .await;
+    let resp = send(storage.clone(), "DELETE", "/webdav/notes/a.md/", None).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(storage.get_stored("notes", "a.md").await.is_some());
+}
+
+#[tokio::test]
+async fn move_and_copy_of_a_folder_are_refused_with_no_collection_move() {
+    for method in ["MOVE", "COPY"] {
+        for uri in ["/webdav/notes/folder", "/webdav/notes/folder/"] {
+            let storage = storage_with_folder().await;
+            let resp = send(storage.clone(), method, uri, Some("/webdav/notes/other")).await;
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+            assert!(response_body(resp).await.contains("no-collection-move"));
+            assert!(storage.get_stored("notes", "folder/a.md").await.is_some());
+        }
+    }
+}
+
+#[tokio::test]
+async fn move_onto_an_existing_folder_is_refused_with_no_collection_move() {
+    let storage = storage_with_folder().await;
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"s"), "\"s\"")
+        .await;
+    let resp = send(
+        storage.clone(),
+        "MOVE",
+        "/webdav/notes/src.md",
+        Some("/webdav/notes/folder"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(response_body(resp).await.contains("no-collection-move"));
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
+}
+
+#[tokio::test]
+async fn move_to_a_collection_destination_that_does_not_exist_is_400() {
+    let storage = empty_storage();
+    storage
+        .insert("notes", "src.md", Bytes::from_static(b"s"), "\"s\"")
+        .await;
+    let resp = send(
+        storage.clone(),
+        "MOVE",
+        "/webdav/notes/src.md",
+        Some("/webdav/notes/nowhere/"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(storage.get_stored("notes", "src.md").await.is_some());
+    assert!(storage.get_stored("notes", "nowhere").await.is_none());
+}
+
+#[tokio::test]
+async fn move_of_a_missing_source_spelled_as_a_collection_is_404() {
+    let resp = send(
+        empty_storage(),
+        "MOVE",
+        "/webdav/notes/missing/",
+        Some("/webdav/notes/dest.md"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn move_of_a_file_spelled_as_a_collection_is_404_and_leaves_it() {
+    let storage = empty_storage();
+    storage
+        .insert("notes", "a.md", Bytes::from_static(b"a"), "\"a\"")
+        .await;
+    let resp = send(
+        storage.clone(),
+        "MOVE",
+        "/webdav/notes/a.md/",
+        Some("/webdav/notes/dest.md"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(storage.get_stored("notes", "a.md").await.is_some());
+    assert!(storage.get_stored("notes", "dest.md").await.is_none());
+}
+
+#[tokio::test]
+async fn a_double_trailing_slash_is_still_400_on_the_write_path() {
+    let storage = storage_with_folder().await;
+    let resp = send(storage.clone(), "DELETE", "/webdav/notes/folder//", None).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = send(
+        storage,
+        "MOVE",
+        "/webdav/notes/folder//",
+        Some("/webdav/notes/other"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn test_get_passes_through() {
     let storage = empty_storage();
@@ -653,6 +807,7 @@ async fn test_move_single_object_returns_201_and_calls_commit_then_commit_delete
         storage.ops(),
         vec![
             StorageOp::HeadObject,
+            StorageOp::ListObjects,
             StorageOp::CopyObject,
             StorageOp::DeleteObject
         ]
@@ -687,7 +842,11 @@ async fn test_copy_single_object_returns_201_and_calls_only_commit() {
     assert_eq!(resp.headers().get("etag").unwrap(), "\"source\"");
     assert_eq!(
         storage.ops(),
-        vec![StorageOp::HeadObject, StorageOp::CopyObject]
+        vec![
+            StorageOp::HeadObject,
+            StorageOp::ListObjects,
+            StorageOp::CopyObject
+        ]
     );
     assert!(storage.get_stored("notes", "source.md").await.is_some());
     assert!(storage.get_stored("notes", "copy.md").await.is_some());
