@@ -9,9 +9,9 @@ use aws_smithy_runtime_api::http::Response as HttpResponse;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use bytes::Bytes;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
-    TenantSlug, Validators, derive_bucket_name,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
+    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
+    Storage, StorageError, TenantSlug, Validators, derive_bucket_name,
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::{debug, info, warn};
@@ -992,7 +992,7 @@ impl Storage for S3Storage {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         let bucket = self.bucket_name(kb);
         let key = path.as_str();
 
@@ -1014,13 +1014,15 @@ impl Storage for S3Storage {
         match req.send().await {
             Ok(_) => {
                 info!(bucket = %bucket, key = %key, "object deleted");
-                Ok(())
+                Ok(DeleteOutcome::Deleted)
             }
             // S3 delete is idempotent — not-found is `Ok`, as the
-            // `Storage::delete_object` contract requires.
+            // `Storage::delete_object` contract requires. A `DeleteObject` response
+            // never says whether the key existed, and a `HEAD` first would be racy,
+            // so S3 reports `Deleted` either way.
             Err(e) if is_not_found_sdk(&e) => {
                 info!(bucket = %bucket, key = %key, "delete_object: object not found (idempotent Ok)");
-                Ok(())
+                Ok(DeleteOutcome::Deleted)
             }
             Err(e) => Err(map_delete_error(&e, &bucket)),
         }

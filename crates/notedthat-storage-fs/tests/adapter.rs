@@ -6,8 +6,8 @@
 
 use bytes::Bytes;
 use notedthat_core::{
-    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, Storage, StorageError, TenantSlug,
-    compute_etag,
+    ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbSlug, ObjectPath, Storage,
+    StorageError, TenantSlug, compute_etag,
 };
 use notedthat_storage_fs::{FsConfig, FsStorage, RootLock, open_root};
 
@@ -343,7 +343,8 @@ async fn deleting_is_idempotent_and_leaves_no_empty_directories() {
     let env = env().await;
     put(&env, "deep/nested/note.md", "x").await;
 
-    env.storage
+    let first = env
+        .storage
         .delete_object(
             &env.kb,
             &path("deep/nested/note.md"),
@@ -351,7 +352,9 @@ async fn deleting_is_idempotent_and_leaves_no_empty_directories() {
         )
         .await
         .expect("delete");
-    env.storage
+    assert_eq!(first, DeleteOutcome::Deleted);
+    let again = env
+        .storage
         .delete_object(
             &env.kb,
             &path("deep/nested/note.md"),
@@ -359,6 +362,13 @@ async fn deleting_is_idempotent_and_leaves_no_empty_directories() {
         )
         .await
         .expect("deleting twice is a no-op");
+    assert_eq!(again, DeleteOutcome::NotFound, "fs can tell a missing key");
+    let never = env
+        .storage
+        .delete_object(&env.kb, &path("never.md"), ConditionalHeaders::default())
+        .await
+        .expect("a never-written key is a no-op");
+    assert_eq!(never, DeleteOutcome::NotFound);
 
     assert!(
         !env.root.join("nt-default-notes/deep").exists(),

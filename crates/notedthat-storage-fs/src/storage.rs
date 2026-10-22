@@ -8,10 +8,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, EtagHasher, KbManifest, KbSlug, ListResponse,
-    ObjectMeta, ObjectPath, ObjectRead, ObjectState, ObjectStream, PutOutcome, StagedBody, Storage,
-    StorageError, TenantSlug, evaluate_read_preconditions, evaluate_write_preconditions,
-    matches_if_match, resolve_range, unix_seconds_i64,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, EtagHasher, KbManifest,
+    KbSlug, ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectState, ObjectStream,
+    PutOutcome, StagedBody, Storage, StorageError, TenantSlug, evaluate_read_preconditions,
+    evaluate_write_preconditions, matches_if_match, resolve_range, unix_seconds_i64,
 };
 
 use crate::commit;
@@ -721,7 +721,7 @@ impl Storage for FsStorage {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         let bucket = self.bucket(kb);
         let key = key_of(path).to_string();
         log_ignored_delete_conditions(&conditionals);
@@ -731,7 +731,7 @@ impl Storage for FsStorage {
             inner.require_bucket(&bucket)?;
             let Some((_, attrs)) = inner.current(&bucket, &key)? else {
                 // Idempotent, as on S3.
-                return Ok(());
+                return Ok(DeleteOutcome::NotFound);
             };
 
             if let Some(expected) = &conditionals.if_match
@@ -743,7 +743,9 @@ impl Storage for FsStorage {
             let object_path = inner.layout.object_path(&bucket, &key)?;
             match std::fs::remove_file(&object_path) {
                 Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(DeleteOutcome::NotFound);
+                }
                 Err(error) => return Err(errors::object(&key, error)),
             }
             inner.meta.remove(&inner.layout, &bucket, &key)?;
@@ -751,7 +753,7 @@ impl Storage for FsStorage {
             if let Some(parent) = object_path.parent() {
                 commit::prune_empty_dirs(parent, &inner.layout.bucket_dir(&bucket));
             }
-            Ok(())
+            Ok(DeleteOutcome::Deleted)
         })
         .await
     }

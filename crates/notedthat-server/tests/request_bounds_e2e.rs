@@ -17,8 +17,9 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures::StreamExt as _;
 use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, ListResponse, ObjectMeta,
-    ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody, Storage, StorageError,
+    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
+    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
+    Storage, StorageError,
 };
 use notedthat_events::MemoryPublisher;
 use notedthat_indexer::testing::StubEmbedder;
@@ -700,7 +701,7 @@ impl Storage for StallsOnList {
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError> {
+    ) -> Result<DeleteOutcome, StorageError> {
         self.inner.delete_object(kb, path, conditionals).await
     }
 }
