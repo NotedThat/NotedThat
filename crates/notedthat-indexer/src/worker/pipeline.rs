@@ -47,6 +47,9 @@ pub(super) struct PipelineFailure {
     pub(super) message: String,
     pub(super) etag: Option<String>,
     pub(super) mime: Option<String>,
+    /// Whether `HEAD` had succeeded: the key was found live. A `Tombstone`
+    /// reports a failure only then (D65).
+    pub(super) after_head: bool,
 }
 
 impl PipelineFailure {
@@ -56,6 +59,7 @@ impl PipelineFailure {
             message,
             etag: None,
             mime: None,
+            after_head: false,
         }
     }
 }
@@ -160,6 +164,7 @@ impl IndexerWorker {
                 message,
                 etag: failure_etag,
                 mime: failure_mime,
+                after_head: true,
             })
     }
 

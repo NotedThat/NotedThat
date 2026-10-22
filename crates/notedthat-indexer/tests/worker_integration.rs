@@ -2765,7 +2765,7 @@ mod announcing {
     /// `object.deleted` already said what happened to the key; there is no
     /// `object.unindexed`. For a key that is gone; a live one is a refresh.
     #[tokio::test]
-    async fn a_tombstone_publishes_nothing() {
+    async fn a_tombstone_of_a_gone_key_publishes_nothing() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
         let storage = Arc::new(MockStorage::new());
@@ -2779,6 +2779,7 @@ mod announcing {
             vec![upsert("note.md")],
         )
         .await;
+        let before = announced(&publisher).await.len();
         storage.remove(kb().as_str(), "note.md");
         drive(
             storage.clone(),
@@ -2792,9 +2793,108 @@ mod announcing {
         .await;
 
         let events = announced(&publisher).await;
-        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(
+            events.len(),
+            before,
+            "the tombstone added nothing: {events:?}"
+        );
         assert_eq!(events[0].kind.name(), "object.indexed");
         assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+    }
+
+    /// The #350 shape with a changed version: the late tombstone finds the
+    /// object live under a new `ETag`, so it is a refresh. It re-indexes and
+    /// says so, once, with the new `ETag`.
+    #[tokio::test]
+    async fn a_tombstone_of_a_live_changed_object_reindexes_and_publishes_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        let before = announced(&publisher).await.len();
+        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        let new_etag = MockStorage::etag_for(b"new body");
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before + 1, "{events:?}");
+        let last = events.last().unwrap();
+        assert_eq!(last.kind.name(), "object.indexed");
+        assert_eq!(last.kind.etag(), Some(new_etag.as_str()));
+        let points = scroll_points(&store, &kb(), "note.md", false).await;
+        assert!(!points.is_empty());
+        assert!(
+            points
+                .iter()
+                .all(|point| string_payload(point, "etag") == new_etag),
+            "every point carries the new version"
+        );
+    }
+
+    /// The same late tombstone, but the re-index fails after `HEAD`: a
+    /// subscriber waiting on this version is told, as for a `Refresh`.
+    #[tokio::test]
+    async fn a_tombstone_of_a_live_object_whose_reindex_fails_publishes_index_failed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let health = Arc::new(IndexHealth::new());
+        // The first embedding call indexes the old body; the second fails.
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(2), None));
+
+        drive_with(
+            storage.clone(),
+            embedder.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        let before = announced(&publisher).await.len();
+        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        drive_with(
+            storage.clone(),
+            embedder,
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before + 1, "{events:?}");
+        let ObjectEventKind::IndexFailed { etag, .. } = &events.last().unwrap().kind else {
+            panic!("expected object.index_failed, got {:?}", events.last());
+        };
+        assert_eq!(
+            etag.as_deref(),
+            Some(MockStorage::etag_for(b"new body").as_str())
+        );
     }
 
     /// A subscriber waiting on `object.indexed` would otherwise wait forever.

@@ -255,11 +255,13 @@ impl IndexerWorker {
             "processing index event"
         );
 
-        // A tombstone reports no outcome, success or failure (D65): there is
-        // no `object.unindexed`, and `object.deleted` already said what
-        // happened to the key. One whose re-read finds the object live and
-        // changed indexes it, and that is published like any other index.
-        let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
+        // A tombstone reports no outcome for a key that is gone (D65): there
+        // is no `object.unindexed`, and `object.deleted` already said what
+        // happened to the key. One whose re-read finds the object live is a
+        // refresh: if it indexes, `object.indexed` is published, and if it
+        // fails after `HEAD`, `object.index_failed`. A failure before `HEAD`
+        // is silent, as the key's state is unknown.
+        let is_tombstone = matches!(event, IndexEvent::Tombstone { .. });
         let pipeline = async {
             match event {
                 IndexEvent::Upsert { kb, object_key } => {
@@ -317,7 +319,7 @@ impl IndexerWorker {
                 );
                 self.health
                     .failed(kb.as_str(), object_key.as_str(), &failure.message);
-                if reports_outcome {
+                if !is_tombstone || failure.after_head {
                     self.publish(ObjectEvent::index_failed(
                         kb,
                         object_key,
