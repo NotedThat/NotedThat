@@ -141,54 +141,65 @@ mod tests {
             (
                 WriteError::TooLarge { size: 2, limit: 1 },
                 StatusCode::PAYLOAD_TOO_LARGE,
+                false,
             ),
             (
                 WriteError::PatchTooLarge { size: 2, limit: 1 },
                 StatusCode::PAYLOAD_TOO_LARGE,
+                false,
             ),
             (
                 WriteError::Storage(unavailable()),
                 StatusCode::SERVICE_UNAVAILABLE,
+                false,
             ),
             (
                 WriteError::Storage(StorageError::BucketNotFound { bucket: "b".into() }),
                 StatusCode::NOT_FOUND,
+                false,
             ),
             (
                 WriteError::Storage(StorageError::PreconditionFailed),
                 StatusCode::PRECONDITION_FAILED,
+                false,
             ),
             (
                 WriteError::IndexerBackpressureUpsert,
                 StatusCode::SERVICE_UNAVAILABLE,
+                true,
             ),
             (
                 WriteError::IndexerBackpressureTombstone,
                 StatusCode::SERVICE_UNAVAILABLE,
+                true,
             ),
             (
                 WriteError::EventPublishFailed {
                     after: WriteEffect::Stored,
                 },
                 StatusCode::SERVICE_UNAVAILABLE,
+                true,
             ),
             (
                 WriteError::InvalidManifest {
                     message: "m".into(),
                 },
                 StatusCode::BAD_REQUEST,
+                false,
             ),
             (
                 WriteError::PatchInvalidRange {
                     message: "r".into(),
                 },
                 StatusCode::BAD_REQUEST,
+                false,
             ),
             (
                 WriteError::PreconditionRequired {
                     message: "p".into(),
                 },
                 StatusCode::PRECONDITION_REQUIRED,
+                false,
             ),
             (
                 WriteError::PatchLineOutOfRange {
@@ -198,20 +209,28 @@ mod tests {
                     total_bytes: 1,
                 },
                 StatusCode::RANGE_NOT_SATISFIABLE,
+                false,
             ),
-            (WriteError::ReplaceNoMatch, StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                WriteError::ReplaceNoMatch,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                false,
+            ),
             (
                 WriteError::ReplaceAmbiguous { count: 2 },
                 StatusCode::UNPROCESSABLE_ENTITY,
+                false,
             ),
         ];
-        for (error, status) in cases {
+        // A storage 503 carries no Retry-After, as on the HTTP API (ApiError's
+        // fall-through arm); only the queue and publish refusals do (D38).
+        for (error, status, has_retry_after) in cases {
             let name = error.to_string();
             let response = write_error_response(error, RETRY);
             assert_eq!(response.status(), status, "{name}");
             assert_eq!(
                 response.headers().contains_key("retry-after"),
-                status == StatusCode::SERVICE_UNAVAILABLE && !name.contains("down"),
+                has_retry_after,
                 "{name}"
             );
         }
