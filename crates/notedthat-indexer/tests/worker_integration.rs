@@ -3259,6 +3259,44 @@ mod announcing {
         );
     }
 
+    /// The delete is committed and announced; a `HEAD` that fails must not
+    /// leave the deleted file searchable, and nothing would repair it later.
+    #[tokio::test]
+    async fn a_tombstone_whose_head_fails_still_removes_the_points() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        assert!(count_points(&store, &kb(), "note.md").await > 0);
+        let before = announced(&publisher).await.len();
+
+        storage.remove(kb().as_str(), "note.md");
+        storage.fail_next_head();
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before, "nothing is published: {events:?}");
+    }
+
     /// The `fs` watcher reports the server's own write back to it (D50). The write
     /// path already announced it; the echo must not.
     #[tokio::test]

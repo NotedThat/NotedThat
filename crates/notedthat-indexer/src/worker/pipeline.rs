@@ -125,6 +125,28 @@ impl IndexerWorker {
                     .map(|()| PipelineOutcome::Tombstoned)
                     .map_err(PipelineFailure::before_head);
             }
+            // A `Tombstone` is the write path saying the delete is committed, and
+            // nothing repairs a failure here: it is terminal and silent, and the
+            // watcher sees no new change. So when storage cannot answer, the
+            // tombstone is taken at its word and the points go. Were the key
+            // re-created meanwhile, that write has its own event to index it.
+            // `BucketNotFound` still fails, as above.
+            Err(err @ (StorageError::BackendUnavailable { .. } | StorageError::Other { .. }))
+                if matches!(told, Told::Deleted) =>
+            {
+                tracing::warn!(
+                    target: "notedthat::indexing",
+                    kb = %kb.as_str(),
+                    path = %object_key.as_str(),
+                    error = %err,
+                    "could not re-read a deleted key; removing its index entries"
+                );
+                return self
+                    .handle_tombstone(kb, object_key)
+                    .await
+                    .map(|()| PipelineOutcome::Tombstoned)
+                    .map_err(PipelineFailure::before_head);
+            }
             Err(err) => {
                 return Err(PipelineFailure::before_head(format!(
                     "storage.head_object failed: {err}"

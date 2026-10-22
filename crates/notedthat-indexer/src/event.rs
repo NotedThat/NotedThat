@@ -69,6 +69,7 @@ pub enum IndexEvent {
     },
     /// Object was deleted; re-read. Gone: delete its points. Still there: keep or
     /// refresh them, so a delayed tombstone never removes a live object (#350).
+    /// Storage unable to answer is not a reason to keep them: the points go.
     Tombstone {
         /// Knowledge-base slug for routing.
         kb: KbSlug,
