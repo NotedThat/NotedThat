@@ -631,8 +631,6 @@ fn upsert(kb: &KbSlug, key: &str) -> IndexEvent {
     IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath(key),
-        etag: format!("etag-{key}"),
-        mtime: 0,
     }
 }
 
@@ -648,8 +646,6 @@ async fn index_once(
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath(key),
-        etag: "advisory-event-etag".to_owned(),
-        mtime: 0,
     })
     .await
     .unwrap();
@@ -812,8 +808,6 @@ async fn happy_path_upsert_creates_qdrant_point() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("hello.md"),
-        etag: "etag-001".to_string(),
-        mtime: 1_700_000_000,
     })
     .await
     .unwrap();
@@ -847,8 +841,10 @@ async fn happy_path_upsert_creates_qdrant_point() {
     );
 }
 
+/// The #350 shape: the delete's tombstone reaches the lane after a newer write
+/// was indexed. Storage still has the object, so its points stay.
 #[tokio::test]
-async fn tombstone_removes_points() {
+async fn a_late_tombstone_keeps_the_points_of_a_live_object() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -864,7 +860,7 @@ async fn tombstone_removes_points() {
     storage.insert(
         "test-kb",
         "doc.md",
-        "# Doc\n\nContent to be tombstoned.",
+        "# Doc\n\nContent that stays.",
         "text/markdown",
     );
 
@@ -884,12 +880,9 @@ async fn tombstone_removes_points() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("doc.md"),
-        etag: "etag-002".to_string(),
-        mtime: 1_700_000_001,
     })
     .await
     .unwrap();
-
     tx.send(IndexEvent::Tombstone {
         kb: kb.clone(),
         object_key: opath("doc.md"),
@@ -902,7 +895,61 @@ async fn tombstone_removes_points() {
     handle.await.unwrap();
 
     let n = count_points(&store, &kb, "doc.md").await;
-    assert_eq!(n, 0, "expected 0 points after tombstone, got {n}");
+    assert!(
+        n > 0,
+        "a tombstone of a live object keeps its points, got {n}"
+    );
+    assert_eq!(
+        mock_server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .len(),
+        1,
+        "the tombstone found the object already indexed and did not re-embed"
+    );
+}
+
+#[tokio::test]
+async fn a_tombstone_of_a_gone_object_removes_its_points() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(
+        "test-kb",
+        "doc.md",
+        "# Doc\n\nContent to be tombstoned.",
+        "text/markdown",
+    );
+    let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+    index_once(
+        storage.clone(),
+        embedder.clone(),
+        store_arc.clone(),
+        &kb,
+        "doc.md",
+        32,
+    )
+    .await;
+    assert!(count_points(&store, &kb, "doc.md").await > 0);
+
+    storage.remove("test-kb", "doc.md");
+    run_one_with_health(
+        storage,
+        embedder,
+        store_arc,
+        IndexEvent::Tombstone {
+            kb: kb.clone(),
+            object_key: opath("doc.md"),
+        },
+        Arc::new(IndexHealth::new()),
+    )
+    .await;
+
+    assert_eq!(count_points(&store, &kb, "doc.md").await, 0);
 }
 
 #[tokio::test]
@@ -930,8 +977,6 @@ async fn not_found_on_reread_implicit_tombstone() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("missing.md"),
-        etag: "etag-003".to_string(),
-        mtime: 1_700_000_002,
     })
     .await
     .unwrap();
@@ -1034,8 +1079,6 @@ async fn non_markdown_content_type_skipped() {
         .send(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath("image.png"),
-            etag: "etag-old".to_string(),
-            mtime: 1_700_000_002,
         })
         .await
         .unwrap();
@@ -1069,8 +1112,6 @@ async fn non_markdown_content_type_skipped() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("image.png"),
-        etag: "etag-image".to_string(),
-        mtime: 1_700_000_003,
     })
     .await
     .unwrap();
@@ -1121,8 +1162,6 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         tx.send(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath("metric.md"),
-            etag: "test".to_owned(),
-            mtime: 0,
         })
         .await
         .unwrap();
@@ -1169,8 +1208,6 @@ async fn shrinking_replacement_removes_stale_okf_points() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("metric.md"),
-        etag: "empty".to_owned(),
-        mtime: 0,
     })
     .await
     .unwrap();
@@ -1225,8 +1262,6 @@ async fn oversized_chunk_is_split_without_dropping_content() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("large.md"),
-        etag: "etag-large".to_string(),
-        mtime: 1_700_000_004,
     })
     .await
     .unwrap();
@@ -1268,8 +1303,6 @@ async fn queue_full_logs_index_queue_full() {
         tx.try_send(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath(&format!("note{i}.md")),
-            etag: format!("e{i}"),
-            mtime: i64::from(i),
         })
         .unwrap_or_else(|_| panic!("send {i} should succeed"));
     }
@@ -1277,8 +1310,6 @@ async fn queue_full_logs_index_queue_full() {
     let result = tx.try_send(IndexEvent::Upsert {
         kb,
         object_key: opath("note4.md"),
-        etag: "e4".to_string(),
-        mtime: 4,
     });
     assert!(
         matches!(result, Err(tokio::sync::mpsc::error::TrySendError::Full(_))),
@@ -1510,7 +1541,7 @@ async fn a_panicking_file_does_not_stop_the_worker() {
 /// same file behind it and an upsert of `b.md` beside it, then let everything
 /// finish. The delete must wait for the upsert, or the upsert's chunks would
 /// land after it and outlive the file; the unrelated file must not wait.
-async fn assert_delete_waits_for_update(delete: IndexEvent, remove_object: bool) {
+async fn assert_delete_waits_for_update(delete: IndexEvent) {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
@@ -1530,9 +1561,7 @@ async fn assert_delete_waits_for_update(delete: IndexEvent, remove_object: bool)
 
     tx.send(upsert(&kb, "a.md")).await.unwrap();
     embedder.wait_started(1).await;
-    if remove_object {
-        storage.remove("test-kb", "a.md");
-    }
+    storage.remove("test-kb", "a.md");
     tx.send(delete).await.unwrap();
     tx.send(upsert(&kb, "b.md")).await.unwrap();
     // b.md embeds while a.md is still held: different files overlap.
@@ -1555,7 +1584,7 @@ async fn a_tombstone_waits_for_an_update_of_the_same_file() {
         kb: kb(),
         object_key: opath("a.md"),
     };
-    assert_delete_waits_for_update(delete, false).await;
+    assert_delete_waits_for_update(delete).await;
 }
 
 #[tokio::test]
@@ -1565,7 +1594,7 @@ async fn a_refresh_of_a_deleted_file_waits_for_its_update() {
         object_key: opath("a.md"),
         origin: RefreshOrigin::Watch,
     };
-    assert_delete_waits_for_update(delete, true).await;
+    assert_delete_waits_for_update(delete).await;
 }
 
 #[tokio::test]
@@ -1713,8 +1742,6 @@ async fn graceful_shutdown_drains_queue() {
         tx.send(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath(&format!("drain{i}.md")),
-            etag: format!("etag-drain-{i}"),
-            mtime: 1_700_000_000 + i64::from(i),
         })
         .await
         .unwrap();
@@ -1772,8 +1799,6 @@ async fn vector_store_failure_logs_indexing_failed() {
     tx.send(IndexEvent::Upsert {
         kb,
         object_key: opath("down.md"),
-        etag: "etag-down".to_string(),
-        mtime: 1_700_000_010,
     })
     .await
     .unwrap();
@@ -1825,8 +1850,6 @@ async fn embedder_retry_on_429_succeeds() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("retry.md"),
-        etag: "etag-retry".to_string(),
-        mtime: 1_700_000_011,
     })
     .await
     .unwrap();
@@ -1872,8 +1895,6 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
     tx.send(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("fail.md"),
-        etag: "etag-fail".to_string(),
-        mtime: 1_700_000_012,
     })
     .await
     .unwrap();
@@ -2476,12 +2497,10 @@ mod announcing {
         }
     }
 
-    fn upsert(key: &str, etag: &str) -> IndexEvent {
+    fn upsert(key: &str) -> IndexEvent {
         IndexEvent::Upsert {
             kb: kb(),
             object_key: opath(key),
-            etag: etag.to_owned(),
-            mtime: 0,
         }
     }
 
@@ -2555,7 +2574,7 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![upsert("note.md", "\"advisory\"")],
+            vec![upsert("note.md")],
         )
         .await;
 
@@ -2592,7 +2611,7 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![upsert("notes/Draft.MD", "\"advisory\"")],
+            vec![upsert("notes/Draft.MD")],
         )
         .await;
 
@@ -2636,7 +2655,7 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![upsert("note.md", &first), upsert("note.md", &second)],
+            vec![upsert("note.md"), upsert("note.md")],
         )
         .await;
 
@@ -2692,14 +2711,13 @@ mod announcing {
         let storage = Arc::new(MockStorage::new());
         storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
         let publisher = Arc::new(MemoryPublisher::new(16));
-        let etag = MockStorage::etag_for(b"body");
 
         drive(
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
             vec![
-                upsert("note.md", &etag),
+                upsert("note.md"),
                 refresh("note.md", RefreshOrigin::Watch),
                 refresh("note.md", RefreshOrigin::Reconcile),
             ],
@@ -2736,11 +2754,7 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![
-                upsert("empty.md", "\"e\""),
-                upsert("pic.png", "\"p\""),
-                upsert("missing.md", "\"m\""),
-            ],
+            vec![upsert("empty.md"), upsert("pic.png"), upsert("missing.md")],
         )
         .await;
 
@@ -2749,9 +2763,9 @@ mod announcing {
     }
 
     /// `object.deleted` already said what happened to the key; there is no
-    /// `object.unindexed`.
+    /// `object.unindexed`. For a key that is gone; a live one is a refresh.
     #[tokio::test]
-    async fn a_tombstone_publishes_nothing() {
+    async fn a_tombstone_of_a_gone_key_publishes_nothing() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
         let storage = Arc::new(MockStorage::new());
@@ -2762,20 +2776,125 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![
-                upsert("note.md", "\"n\""),
-                IndexEvent::Tombstone {
-                    kb: kb(),
-                    object_key: opath("note.md"),
-                },
-            ],
+            vec![upsert("note.md")],
+        )
+        .await;
+        let before = announced(&publisher).await.len();
+        storage.remove(kb().as_str(), "note.md");
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
         )
         .await;
 
         let events = announced(&publisher).await;
-        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(
+            events.len(),
+            before,
+            "the tombstone added nothing: {events:?}"
+        );
         assert_eq!(events[0].kind.name(), "object.indexed");
         assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+    }
+
+    /// The #350 shape with a changed version: the late tombstone finds the
+    /// object live under a new `ETag`, so it is a refresh. It re-indexes and
+    /// says so, once, with the new `ETag`.
+    #[tokio::test]
+    async fn a_tombstone_of_a_live_changed_object_reindexes_and_publishes_indexed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        let before = announced(&publisher).await.len();
+        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        let new_etag = MockStorage::etag_for(b"new body");
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before + 1, "{events:?}");
+        let last = events.last().unwrap();
+        assert_eq!(last.kind.name(), "object.indexed");
+        assert_eq!(last.kind.etag(), Some(new_etag.as_str()));
+        let points = scroll_points(&store, &kb(), "note.md", false).await;
+        assert_ne!(points.len(), 0);
+        assert!(
+            points
+                .iter()
+                .all(|point| string_payload(point, "etag") == new_etag),
+            "every point carries the new version"
+        );
+    }
+
+    /// The same late tombstone, but the re-index fails after `HEAD`: a
+    /// subscriber waiting on this version is told, as for a `Refresh`.
+    #[tokio::test]
+    async fn a_tombstone_of_a_live_object_whose_reindex_fails_publishes_index_failed() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let health = Arc::new(IndexHealth::new());
+        // The first embedding call indexes the old body; the second fails.
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(2), None));
+
+        drive_with(
+            storage.clone(),
+            embedder.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        let before = announced(&publisher).await.len();
+        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        drive_with(
+            storage.clone(),
+            embedder,
+            Arc::new(store.clone()),
+            publisher.clone(),
+            health.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before + 1, "{events:?}");
+        let ObjectEventKind::IndexFailed { etag, .. } = &events.last().unwrap().kind else {
+            panic!("expected object.index_failed, got {:?}", events.last());
+        };
+        assert_eq!(
+            etag.as_deref(),
+            Some(MockStorage::etag_for(b"new body").as_str())
+        );
     }
 
     /// A subscriber waiting on `object.indexed` would otherwise wait forever.
@@ -2797,7 +2916,7 @@ mod announcing {
             Arc::new(store.clone()),
             publisher.clone(),
             health.clone(),
-            vec![upsert("broken.md", "\"b\"")],
+            vec![upsert("broken.md")],
         )
         .await;
 
@@ -2850,7 +2969,7 @@ mod announcing {
             Arc::new(store.clone()),
             publisher.clone(),
             health.clone(),
-            vec![upsert("boom.md", "\"b\"")],
+            vec![upsert("boom.md")],
         )
         .await;
 
@@ -2920,7 +3039,7 @@ mod announcing {
         storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
         let health = Arc::new(IndexHealth::new());
         let (tx, rx) = index_queue(1);
-        tx.send(upsert("note.md", "\"n\"")).await.unwrap();
+        tx.send(upsert("note.md")).await.unwrap();
         health.enqueued(kb().as_str());
         drop(tx);
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
@@ -2958,7 +3077,7 @@ mod announcing {
         storage.insert(kb().as_str(), "boom.md", "# boom", "text/markdown");
         let health = Arc::new(IndexHealth::new());
         let (tx, rx) = index_queue(1);
-        tx.send(upsert("boom.md", "\"b\"")).await.unwrap();
+        tx.send(upsert("boom.md")).await.unwrap();
         health.enqueued(kb().as_str());
         drop(tx);
         let worker = make_worker_with_batch(
@@ -3093,7 +3212,7 @@ mod announcing {
             Arc::new(store.clone()),
             publisher.clone(),
             Arc::new(IndexHealth::new()),
-            vec![upsert("flaky.md", "\"f\""), upsert("flaky.md", "\"f\"")],
+            vec![upsert("flaky.md"), upsert("flaky.md")],
         )
         .await;
 
@@ -3122,7 +3241,7 @@ mod announcing {
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
-            vec![upsert("note.md", "\"n\"")],
+            vec![upsert("note.md")],
         )
         .await;
 
@@ -3140,6 +3259,44 @@ mod announcing {
         );
     }
 
+    /// The delete is committed and announced; a `HEAD` that fails must not
+    /// leave the deleted file searchable, and nothing would repair it later.
+    #[tokio::test]
+    async fn a_tombstone_whose_head_fails_still_removes_the_points() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        assert!(count_points(&store, &kb(), "note.md").await > 0);
+        let before = announced(&publisher).await.len();
+
+        storage.remove(kb().as_str(), "note.md");
+        storage.fail_next_head();
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![IndexEvent::Tombstone {
+                kb: kb(),
+                object_key: opath("note.md"),
+            }],
+        )
+        .await;
+
+        assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), before, "nothing is published: {events:?}");
+    }
+
     /// The `fs` watcher reports the server's own write back to it (D50). The write
     /// path already announced it; the echo must not.
     #[tokio::test]
@@ -3154,14 +3311,13 @@ mod announcing {
             "audio/mpeg",
         );
         let publisher = Arc::new(MemoryPublisher::new(16));
-        let etag = MockStorage::etag_for(b"ID3\x03");
 
         drive(
             storage.clone(),
             Arc::new(store.clone()),
             publisher.clone(),
             vec![
-                upsert("memo.mp3", &etag),
+                upsert("memo.mp3"),
                 refresh("memo.mp3", RefreshOrigin::Watch),
                 refresh("memo.mp3", RefreshOrigin::Reconcile),
             ],
@@ -3216,6 +3372,65 @@ mod announcing {
         assert_eq!(announced(&publisher).await.len(), 0);
     }
 
+    /// Someone else removed the file between the write and its `Upsert`: no
+    /// `object.deleted` was ever published, so the watcher's report of the
+    /// removal is news, not the echo of a tombstone.
+    #[tokio::test]
+    async fn an_upsert_that_finds_the_key_gone_leaves_the_deletion_for_the_watcher() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![upsert("gone.md"), refresh("gone.md", RefreshOrigin::Watch)],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.deleted");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+    }
+
+    /// Someone else re-created the file between the delete and its `Tombstone`:
+    /// the log says deleted, so the watcher's report of the live file is news.
+    #[tokio::test]
+    async fn a_tombstone_that_finds_the_key_live_leaves_the_write_for_the_watcher() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        storage.insert_bytes(
+            kb().as_str(),
+            "memo.mp3",
+            Bytes::from_static(b"ID3\x03"),
+            "audio/mpeg",
+        );
+        let publisher = Arc::new(MemoryPublisher::new(16));
+
+        drive(
+            storage.clone(),
+            Arc::new(store.clone()),
+            publisher.clone(),
+            vec![
+                IndexEvent::Tombstone {
+                    kb: kb(),
+                    object_key: opath("memo.mp3"),
+                },
+                refresh("memo.mp3", RefreshOrigin::Watch),
+            ],
+        )
+        .await;
+
+        let events = announced(&publisher).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind.name(), "object.written");
+        assert_eq!(events[0].source, EventSource::FsWatch);
+    }
+
     #[tokio::test]
     async fn a_refused_publish_does_not_stop_indexing() {
         struct Refusing;
@@ -3259,7 +3474,7 @@ mod announcing {
         tx.send(refresh("note.md", RefreshOrigin::Watch))
             .await
             .unwrap();
-        tx.send(upsert("other.md", "\"o\"")).await.unwrap();
+        tx.send(upsert("other.md")).await.unwrap();
         drop(tx);
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
         make_worker_with_batch(
@@ -3318,8 +3533,6 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
         IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath("ok.md"),
-            etag: "etag-ok".into(),
-            mtime: 0,
         },
         Arc::clone(&health),
     )
@@ -3356,8 +3569,6 @@ async fn the_worker_records_a_failure_with_the_key_and_the_pipelines_error() {
         IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: opath("broken.md"),
-            etag: "etag-broken".into(),
-            mtime: 0,
         },
         Arc::clone(&health),
     )

@@ -1345,8 +1345,6 @@ mod tests {
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
                 object_key: ObjectPath::try_from_str("queued.md").unwrap(),
-                etag: "queued".to_string(),
-                mtime: 0,
             })
             .unwrap();
         let router =

@@ -1,13 +1,13 @@
 use super::chunks::{ChunkCursor, open_chunk_cursor, take_chunk_batch, validate_chunk_byte_bound};
 use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
-use super::{IndexerWorker, Skip, content_type_from_key, is_indexable};
+use super::{IndexerWorker, Skip, Told, content_type_from_key, is_indexable};
 use crate::chunker;
 use crate::vector_store::PointSelector;
 use futures::StreamExt;
 use notedthat_core::{
-    ConditionalHeaders, EventSource, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StagedBody,
-    StorageError, search::ConceptMetadata,
+    ConditionalHeaders, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StagedBody, StorageError,
+    search::ConceptMetadata,
 };
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +47,9 @@ pub(super) struct PipelineFailure {
     pub(super) message: String,
     pub(super) etag: Option<String>,
     pub(super) mime: Option<String>,
+    /// Whether `HEAD` had succeeded: the key was found live. A `Tombstone`
+    /// reports a failure only then (D65).
+    pub(super) after_head: bool,
 }
 
 impl PipelineFailure {
@@ -56,21 +59,25 @@ impl PipelineFailure {
             message,
             etag: None,
             mime: None,
+            after_head: false,
         }
     }
 }
 
 impl IndexerWorker {
-    /// `announce` names the source to publish a change event under, for
-    /// changes this worker detected rather than was told about. It fires from
-    /// the `HEAD` result, before any indexability check, so an mp3 dropped into
-    /// the tree is announced even though it is never indexed.
+    /// `told` is what the log already says about the key. A change this worker
+    /// detected rather than was told about is announced from the `HEAD` result,
+    /// before any indexability check, so an mp3 dropped into the tree is
+    /// announced even though it is never indexed. The last-seen stamp records
+    /// only the state the write path announced: the version a write's `HEAD`
+    /// finds, or the absence a tombstone's confirms. Anything else `HEAD` finds
+    /// is someone else's change, left for the watcher to announce.
     pub(super) async fn handle_upsert(
         &self,
         kb: KbSlug,
         object_key: ObjectPath,
         skip: Skip,
-        announce: Option<EventSource>,
+        told: Told,
     ) -> Result<PipelineOutcome, PipelineFailure> {
         // No object may live under a reserved key (#279), so none is indexed there.
         // Reconcile and the `fs` watcher still hand one over: this is how search
@@ -104,10 +111,36 @@ impl IndexerWorker {
                     path = %object_key.as_str(),
                     "object not found on re-read; treating as tombstone"
                 );
-                if let Some(source) = announce {
-                    self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
-                        .await;
+                match told {
+                    Told::Nothing(source) => {
+                        self.announce(ObjectEvent::deleted(kb.clone(), object_key.clone(), source))
+                            .await;
+                    }
+                    Told::Deleted => self.remember(&kb, &object_key, None),
+                    Told::Written => {}
                 }
+                return self
+                    .handle_tombstone(kb, object_key)
+                    .await
+                    .map(|()| PipelineOutcome::Tombstoned)
+                    .map_err(PipelineFailure::before_head);
+            }
+            // A `Tombstone` is the write path saying the delete is committed, and
+            // nothing repairs a failure here: it is terminal and silent, and the
+            // watcher sees no new change. So when storage cannot answer, the
+            // tombstone is taken at its word and the points go. Were the key
+            // re-created meanwhile, that write has its own event to index it.
+            // `BucketNotFound` still fails, as above.
+            Err(err @ (StorageError::BackendUnavailable { .. } | StorageError::Other { .. }))
+                if matches!(told, Told::Deleted) =>
+            {
+                tracing::warn!(
+                    target: "notedthat::indexing",
+                    kb = %kb.as_str(),
+                    path = %object_key.as_str(),
+                    error = %err,
+                    "could not re-read a deleted key; removing its index entries"
+                );
                 return self
                     .handle_tombstone(kb, object_key)
                     .await
@@ -120,14 +153,18 @@ impl IndexerWorker {
                 )));
             }
         };
-        if let Some(source) = announce {
-            self.announce(ObjectEvent::from_meta(
-                kb.clone(),
-                object_key.clone(),
-                &head,
-                source,
-            ))
-            .await;
+        match told {
+            Told::Nothing(source) => {
+                self.announce(ObjectEvent::from_meta(
+                    kb.clone(),
+                    object_key.clone(),
+                    &head,
+                    source,
+                ))
+                .await;
+            }
+            Told::Written => self.remember(&kb, &object_key, head.etag.clone()),
+            Told::Deleted => {}
         }
 
         // An object with no declared type — a file the fs backend could not
@@ -153,6 +190,7 @@ impl IndexerWorker {
                 message,
                 etag: failure_etag,
                 mime: failure_mime,
+                after_head: true,
             })
     }
 

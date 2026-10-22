@@ -19,7 +19,9 @@ use crate::{
 };
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use last_seen::LastSeen;
-use notedthat_core::{EventPublisher, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage};
+use notedthat_core::{
+    EventPublisher, EventSource, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage,
+};
 use pipeline::{PipelineFailure, PipelineOutcome};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -55,6 +57,18 @@ pub(crate) enum Skip {
     Never,
     /// Do nothing when the indexed chunks already carry the object's current `ETag`.
     IfUnchanged,
+}
+
+/// What the log already says about a key, so the worker knows which state
+/// `HEAD` finds is the echo of an announced change (D50) and which is news.
+#[derive(Debug, Clone)]
+pub(crate) enum Told {
+    /// A write was announced: the live version is its echo.
+    Written,
+    /// A deletion was announced: the key's absence is its echo.
+    Deleted,
+    /// Nothing: what `HEAD` finds is announced under this source.
+    Nothing(EventSource),
 }
 
 /// Async indexing worker.
@@ -255,35 +269,36 @@ impl IndexerWorker {
             "processing index event"
         );
 
-        // A tombstone reports no outcome, success or failure (D65): there is
-        // no `object.unindexed`, and `object.deleted` already said what
-        // happened to the key.
-        let reports_outcome = !matches!(event, IndexEvent::Tombstone { .. });
+        // A tombstone reports no outcome for a key that is gone (D65): there
+        // is no `object.unindexed`, and `object.deleted` already said what
+        // happened to the key. One whose re-read finds the object live is a
+        // refresh: if it indexes, `object.indexed` is published, and if it
+        // fails after `HEAD`, `object.index_failed`. A failure before `HEAD`
+        // is silent, as the key's state is unknown.
+        let is_tombstone = matches!(event, IndexEvent::Tombstone { .. });
         let pipeline = async {
             match event {
-                IndexEvent::Upsert {
-                    kb,
-                    object_key,
-                    etag,
-                    ..
-                } => {
-                    self.remember(&kb, &object_key, Some(etag));
-                    self.handle_upsert(kb, object_key, Skip::Never, None).await
+                IndexEvent::Upsert { kb, object_key } => {
+                    self.handle_upsert(kb, object_key, Skip::Never, Told::Written)
+                        .await
                 }
                 IndexEvent::Refresh {
                     kb,
                     object_key,
                     origin,
                 } => {
-                    self.handle_upsert(kb, object_key, Skip::IfUnchanged, Some(origin.source()))
-                        .await
+                    self.handle_upsert(
+                        kb,
+                        object_key,
+                        Skip::IfUnchanged,
+                        Told::Nothing(origin.source()),
+                    )
+                    .await
                 }
+                // Storage decides (#350): gone, tombstone; live, skip or index.
                 IndexEvent::Tombstone { kb, object_key } => {
-                    self.remember(&kb, &object_key, None);
-                    self.handle_tombstone(kb, object_key)
+                    self.handle_upsert(kb, object_key, Skip::IfUnchanged, Told::Deleted)
                         .await
-                        .map(|()| PipelineOutcome::Tombstoned)
-                        .map_err(PipelineFailure::before_head)
                 }
             }
         };
@@ -324,7 +339,7 @@ impl IndexerWorker {
                 );
                 self.health
                     .failed(kb.as_str(), object_key.as_str(), &failure.message);
-                if reports_outcome {
+                if !is_tombstone || failure.after_head {
                     self.publish(ObjectEvent::index_failed(
                         kb,
                         object_key,

@@ -466,8 +466,6 @@ async fn test_put_returns_503_with_retry_after_when_indexer_backpressure() {
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
             object_key: object_path("queued.md"),
-            etag: "\"queued\"".to_string(),
-            mtime: 0,
         })
         .expect("queue accepts the prefilled event");
 
@@ -708,8 +706,6 @@ async fn test_copy_or_move_maps_destination_indexer_backpressure_to_503() {
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
             object_key: object_path("queued.md"),
-            etag: "\"queued\"".to_string(),
-            mtime: 0,
         })
         .expect("queue accepts the prefilled event");
 
@@ -745,8 +741,6 @@ async fn test_move_returns_503_when_destination_upsert_backpressured() {
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
             object_key: object_path("queued.md"),
-            etag: "\"queued\"".to_string(),
-            mtime: 0,
         })
         .expect("queue accepts the prefilled event");
 
@@ -782,8 +776,6 @@ async fn test_move_returns_503_when_source_tombstone_backpressured_after_destina
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
             object_key: object_path("queued.md"),
-            etag: "\"queued\"".to_string(),
-            mtime: 0,
         })
         .expect("queue accepts the prefilled event");
 

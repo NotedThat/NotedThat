@@ -87,8 +87,6 @@ async fn indexer_channel_full_returns_backpressure_upsert_after_successful_put()
         .try_send(IndexEvent::Upsert {
             kb: kb(),
             object_key: path(),
-            etag: "queued".to_string(),
-            mtime: 0,
         })
         .expect("prefill indexer channel");
     let err = expect_replace_err(

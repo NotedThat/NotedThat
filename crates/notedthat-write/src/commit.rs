@@ -250,8 +250,6 @@ pub(crate) async fn after_write(
         event: Some(IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: path.clone(),
-            etag: outcome.etag.clone().unwrap_or_default(),
-            mtime: current_unix_seconds(),
         }),
     };
 
@@ -618,8 +616,6 @@ mod tests {
         let dummy_event = IndexEvent::Upsert {
             kb: kb.clone(),
             object_key: path.clone(),
-            etag: "dummy".to_string(),
-            mtime: 0,
         };
         indexer_tx
             .try_send(dummy_event)
