@@ -5,9 +5,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, StorageError};
 
-use super::backpressure::{delete_backpressure_response, event_publish_failed_response};
-use super::path_validation::parse_webdav_uri_path;
-use crate::filesystem::DavTarget;
+use super::backpressure::{
+    dav_error_body, delete_backpressure_response, event_publish_failed_response,
+};
+use super::path_validation::parse_webdav_write_target;
+use crate::filesystem::{DavTarget, Named, name_in_storage};
 use crate::state::WebDavState;
 
 mod copy_move;
@@ -20,7 +22,8 @@ pub(super) use put::handle_put;
 
 pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response {
     let uri_path = req.uri().path().to_string();
-    let Ok(target) = parse_webdav_uri_path(&uri_path, &state.declared_kbs) else {
+    let Ok((target, as_collection)) = parse_webdav_write_target(&uri_path, &state.declared_kbs)
+    else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let (kb, path) = match target {
@@ -28,6 +31,22 @@ pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response 
         DavTarget::Root | DavTarget::KbRoot(_) => return StatusCode::BAD_REQUEST.into_response(),
         DavTarget::NonDeclaredKb => return StatusCode::FORBIDDEN.into_response(),
     };
+    // Folders are virtual (a key prefix), so a folder delete would be a bulk
+    // delete: refused (#281). A missing key spelled as an object still goes
+    // through `commit_delete`: idempotent, and the documented retry path.
+    match name_in_storage(state.storage.as_ref(), &kb, &path, as_collection).await {
+        Ok(Named::Folder) => {
+            return (
+                StatusCode::FORBIDDEN,
+                dav_error_body("no-collection-delete"),
+            )
+                .into_response();
+        }
+        Ok(Named::Nothing) if as_collection => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Named::Object(_) | Named::Nothing) => {}
+        Err(err) if err.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
     let conditionals = ConditionalHeaders::from_header_map(req.headers());
 
     match notedthat_write::commit_delete(
