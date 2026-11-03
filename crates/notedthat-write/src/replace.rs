@@ -110,18 +110,13 @@ fn replace_in(
     Ok((new_bytes, match_count))
 }
 
+/// Start offsets of every non-overlapping, leftmost-first match of `needle` in `haystack`.
+///
+/// `memmem` is linear in both operands. A byte-by-byte scan costs `haystack × needle`, which a
+/// 100 MiB object and a near-miss `old_string` turn into minutes of one stalled worker thread.
+/// An empty needle would match at every offset; `replace` refuses it before this is reached.
 fn find_non_overlapping_matches(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    let mut matches = Vec::new();
-    let mut cursor = 0usize;
-    while cursor + needle.len() <= haystack.len() {
-        if &haystack[cursor..cursor + needle.len()] == needle {
-            matches.push(cursor);
-            cursor += needle.len();
-        } else {
-            cursor += 1;
-        }
-    }
-    matches
+    memchr::memmem::find_iter(haystack, needle).collect()
 }
 
 struct ReplacementSplice<'a> {

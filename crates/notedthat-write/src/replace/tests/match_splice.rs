@@ -124,3 +124,23 @@ async fn post_splice_size_over_max_patchable_returns_patch_too_large() {
     assert_eq!(after.bytes, before.bytes);
     assert_eq!(after.meta.etag, before.meta.etag);
 }
+
+/// A near-miss needle over a long run of one byte is the worst case for a naive scan (about
+/// 16 s in release at these sizes, far longer in debug); a linear search takes milliseconds.
+/// The bound is loose so a debug build on a busy runner passes, while a quadratic scan cannot.
+#[test]
+fn near_miss_needle_over_long_run_is_searched_in_linear_time() {
+    let haystack = vec![b'a'; 4 * 1024 * 1024];
+    let mut needle = vec![b'a'; 256 * 1024 - 1];
+    needle.push(b'b');
+
+    let started = std::time::Instant::now();
+    let matches = crate::replace::find_non_overlapping_matches(&haystack, &needle);
+    let elapsed = started.elapsed();
+
+    assert_eq!(matches.len(), 0);
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "substring search took {elapsed:?}"
+    );
+}
