@@ -1037,13 +1037,11 @@ impl Storage for S3Storage {
     /// by each entry is asserted against `HEAD`'s by `list_reports_an_etag_that_matches_head`
     /// in the same file.
     ///
-    /// The two malformed responses handled below have no coverage, because a real backend
-    /// cannot be made to produce either on demand: `is_truncated=false` carrying a
-    /// `NextContinuationToken` (warned about and ignored) and `is_truncated=true` carrying
-    /// none (failed closed as [`StorageError::BackendUnavailable`], rather than silently
-    /// ending the walk). Asserting them needs a stubbed S3 response; `wiremock` can serve
-    /// one, as `tests/missing_bucket.rs` and `tests/conditional_write_probe.rs` do, but
-    /// nobody has written these two yet.
+    /// A real backend cannot be made to produce the two malformed responses handled below
+    /// on demand: `is_truncated=false` carrying a `NextContinuationToken` (warned about and
+    /// ignored) and `is_truncated=true` carrying none (failed closed as
+    /// [`StorageError::BackendUnavailable`], rather than silently ending the walk).
+    /// `tests/list_objects_pages.rs` asserts both against a stubbed S3 response.
     async fn list_objects(
         &self,
         kb: &KbSlug,
