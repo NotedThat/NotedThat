@@ -2538,6 +2538,39 @@ mod announcing {
         assert_eq!(storage.stream_calls(), 0, "an mp3 is never read");
     }
 
+    /// A non-empty file whose body chunks to nothing — whitespace only, or an
+    /// OKF concept that is all frontmatter — is out of the index like an empty
+    /// one: no point, and no `object.indexed { chunks: 0 }` on every pass.
+    #[tokio::test]
+    async fn an_object_that_chunks_to_nothing_is_never_announced_as_indexed() {
+        for (key, body) in [
+            ("blank.md", "\n\n  \n"),
+            ("metric.md", "---\ntype: Metric\n---"),
+        ] {
+            let (store, provisioner) = make_store();
+            provisioner.ensure_collection(&kb(), 4).await.unwrap();
+            let storage = Arc::new(MockStorage::new());
+            storage.insert(kb().as_str(), key, body, "text/markdown");
+            let publisher = Arc::new(MemoryPublisher::new(16));
+
+            drive(
+                storage.clone(),
+                Arc::new(store.clone()),
+                publisher.clone(),
+                vec![
+                    upsert(key),
+                    refresh(key, RefreshOrigin::Reconcile),
+                    refresh(key, RefreshOrigin::Reconcile),
+                ],
+            )
+            .await;
+
+            let events = announced(&publisher).await;
+            assert!(indexed_events(&events).is_empty(), "{key}: {events:?}");
+            assert_eq!(count_points(&store, &kb(), key).await, 0, "{key}");
+        }
+    }
+
     #[tokio::test]
     async fn a_detected_deletion_is_announced_as_deleted_with_its_origin() {
         let (store, provisioner) = make_store();

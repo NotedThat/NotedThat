@@ -251,6 +251,14 @@ impl IndexerWorker {
         let new_count = self
             .upsert_batches(&kb, &object_key, &snapshot, cursor)
             .await?;
+        // A body that chunks to nothing (whitespace, frontmatter only) is out of
+        // the index like an empty object: no `object.indexed { chunks: 0 }`.
+        // shortcut: with no point to carry its ETag, every Refresh still re-reads
+        // it; record the ETag elsewhere if that read ever matters.
+        if new_count == 0 {
+            self.handle_tombstone(kb, object_key).await?;
+            return Ok(PipelineOutcome::Tombstoned);
+        }
         let chunks = u32::try_from(new_count)
             .map_err(|_| "chunk count exceeds supported numeric range".to_owned())?;
         self.cleanup_obsolete(&kb, &object_key, chunks).await?;
