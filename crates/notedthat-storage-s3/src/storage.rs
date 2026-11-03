@@ -414,11 +414,13 @@ fn object_meta(
 /// Convert an HTTP-date string (e.g., "Thu, 01 Jan 1970 00:00:00 GMT") to an
 /// `aws_smithy_types::DateTime` for use with conditional request builders.
 ///
-/// Returns [`StorageError::Other`] on parse failure (never panics).
-fn parse_http_date_to_smithy(header: &str) -> Result<aws_smithy_types::DateTime, StorageError> {
-    let system_time = httpdate::parse_http_date(header)
-        .map_err(|e| storage_other(format!("invalid HTTP-date '{header}': {e}")))?;
-    Ok(aws_smithy_types::DateTime::from(system_time))
+/// `None` when `header` is absent or not an HTTP-date: RFC 9110 §13.1.3/§13.1.4 say a
+/// malformed `If-Modified-Since`/`If-Unmodified-Since` is ignored, as the filesystem
+/// backend's `evaluate_read_preconditions` does.
+fn parse_http_date_to_smithy(header: Option<&str>) -> Option<aws_smithy_types::DateTime> {
+    httpdate::parse_http_date(header?)
+        .ok()
+        .map(aws_smithy_types::DateTime::from)
 }
 
 /// Extract the complete object length from a `Content-Range: bytes */NNN` header value.
@@ -709,12 +711,12 @@ impl Storage for S3Storage {
         if let Some(v) = conditionals.if_none_match {
             req = req.if_none_match(v);
         }
-        if let Some(v) = &conditionals.if_modified_since {
-            req = req.if_modified_since(parse_http_date_to_smithy(v)?);
-        }
-        if let Some(v) = &conditionals.if_unmodified_since {
-            req = req.if_unmodified_since(parse_http_date_to_smithy(v)?);
-        }
+        req = req.set_if_modified_since(parse_http_date_to_smithy(
+            conditionals.if_modified_since.as_deref(),
+        ));
+        req = req.set_if_unmodified_since(parse_http_date_to_smithy(
+            conditionals.if_unmodified_since.as_deref(),
+        ));
 
         let resp = req
             .send()
@@ -773,12 +775,12 @@ impl Storage for S3Storage {
         if let Some(value) = conditionals.if_none_match {
             req = req.if_none_match(value);
         }
-        if let Some(value) = &conditionals.if_modified_since {
-            req = req.if_modified_since(parse_http_date_to_smithy(value)?);
-        }
-        if let Some(value) = &conditionals.if_unmodified_since {
-            req = req.if_unmodified_since(parse_http_date_to_smithy(value)?);
-        }
+        req = req.set_if_modified_since(parse_http_date_to_smithy(
+            conditionals.if_modified_since.as_deref(),
+        ));
+        req = req.set_if_unmodified_since(parse_http_date_to_smithy(
+            conditionals.if_unmodified_since.as_deref(),
+        ));
         let resp = req
             .send()
             .await
