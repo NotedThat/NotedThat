@@ -190,16 +190,21 @@ fn read_level(bucket_dir: &Path, dir: &Path) -> Vec<Entry> {
     let mut level: Vec<(String, Entry)> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
+        // `file_type` rather than `metadata`: on Linux and macOS it comes from the dirent's
+        // `d_type`, so classifying a sibling costs no `lstat`. `list_objects` re-reads the
+        // top level on every page, so a stat here was paid for every sibling on every
+        // page. Like `symlink_metadata`, it never follows a symlink; size and mtime are
+        // read later, only for the keys a page actually returns.
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
 
         // Symlinks and anything that is not a regular file or directory are not objects.
-        if metadata.file_type().is_symlink() {
+        if file_type.is_symlink() {
             continue;
         }
-        let is_dir = metadata.is_dir();
-        if !is_dir && !metadata.is_file() {
+        let is_dir = file_type.is_dir();
+        if !is_dir && !file_type.is_file() {
             continue;
         }
 
@@ -348,6 +353,29 @@ mod tests {
             .expect("symlink");
 
         assert_eq!(walk(dir.path(), None), vec!["real.md"]);
+    }
+
+    /// A symlink sitting right at a page boundary — the key just after the cursor, and a
+    /// linked directory beside it — is still skipped, never followed, when resuming.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_after_the_cursor_are_skipped_not_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("secret.md"), b"x").expect("write");
+        for key in ["a.md", "c.md"] {
+            std::fs::write(dir.path().join(key), b"x").expect("write");
+        }
+        std::os::unix::fs::symlink(dir.path().join("a.md"), dir.path().join("b.md"))
+            .expect("symlink");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("b0")).expect("symlink");
+
+        let mut walk = OrderedWalk::new(dir.path().to_path_buf());
+        let mut keys = Vec::new();
+        while let Some(found) = walk.next_match(Some("a.md"), None) {
+            keys.push(found.key);
+        }
+        assert_eq!(keys, vec!["c.md"]);
     }
 
     #[test]
