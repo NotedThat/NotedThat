@@ -1442,11 +1442,14 @@ pub(crate) mod tests {
     }
 
     /// Records the `resources/updated` notifications a session is sent, by
-    /// URI, and each `list_changed` as [`LIST_CHANGED`].
+    /// URI, each `list_changed` as [`LIST_CHANGED`] and each `ping` it
+    /// answers as [`PING`].
     #[derive(Clone, Default)]
     pub(crate) struct Recorder(Arc<Mutex<Vec<String>>>);
 
     const LIST_CHANGED: &str = "list_changed";
+    /// Each `ping` the session answers, recorded in the same log.
+    const PING: &str = "ping";
 
     impl rmcp::ClientHandler for Recorder {
         async fn on_resource_updated(
@@ -1463,14 +1466,31 @@ pub(crate) mod tests {
         ) {
             self.0.lock().unwrap().push(LIST_CHANGED.to_owned());
         }
+
+        fn ping(
+            &self,
+            _context: rmcp::service::RequestContext<rmcp::RoleClient>,
+        ) -> impl Future<Output = Result<(), McpError>> + rmcp::service::MaybeSendFuture + '_
+        {
+            self.0.lock().unwrap().push(PING.to_owned());
+            std::future::ready(Ok(()))
+        }
     }
 
     struct Idle;
     impl rmcp::ServerHandler for Idle {}
 
     /// A server peer connected to a [`Recorder`] over an in-memory pipe. The
-    /// two running services are returned so they outlive the test body.
-    async fn connected() -> (Peer<RoleServer>, Recorder, impl Sized) {
+    /// two running services are returned so they outlive the test body; drop
+    /// the second to hang up the client side.
+    async fn connected() -> (
+        Peer<RoleServer>,
+        Recorder,
+        (
+            rmcp::service::RunningService<RoleServer, Idle>,
+            rmcp::service::RunningService<rmcp::RoleClient, Recorder>,
+        ),
+    ) {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let recorder = Recorder::default();
         let (server, client) = tokio::join!(
@@ -1501,6 +1521,101 @@ pub(crate) mod tests {
     }
 
     const URI: &str = "notedthat://notes/a.md";
+
+    /// Let the keeper and both ends of the pipe run to quiescence without
+    /// letting paused time auto-advance: a yielding task keeps the runtime
+    /// busy, so the clock only moves on `tokio::time::advance`.
+    async fn settle() {
+        for _ in 0..1000 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A session with one subscribed key and its keeper started, the way
+    /// `subscribe` leaves it.
+    fn kept(peer: &Peer<RoleServer>) -> Arc<Subscriptions> {
+        let subs = Subscriptions::new(&CancellationToken::new());
+        let mut inner = subs.inner.lock().unwrap();
+        inner
+            .kbs
+            .insert(key("notes", Some("t1")), watch(&[("a.md", URI)], false));
+        subs.ensure_keeper(&mut inner, peer);
+        drop(inner);
+        subs
+    }
+
+    /// The keeper is what holds a subscribed session open against rmcp's idle
+    /// timer: one ping per interval, and it keeps going while a key is
+    /// subscribed.
+    #[tokio::test(start_paused = true)]
+    async fn the_keeper_pings_a_subscribed_session_once_a_minute() {
+        let (peer, recorder, _services) = connected().await;
+        let subs = kept(&peer);
+        settle().await;
+        assert_eq!(updates(&recorder, PING), 0, "nothing before the first tick");
+
+        for pings in 1..=2 {
+            tokio::time::advance(KEEPER_INTERVAL).await;
+            settle().await;
+            assert_eq!(updates(&recorder, PING), pings);
+            assert!(subs.inner.lock().unwrap().keeper_started);
+            assert!(!subs.gone.load(Ordering::SeqCst));
+            assert!(!subs.cancel.is_cancelled());
+        }
+    }
+
+    /// A client that stops answering has no working notification leg: the
+    /// keeper marks the session gone, cancels its subscriptions, and a later
+    /// `subscribe` is refused rather than answered `Ok` and left silent.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_ping_marks_the_session_gone() {
+        let (peer, _recorder, (_server, client)) = connected().await;
+        let subs = kept(&peer);
+        drop(client);
+        settle().await;
+
+        tokio::time::advance(KEEPER_INTERVAL).await;
+        settle().await;
+        tokio::time::advance(KEEPER_TIMEOUT).await;
+        settle().await;
+
+        assert!(subs.gone.load(Ordering::SeqCst));
+        assert!(subs.cancel.is_cancelled());
+        let refused = subs
+            .subscribe(
+                "notes",
+                "b.md",
+                "notedthat://notes/b.md",
+                &NotedThatClient::new("http://127.0.0.1:9", "t1").unwrap(),
+                &peer,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused, McpToolError::BackendUnavailable.into());
+    }
+
+    /// Once the last key is unsubscribed the keeper stands down at its next
+    /// tick, releases `keeper_started` for a later `subscribe`, and pings no
+    /// more, so rmcp's idle timer can reclaim the session.
+    #[tokio::test(start_paused = true)]
+    async fn the_keeper_stops_after_the_last_unsubscribe() {
+        let (peer, recorder, _services) = connected().await;
+        let subs = kept(&peer);
+        settle().await;
+        tokio::time::advance(KEEPER_INTERVAL).await;
+        settle().await;
+        assert_eq!(updates(&recorder, PING), 1);
+
+        subs.unsubscribe("notes", "a.md");
+        for _ in 0..3 {
+            tokio::time::advance(KEEPER_INTERVAL).await;
+            settle().await;
+        }
+
+        assert_eq!(updates(&recorder, PING), 1, "no ping after the stand-down");
+        assert!(!subs.inner.lock().unwrap().keeper_started);
+        assert!(!subs.cancel.is_cancelled(), "standing down does not end it");
+    }
 
     /// The old bearer's stream: open once, then — the bearer having expired —
     /// refused on the reconnect.

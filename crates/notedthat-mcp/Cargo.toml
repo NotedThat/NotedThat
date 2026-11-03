@@ -42,7 +42,7 @@ wiremock = { workspace = true }
 # `client` lets the subscription tests stand up a real peer over a duplex pipe
 # and record the notifications it is sent.
 rmcp = { workspace = true, features = ["client"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "test-util"] }
 tower = { workspace = true }
 
 [lints]
