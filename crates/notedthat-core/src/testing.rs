@@ -131,6 +131,21 @@ impl InMemoryStorage {
         );
     }
 
+    /// Overwrite the stored last-modified time of the object at `path`, for a test
+    /// that needs a timestamp no write path would stamp (an `fs` mtime set by hand).
+    ///
+    /// # Panics
+    ///
+    /// Panics if no object is stored at `path`.
+    pub async fn set_last_modified(&self, kb: &str, path: &str, last_modified: SystemTime) {
+        let mut inner = self.inner.write().await;
+        inner
+            .objects
+            .get_mut(&(kb.to_string(), path.to_string()))
+            .expect("object to re-date is seeded")
+            .last_modified = last_modified;
+    }
+
     /// The object at `path`, read past every precondition and reachability switch,
     /// for a test asserting on what the store ended up holding.
     pub async fn object(&self, kb: &str, path: &str) -> Option<ObjectRead> {

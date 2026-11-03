@@ -3034,3 +3034,40 @@ async fn list_route_invalid_cursor_is_503() {
     );
     assert_ne!(json["request_id"].as_str().unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn an_object_modified_past_year_9999_is_served_without_last_modified() {
+    // Given — an mtime `httpdate` cannot format, as a hand-set `fs` mtime can be.
+    let storage = Arc::new(InMemoryStorage::with_kbs(declared_kbs().values()));
+    storage.seed(KB, "far.md", "# far\n", None, None).await;
+    storage
+        .set_last_modified(
+            KB,
+            "far.md",
+            // 300_000_000_000 s after the epoch, around year 11476.
+            std::time::UNIX_EPOCH + std::time::Duration::from_mins(5_000_000_000),
+        )
+        .await;
+    let a = app_over(storage, 1024, None, ready_receiver());
+
+    for method in ["GET", "HEAD"] {
+        // When
+        let resp = a
+            .clone()
+            .oneshot(authed_request(
+                method,
+                format!("/api/v1/knowledgebases/{KB}/far.md"),
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+
+        // Then — answered, with the unformattable date left out rather than a panic.
+        assert_eq!(resp.status(), StatusCode::OK, "{method}");
+        assert!(resp.headers().get(header::ETAG).is_some(), "{method}");
+        assert!(
+            resp.headers().get(header::LAST_MODIFIED).is_none(),
+            "{method}"
+        );
+    }
+}
