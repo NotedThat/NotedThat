@@ -38,22 +38,30 @@ pub async fn read_resource(
         .await
         .map_err(McpToolError::Transport)?;
     let resp = map_response(resp).await.map_err(McpError::from)?;
+    // The API returns the object's stored type; the extension table is only
+    // a guess for a response that carries no usable header.
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let bytes = client
         .read_body_bounded(resp)
         .await
         .map_err(McpError::from)?;
-    let mime_type = detect_mime_type(&parsed.object_key);
 
     let contents = match String::from_utf8(bytes.to_vec()) {
         Ok(text) => ResourceContents::TextResourceContents {
             uri: uri.to_string(),
-            mime_type: Some(mime_type.to_string()),
+            mime_type: Some(
+                content_type.unwrap_or_else(|| detect_mime_type(&parsed.object_key).to_owned()),
+            ),
             text,
             meta: None,
         },
         Err(err) => ResourceContents::BlobResourceContents {
             uri: uri.to_string(),
-            mime_type: Some(OCTET_STREAM.to_string()),
+            mime_type: Some(content_type.unwrap_or_else(|| OCTET_STREAM.to_owned())),
             blob: BASE64_STANDARD.encode(err.into_bytes()),
             meta: None,
         },
@@ -148,7 +156,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/knowledgebases/kb/note.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("# Hello"))
+            // `set_body_bytes` sends no Content-Type, so this covers the
+            // extension fallback.
+            .respond_with(ResponseTemplate::new(200).set_body_bytes("# Hello"))
             .mount(&server)
             .await;
 
@@ -227,6 +237,36 @@ mod tests {
                 assert!(meta.is_none());
             }
             other => panic!("expected blob contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_api_content_type_is_reported() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/config.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(r#"{"a":1}"#, "application/json; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/config.json")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(
+                    mime_type.as_deref(),
+                    Some("application/json; charset=utf-8")
+                );
+                assert_eq!(text, r#"{"a":1}"#);
+            }
+            other => panic!("expected text contents, got {other:?}"),
         }
     }
 

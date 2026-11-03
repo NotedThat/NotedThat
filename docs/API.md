@@ -2475,10 +2475,10 @@ The object key is percent-encoded exactly once. The `/` separator within a key i
 
 `resources/read` accepts `{ "uri": "notedthat://..." }` and returns the object contents:
 
-- **Text resources** (valid UTF-8): `TextResourceContents` with the detected MIME type.
-- **Binary resources** (non-UTF-8 bytes): `BlobResourceContents` with base64-encoded data and `mimeType: "application/octet-stream"`.
+- **Text resources** (valid UTF-8): `TextResourceContents`.
+- **Binary resources** (non-UTF-8 bytes): `BlobResourceContents` with base64-encoded data.
 
-MIME detection by extension:
+`mimeType` is the object's `Content-Type` as the API returns it on `GET` (for example `text/markdown; charset=utf-8`). Only when that header is missing or not valid UTF-8 does a binary resource fall back to `application/octet-stream`, and a text resource to detection by extension:
 
 | Extension | MIME type |
 |-----------|-----------|

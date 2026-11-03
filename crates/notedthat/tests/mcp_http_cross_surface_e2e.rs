@@ -876,8 +876,8 @@ async fn mcp_resources_list_and_read() {
     let md_item = &md_contents[0];
     assert_eq!(
         md_item["mimeType"].as_str(),
-        Some("text/markdown"),
-        "markdown resource must carry text/markdown MIME type: {md_item}"
+        Some("text/markdown; charset=utf-8"),
+        "markdown resource must carry the API's Content-Type: {md_item}"
     );
     assert!(
         md_item["text"].as_str().is_some(),
