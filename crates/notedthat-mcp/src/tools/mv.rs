@@ -71,12 +71,27 @@ pub(super) async fn run(
         .map_err(McpError::from)?;
 
     let put_url = client.api_v1_url(&["knowledgebases", kb.as_str(), to.as_str()]);
-    let mut put_req = client.authorized(client.http.put(put_url)).body(body_bytes);
+    // Create-only: a move must never clobber what already sits at `to` —
+    // there is no versioning to get it back.
+    let mut put_req = client
+        .authorized(client.http.put(put_url))
+        .header("If-None-Match", "*")
+        .body(body_bytes);
     if let Some(ct) = content_type {
         put_req = put_req.header("Content-Type", ct);
     }
     let put_resp = put_req.send().await.map_err(McpToolError::Transport)?;
-    map_response(put_resp).await.map_err(McpError::from)?;
+    map_response(put_resp)
+        .await
+        .map_err(|error| match error {
+            McpToolError::PreconditionFailed => McpToolError::InvalidRequest(format!(
+                "precondition_failed: move: destination {} already exists; move does not \
+                 overwrite — delete or rename it first, or pick another destination",
+                args.to
+            )),
+            other => other,
+        })
+        .map_err(McpError::from)?;
 
     let del_url = client.api_v1_url(&["knowledgebases", kb.as_str(), from.as_str()]);
     let mut del_req = client.authorized(client.http.delete(del_url));
@@ -174,6 +189,7 @@ mod tests {
             .await;
         Mock::given(method("PUT"))
             .and(path("/api/v1/knowledgebases/notes/b.md"))
+            .and(header("If-None-Match", "*"))
             .respond_with(ResponseTemplate::new(201).insert_header("ETag", "\"etag2\""))
             .expect(1)
             .mount(&server)
@@ -193,6 +209,52 @@ mod tests {
         };
         let result = run(&c, args).await.unwrap();
         assert_ne!(result.content.len(), 0);
+        server.verify().await;
+    }
+
+    /// A move never overwrites: the PUT is create-only, so an existing `to`
+    /// answers 412, the error names it, and the source is left alone.
+    #[tokio::test]
+    async fn an_existing_destination_is_refused_without_deleting_the_source() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/notes/a.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"# a".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/api/v1/knowledgebases/notes/b.md"))
+            .and(header("If-None-Match", "*"))
+            .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
+                "error": "precondition_failed",
+                "message": "object exists",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        let args = MoveArgs {
+            kb: "notes".into(),
+            from: "a.md".into(),
+            to: "b.md".into(),
+            if_match: None,
+        };
+
+        let error = run(&c, args).await.unwrap_err();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            error.message.starts_with("precondition_failed"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("b.md"), "{}", error.message);
         server.verify().await;
     }
 
