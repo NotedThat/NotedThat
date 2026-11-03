@@ -1,5 +1,7 @@
 //! Turning object metadata into the two columns a directory listing shows.
 
+use crate::validators::http_date;
+
 /// The placeholder for a value a row does not have.
 ///
 /// Folders have no size and no timestamp — they are synthesised from keys, not
@@ -55,23 +57,6 @@ pub(super) fn civil_date(unix_seconds: i64) -> Option<String> {
     let month = MONTHS.iter().position(|name| *name == month_name)?;
     let year = formatted.get(12..16)?;
     Some(format!("{year}-{:02}-{day}", month + 1))
-}
-
-/// The full RFC 7231 timestamp, for the row's tooltip.
-///
-/// `httpdate::fmt_http_date` **panics** past year 9999, and `last_modified` is
-/// whatever the backend put there. A page render must not panic on absurd
-/// metadata, so the value is bounded here rather than trusted.
-pub(super) fn http_date(unix_seconds: i64) -> Option<String> {
-    /// 9999-12-31T23:59:59Z — the last instant `httpdate` will format.
-    const LATEST_FORMATTABLE: u64 = 253_402_300_799;
-
-    let seconds = u64::try_from(unix_seconds).ok()?;
-    if seconds > LATEST_FORMATTABLE {
-        return None;
-    }
-    let instant = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))?;
-    Some(httpdate::fmt_http_date(instant))
 }
 
 const MONTHS: [&str; 12] = [
