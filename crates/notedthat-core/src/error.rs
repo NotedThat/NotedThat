@@ -53,7 +53,7 @@ pub enum Error {
     Storage(#[from] StorageError),
 
     /// Malformed `Range: bytes=` header — unparseable syntax. Maps to HTTP 400.
-    #[error("malformed Range header: {0}")]
+    #[error("malformed range: {0}")]
     MalformedRange(String),
 }
 

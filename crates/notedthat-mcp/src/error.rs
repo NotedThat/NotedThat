@@ -190,33 +190,108 @@ mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
-    #[test]
-    fn all_error_variants_convert_to_error_data() {
-        // Ensure From<McpToolError> for ErrorData works without panics
-        let cases: Vec<McpToolError> = vec![
-            McpToolError::InvalidRequest("bad input".into()),
-            McpToolError::Unauthorized,
-            McpToolError::NotFound("kb missing".into()),
-            McpToolError::PreconditionFailed,
-            McpToolError::PayloadTooLarge,
-            McpToolError::RangeNotSatisfiable,
-            McpToolError::NoMatch("hello".into()),
-            McpToolError::AmbiguousMatch { count: 3 },
-            McpToolError::BackendUnavailable,
-            McpToolError::RequestTimeout("slow".into()),
-            McpToolError::InternalError("boom".into()),
-            McpToolError::Forbidden,
-            McpToolError::ResponseTooLarge {
-                limit: 1,
-                total: Some(2),
-            },
-            McpToolError::ResponseTooLarge {
-                limit: 1,
-                total: None,
-            },
+    /// Every variant's exact `(code, message)` on the wire (#412).
+    #[tokio::test]
+    async fn every_error_variant_has_its_code_and_message() {
+        let transport = reqwest::get("not a url").await.unwrap_err();
+        let serialization = serde_json::from_str::<u8>("x").unwrap_err();
+        let too_large = "response_too_large: the object is 2 bytes, over this server's read budget of 1 bytes; \
+             read it in slices with byte_start/byte_end or line_start/line_end on the read tool";
+        let too_large_unknown = "response_too_large: the object is larger than this server's read budget of 1 bytes; \
+             read it in slices with byte_start/byte_end or line_start/line_end on the read tool";
+        let cases: Vec<(McpToolError, ErrorCode, &str)> = vec![
+            (
+                McpToolError::InvalidRequest("bad input".into()),
+                ErrorCode::INVALID_PARAMS,
+                "bad input",
+            ),
+            (
+                McpToolError::Unauthorized,
+                ErrorCode::INVALID_PARAMS,
+                "unauthorized",
+            ),
+            (
+                McpToolError::Forbidden,
+                ErrorCode::INVALID_PARAMS,
+                "forbidden",
+            ),
+            (
+                McpToolError::NotFound("kb missing".into()),
+                ErrorCode::RESOURCE_NOT_FOUND,
+                "not_found: kb missing",
+            ),
+            (
+                McpToolError::PreconditionFailed,
+                ErrorCode::INVALID_PARAMS,
+                "precondition_failed",
+            ),
+            (
+                McpToolError::PayloadTooLarge,
+                ErrorCode::INVALID_PARAMS,
+                "payload_too_large",
+            ),
+            (
+                McpToolError::RangeNotSatisfiable,
+                ErrorCode::INVALID_PARAMS,
+                "range_not_satisfiable",
+            ),
+            (
+                McpToolError::ResponseTooLarge {
+                    limit: 1,
+                    total: Some(2),
+                },
+                ErrorCode::INVALID_PARAMS,
+                too_large,
+            ),
+            (
+                McpToolError::ResponseTooLarge {
+                    limit: 1,
+                    total: None,
+                },
+                ErrorCode::INVALID_PARAMS,
+                too_large_unknown,
+            ),
+            (
+                McpToolError::NoMatch("hello".into()),
+                ErrorCode::INVALID_PARAMS,
+                "no match found for old_string: hello",
+            ),
+            (
+                McpToolError::AmbiguousMatch { count: 3 },
+                ErrorCode::INVALID_PARAMS,
+                "multiple matches (3); use replace_all to replace them all",
+            ),
+            (
+                McpToolError::BackendUnavailable,
+                ErrorCode::INTERNAL_ERROR,
+                "backend_unavailable",
+            ),
+            (
+                McpToolError::RequestTimeout("slow".into()),
+                ErrorCode::INTERNAL_ERROR,
+                "request_timeout: slow",
+            ),
+            (
+                McpToolError::InternalError("boom".into()),
+                ErrorCode::INTERNAL_ERROR,
+                "boom",
+            ),
+            (
+                McpToolError::Transport(transport),
+                ErrorCode::INTERNAL_ERROR,
+                "transport error: builder error",
+            ),
+            (
+                McpToolError::Serialization(serialization),
+                ErrorCode::INTERNAL_ERROR,
+                "serialization error: expected value at line 1 column 1",
+            ),
         ];
-        for e in cases {
-            let _ed: ErrorData = e.into();
+        for (error, code, message) in cases {
+            let shown = format!("{error:?}");
+            let ed: ErrorData = error.into();
+            assert_eq!(ed.code, code, "{shown}");
+            assert_eq!(ed.message, message, "{shown}");
         }
     }
 

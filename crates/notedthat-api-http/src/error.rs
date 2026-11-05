@@ -562,6 +562,239 @@ mod tests {
         }
     }
 
+    /// Every variant's status, code and exact message on the wire (#426, #413).
+    /// `None` is a response whose body must be empty (304, 416).
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn every_error_variant_has_its_status_code_and_message() {
+        use notedthat_core::EventId;
+        use notedthat_write::WriteEffect;
+        type Case = (ApiError, StatusCode, Option<(ErrorCode, &'static str)>);
+        let storage = |e: StorageError| ApiError::Core(CoreError::Storage(e));
+        let cases: Vec<Case> = vec![
+            (
+                ApiError::Unauthorized,
+                StatusCode::UNAUTHORIZED,
+                Some((
+                    ErrorCode::Unauthorized,
+                    "provide a valid Bearer token in the Authorization header",
+                )),
+            ),
+            (
+                ApiError::Forbidden,
+                StatusCode::FORBIDDEN,
+                Some((ErrorCode::Forbidden, "forbidden")),
+            ),
+            (
+                ApiError::IndexerBackpressureUpsert,
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((
+                    ErrorCode::BackendUnavailable,
+                    "object stored; indexer queue full — retry to re-enqueue",
+                )),
+            ),
+            (
+                ApiError::IndexerBackpressureTombstone,
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((
+                    ErrorCode::BackendUnavailable,
+                    "deleted from storage; retry to clear from search index",
+                )),
+            ),
+            (
+                ApiError::EventPublishFailed {
+                    after: WriteEffect::Stored,
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((
+                    ErrorCode::BackendUnavailable,
+                    "object stored; change event not published — retry to publish",
+                )),
+            ),
+            (
+                ApiError::EventPublishFailed {
+                    after: WriteEffect::Deleted,
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((
+                    ErrorCode::BackendUnavailable,
+                    "deleted from storage; change event not published — retry to publish",
+                )),
+            ),
+            (
+                ApiError::ReconcileInProgress,
+                StatusCode::CONFLICT,
+                Some((
+                    ErrorCode::Conflict,
+                    "a reconciliation pass is already running for this knowledge base; retry once last_reconcile advances",
+                )),
+            ),
+            (
+                ApiError::ReconcileUnsupported,
+                StatusCode::NOT_FOUND,
+                Some((
+                    ErrorCode::NotFound,
+                    "on-demand reconciliation is available on the s3 backend only",
+                )),
+            ),
+            (
+                ApiError::EventsGone {
+                    requested: EventId(5),
+                    oldest: EventId(9),
+                },
+                StatusCode::GONE,
+                Some((
+                    ErrorCode::Gone,
+                    "events after 5 are no longer retained; oldest retained is 9",
+                )),
+            ),
+            (
+                ApiError::EventsUnavailable {
+                    message: "nats down".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((ErrorCode::BackendUnavailable, "event backend unavailable")),
+            ),
+            (
+                ApiError::Core(CoreError::InvalidInput {
+                    message: "bad slug".into(),
+                }),
+                StatusCode::BAD_REQUEST,
+                Some((ErrorCode::InvalidRequest, "invalid input: bad slug")),
+            ),
+            (
+                ApiError::Core(CoreError::NotFound {
+                    resource: "kb:x".into(),
+                }),
+                StatusCode::NOT_FOUND,
+                Some((ErrorCode::NotFound, "not found: kb:x")),
+            ),
+            (
+                ApiError::Core(CoreError::PayloadTooLarge { size: 2, limit: 1 }),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Some((
+                    ErrorCode::PayloadTooLarge,
+                    "payload too large: 2 bytes (limit 1)",
+                )),
+            ),
+            (
+                ApiError::Core(CoreError::BucketNameTooLong {
+                    name: "nt-secret".into(),
+                    len: 64,
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some((ErrorCode::InternalError, "internal error")),
+            ),
+            (
+                ApiError::Core(CoreError::Config {
+                    message: "secret".into(),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some((ErrorCode::InternalError, "internal error")),
+            ),
+            (
+                ApiError::Core(CoreError::MalformedRange("bytes=abc".into())),
+                StatusCode::BAD_REQUEST,
+                Some((ErrorCode::MalformedRange, "malformed range: bytes=abc")),
+            ),
+            (
+                storage(StorageError::NotFound { key: "a.md".into() }),
+                StatusCode::NOT_FOUND,
+                Some((ErrorCode::NotFound, "object not found: a.md")),
+            ),
+            (
+                storage(StorageError::BucketNotFound {
+                    bucket: "nt-secret".into(),
+                }),
+                StatusCode::NOT_FOUND,
+                Some((ErrorCode::NotFound, "not found: knowledge base storage")),
+            ),
+            (
+                ApiError::from(StorageError::BucketNotFound {
+                    bucket: "nt-secret".into(),
+                }),
+                StatusCode::NOT_FOUND,
+                Some((ErrorCode::NotFound, "not found: knowledge base storage")),
+            ),
+            (
+                storage(StorageError::BackendUnavailable {
+                    message: "secret".into(),
+                }),
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some((ErrorCode::BackendUnavailable, "backend unavailable")),
+            ),
+            (
+                storage(StorageError::Other {
+                    source: "secret".into(),
+                }),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some((ErrorCode::InternalError, "internal error")),
+            ),
+            (
+                storage(StorageError::NotModified(Validators::default())),
+                StatusCode::NOT_MODIFIED,
+                None,
+            ),
+            (
+                storage(StorageError::PreconditionFailed),
+                StatusCode::PRECONDITION_FAILED,
+                Some((ErrorCode::PreconditionFailed, "precondition failed")),
+            ),
+            (
+                storage(StorageError::RangeNotSatisfiable {
+                    complete_length: 100,
+                }),
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                None,
+            ),
+            (
+                ApiError::PreconditionRequired {
+                    message: "send If-Match".into(),
+                },
+                StatusCode::PRECONDITION_REQUIRED,
+                Some((
+                    ErrorCode::PreconditionRequired,
+                    "precondition required: send If-Match",
+                )),
+            ),
+            (
+                ApiError::LineRangeNotSatisfiable {
+                    line_total: 20,
+                    byte_total: 100,
+                },
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                None,
+            ),
+            (
+                ApiError::ReplaceNoMatch,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some((ErrorCode::NoMatch, "no match found for old_string")),
+            ),
+            (
+                ApiError::ReplaceAmbiguous { count: 3 },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some((
+                    ErrorCode::AmbiguousMatch,
+                    "multiple matches found (3); use replace_all to replace them all",
+                )),
+            ),
+        ];
+        for (error, status, body) in cases {
+            let shown = format!("{error:?}");
+            let resp = error.into_response();
+            assert_eq!(resp.status(), status, "{shown}");
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            match body {
+                None => assert!(bytes.is_empty(), "{shown}: body must be empty"),
+                Some((code, message)) => {
+                    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(json["error"], code.as_str(), "{shown}");
+                    assert_eq!(json["message"], message, "{shown}");
+                }
+            }
+        }
+    }
+
     const KB: &str = "notes";
     const TOKEN: &str = "test-token-abc";
 
@@ -1563,6 +1796,7 @@ mod tests {
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(json["error"], "malformed_range");
+            assert_eq!(json["message"], "malformed range: lines=abc");
         }
 
         #[tokio::test]
