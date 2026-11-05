@@ -39,11 +39,18 @@ pub async fn read_resource(
         .map_err(McpToolError::Transport)?;
     let resp = map_response(resp).await.map_err(McpError::from)?;
     // The API returns the object's stored type; the extension table is only
-    // a guess for a response that carries no usable header.
+    // a guess for a response that carries no usable header. The API stores
+    // `application/octet-stream` when the writer declared no type, so that
+    // value says nothing and falls back too.
     let content_type = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
+        .filter(|ct| {
+            !ct.split(';')
+                .next()
+                .is_some_and(|essence| essence.trim().eq_ignore_ascii_case(OCTET_STREAM))
+        })
         .map(str::to_owned);
     let bytes = client
         .read_body_bounded(resp)
@@ -265,6 +272,29 @@ mod tests {
                     Some("application/json; charset=utf-8")
                 );
                 assert_eq!(text, r#"{"a":1}"#);
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_octet_stream_falls_back_to_the_extension() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/todo.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("buy milk", "application/octet-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/todo.txt")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::TextResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("text/plain"));
             }
             other => panic!("expected text contents, got {other:?}"),
         }
