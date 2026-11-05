@@ -301,6 +301,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_binary_resource_reports_the_declared_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/image.png"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(vec![0x89, b'P', b'N', b'G'], "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/image.png")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::BlobResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("image/png"));
+            }
+            other => panic!("expected blob contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn malformed_uri_returns_error() {
         let server = MockServer::start().await;
 
