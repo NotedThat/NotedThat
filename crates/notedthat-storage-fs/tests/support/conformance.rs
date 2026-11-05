@@ -813,6 +813,17 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
         memory: "BucketNotFound",
         why: "The same PutObject leniency as `put_missing_bucket`, on the manifest key.",
     },
+    Divergence {
+        name: "delete_never_existed",
+        s3: "Ok(Deleted)",
+        fs: "Ok(NotFound)",
+        memory: "Ok(NotFound)",
+        why: "S3's `DeleteObject` answers 204 whether or not the key existed, so the \
+              adapter cannot tell, and a `HEAD` first would add a round trip and still race \
+              a concurrent write. `Storage::delete_object` documents this: `NotFound` proves \
+              the key was missing, `Deleted` does not prove it existed. Every value is `Ok`: \
+              a missing key is never an error on any backend.",
+    },
 ];
 
 /// Observe the pinned divergences, so each backend's actual behaviour stays recorded.
@@ -834,6 +845,16 @@ pub async fn observe_pinned_divergences(store: &dyn Storage, kb: &KbSlug) -> Obs
         (
             "garbage_cursor",
             outcome(&store.list_objects(kb, None, 10, Some("not-a-cursor")).await),
+        ),
+        (
+            "delete_never_existed",
+            match store
+                .delete_object(kb, &path("never.md"), ConditionalHeaders::default())
+                .await
+            {
+                Ok(found) => format!("Ok({found:?})"),
+                Err(error) => format!("Err({})", error_kind(&error)),
+            },
         ),
         ("copy_replaced_content_type", {
             let _ = store

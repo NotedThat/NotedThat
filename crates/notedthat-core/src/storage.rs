@@ -75,6 +75,16 @@ pub struct ListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// What [`Storage::delete_object`] found at the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// An object was there and is now gone.
+    Deleted,
+    /// Nothing was there. The `fs` backend reports this; S3's `DeleteObject`
+    /// cannot tell, so S3 always reports `Deleted`.
+    NotFound,
+}
+
 /// Return value from [`Storage::put_object`] and the other writes. Carries the `ETag`
 /// of the stored object and whether the write created it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,15 +218,19 @@ pub trait Storage: Send + Sync {
     /// Delete an object.
     ///
     /// `conditionals` carries raw HTTP conditional headers for the backend to evaluate.
-    /// This operation is **idempotent** — deleting a non-existent object returns
-    /// `Ok(())` — S3's own semantics, and what `DELETE` on the HTTP API promises:
-    /// `204` for a missing object (docs/API.md).
+    /// This operation is **idempotent** — deleting a non-existent object is `Ok`, never
+    /// an error — S3's own semantics, and what `DELETE` on the HTTP API promises: `204`
+    /// for a missing object (docs/API.md). A backend that can tell reports
+    /// [`DeleteOutcome::NotFound`] for a missing key (`fs`, the in-memory double); S3
+    /// cannot and always reports `Deleted`. `NotFound` therefore proves the key was
+    /// missing, but `Deleted` does not prove it existed: callers must not branch on the
+    /// distinction where every backend has to behave the same.
     async fn delete_object(
         &self,
         kb: &KbSlug,
         path: &ObjectPath,
         conditionals: ConditionalHeaders,
-    ) -> Result<(), StorageError>;
+    ) -> Result<DeleteOutcome, StorageError>;
 
     /// List objects in the KB, optionally filtered by a prefix.
     ///
