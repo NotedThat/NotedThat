@@ -13,7 +13,10 @@ pub mod stream;
 
 pub use config::{
     DEFAULT_NATS_DUPLICATE_WINDOW_SECS, DEFAULT_NATS_REPLICAS, MIN_NATS_DUPLICATE_WINDOW_SECS,
-    NATS_CONNECT_ENV_VARS, NatsAuth, NatsConnectConfig, NatsConnectSettings, NatsStorage,
+    NATS_CONNECT_ENV_VARS, NATS_CREDS_FILE_ENV, NATS_DUPLICATE_WINDOW_SECS_ENV,
+    NATS_NKEY_SEED_FILE_ENV, NATS_REPLICAS_ENV, NATS_STORAGE_ENV, NATS_TLS_CA_FILE_ENV,
+    NATS_TLS_CERT_FILE_ENV, NATS_TLS_KEY_FILE_ENV, NATS_TLS_REQUIRED_ENV, NATS_TOKEN_ENV,
+    NATS_URL_ENV, NatsAuth, NatsConnectConfig, NatsConnectSettings, NatsStorage,
     NatsStreamSettings, NatsTls, parse_positive, parse_stream_name,
 };
 pub use connect::{NatsConnectError, TIMEOUT, connect};

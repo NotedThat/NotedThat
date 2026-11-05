@@ -133,17 +133,23 @@ impl OidcVerifier {
         let mut builder = reqwest::Client::builder().timeout(settings.http_timeout);
         if let Some(path) = &settings.ca_cert {
             let bundle = std::fs::read(path).map_err(|error| {
-                anyhow::anyhow!("NOTEDTHAT_OIDC_CA_CERT {}: {error}", path.display())
+                anyhow::anyhow!(
+                    "{} {}: {error}",
+                    crate::cli::OIDC_CA_CERT_ENV,
+                    path.display()
+                )
             })?;
             let certificates = reqwest::Certificate::from_pem_bundle(&bundle).map_err(|error| {
                 anyhow::anyhow!(
-                    "NOTEDTHAT_OIDC_CA_CERT {} is not a PEM certificate bundle: {error}",
+                    "{} {} is not a PEM certificate bundle: {error}",
+                    crate::cli::OIDC_CA_CERT_ENV,
                     path.display()
                 )
             })?;
             if certificates.is_empty() {
                 anyhow::bail!(
-                    "NOTEDTHAT_OIDC_CA_CERT {} contains no certificates",
+                    "{} {} contains no certificates",
+                    crate::cli::OIDC_CA_CERT_ENV,
                     path.display()
                 );
             }

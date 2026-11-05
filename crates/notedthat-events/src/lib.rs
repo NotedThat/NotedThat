@@ -12,8 +12,9 @@ pub mod memory;
 pub mod nats;
 
 pub use config::{
-    DEFAULT_MEMORY_CAPACITY, DEFAULT_NATS_MAX_AGE_SECS, DEFAULT_NATS_STREAM, MEMORY_ENV_VARS,
-    MemoryConfig, MemorySettings, NATS_ENV_VARS, NatsConfig, NatsSettings,
+    DEFAULT_MEMORY_CAPACITY, DEFAULT_NATS_MAX_AGE_SECS, DEFAULT_NATS_STREAM,
+    EVENTS_MEMORY_CAPACITY_ENV, MEMORY_ENV_VARS, MemoryConfig, MemorySettings, NATS_ENV_VARS,
+    NATS_MAX_AGE_SECS_ENV, NATS_STREAM_ENV, NatsConfig, NatsSettings,
 };
 pub use memory::MemoryPublisher;
 pub use nats::{EVENT_SCHEMA, NatsError, NatsPublisher, SUBJECT_ROOT};
