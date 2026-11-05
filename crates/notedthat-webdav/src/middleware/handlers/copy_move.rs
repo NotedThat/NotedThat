@@ -201,7 +201,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         Ok(outcome) => outcome,
         Err(notedthat_write::WriteError::IndexerBackpressureUpsert) => {
             return if delete_source {
-                move_destination_backpressure_response("")
+                move_destination_backpressure_response()
             } else {
                 copy_destination_backpressure_response()
             };
@@ -238,7 +238,7 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
         {
             Ok(()) => {}
             Err(notedthat_write::WriteError::IndexerBackpressureTombstone) => {
-                return move_source_tombstone_backpressure_response("");
+                return move_source_tombstone_backpressure_response();
             }
             Err(notedthat_write::WriteError::EventPublishFailed { .. }) => {
                 return event_publish_failed_response(
