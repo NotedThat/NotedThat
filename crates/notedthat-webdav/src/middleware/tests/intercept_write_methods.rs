@@ -270,6 +270,27 @@ async fn delete_of_a_folder_is_refused_with_no_collection_delete() {
     }
 }
 
+/// An object and a folder can share a name; listings show only the folder, so
+/// writes treat the path as the folder and leave the hidden object alone.
+#[tokio::test]
+async fn a_folder_shadowing_an_object_of_the_same_name_is_still_refused() {
+    for (method, destination, condition) in [
+        ("DELETE", None, "no-collection-delete"),
+        ("MOVE", Some("/webdav/notes/other"), "no-collection-move"),
+        ("COPY", Some("/webdav/notes/other"), "no-collection-move"),
+    ] {
+        let storage = storage_with_folder().await;
+        storage
+            .insert("notes", "folder", Bytes::from_static(b"f"), "\"f\"")
+            .await;
+        let resp = send(storage.clone(), method, "/webdav/notes/folder", destination).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{method}");
+        assert!(response_body(resp).await.contains(condition), "{method}");
+        assert!(storage.get_stored("notes", "folder").await.is_some());
+        assert!(storage.get_stored("notes", "other").await.is_none());
+    }
+}
+
 #[tokio::test]
 async fn delete_of_a_missing_path_spelled_as_a_collection_is_404() {
     let storage = empty_storage();
@@ -815,6 +836,7 @@ async fn test_move_single_object_returns_201_and_calls_commit_then_commit_delete
     assert_eq!(
         storage.ops(),
         vec![
+            StorageOp::ListObjects,
             StorageOp::HeadObject,
             StorageOp::ListObjects,
             StorageOp::CopyObject,
@@ -852,6 +874,7 @@ async fn test_copy_single_object_returns_201_and_calls_only_commit() {
     assert_eq!(
         storage.ops(),
         vec![
+            StorageOp::ListObjects,
             StorageOp::HeadObject,
             StorageOp::ListObjects,
             StorageOp::CopyObject
