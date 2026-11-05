@@ -46,7 +46,7 @@ permissions:
 jobs:
   plan:
     name: Plan release
-    runs-on: ubuntu-22.04
+    runs-on: 9xx
     outputs:
       manifest: ${{ steps.plan.outputs.manifest }}
       tag: ${{ github.ref_name }}
@@ -163,7 +163,7 @@ jobs:
   build-global-artifacts:
     name: build-global-artifacts
     needs: [plan, build-local-artifacts]
-    runs-on: ubuntu-22.04
+    runs-on: 9xx
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json

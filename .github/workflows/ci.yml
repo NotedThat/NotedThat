@@ -35,7 +35,7 @@ jobs:
   # exactly the manifest claim that would otherwise ship unverified.
   test:
     name: test (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     strategy:
       # Both legs always report. "stable green, MSRV red" is a different
       # diagnosis from "both red", and fail-fast would hide which one it is.
@@ -151,7 +151,7 @@ jobs:
   # Cargo unifies features across every member; the packaged crate has only
   # the features its own Cargo.toml asks for.
   package:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -676,7 +676,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: write
       pull-requests: write
