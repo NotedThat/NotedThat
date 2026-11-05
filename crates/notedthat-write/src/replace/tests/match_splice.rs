@@ -144,3 +144,13 @@ fn near_miss_needle_over_long_run_is_searched_in_linear_time() {
         "substring search took {elapsed:?}"
     );
 }
+
+/// Overlapping candidates must collapse to leftmost-first, non-overlapping starts, or `replace`
+/// would count `"aa"` in `"aaa"` twice and `replace_all` would splice overlapping ranges.
+#[test]
+fn overlapping_candidates_yield_non_overlapping_leftmost_matches() {
+    let find = crate::replace::find_non_overlapping_matches;
+    assert_eq!(find(b"aaa", b"aa"), [0]);
+    assert_eq!(find(b"aaaa", b"aa"), [0, 2]);
+    assert_eq!(find(b"abababa", b"aba"), [0, 4]);
+}
