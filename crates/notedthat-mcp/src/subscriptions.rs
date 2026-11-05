@@ -1554,7 +1554,19 @@ pub(crate) mod tests {
         settle().await;
         assert_eq!(updates(&recorder, PING), 0, "nothing before the first tick");
 
-        for pings in 1..=2 {
+        // One millisecond short of the interval pins it: a shorter sleep would ping here.
+        tokio::time::advance(KEEPER_INTERVAL.saturating_sub(Duration::from_millis(1))).await;
+        settle().await;
+        assert_eq!(
+            updates(&recorder, PING),
+            0,
+            "nothing before a full interval"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(updates(&recorder, PING), 1, "one ping at the interval");
+
+        for pings in 2..=3 {
             tokio::time::advance(KEEPER_INTERVAL).await;
             settle().await;
             assert_eq!(updates(&recorder, PING), pings);
