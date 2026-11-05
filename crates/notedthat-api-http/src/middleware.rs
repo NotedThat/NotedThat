@@ -8,7 +8,7 @@ use crate::router::{
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{MatchedPath, State};
-use axum::http::{Method, Request, StatusCode, header::WWW_AUTHENTICATE};
+use axum::http::{Extensions, Method, Request, StatusCode, header::WWW_AUTHENTICATE};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{Principal, Schemes};
@@ -61,7 +61,7 @@ pub async fn auth_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let request_id = extract_request_id(&req);
+    let request_id = extract_request_id(req.extensions());
 
     let response = match state
         .authenticator
@@ -118,8 +118,8 @@ pub use notedthat_core::CredentialRefused;
 ///
 /// Defaults to [`Principal::Anyone`] when the auth layer has not run, so a
 /// handler reached by an unexpected route fails closed rather than open.
-pub fn principal<B>(req: &Request<B>) -> Principal {
-    req.extensions()
+pub fn principal(extensions: &Extensions) -> Principal {
+    extensions
         .get::<Principal>()
         .cloned()
         .unwrap_or(Principal::Anyone)
@@ -129,8 +129,8 @@ pub use notedthat_core::is_internal_path;
 
 /// Extract the `x-request-id` value from request extensions, falling back to a
 /// generated UUID if the `SetRequestId` middleware hasn't run yet.
-pub fn extract_request_id<B>(req: &Request<B>) -> String {
-    req.extensions()
+pub fn extract_request_id(extensions: &Extensions) -> String {
+    extensions
         .get::<RequestId>()
         .and_then(|r| r.header_value().to_str().ok())
         .map_or_else(

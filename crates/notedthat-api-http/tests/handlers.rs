@@ -2373,6 +2373,74 @@ async fn put_rejects_actual_body_above_limit() {
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+/// A declared oversize body answers 413 before PATCH and replace look at
+/// `If-Match`, whatever that header holds.
+#[tokio::test]
+async fn an_oversized_declared_body_answers_413_before_the_precondition_checks() {
+    // replace's cap is 2 * max_patchable_size + 4096 = 4104 here.
+    let cases = [
+        ("PATCH", "too-big.md", "5", Some("*")),
+        ("PATCH", "too-big.md", "5", Some("\"a\", \"b\"")),
+        ("POST", "replace/too-big.md", "5000", None),
+        ("POST", "replace/too-big.md", "5000", Some("*")),
+    ];
+    for (method, path, content_length, if_match) in cases {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(format!("/api/v1/knowledgebases/{KB}/{path}"))
+            .header(auth().0, auth().1)
+            .header("content-length", content_length);
+        if let Some(if_match) = if_match {
+            request = request.header(header::IF_MATCH, if_match);
+        }
+        let resp = app_with_max_body_size(4)
+            .oneshot(request.body(Body::from("x")).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "{method} {path} If-Match {if_match:?}"
+        );
+    }
+}
+
+/// Axum rejects a capture that is not UTF-8 before any handler runs; every
+/// object and knowledge-base route still answers the JSON error envelope.
+#[tokio::test]
+async fn a_non_utf8_path_capture_answers_the_error_envelope_on_every_route() {
+    let cases = [
+        ("HEAD", "/api/v1/knowledgebases/notes/%ff.md"),
+        ("GET", "/api/v1/knowledgebases/notes/%ff.md"),
+        ("PUT", "/api/v1/knowledgebases/notes/%ff.md"),
+        ("PATCH", "/api/v1/knowledgebases/notes/%ff.md"),
+        ("DELETE", "/api/v1/knowledgebases/notes/%ff.md"),
+        ("GET", "/api/v1/knowledgebases/%ff"),
+        ("GET", "/api/v1/knowledgebases/%ff/events"),
+        ("GET", "/api/v1/knowledgebases/%ff/index"),
+        ("POST", "/api/v1/knowledgebases/%ff/index/reconcile"),
+    ];
+    for (method, uri) in cases {
+        let resp = app()
+            .oneshot(authed_request(method, uri.to_string(), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{method} {uri}");
+        let content_type = resp.headers().get(header::CONTENT_TYPE).cloned();
+        assert!(
+            content_type.is_some_and(|value| value.as_bytes().starts_with(b"application/json")),
+            "{method} {uri}: content type"
+        );
+        if method == "HEAD" {
+            continue;
+        }
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "invalid_request", "{method} {uri}");
+        assert!(json["request_id"].is_string(), "{method} {uri}");
+    }
+}
+
 #[tokio::test]
 async fn put_allows_body_at_exact_limit() {
     let resp = app_with_max_body_size(4)

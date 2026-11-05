@@ -15,7 +15,8 @@
 use std::convert::Infallible;
 use std::time::{Duration, SystemTime};
 
-use axum::extract::{Path, Query, Request, State};
+use super::extract::KbRequest;
+use axum::extract::{Query, Request, State};
 use axum::http::header::{CACHE_CONTROL, HeaderName, HeaderValue};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -36,7 +37,6 @@ use super::openapi::{
 };
 use crate::authz::KbAccess;
 use crate::error::{ApiError, ApiErrorResponse};
-use crate::middleware::extract_request_id;
 use crate::state::AppState;
 
 /// What a disconnected client should wait before reconnecting, sent as the
@@ -270,17 +270,12 @@ where
 )]
 pub(super) async fn subscribe_events(
     State(state): State<AppState>,
-    Path(kb_slug): Path<String>,
     Query(query): Query<EventsQuery>,
+    kb: KbRequest,
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = extract_request_id(&req);
-    let err = |error: ApiError| ApiErrorResponse {
-        error,
-        request_id: request_id.clone(),
-    };
-
-    let access = KbAccess::resolve(&state, &kb_slug, &req).map_err(err)?;
+    let err = &kb.err();
+    let access = kb.access;
     access.require_any(Verb::List).map_err(err)?;
     let Some(events) = state.events.clone() else {
         return Err(err(ApiError::Core(CoreError::NotFound {
