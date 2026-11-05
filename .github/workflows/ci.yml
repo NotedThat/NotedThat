@@ -54,10 +54,8 @@ jobs:
       # ref accepts. `stable` is a valid value for it.
       #
       # SHA-pinned because `master` moves with every commit to that repository,
-      # which would be a looser ref than the `@stable` it replaces. This matches
-      # how the other third-party actions in this repository are pinned; the
-      # `dtolnay/rust-toolchain@stable` uses elsewhere stay on that ref, since it
-      # names the toolchain rather than a release.
+      # which would be a looser ref than the `@stable` it replaces. Every
+      # third-party action in this repository is pinned the same way.
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -81,8 +79,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
         with:
+          toolchain: stable
           components: clippy
       # dead_code is `deny` in Cargo.toml, so unused code fails the build; this
       # refuses the way around that, an allow or expect of dead_code or of the
@@ -110,8 +109,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
         with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -157,7 +157,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo package --workspace --locked
       # A dev-dependency on a workspace crate carries `path` only, never
@@ -383,7 +385,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # `--include-ignored` is how the container-backed and subprocess tests get
       # run, but it also sweeps in the `stress_*` scenarios, which generate and
@@ -473,7 +477,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
       # Trusted Publishing cannot create a crate, so release-plz fails on a
       # never-published one until it is bootstrapped (RELEASING.md, "Adding a
       # Crate to the Workspace"). Instead of a red main: set `release = false`
@@ -680,7 +686,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
       - name: Run release-plz (release-pr)
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5
         with:
