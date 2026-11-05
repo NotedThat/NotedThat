@@ -43,7 +43,10 @@ fn env_filter(rust_log: Option<&OsStr>) -> anyhow::Result<EnvFilter> {
     let spec = spec
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("RUST_LOG must be valid UTF-8"))?;
-    EnvFilter::try_new(spec).map_err(|e| anyhow::anyhow!("RUST_LOG is invalid ({spec:?}): {e}"))
+    // tracing-subscriber 0.3.23 slices each directive untrimmed, so `a, b` or a
+    // trailing newline would fail to parse; trim them the way an operator means.
+    let trimmed = spec.split(',').map(str::trim).collect::<Vec<_>>().join(",");
+    EnvFilter::try_new(trimmed).map_err(|e| anyhow::anyhow!("RUST_LOG is invalid ({spec:?}): {e}"))
 }
 
 #[cfg(test)]
@@ -70,6 +73,25 @@ mod tests {
             env_filter(Some(OsStr::new("notedthat=debgu"))).expect_err("a typo must be refused");
         let msg = err.to_string();
         assert!(msg.contains("RUST_LOG"), "error must name RUST_LOG: {msg}");
+    }
+
+    #[test]
+    fn space_after_a_comma_in_rust_log_is_accepted() {
+        let filter = env_filter(Some(OsStr::new("info, notedthat=debug"))).expect("spaced filter");
+        assert_eq!(filter.to_string(), "notedthat=debug,info");
+    }
+
+    #[test]
+    fn trailing_newline_in_rust_log_is_accepted() {
+        let filter = env_filter(Some(OsStr::new("notedthat=debug\n"))).expect("newline filter");
+        assert_eq!(filter.to_string(), "notedthat=debug");
+    }
+
+    #[test]
+    fn whitespace_only_rust_log_is_treated_as_empty() {
+        let filter = env_filter(Some(OsStr::new(" \n"))).expect("whitespace-only filter");
+        let empty = env_filter(Some(OsStr::new(""))).expect("empty filter");
+        assert_eq!(filter.to_string(), empty.to_string());
     }
 
     #[cfg(unix)]
