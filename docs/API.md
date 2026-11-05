@@ -1594,9 +1594,11 @@ server's own write is one more attempt, so a failure there is usually reported t
 
 Nothing is published where the index gained nothing: an object the indexer does not index
 (anything but `text/markdown` and `text/plain` — an mp3, an image — or an empty body) gets its
-`object.written` and no verdict; a deletion gets `object.deleted` and nothing more; on the `fs`
-backend a detected change whose `ETag` the index already holds is skipped silently. A subscriber
-waiting on `object.indexed` should therefore look at the `mime` of the `object.written` first.
+`object.written` and no verdict, and so does a body with nothing to search in it (only
+whitespace, or an OKF concept that is only frontmatter); a deletion gets `object.deleted` and
+nothing more; on the `fs` backend a detected change whose `ETag` the index already holds is
+skipped silently. A subscriber waiting on `object.indexed` should therefore look at the `mime`
+of the `object.written` first, and expect no verdict for a body it knows to be blank.
 
 **Ids and replay.** Ids are strictly increasing within a deployment and never reused. With the
 `memory` backend they are a process-local counter; with `nats` they are the JetStream stream
@@ -2277,8 +2279,10 @@ One knowledge base's search-index health.
 `state`, `pending`, `queue`, `worker`, `last_indexed_at`, `last_failure`, `last_reconcile`. Check
 it when search results look incomplete or out of date; a `failed` or `stale` knowledge base may
 not reflect recent writes. For one specific write, the `object.indexed` event on the
-[events stream](#get-apiv1knowledgebaseskb_slugevents) is the precise completion signal. Refused
-like the route: `forbidden` for a credential holding no grant,
+[events stream](#get-apiv1knowledgebaseskb_slugevents) is the precise completion signal; none
+comes for a body with nothing to search in it (empty, only whitespace, or an OKF concept that is
+only frontmatter).
+Refused like the route: `forbidden` for a credential holding no grant,
 not found for a knowledge base the caller cannot see.
 
 #### `search`
@@ -2293,7 +2297,9 @@ Hybrid semantic + keyword search across one or more knowledge bases in a single 
 - Indexing is asynchronous. An object written moments ago is in the results once the knowledge
   base's [events stream](#get-apiv1knowledgebaseskb_slugevents) has reported `object.indexed`
   for its `etag` — and never if it reported `object.index_failed`. Wait for that rather than
-  retrying the search; `index_status` reports the knowledge base as a whole.
+  retrying the search; `index_status` reports the knowledge base as a whole. No verdict comes
+  for a body with nothing to search in it (empty, only whitespace, or an OKF concept that is
+  only frontmatter).
 
 The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, at most 8 in flight at once, as the calling identity; the HTTP route itself stays single-slug.
 

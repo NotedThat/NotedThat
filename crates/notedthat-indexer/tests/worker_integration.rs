@@ -2538,6 +2538,78 @@ mod announcing {
         assert_eq!(storage.stream_calls(), 0, "an mp3 is never read");
     }
 
+    /// A non-empty file whose body chunks to nothing — whitespace only, or an
+    /// OKF concept that is all frontmatter — is out of the index like an empty
+    /// one: no point, and no `object.indexed { chunks: 0 }` on every pass.
+    #[tokio::test]
+    async fn an_object_that_chunks_to_nothing_is_never_announced_as_indexed() {
+        for (key, body) in [
+            ("blank.md", "\n\n  \n"),
+            ("metric.md", "---\ntype: Metric\n---"),
+        ] {
+            let (store, provisioner) = make_store();
+            provisioner.ensure_collection(&kb(), 4).await.unwrap();
+            let storage = Arc::new(MockStorage::new());
+            storage.insert(kb().as_str(), key, body, "text/markdown");
+            let publisher = Arc::new(MemoryPublisher::new(16));
+
+            drive(
+                storage.clone(),
+                Arc::new(store.clone()),
+                publisher.clone(),
+                vec![
+                    upsert(key),
+                    refresh(key, RefreshOrigin::Reconcile),
+                    refresh(key, RefreshOrigin::Reconcile),
+                ],
+            )
+            .await;
+
+            let events = announced(&publisher).await;
+            assert!(indexed_events(&events).is_empty(), "{key}: {events:?}");
+            assert_eq!(count_points(&store, &kb(), key).await, 0, "{key}");
+        }
+    }
+
+    /// A key that had content and is rewritten blank loses its points: the
+    /// earlier version must not stay searchable, and only it was announced.
+    #[tokio::test]
+    async fn rewriting_a_note_blank_removes_its_points() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let store_dyn: Arc<dyn VectorStore> = Arc::new(store.clone());
+
+        storage.insert(
+            kb().as_str(),
+            "note.md",
+            "# Title\n\nSome words.\n",
+            "text/markdown",
+        );
+        drive(
+            storage.clone(),
+            store_dyn.clone(),
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+        assert!(count_points(&store, &kb(), "note.md").await > 0);
+
+        storage.insert(kb().as_str(), "note.md", "\n  \n", "text/markdown");
+        drive(
+            storage.clone(),
+            store_dyn,
+            publisher.clone(),
+            vec![upsert("note.md")],
+        )
+        .await;
+
+        assert_eq!(count_points(&store, &kb(), "note.md").await, 0);
+        let events = announced(&publisher).await;
+        assert_eq!(indexed_events(&events).len(), 1, "{events:?}");
+    }
+
     #[tokio::test]
     async fn a_detected_deletion_is_announced_as_deleted_with_its_origin() {
         let (store, provisioner) = make_store();
