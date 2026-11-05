@@ -815,14 +815,14 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
     },
     Divergence {
         name: "delete_never_existed",
-        s3: "Deleted",
-        fs: "NotFound",
-        memory: "NotFound",
+        s3: "Ok(Deleted)",
+        fs: "Ok(NotFound)",
+        memory: "Ok(NotFound)",
         why: "S3's `DeleteObject` answers 204 whether or not the key existed, so the \
               adapter cannot tell, and a `HEAD` first would add a round trip and still race \
               a concurrent write. `Storage::delete_object` documents this: `NotFound` proves \
-              the key was missing, `Deleted` does not prove it existed. All three agree the \
-              delete is `Ok`, which `lifecycle/delete_never_existed` checks.",
+              the key was missing, `Deleted` does not prove it existed. Every value is `Ok`: \
+              a missing key is never an error on any backend.",
     },
 ];
 
@@ -852,8 +852,8 @@ pub async fn observe_pinned_divergences(store: &dyn Storage, kb: &KbSlug) -> Obs
                 .delete_object(kb, &path("never.md"), ConditionalHeaders::default())
                 .await
             {
-                Ok(found) => format!("{found:?}"),
-                Err(error) => error_kind(&error),
+                Ok(found) => format!("Ok({found:?})"),
+                Err(error) => format!("Err({})", error_kind(&error)),
             },
         ),
         ("copy_replaced_content_type", {
