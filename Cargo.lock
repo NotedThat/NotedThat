@@ -2695,6 +2695,7 @@ version = "0.13.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "memchr",
  "notedthat-core",
  "notedthat-indexer",
  "serde_json",

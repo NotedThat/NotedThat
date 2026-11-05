@@ -72,6 +72,9 @@ bytes = "1.12"
 futures = "0.3"
 tempfile = "3"
 pulldown-cmark = { version = "0.13", default-features = false }
+# Substring search for the string-replace write path: linear time, where a naive
+# scan costs haystack × needle. Already in the tree through axum and serde_json.
+memchr = "2"
 
 # HTTP layer
 axum = { version = "0.8", default-features = false }
