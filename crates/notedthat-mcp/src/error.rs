@@ -7,7 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum McpToolError {
     /// 400 — invalid request parameters.
-    #[error("invalid_request: {0}")]
+    #[error("{code}: {0}", code = notedthat_core::ErrorCode::InvalidRequest.as_str())]
     InvalidRequest(String),
     /// 401 — missing or invalid bearer token.
     ///
@@ -16,7 +16,7 @@ pub enum McpToolError {
     /// **anonymous** caller asking for something no anonymous caller may have:
     /// a mutating tool (`write`, `edit`, `append`, `replace`, `move`,
     /// `delete`), whose API route admits no anonymous principal at all.
-    #[error("unauthorized")]
+    #[error("{}", notedthat_core::ErrorCode::Unauthorized.as_str())]
     Unauthorized,
     /// 403 — the credential is valid but the knowledge base's access rules do
     /// not grant this operation on this key.
@@ -24,7 +24,7 @@ pub enum McpToolError {
     /// Reachable since access rules began binding the credential holder (D51):
     /// a manifest can narrow what the configured token may do, and MCP holds
     /// that token, so a read-only MCP deployment is now expressible.
-    #[error("forbidden")]
+    #[error("{}", notedthat_core::ErrorCode::Forbidden.as_str())]
     Forbidden,
     /// 404 — knowledge base or object not found.
     ///
@@ -33,16 +33,16 @@ pub enum McpToolError {
     /// `404` as an undeclared slug, so the status cannot enumerate private
     /// knowledge bases, and MCP passes it on unchanged. A signed-in caller's
     /// denial is [`Forbidden`](Self::Forbidden) instead.
-    #[error("not_found: {0}")]
+    #[error("{code}: {0}", code = notedthat_core::ErrorCode::NotFound.as_str())]
     NotFound(String),
     /// 412 — If-Match or If-None-Match precondition failed.
-    #[error("precondition_failed")]
+    #[error("{}", notedthat_core::ErrorCode::PreconditionFailed.as_str())]
     PreconditionFailed,
     /// 413 — request body exceeds server limit.
-    #[error("payload_too_large")]
+    #[error("{}", notedthat_core::ErrorCode::PayloadTooLarge.as_str())]
     PayloadTooLarge,
     /// 416 — Range header not satisfiable (RFC 7233 §4.4 — body is EMPTY).
-    #[error("range_not_satisfiable")]
+    #[error("{}", notedthat_core::ErrorCode::RangeNotSatisfiable.as_str())]
     RangeNotSatisfiable,
     /// The object is larger than this MCP server will hand to a client in one
     /// response (`NOTEDTHAT_MCP_MAX_READ_BYTES`). Not the API's `413`, which is
@@ -65,14 +65,14 @@ pub enum McpToolError {
     },
     /// 503 — backend (S3 / Qdrant) unavailable, or the server is at its limit
     /// of requests in flight.
-    #[error("backend_unavailable")]
+    #[error("{}", notedthat_core::ErrorCode::BackendUnavailable.as_str())]
     BackendUnavailable,
     /// 504 — the API call did not produce a response within the server's
     /// request timeout (D71). Not retried: the same call would take as long.
-    #[error("request_timeout: {0}")]
+    #[error("{code}: {0}", code = notedthat_core::ErrorCode::RequestTimeout.as_str())]
     RequestTimeout(String),
     /// 500 / other — internal server error.
-    #[error("internal_error: {0}")]
+    #[error("{code}: {0}", code = notedthat_core::ErrorCode::InternalError.as_str())]
     InternalError(String),
     /// Transport-level reqwest error.
     #[error("transport error: {0}")]
@@ -84,65 +84,26 @@ pub enum McpToolError {
 
 impl From<McpToolError> for ErrorData {
     fn from(e: McpToolError) -> Self {
-        match e {
-            McpToolError::InvalidRequest(msg) => {
-                ErrorData::new(ErrorCode::INVALID_PARAMS, msg, None)
-            }
-            McpToolError::Unauthorized => {
-                ErrorData::new(ErrorCode::INVALID_PARAMS, "unauthorized", None)
-            }
-            McpToolError::Forbidden => ErrorData::new(ErrorCode::INVALID_PARAMS, "forbidden", None),
-            McpToolError::NotFound(msg) => ErrorData::new(
-                ErrorCode::RESOURCE_NOT_FOUND,
-                format!("not_found: {msg}"),
-                None,
-            ),
-            McpToolError::PreconditionFailed => {
-                ErrorData::new(ErrorCode::INVALID_PARAMS, "precondition_failed", None)
-            }
-            McpToolError::PayloadTooLarge => {
-                ErrorData::new(ErrorCode::INVALID_PARAMS, "payload_too_large", None)
-            }
-            McpToolError::RangeNotSatisfiable => {
-                ErrorData::new(ErrorCode::INVALID_PARAMS, "range_not_satisfiable", None)
-            }
-            McpToolError::ResponseTooLarge { limit, total } => ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                response_too_large_message(limit, total),
-                None,
-            ),
-            McpToolError::NoMatch(old_string) => ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("no match found for old_string: {old_string}"),
-                None,
-            ),
-            McpToolError::AmbiguousMatch { count } => ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("multiple matches ({count}); use replace_all to replace them all"),
-                None,
-            ),
-            McpToolError::BackendUnavailable => {
-                ErrorData::new(ErrorCode::INTERNAL_ERROR, "backend_unavailable", None)
-            }
-            McpToolError::RequestTimeout(msg) => ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("request_timeout: {msg}"),
-                None,
-            ),
-            McpToolError::InternalError(msg) => {
-                ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None)
-            }
-            McpToolError::Transport(e) => ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("transport error: {e}"),
-                None,
-            ),
-            McpToolError::Serialization(e) => ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("serialization error: {e}"),
-                None,
-            ),
-        }
+        let code = rmcp_code(&e);
+        // These two carry a message that already says what is wrong; the code
+        // prefix the Display adds is for logs, not for the client.
+        let message = match e {
+            McpToolError::InvalidRequest(msg) | McpToolError::InternalError(msg) => msg,
+            other => other.to_string(),
+        };
+        ErrorData::new(code, message, None)
+    }
+}
+
+fn rmcp_code(e: &McpToolError) -> ErrorCode {
+    match e {
+        McpToolError::NotFound(_) => ErrorCode::RESOURCE_NOT_FOUND,
+        McpToolError::BackendUnavailable
+        | McpToolError::RequestTimeout(_)
+        | McpToolError::InternalError(_)
+        | McpToolError::Transport(_)
+        | McpToolError::Serialization(_) => ErrorCode::INTERNAL_ERROR,
+        _ => ErrorCode::INVALID_PARAMS,
     }
 }
 
@@ -209,8 +170,10 @@ pub(crate) async fn map_response(
         412 => McpToolError::PreconditionFailed,
         413 => McpToolError::PayloadTooLarge,
         422 => match parsed.as_ref().and_then(|b| b.error.as_deref()) {
-            Some("no_match") => McpToolError::NoMatch(message),
-            Some("ambiguous_match") => {
+            Some(code) if notedthat_core::ErrorCode::NoMatch == code => {
+                McpToolError::NoMatch(message)
+            }
+            Some(code) if notedthat_core::ErrorCode::AmbiguousMatch == code => {
                 let count = parsed.as_ref().and_then(|b| b.match_count).unwrap_or(0);
                 McpToolError::AmbiguousMatch { count }
             }
@@ -227,33 +190,108 @@ mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
-    #[test]
-    fn all_error_variants_convert_to_error_data() {
-        // Ensure From<McpToolError> for ErrorData works without panics
-        let cases: Vec<McpToolError> = vec![
-            McpToolError::InvalidRequest("bad input".into()),
-            McpToolError::Unauthorized,
-            McpToolError::NotFound("kb missing".into()),
-            McpToolError::PreconditionFailed,
-            McpToolError::PayloadTooLarge,
-            McpToolError::RangeNotSatisfiable,
-            McpToolError::NoMatch("hello".into()),
-            McpToolError::AmbiguousMatch { count: 3 },
-            McpToolError::BackendUnavailable,
-            McpToolError::RequestTimeout("slow".into()),
-            McpToolError::InternalError("boom".into()),
-            McpToolError::Forbidden,
-            McpToolError::ResponseTooLarge {
-                limit: 1,
-                total: Some(2),
-            },
-            McpToolError::ResponseTooLarge {
-                limit: 1,
-                total: None,
-            },
+    /// Every variant's exact `(code, message)` on the wire (#412).
+    #[tokio::test]
+    async fn every_error_variant_has_its_code_and_message() {
+        let transport = reqwest::get("not a url").await.unwrap_err();
+        let serialization = serde_json::from_str::<u8>("x").unwrap_err();
+        let too_large = "response_too_large: the object is 2 bytes, over this server's read budget of 1 bytes; \
+             read it in slices with byte_start/byte_end or line_start/line_end on the read tool";
+        let too_large_unknown = "response_too_large: the object is larger than this server's read budget of 1 bytes; \
+             read it in slices with byte_start/byte_end or line_start/line_end on the read tool";
+        let cases: Vec<(McpToolError, ErrorCode, &str)> = vec![
+            (
+                McpToolError::InvalidRequest("bad input".into()),
+                ErrorCode::INVALID_PARAMS,
+                "bad input",
+            ),
+            (
+                McpToolError::Unauthorized,
+                ErrorCode::INVALID_PARAMS,
+                "unauthorized",
+            ),
+            (
+                McpToolError::Forbidden,
+                ErrorCode::INVALID_PARAMS,
+                "forbidden",
+            ),
+            (
+                McpToolError::NotFound("kb missing".into()),
+                ErrorCode::RESOURCE_NOT_FOUND,
+                "not_found: kb missing",
+            ),
+            (
+                McpToolError::PreconditionFailed,
+                ErrorCode::INVALID_PARAMS,
+                "precondition_failed",
+            ),
+            (
+                McpToolError::PayloadTooLarge,
+                ErrorCode::INVALID_PARAMS,
+                "payload_too_large",
+            ),
+            (
+                McpToolError::RangeNotSatisfiable,
+                ErrorCode::INVALID_PARAMS,
+                "range_not_satisfiable",
+            ),
+            (
+                McpToolError::ResponseTooLarge {
+                    limit: 1,
+                    total: Some(2),
+                },
+                ErrorCode::INVALID_PARAMS,
+                too_large,
+            ),
+            (
+                McpToolError::ResponseTooLarge {
+                    limit: 1,
+                    total: None,
+                },
+                ErrorCode::INVALID_PARAMS,
+                too_large_unknown,
+            ),
+            (
+                McpToolError::NoMatch("hello".into()),
+                ErrorCode::INVALID_PARAMS,
+                "no match found for old_string: hello",
+            ),
+            (
+                McpToolError::AmbiguousMatch { count: 3 },
+                ErrorCode::INVALID_PARAMS,
+                "multiple matches (3); use replace_all to replace them all",
+            ),
+            (
+                McpToolError::BackendUnavailable,
+                ErrorCode::INTERNAL_ERROR,
+                "backend_unavailable",
+            ),
+            (
+                McpToolError::RequestTimeout("slow".into()),
+                ErrorCode::INTERNAL_ERROR,
+                "request_timeout: slow",
+            ),
+            (
+                McpToolError::InternalError("boom".into()),
+                ErrorCode::INTERNAL_ERROR,
+                "boom",
+            ),
+            (
+                McpToolError::Transport(transport),
+                ErrorCode::INTERNAL_ERROR,
+                "transport error: builder error",
+            ),
+            (
+                McpToolError::Serialization(serialization),
+                ErrorCode::INTERNAL_ERROR,
+                "serialization error: expected value at line 1 column 1",
+            ),
         ];
-        for e in cases {
-            let _ed: ErrorData = e.into();
+        for (error, code, message) in cases {
+            let shown = format!("{error:?}");
+            let ed: ErrorData = error.into();
+            assert_eq!(ed.code, code, "{shown}");
+            assert_eq!(ed.message, message, "{shown}");
         }
     }
 

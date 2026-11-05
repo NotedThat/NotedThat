@@ -20,8 +20,9 @@ use utoipa::openapi::{Content, Header, Ref, RefOr, Required};
 use utoipa::{IntoParams, Modify, OpenApi, ToResponse, ToSchema};
 
 use super::{events, index_health, index_reconcile, kbs, objects};
-use crate::error::{ErrorBody, ErrorCode, RefusalBody, ReplaceAmbiguousBody};
+use crate::error::{ErrorBody, RefusalBody, ReplaceAmbiguousBody};
 use crate::search_route;
+use notedthat_core::ErrorCode;
 
 /// The document, as served and as committed: pretty-printed, one trailing
 /// newline.

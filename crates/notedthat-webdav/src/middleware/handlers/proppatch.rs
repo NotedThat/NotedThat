@@ -17,8 +17,9 @@ use axum::body::to_bytes;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use notedthat_core::{ConditionalHeaders, ObjectState, StorageError, evaluate_write_preconditions};
+use notedthat_core::{ConditionalHeaders, ObjectState, evaluate_write_preconditions};
 
+use super::super::errors::storage_status;
 use super::super::path_validation::parse_webdav_uri_path;
 use crate::filesystem::DavTarget;
 use crate::if_header::IfHeader;
@@ -79,10 +80,7 @@ pub(crate) async fn handle_proppatch(state: WebDavState, req: Request) -> Respon
                         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
                     }
                 }
-                Err(StorageError::BackendUnavailable { .. }) => {
-                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
-                }
-                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                Err(error) => return storage_status(&error).into_response(),
             }
         }
     };

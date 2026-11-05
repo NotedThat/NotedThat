@@ -1907,6 +1907,8 @@ See `SPECIFICATIONS.md` D40 for the full normative path validation rules.
 | `MOVE` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
 | `COPY` | 201 (new dest), 204 (overwrite) | Single-object only. Same KB only. Honours preconditions on the source (see below). |
 
+`PUT`, `DELETE`, `COPY` and `MOVE` answer `503` when the storage backend is unavailable and `404` when the knowledge base's bucket is gone, like the HTTP API. `PROPFIND` answers a storage failure from the same mapping: `404` for a missing target or bucket, `503` for an unavailable backend, `412` for a storage precondition failure, `500` otherwise. `PROPPATCH` answers a failed target lookup the same way, with `404` for a missing target, except that a lookup that finds no object and then cannot list the folder beneath it (a missing bucket, for one) answers `500`.
+
 ### Preconditions on MOVE, COPY and PROPPATCH
 
 `If-Match` and `If-None-Match` are evaluated against the source (or the PROPPATCH target), and a
