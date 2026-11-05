@@ -323,22 +323,48 @@ async fn move_and_copy_of_a_folder_are_refused_with_no_collection_move() {
     }
 }
 
+/// #281 criterion 3: a folder Destination is refused, with or without its `/`,
+/// and also when a file of the same name hides under it.
 #[tokio::test]
-async fn move_onto_an_existing_folder_is_refused_with_no_collection_move() {
-    let storage = storage_with_folder().await;
-    storage
-        .insert("notes", "src.md", Bytes::from_static(b"s"), "\"s\"")
-        .await;
-    let resp = send(
-        storage.clone(),
-        "MOVE",
-        "/webdav/notes/src.md",
-        Some("/webdav/notes/folder"),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(response_body(resp).await.contains("no-collection-move"));
-    assert!(storage.get_stored("notes", "src.md").await.is_some());
+async fn move_and_copy_onto_an_existing_folder_are_refused_with_no_collection_move() {
+    for shadowed in [false, true] {
+        for method in ["MOVE", "COPY"] {
+            for destination in ["/webdav/notes/folder", "/webdav/notes/folder/"] {
+                let storage = storage_with_folder().await;
+                storage
+                    .insert("notes", "src.md", Bytes::from_static(b"s"), "\"s\"")
+                    .await;
+                if shadowed {
+                    storage
+                        .insert("notes", "folder", Bytes::from_static(b"f"), "\"f\"")
+                        .await;
+                }
+                let case = format!("{method} -> {destination}, shadowed: {shadowed}");
+                let resp = send(
+                    storage.clone(),
+                    method,
+                    "/webdav/notes/src.md",
+                    Some(destination),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{case}");
+                assert!(
+                    response_body(resp).await.contains("no-collection-move"),
+                    "{case}"
+                );
+                assert!(
+                    storage.get_stored("notes", "src.md").await.is_some(),
+                    "{case}"
+                );
+                assert_eq!(
+                    storage.get_stored("notes", "folder").await.is_some(),
+                    shadowed,
+                    "{case}"
+                );
+                assert_eq!(storage.count(StorageOp::CopyObject), 0, "{case}");
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -357,6 +383,23 @@ async fn move_to_a_collection_destination_that_does_not_exist_is_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(storage.get_stored("notes", "src.md").await.is_some());
     assert!(storage.get_stored("notes", "nowhere").await.is_none());
+}
+
+#[tokio::test]
+async fn move_of_a_missing_source_lists_its_prefix_once() {
+    let storage = empty_storage();
+    let resp = send(
+        storage.clone(),
+        "MOVE",
+        "/webdav/notes/missing.md",
+        Some("/webdav/notes/dest.md"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        storage.ops(),
+        vec![StorageOp::ListObjects, StorageOp::HeadObject]
+    );
 }
 
 #[tokio::test]
