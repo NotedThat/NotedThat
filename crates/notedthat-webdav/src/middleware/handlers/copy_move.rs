@@ -145,16 +145,22 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     let Ok(if_header) = IfHeader::from_headers(req.headers()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let src_meta =
-        match name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, src_as_collection).await {
-            Ok(Named::Object(meta)) => meta,
-            // A folder is a key prefix; there is no atomic prefix rename (#281).
-            Ok(Named::Folder) => return TargetError::Collection.into_response(),
-            // Without its preconditions this request would be a 404, so they are ignored
-            // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
-            Ok(Named::Nothing) => return StatusCode::NOT_FOUND.into_response(),
-            Err(error) => return storage_status(&error).into_response(),
-        };
+    // The prefix is asked first: a folder hides an object of the same name, as listings do.
+    let src_named = match name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, true).await {
+        Ok(Named::Nothing) if !src_as_collection => {
+            name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, false).await
+        }
+        named => named,
+    };
+    let src_meta = match src_named {
+        Ok(Named::Object(meta)) => meta,
+        // A folder is a key prefix; there is no atomic prefix rename (#281).
+        Ok(Named::Folder) => return TargetError::Collection.into_response(),
+        // Without its preconditions this request would be a 404, so they are ignored
+        // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
+        Ok(Named::Nothing) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return storage_status(&error).into_response(),
+    };
     // Only the prefix is asked about: a file at the destination is the overwrite
     // `commit_copy` judges. A destination spelled as a collection must be one.
     match name_in_storage(state.storage.as_ref(), &dst_kb, &dst_obj, true).await {
