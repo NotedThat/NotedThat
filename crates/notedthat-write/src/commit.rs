@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectEvent, ObjectPath, PutOutcome, StagedBody,
-    Storage, StorageError,
+    Storage, StorageError, unix_seconds_i64,
 };
 use notedthat_indexer::{IndexEvent, IndexHealth, IndexQueueSender};
 use tokio::sync::mpsc::error::TrySendError;
@@ -261,7 +261,7 @@ pub(crate) async fn after_write(
                 outcome.etag.clone().unwrap_or_default(),
                 size,
                 mime.to_string(),
-                current_unix_seconds(),
+                unix_seconds_i64(std::time::SystemTime::now()),
                 sinks.source,
             );
             publish(events, event, WriteEffect::Stored).await
@@ -502,12 +502,6 @@ async fn publish(
             Err(WriteError::EventPublishFailed { after })
         }
     }
-}
-
-pub(crate) fn current_unix_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
