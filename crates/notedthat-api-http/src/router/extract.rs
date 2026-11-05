@@ -80,7 +80,8 @@ impl<V: Requires + Send> FromRequestParts<AppState> for ObjectRequest<V> {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, ApiErrorResponse> {
-        let Path((kb_slug, raw_path)) = path::<(String, String)>(parts, state).await?;
+        let ApiPath((kb_slug, raw_path)) =
+            ApiPath::<(String, String)>::from_request_parts(parts, state).await?;
         Self::resolve(
             state,
             &parts.headers,
@@ -111,7 +112,7 @@ impl FromRequestParts<AppState> for KbRequest {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, ApiErrorResponse> {
-        let Path(kb_slug) = path::<String>(parts, state).await?;
+        let ApiPath(kb_slug) = ApiPath::<String>::from_request_parts(parts, state).await?;
         let request_id = extract_request_id(&parts.extensions);
         let access = KbAccess::resolve(state, &kb_slug, &parts.extensions)
             .map_err(wrap(request_id.clone()))?;
@@ -126,19 +127,27 @@ fn wrap(request_id: String) -> impl Fn(ApiError) -> ApiErrorResponse {
     }
 }
 
-/// Axum's path rejection in the API's envelope, instead of its plain text.
-async fn path<T: serde::de::DeserializeOwned + Send>(
-    parts: &mut Parts,
-    state: &AppState,
-) -> Result<Path<T>, ApiErrorResponse> {
-    Path::<T>::from_request_parts(parts, state)
-        .await
-        .map_err(|rejection| ApiErrorResponse {
-            error: ApiError::Core(CoreError::InvalidInput {
-                message: rejection.body_text(),
-            }),
-            request_id: extract_request_id(&parts.extensions),
-        })
+/// Axum's `Path`, with its rejection in the API's envelope instead of plain text.
+pub(crate) struct ApiPath<T>(pub T);
+
+impl<T: serde::de::DeserializeOwned + Send> FromRequestParts<AppState> for ApiPath<T> {
+    type Rejection = ApiErrorResponse;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, ApiErrorResponse> {
+        let Path(value) =
+            Path::<T>::from_request_parts(parts, state)
+                .await
+                .map_err(|rejection| ApiErrorResponse {
+                    error: ApiError::Core(CoreError::InvalidInput {
+                        message: rejection.body_text(),
+                    }),
+                    request_id: extract_request_id(&parts.extensions),
+                })?;
+        Ok(Self(value))
+    }
 }
 
 #[cfg(test)]

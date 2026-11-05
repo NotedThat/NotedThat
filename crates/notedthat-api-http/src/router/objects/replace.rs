@@ -1,4 +1,4 @@
-use super::super::extract::{ObjectRequest, Write};
+use super::super::extract::{ApiPath, ObjectRequest, Write};
 use super::super::helpers::{
     object_location, read_bounded_body, reject_declared_oversize, replace_conditionals,
 };
@@ -6,7 +6,7 @@ use crate::error::{ApiError, ApiErrorResponse};
 use crate::middleware::extract_request_id;
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{ConditionalHeaders, Error as CoreError};
@@ -82,7 +82,7 @@ struct ReplaceResponse {
 )]
 pub(in crate::router) async fn post_object(
     State(state): State<AppState>,
-    Path((kb_slug, object_path)): Path<(String, String)>,
+    ApiPath((kb_slug, object_path)): ApiPath<(String, String)>,
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = extract_request_id(req.extensions());

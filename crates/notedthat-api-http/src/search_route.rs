@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use crate::{
     error::{ApiError, ApiErrorResponse},
+    router::ApiPath,
     router::openapi::{
         BackendUnavailable, BadRequest, Forbidden, InternalError, KbPath, NotFound,
         PayloadTooLarge, Unauthorized,
@@ -105,9 +106,9 @@ impl Drop for SearchCall {
         (status = 503, response = BackendUnavailable),
     ),
 )]
-pub async fn search_kb(
+pub(crate) async fn search_kb(
     State(state): State<AppState>,
-    Path(kb_slug_raw): Path<String>,
+    ApiPath(kb_slug_raw): ApiPath<String>,
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
     let request_id = crate::middleware::extract_request_id(req.extensions());

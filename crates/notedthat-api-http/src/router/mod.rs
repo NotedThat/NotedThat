@@ -2,6 +2,7 @@
 
 // `lookup_kb` is the single definition of "is this knowledge base declared";
 // `crate::authz::KbAccess::resolve` is its only caller.
+pub(crate) use extract::ApiPath;
 pub(crate) use helpers::{kb_not_found, lookup_kb};
 
 mod browse;
