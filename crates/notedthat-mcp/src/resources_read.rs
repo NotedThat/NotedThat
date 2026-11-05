@@ -133,16 +133,23 @@ fn invalid_params(message: impl Into<String>) -> McpError {
 /// so the charset the API added to a textual type would be wrong for them.
 /// Any other declared charset may be right and stays.
 fn without_utf8_charset(content_type: &str) -> String {
-    content_type
-        .split(';')
-        .filter(|part| {
-            !part.split_once('=').is_some_and(|(name, value)| {
-                name.trim().eq_ignore_ascii_case("charset")
-                    && ["utf-8", "utf8"]
-                        .iter()
-                        .any(|utf8| value.trim().trim_matches('"').eq_ignore_ascii_case(utf8))
-            })
+    // shortcut: splits on every `;`, so a quoted parameter value holding `;` is cut; parse per RFC 9110 if stored types ever carry one.
+    let mut parts = content_type.split(';');
+    let essence = parts.next().unwrap_or_default();
+    // A stored type without `type/subtype` (such as a bare `charset=utf-8`) names nothing.
+    if !essence.contains('/') {
+        return OCTET_STREAM.to_owned();
+    }
+    let params = parts.filter(|part| {
+        !part.split_once('=').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("charset")
+                && ["utf-8", "utf8"]
+                    .iter()
+                    .any(|utf8| value.trim().trim_matches('"').eq_ignore_ascii_case(utf8))
         })
+    });
+    std::iter::once(essence)
+        .chain(params)
         .collect::<Vec<_>>()
         .join(";")
 }
@@ -383,6 +390,12 @@ mod tests {
             without_utf8_charset("text/plain; charset=utf-16"),
             "text/plain; charset=utf-16"
         );
+    }
+
+    #[test]
+    fn a_stored_type_without_a_media_type_is_octet_stream() {
+        assert_eq!(without_utf8_charset("charset=utf-8"), OCTET_STREAM);
+        assert_eq!(without_utf8_charset(""), OCTET_STREAM);
     }
 
     #[tokio::test]
