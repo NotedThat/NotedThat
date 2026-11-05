@@ -68,7 +68,9 @@ pub async fn read_resource(
         },
         Err(err) => ResourceContents::BlobResourceContents {
             uri: uri.to_string(),
-            mime_type: Some(content_type.unwrap_or_else(|| OCTET_STREAM.to_owned())),
+            mime_type: Some(
+                content_type.map_or_else(|| OCTET_STREAM.to_owned(), |ct| without_charset(&ct)),
+            ),
             blob: BASE64_STANDARD.encode(err.into_bytes()),
             meta: None,
         },
@@ -124,6 +126,20 @@ pub(crate) fn parse_resource_uri(uri: &str) -> Result<ParsedResourceUri, McpErro
 
 fn invalid_params(message: impl Into<String>) -> McpError {
     McpError::new(ErrorCode::INVALID_PARAMS, message.into(), None)
+}
+
+/// Drop a `charset` parameter: these bytes just failed UTF-8 decoding, so the
+/// charset the API added to a textual type would be wrong for them.
+fn without_charset(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .filter(|part| {
+            !part
+                .split_once('=')
+                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("charset"))
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn detect_mime_type(object_key: &str) -> &'static str {
@@ -318,6 +334,31 @@ mod tests {
         match only_content(result) {
             ResourceContents::BlobResourceContents { mime_type, .. } => {
                 assert_eq!(mime_type.as_deref(), Some("image/png"));
+            }
+            other => panic!("expected blob contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binary_resource_drops_the_utf8_charset() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/data.csv"))
+            .respond_with(
+                // Latin-1 `café`: not UTF-8, whatever the stored type claims.
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"caf\xe9".to_vec(), "text/csv; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/data.csv")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::BlobResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("text/csv"));
             }
             other => panic!("expected blob contents, got {other:?}"),
         }
