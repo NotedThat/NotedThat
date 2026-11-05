@@ -32,8 +32,9 @@ pub(super) async fn handle_delete(state: WebDavState, req: Request) -> Response 
     };
     // Folders are virtual (a key prefix), so a folder delete would be a bulk
     // delete: refused (#281). A missing key spelled as an object still goes
-    // through `commit_delete`: idempotent, and the documented retry path.
-    match name_in_storage(state.storage.as_ref(), &kb, &path, as_collection).await {
+    // through `commit_delete`: idempotent, and the documented retry path. Only the
+    // prefix is asked about: a folder hides an object of the same name, as listings do.
+    match name_in_storage(state.storage.as_ref(), &kb, &path, true).await {
         Ok(Named::Folder) => {
             return dav_xml::error(StatusCode::FORBIDDEN, "no-collection-delete");
         }

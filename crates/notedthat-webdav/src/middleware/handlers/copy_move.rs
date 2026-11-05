@@ -259,14 +259,15 @@ async fn check_source_preconditions(
     let Ok(if_header) = IfHeader::from_headers(headers) else {
         return Err(StatusCode::BAD_REQUEST.into_response());
     };
-    let src_meta = match name_in_storage(
-        state.storage.as_ref(),
-        &targets.kb,
-        &targets.source,
-        targets.source_as_collection,
-    )
-    .await
-    {
+    // The prefix is asked first: a folder hides an object of the same name, as listings do.
+    let storage = state.storage.as_ref();
+    let src_named = match name_in_storage(storage, &targets.kb, &targets.source, true).await {
+        Ok(Named::Nothing) if !targets.source_as_collection => {
+            name_in_storage(storage, &targets.kb, &targets.source, false).await
+        }
+        named => named,
+    };
+    let src_meta = match src_named {
         Ok(Named::Object(meta)) => meta,
         // A folder is a key prefix; there is no atomic prefix rename (#281).
         Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
@@ -277,14 +278,7 @@ async fn check_source_preconditions(
     };
     // Only the prefix is asked about: a file at the destination is the overwrite
     // `commit_copy` judges. A destination spelled as a collection must be one.
-    match name_in_storage(
-        state.storage.as_ref(),
-        &targets.kb,
-        &targets.destination,
-        true,
-    )
-    .await
-    {
+    match name_in_storage(storage, &targets.kb, &targets.destination, true).await {
         Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
         Ok(Named::Nothing) if targets.destination_as_collection => {
             return Err(StatusCode::BAD_REQUEST.into_response());
