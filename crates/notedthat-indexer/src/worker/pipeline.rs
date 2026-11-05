@@ -36,8 +36,9 @@ pub(super) enum PipelineOutcome {
     },
     /// The index already held this `ETag` (D50); nothing was touched.
     Skipped,
-    /// Nothing to index — missing on re-read, non-indexable or empty — and any
-    /// previous points are gone. Also what an explicit `Tombstone` maps to.
+    /// Nothing to index — missing on re-read, non-indexable, empty or chunking to
+    /// nothing — and any previous points are gone. Also what an explicit
+    /// `Tombstone` maps to.
     Tombstoned,
 }
 

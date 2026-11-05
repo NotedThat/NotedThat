@@ -2279,8 +2279,9 @@ One knowledge base's search-index health.
 `state`, `pending`, `queue`, `worker`, `last_indexed_at`, `last_failure`, `last_reconcile`. Check
 it when search results look incomplete or out of date; a `failed` or `stale` knowledge base may
 not reflect recent writes. For one specific write, the `object.indexed` event on the
-[events stream](#get-apiv1knowledgebaseskb_slugevents) is the precise completion signal. Refused
-like the route: `forbidden` for a credential holding no grant,
+[events stream](#get-apiv1knowledgebaseskb_slugevents) is the precise completion signal; none
+comes for a body with nothing to search in it (empty, only whitespace, or only frontmatter).
+Refused like the route: `forbidden` for a credential holding no grant,
 not found for a knowledge base the caller cannot see.
 
 #### `search`
@@ -2295,7 +2296,8 @@ Hybrid semantic + keyword search across one or more knowledge bases in a single 
 - Indexing is asynchronous. An object written moments ago is in the results once the knowledge
   base's [events stream](#get-apiv1knowledgebaseskb_slugevents) has reported `object.indexed`
   for its `etag` — and never if it reported `object.index_failed`. Wait for that rather than
-  retrying the search; `index_status` reports the knowledge base as a whole.
+  retrying the search; `index_status` reports the knowledge base as a whole. No verdict comes
+  for a body with nothing to search in it (empty, only whitespace, or only frontmatter).
 
 The tool fans out to one `POST /api/v1/knowledgebases/{kb_slug}/search` per slug, at most 8 in flight at once, as the calling identity; the HTTP route itself stays single-slug.
 
