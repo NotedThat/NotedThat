@@ -5,7 +5,7 @@ use super::API_V1_PREFIX;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::Request;
-use axum::http::HeaderValue;
+use axum::http::{HeaderMap, HeaderValue};
 use bytes::Bytes;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, Error as CoreError, EventSource, KbSlug, ObjectPath,
@@ -20,8 +20,8 @@ use std::fmt::Write;
 pub const SOURCE_HEADER: &str = "x-notedthat-source";
 
 /// Which surface a write is attributed to in the events it publishes.
-pub(crate) fn event_source(req: &Request) -> EventSource {
-    match req.headers().get(SOURCE_HEADER).map(HeaderValue::as_bytes) {
+pub(crate) fn event_source(headers: &HeaderMap) -> EventSource {
+    match headers.get(SOURCE_HEADER).map(HeaderValue::as_bytes) {
         Some(b"mcp") => EventSource::Mcp,
         _ => EventSource::Http,
     }
@@ -57,6 +57,39 @@ pub(super) fn parse_path(raw: &str) -> Result<ObjectPath, ApiError> {
 
 pub(super) fn body_limit_usize(max_body_size: u64) -> usize {
     usize::try_from(max_body_size.saturating_add(1)).unwrap_or(usize::MAX)
+}
+
+/// Read a request body of at most `limit` bytes; anything larger is `413`.
+/// Consumes the request, so read any other header first.
+pub(crate) async fn read_bounded_body(req: Request, limit: u64) -> Result<Bytes, ApiError> {
+    let too_large = |size| ApiError::Core(CoreError::PayloadTooLarge { size, limit });
+    reject_declared_oversize(req.headers(), limit)?;
+    let bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(limit))
+        .await
+        .map_err(|_| too_large(limit.saturating_add(1)))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
+/// `413` from a declared `Content-Length` above `limit`, before the body is read.
+/// PATCH and replace call it before their precondition headers, so an
+/// oversized request answers `413` whatever its `If-Match`.
+pub(crate) fn reject_declared_oversize(
+    headers: &axum::http::HeaderMap,
+    limit: u64,
+) -> Result<(), ApiError> {
+    let content_length = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    match content_length {
+        Some(size) if size > limit => {
+            Err(ApiError::Core(CoreError::PayloadTooLarge { size, limit }))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Absolute path of an object under the API mount, as returned in `Location`

@@ -6,6 +6,7 @@ pub(crate) use helpers::{kb_not_found, lookup_kb};
 
 mod browse;
 mod events;
+mod extract;
 mod health;
 pub(crate) mod helpers;
 mod index_health;

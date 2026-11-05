@@ -6,7 +6,6 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use bytes::Bytes;
 use notedthat_core::metrics::{label as metric_label, name as metric, outcome as metric_outcome};
 use notedthat_core::{
     Error as CoreError, KbSlug, Verb,
@@ -111,7 +110,7 @@ pub async fn search_kb(
     Path(kb_slug_raw): Path<String>,
     req: Request,
 ) -> Result<Response, ApiErrorResponse> {
-    let request_id = crate::middleware::extract_request_id(&req);
+    let request_id = crate::middleware::extract_request_id(req.extensions());
 
     let err = |error: ApiError| ApiErrorResponse {
         error,
@@ -121,25 +120,23 @@ pub async fn search_kb(
     // Validate slug format before declaration lookup so malformed slugs return
     // 400 `invalid_request` instead of leaking as a 404.
     let kb_slug = KbSlug::try_new(kb_slug_raw).map_err(|e| err(ApiError::Core(e)))?;
-    let access = crate::authz::KbAccess::resolve(&state, kb_slug.as_str(), &req).map_err(err)?;
+    let access =
+        crate::authz::KbAccess::resolve(&state, kb_slug.as_str(), req.extensions()).map_err(err)?;
     // Refuse before the request body, the embedding call and the vector query:
     // an unauthorized search must not cost a round-trip to the embedder.
     access.require_any(Verb::Search).map_err(err)?;
-    let (parts, body) = req.into_parts();
-    let body_bytes: Bytes = axum::body::to_bytes(body, SEARCH_BODY_MAX_BYTES)
-        .await
-        .map_err(|_| {
-            err(ApiError::Core(CoreError::PayloadTooLarge {
-                size: SEARCH_BODY_MAX_BYTES as u64 + 1,
-                limit: SEARCH_BODY_MAX_BYTES as u64,
-            }))
-        })?;
-
-    let content_type = parts
-        .headers
+    let content_type = req
+        .headers()
         .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
-    if content_type.is_none_or(|value| !value.starts_with("application/json")) {
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body_bytes = crate::router::helpers::read_bounded_body(req, SEARCH_BODY_MAX_BYTES as u64)
+        .await
+        .map_err(err)?;
+    if content_type
+        .as_deref()
+        .is_none_or(|value| !value.starts_with("application/json"))
+    {
         return Err(err(ApiError::Core(CoreError::InvalidInput {
             message: "Content-Type must be application/json".into(),
         })));
