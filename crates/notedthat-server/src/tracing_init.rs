@@ -11,7 +11,7 @@ const DEFAULT_FILTER: &str = "info,notedthat=debug";
 ///
 /// Must be called exactly once, before any `tracing::info!` / `warn!` / etc.
 /// calls. The `RUST_LOG` env var controls verbosity; falls back to
-/// `info,notedthat=debug` if unset.
+/// `info,notedthat=debug` if unset, empty or whitespace-only.
 ///
 /// # Errors
 ///
@@ -31,7 +31,8 @@ pub fn init_tracing(format: LogFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the filter from the value of `RUST_LOG` (`None` when unset).
+/// Build the filter from the value of `RUST_LOG` (`None` when unset). An empty
+/// or whitespace-only value counts as unset rather than switching logging off.
 ///
 /// A set-but-unparsable value is refused by name rather than folded into the
 /// default: an operator who typos `RUST_LOG` while chasing an incident would
@@ -43,6 +44,9 @@ fn env_filter(rust_log: Option<&OsStr>) -> anyhow::Result<EnvFilter> {
     let spec = spec
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("RUST_LOG must be valid UTF-8"))?;
+    if spec.trim().is_empty() {
+        return Ok(EnvFilter::new(DEFAULT_FILTER));
+    }
     // tracing-subscriber 0.3.23 slices each directive untrimmed, so `a, b` or a
     // trailing newline would fail to parse; trim them the way an operator means.
     let trimmed = spec.split(',').map(str::trim).collect::<Vec<_>>().join(",");
@@ -88,10 +92,15 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_only_rust_log_is_treated_as_empty() {
+    fn empty_rust_log_uses_the_default_filter() {
+        let filter = env_filter(Some(OsStr::new(""))).expect("empty filter");
+        assert_eq!(filter.to_string(), "notedthat=debug,info");
+    }
+
+    #[test]
+    fn whitespace_only_rust_log_uses_the_default_filter() {
         let filter = env_filter(Some(OsStr::new(" \n"))).expect("whitespace-only filter");
-        let empty = env_filter(Some(OsStr::new(""))).expect("empty filter");
-        assert_eq!(filter.to_string(), empty.to_string());
+        assert_eq!(filter.to_string(), "notedthat=debug,info");
     }
 
     #[cfg(unix)]
