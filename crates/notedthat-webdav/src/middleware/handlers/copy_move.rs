@@ -147,9 +147,15 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     };
     // The prefix is asked first: a folder hides an object of the same name, as listings do.
     let src_named = match name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, true).await {
-        Ok(Named::Nothing) if !src_as_collection => {
-            name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, false).await
-        }
+        Ok(Named::Nothing) if !src_as_collection => match state
+            .storage
+            .head_object(&src_kb, &src_obj, ConditionalHeaders::default())
+            .await
+        {
+            Ok(meta) => Ok(Named::Object(meta)),
+            Err(err) if err.is_not_found() => Ok(Named::Nothing),
+            Err(err) => Err(err),
+        },
         named => named,
     };
     let src_meta = match src_named {
