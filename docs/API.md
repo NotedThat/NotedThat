@@ -2478,7 +2478,7 @@ The object key is percent-encoded exactly once. The `/` separator within a key i
 - **Text resources** (valid UTF-8): `TextResourceContents`.
 - **Binary resources** (non-UTF-8 bytes): `BlobResourceContents` with base64-encoded data.
 
-`mimeType` is the object's `Content-Type` as the API returns it on `GET` (for example `text/markdown; charset=utf-8`). Only when that header is missing, not valid UTF-8, or the generic `application/octet-stream` (what the API stores when the writer declared no type) does a binary resource fall back to `application/octet-stream`, and a text resource to detection by extension. A binary resource never carries a `charset` parameter, because its bytes are not valid UTF-8:
+`mimeType` is the object's `Content-Type` as the API returns it on `GET` (for example `text/markdown; charset=utf-8`). Only when that header is missing, not valid UTF-8, or the generic `application/octet-stream` (what the API stores when the writer declared no type) does a binary resource fall back to `application/octet-stream`, and a text resource to detection by extension. A binary resource never carries `charset=utf-8`, because its bytes are not valid UTF-8; any other declared charset is kept:
 
 | Extension | MIME type |
 |-----------|-----------|

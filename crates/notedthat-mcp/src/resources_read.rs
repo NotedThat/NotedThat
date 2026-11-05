@@ -69,7 +69,8 @@ pub async fn read_resource(
         Err(err) => ResourceContents::BlobResourceContents {
             uri: uri.to_string(),
             mime_type: Some(
-                content_type.map_or_else(|| OCTET_STREAM.to_owned(), |ct| without_charset(&ct)),
+                content_type
+                    .map_or_else(|| OCTET_STREAM.to_owned(), |ct| without_utf8_charset(&ct)),
             ),
             blob: BASE64_STANDARD.encode(err.into_bytes()),
             meta: None,
@@ -128,15 +129,19 @@ fn invalid_params(message: impl Into<String>) -> McpError {
     McpError::new(ErrorCode::INVALID_PARAMS, message.into(), None)
 }
 
-/// Drop a `charset` parameter: these bytes just failed UTF-8 decoding, so the
-/// charset the API added to a textual type would be wrong for them.
-fn without_charset(content_type: &str) -> String {
+/// Drop a `charset=utf-8` parameter: these bytes just failed UTF-8 decoding,
+/// so the charset the API added to a textual type would be wrong for them.
+/// Any other declared charset may be right and stays.
+fn without_utf8_charset(content_type: &str) -> String {
     content_type
         .split(';')
         .filter(|part| {
-            !part
-                .split_once('=')
-                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("charset"))
+            !part.split_once('=').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("charset")
+                    && ["utf-8", "utf8"]
+                        .iter()
+                        .any(|utf8| value.trim().trim_matches('"').eq_ignore_ascii_case(utf8))
+            })
         })
         .collect::<Vec<_>>()
         .join(";")
@@ -362,6 +367,22 @@ mod tests {
             }
             other => panic!("expected blob contents, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn only_a_utf8_charset_is_dropped() {
+        assert_eq!(
+            without_utf8_charset("text/csv; charset=\"UTF-8\""),
+            "text/csv"
+        );
+        assert_eq!(
+            without_utf8_charset("text/plain; charset=utf8"),
+            "text/plain"
+        );
+        assert_eq!(
+            without_utf8_charset("text/plain; charset=utf-16"),
+            "text/plain; charset=utf-16"
+        );
     }
 
     #[tokio::test]
