@@ -141,4 +141,18 @@ mod tests {
         let input = "abcXYZ123-._~";
         assert_eq!(encode_object_path(input), input);
     }
+
+    #[test]
+    fn every_ascii_byte_outside_unreserved_is_encoded() {
+        for b in 0u8..=0x7F {
+            let s = char::from(b).to_string();
+            let unreserved = b.is_ascii_alphanumeric() || b"-._~".contains(&b);
+            let expected = if unreserved {
+                s.clone()
+            } else {
+                format!("%{b:02X}")
+            };
+            assert_eq!(encode_object_path(&s), expected, "byte 0x{b:02X}");
+        }
+    }
 }
