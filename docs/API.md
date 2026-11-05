@@ -1594,9 +1594,11 @@ server's own write is one more attempt, so a failure there is usually reported t
 
 Nothing is published where the index gained nothing: an object the indexer does not index
 (anything but `text/markdown` and `text/plain` — an mp3, an image — or an empty body) gets its
-`object.written` and no verdict; a deletion gets `object.deleted` and nothing more; on the `fs`
-backend a detected change whose `ETag` the index already holds is skipped silently. A subscriber
-waiting on `object.indexed` should therefore look at the `mime` of the `object.written` first.
+`object.written` and no verdict, and so does a body with nothing to search in it (only
+whitespace, or an OKF concept that is only frontmatter); a deletion gets `object.deleted` and
+nothing more; on the `fs` backend a detected change whose `ETag` the index already holds is
+skipped silently. A subscriber waiting on `object.indexed` should therefore look at the `mime`
+of the `object.written` first, and expect no verdict for a body it knows to be blank.
 
 **Ids and replay.** Ids are strictly increasing within a deployment and never reused. With the
 `memory` backend they are a process-local counter; with `nats` they are the JetStream stream
