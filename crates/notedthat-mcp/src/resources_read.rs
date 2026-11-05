@@ -38,22 +38,40 @@ pub async fn read_resource(
         .await
         .map_err(McpToolError::Transport)?;
     let resp = map_response(resp).await.map_err(McpError::from)?;
+    // The API returns the object's stored type; the extension table is only
+    // a guess for a response that carries no usable header. The API stores
+    // `application/octet-stream` when the writer declared no type, so that
+    // value says nothing and falls back too.
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|ct| {
+            !ct.split(';')
+                .next()
+                .is_some_and(|essence| essence.trim().eq_ignore_ascii_case(OCTET_STREAM))
+        })
+        .map(str::to_owned);
     let bytes = client
         .read_body_bounded(resp)
         .await
         .map_err(McpError::from)?;
-    let mime_type = detect_mime_type(&parsed.object_key);
 
     let contents = match String::from_utf8(bytes.to_vec()) {
         Ok(text) => ResourceContents::TextResourceContents {
             uri: uri.to_string(),
-            mime_type: Some(mime_type.to_string()),
+            mime_type: Some(
+                content_type.unwrap_or_else(|| detect_mime_type(&parsed.object_key).to_owned()),
+            ),
             text,
             meta: None,
         },
         Err(err) => ResourceContents::BlobResourceContents {
             uri: uri.to_string(),
-            mime_type: Some(OCTET_STREAM.to_string()),
+            mime_type: Some(
+                content_type
+                    .map_or_else(|| OCTET_STREAM.to_owned(), |ct| without_utf8_charset(&ct)),
+            ),
             blob: BASE64_STANDARD.encode(err.into_bytes()),
             meta: None,
         },
@@ -111,6 +129,31 @@ fn invalid_params(message: impl Into<String>) -> McpError {
     McpError::new(ErrorCode::INVALID_PARAMS, message.into(), None)
 }
 
+/// Drop a `charset=utf-8` parameter: these bytes just failed UTF-8 decoding,
+/// so the charset the API added to a textual type would be wrong for them.
+/// Any other declared charset may be right and stays.
+fn without_utf8_charset(content_type: &str) -> String {
+    // shortcut: splits on every `;`, so a quoted parameter value holding `;` is cut; parse per RFC 9110 if stored types ever carry one.
+    let mut parts = content_type.split(';');
+    let essence = parts.next().unwrap_or_default();
+    // A stored type without `type/subtype` (such as a bare `charset=utf-8`) names nothing.
+    if !essence.contains('/') {
+        return OCTET_STREAM.to_owned();
+    }
+    let params = parts.filter(|part| {
+        !part.split_once('=').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("charset")
+                && ["utf-8", "utf8"]
+                    .iter()
+                    .any(|utf8| value.trim().trim_matches('"').eq_ignore_ascii_case(utf8))
+        })
+    });
+    std::iter::once(essence)
+        .chain(params)
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn detect_mime_type(object_key: &str) -> &'static str {
     let ext = Path::new(object_key)
         .extension()
@@ -148,7 +191,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/knowledgebases/kb/note.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("# Hello"))
+            // `set_body_bytes` sends no Content-Type, so this covers the
+            // extension fallback.
+            .respond_with(ResponseTemplate::new(200).set_body_bytes("# Hello"))
             .mount(&server)
             .await;
 
@@ -228,6 +273,129 @@ mod tests {
             }
             other => panic!("expected blob contents, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn the_api_content_type_is_reported() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/config.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(r#"{"a":1}"#, "application/json; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/config.json")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } => {
+                assert_eq!(
+                    mime_type.as_deref(),
+                    Some("application/json; charset=utf-8")
+                );
+                assert_eq!(text, r#"{"a":1}"#);
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_octet_stream_falls_back_to_the_extension() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/todo.txt"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("buy milk", "application/octet-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/todo.txt")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::TextResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("text/plain"));
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binary_resource_reports_the_declared_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/image.png"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(vec![0x89, b'P', b'N', b'G'], "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/image.png")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::BlobResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("image/png"));
+            }
+            other => panic!("expected blob contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binary_resource_drops_the_utf8_charset() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/knowledgebases/kb/data.csv"))
+            .respond_with(
+                // Latin-1 `café`: not UTF-8, whatever the stored type claims.
+                ResponseTemplate::new(200)
+                    .set_body_raw(b"caf\xe9".to_vec(), "text/csv; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let result = read_resource(&client(&server.uri()), "notedthat://kb/data.csv")
+            .await
+            .unwrap();
+
+        match only_content(result) {
+            ResourceContents::BlobResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("text/csv"));
+            }
+            other => panic!("expected blob contents, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_utf8_charset_is_dropped() {
+        assert_eq!(
+            without_utf8_charset("text/csv; charset=\"UTF-8\""),
+            "text/csv"
+        );
+        assert_eq!(
+            without_utf8_charset("text/plain; charset=utf8"),
+            "text/plain"
+        );
+        assert_eq!(
+            without_utf8_charset("text/plain; charset=utf-16"),
+            "text/plain; charset=utf-16"
+        );
+    }
+
+    #[test]
+    fn a_stored_type_without_a_media_type_is_octet_stream() {
+        assert_eq!(without_utf8_charset("charset=utf-8"), OCTET_STREAM);
+        assert_eq!(without_utf8_charset(""), OCTET_STREAM);
     }
 
     #[tokio::test]
