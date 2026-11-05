@@ -207,7 +207,7 @@ jobs:
   attest:
     name: Generate binary attestations
     needs: [build-local-artifacts, build-global-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -231,7 +231,7 @@ jobs:
   sign:
     name: Sign binaries
     needs: [build-local-artifacts, build-global-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -299,7 +299,7 @@ jobs:
   release:
     name: Attach artifacts to GitHub Release
     needs: [plan, build-local-artifacts, build-global-artifacts, attest, sign, docker]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

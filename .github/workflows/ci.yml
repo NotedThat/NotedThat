@@ -72,7 +72,7 @@ jobs:
       - run: cargo test --workspace --locked
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -102,7 +102,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -127,7 +127,7 @@ jobs:
   # in that crate's Cargo.toml under `[package.metadata.cargo-machete]
   # ignored`, with a reason, never with a flag here.
   machete:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -137,6 +137,7 @@ jobs:
       # Renovate bumps the action SHA but CANNOT see `tool:`, so the
       # cargo-machete version moves by hand, in two places: here and
       # DEVELOPMENT.md.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-machete@0.9.2
@@ -253,7 +254,7 @@ jobs:
   # of which is longer, so it adds nothing to the pull-request feedback time
   # #87 measured at about six minutes.
   advisories:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     # A tripwire on a hung advisory-database fetch, not a budget on the check,
     # which takes about a second. Note this CANCELS rather than fails, which is
     # harmless only because nothing `needs:` this job — and is the first thing
@@ -275,6 +276,7 @@ jobs:
       #
       # Renovate bumps the action SHA but CANNOT see `tool:`, so the cargo-deny
       # version moves by hand, in two places: here and DEVELOPMENT.md.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-deny@0.20.2
