@@ -426,3 +426,27 @@ async fn test17_internal_search_error_returns_500() {
     let json = response_json(resp).await;
     assert_error_envelope(&json, "internal_error");
 }
+
+/// Axum rejects a capture that is not UTF-8 before the handler runs; the
+/// rejection must still use the error envelope, not Axum's plain text.
+#[tokio::test]
+async fn a_non_utf8_path_capture_answers_the_error_envelope() {
+    for uri in [
+        "/api/v1/knowledgebases/%ff/search",
+        "/api/v1/knowledgebases/notes/replace/%ff.md",
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(auth_header().0, auth_header().1)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = make_app().oneshot(request).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_json_content_type(&resp);
+        let json = response_json(resp).await;
+        assert_error_envelope(&json, "invalid_request");
+    }
+}
