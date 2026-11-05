@@ -1564,19 +1564,19 @@ pub(crate) mod tests {
         }
     }
 
-    /// A client that stops answering has no working notification leg: the
-    /// keeper marks the session gone, cancels its subscriptions, and a later
-    /// `subscribe` is refused rather than answered `Ok` and left silent.
+    /// A client that has hung up has no working notification leg: the
+    /// keeper's ping fails on the closed transport, so it marks the session
+    /// gone, cancels its subscriptions, and a later `subscribe` is refused
+    /// rather than answered `Ok` and left silent. A client that stays
+    /// connected but never answers is not covered here.
     #[tokio::test(start_paused = true)]
-    async fn an_unanswered_ping_marks_the_session_gone() {
+    async fn a_ping_to_a_hung_up_client_marks_the_session_gone() {
         let (peer, _recorder, (_server, client)) = connected().await;
         let subs = kept(&peer);
         drop(client);
         settle().await;
 
         tokio::time::advance(KEEPER_INTERVAL).await;
-        settle().await;
-        tokio::time::advance(KEEPER_TIMEOUT).await;
         settle().await;
 
         assert!(subs.gone.load(Ordering::SeqCst));
