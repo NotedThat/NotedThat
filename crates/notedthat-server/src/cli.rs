@@ -502,6 +502,7 @@ mod tests {
         let command_line: Vec<&str> = std::iter::once("notedthat-server")
             .chain(args.iter().copied())
             .collect();
+        // Deliberate exception to #432's "no test mutates the environment": clap reads only the real one.
         temp_env::with_vars(vars, || {
             ServerCli::try_parse_from(&command_line).expect("arguments must parse")
         })

@@ -1223,7 +1223,7 @@ fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 6] {
             cli.oidc_http_timeout_ms.is_some(),
         ),
         ("NOTEDTHAT_OIDC_RESOURCE", cli.oidc_resource.is_some()),
-        ("NOTEDTHAT_OIDC_CA_CERT", cli.oidc_ca_cert.is_some()),
+        (crate::cli::OIDC_CA_CERT_ENV, cli.oidc_ca_cert.is_some()),
     ]
 }
 
@@ -1298,7 +1298,10 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         None => None,
         Some(path) if path.is_empty() => {
             return Err(Error::Config {
-                message: format!("{} must not be empty", setting("NOTEDTHAT_OIDC_CA_CERT")),
+                message: format!(
+                    "{} must not be empty",
+                    setting(crate::cli::OIDC_CA_CERT_ENV)
+                ),
             });
         }
         Some(path) => {
@@ -1307,7 +1310,7 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
                 return Err(Error::Config {
                     message: format!(
                         "{} is not a readable file: {}",
-                        setting("NOTEDTHAT_OIDC_CA_CERT"),
+                        setting(crate::cli::OIDC_CA_CERT_ENV),
                         path.display()
                     ),
                 });
@@ -1420,7 +1423,7 @@ impl ServerQdrantConfig {
         connect_timeout_ms: Option<&str>,
     ) -> Result<Self, Error> {
         let url = url.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("NOTEDTHAT_QDRANT_URL")),
+            message: format!("{} is required", setting(crate::cli::QDRANT_URL_ENV)),
         })?;
         Ok(Self {
             url,
@@ -1643,14 +1646,16 @@ mod tests {
     /// named by its variable so a test reads like the deployment it describes;
     /// `flag_for` turns that into the flag, and `--flag=` keeps an empty value.
     ///
-    /// A name the parser does not know panics rather than erring, so a typo
-    /// cannot satisfy an `is_err()` test.
+    /// A name the parser does not know panics rather than erring, even when it
+    /// is unset with `None`, so a typo cannot satisfy an `is_err()` test.
     fn parse_config(overrides: &[(&str, Option<&str>)]) -> Result<Config, Error> {
         let mut settings: Vec<(&str, Option<&str>)> = DEFAULT_SETTINGS
             .iter()
             .map(|(key, value)| (*key, Some(*value)))
             .collect();
+        let known = cli_env_names();
         for (key, value) in overrides {
+            assert!(known.contains(*key), "{key} is not a setting");
             match settings.iter_mut().find(|(existing, _)| existing == key) {
                 Some(slot) => slot.1 = *value,
                 None => settings.push((key, *value)),
@@ -1671,6 +1676,12 @@ mod tests {
             .get_arguments()
             .filter_map(|arg| Some(arg.get_env()?.to_string_lossy().into_owned()))
             .collect()
+    }
+
+    #[test]
+    #[should_panic(expected = "NOTEDTHAT_S3_REGON is not a setting")]
+    fn parse_config_panics_on_an_unknown_name_even_when_unset() {
+        let _ = parse_config(&[("NOTEDTHAT_S3_REGON", None)]);
     }
 
     #[test]

@@ -166,7 +166,7 @@ impl NatsConfig {
             return Err(config_error(format!(
                 "{} is {} seconds, longer than {} ({max_age_secs} seconds); JetStream refuses a \
                  duplicate window longer than the retention",
-                setting("NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS"),
+                setting(notedthat_nats::NATS_DUPLICATE_WINDOW_SECS_ENV),
                 window.as_secs(),
                 setting(NATS_MAX_AGE_SECS_ENV),
             )));
