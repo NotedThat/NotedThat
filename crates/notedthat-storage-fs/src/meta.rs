@@ -19,7 +19,6 @@
 //! to land on the same size and whole-second mtime would read as fresh.
 
 use std::fs::Metadata;
-use std::path::Path;
 use std::time::SystemTime;
 
 use notedthat_core::{StorageError, unix_seconds_i64};
@@ -240,13 +239,7 @@ impl MetaStore {
 /// Deliberately minimal: this only fires for objects written outside the server, where
 /// no type was ever declared.
 fn guess_content_type(key: &str) -> Option<String> {
-    let extension = Path::new(key).extension()?.to_str()?.to_ascii_lowercase();
-    match extension.as_str() {
-        "md" | "markdown" => Some("text/markdown".to_string()),
-        "txt" => Some("text/plain".to_string()),
-        "json" => Some("application/json".to_string()),
-        _ => None,
-    }
+    notedthat_core::mime::from_key(key).map(str::to_string)
 }
 
 #[cfg(test)]
