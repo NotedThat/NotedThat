@@ -549,11 +549,30 @@ pub async fn get_malformed_date_ignored(store: &dyn Storage, kb: &KbSlug) {
             ..ConditionalHeaders::default()
         },
     ] {
+        // Each read site parses the dates separately, so cover every one.
         let object = store
-            .get_object(kb, &path(key), None, conditionals)
+            .get_object(kb, &path(key), None, conditionals.clone())
             .await
             .expect("a malformed HTTP-date should be ignored");
         assert_eq!(object.bytes, Bytes::from_static(b"initial"));
+        let ranged = store
+            .get_object(
+                kb,
+                &path(key),
+                Some(ByteRange::FromStart { first: 0, last: 2 }),
+                conditionals.clone(),
+            )
+            .await
+            .expect("a malformed HTTP-date should be ignored on a ranged GET");
+        assert_eq!(ranged.bytes, Bytes::from_static(b"ini"));
+        store
+            .head_object(kb, &path(key), conditionals.clone())
+            .await
+            .expect("a malformed HTTP-date should be ignored on HEAD");
+        store
+            .get_object_stream(kb, &path(key), None, conditionals)
+            .await
+            .expect("a malformed HTTP-date should be ignored on a streamed GET");
     }
 }
 
