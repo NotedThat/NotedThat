@@ -3139,3 +3139,49 @@ async fn an_object_modified_past_year_9999_is_served_without_last_modified() {
         );
     }
 }
+
+/// A body that cannot be read — the client reset mid-upload — is not "too
+/// large": only a body over the limit answers `413` (#452).
+#[tokio::test]
+async fn an_unreadable_body_is_not_payload_too_large() {
+    let app = app_over(
+        Arc::new(InMemoryStorage::with_kbs(declared_kbs().values())),
+        1024,
+        None,
+        ready_receiver(),
+    );
+    let reset = futures::stream::iter([
+        Ok(bytes::Bytes::from_static(b"half a note")),
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "client went away",
+        )),
+    ]);
+
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/reset.md"),
+            Body::from_stream(reset),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // A body that really is over the limit, sent without a Content-Length,
+    // still is.
+    let oversize = futures::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from(vec![
+        b'x';
+        4096
+    ]))]);
+    let response = app
+        .oneshot(authed_request(
+            "PUT",
+            format!("/api/v1/knowledgebases/{KB}/big.md"),
+            Body::from_stream(oversize),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
