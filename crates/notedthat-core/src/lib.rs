@@ -12,6 +12,7 @@ pub mod events;
 pub mod kb;
 pub mod listing;
 pub mod metrics;
+pub mod mime;
 pub mod object_path;
 pub mod preconditions;
 pub mod range;

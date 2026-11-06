@@ -526,12 +526,7 @@ pub fn is_indexable(mime: &str) -> bool {
 /// extension — is not something the index can read. Case-insensitive, like
 /// `sniff_content_type` in `notedthat-write`.
 pub(crate) fn content_type_from_key(key: &str) -> Option<&'static str> {
-    let (_, extension) = key.rsplit_once('.')?;
-    match extension.to_ascii_lowercase().as_str() {
-        "md" | "markdown" => Some("text/markdown"),
-        "txt" => Some("text/plain"),
-        _ => None,
-    }
+    notedthat_core::mime::from_key(key).filter(|content_type| is_indexable(content_type))
 }
 
 #[cfg(test)]
