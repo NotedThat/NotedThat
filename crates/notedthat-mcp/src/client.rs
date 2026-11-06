@@ -34,7 +34,7 @@ pub enum ConfigError {
 /// Async HTTP client for the `NotedThat` API.
 ///
 /// Clone-cheap: clones share the underlying reqwest connection pool.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NotedThatClient {
     pub(crate) http: reqwest::Client,
     /// For the event streams the subscription forwarders hold open (D66): no
@@ -49,6 +49,30 @@ pub struct NotedThatClient {
     pub(crate) max_read_bytes: u64,
     /// The deadline [`Self::http`] was built with; see [`Self::api_timeout`].
     api_timeout: Duration,
+}
+
+// `{:?}` must not print the bearer, which on a tool call is the caller's own
+// credential (#503). Destructured without `..`, so a new field does not compile
+// until it is decided how to print it.
+impl std::fmt::Debug for NotedThatClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            http,
+            stream_http,
+            base_url,
+            token,
+            max_read_bytes,
+            api_timeout,
+        } = self;
+        f.debug_struct("NotedThatClient")
+            .field("http", http)
+            .field("stream_http", stream_http)
+            .field("base_url", &base_url.as_str())
+            .field("token", &token.as_ref().map(|_| "<redacted>"))
+            .field("max_read_bytes", max_read_bytes)
+            .field("api_timeout", api_timeout)
+            .finish()
+    }
 }
 
 /// The server request timeout this client assumes when nothing tells it one:
@@ -470,6 +494,21 @@ mod tests {
             .expect("request builds");
         assert_eq!(req.headers().get("authorization").unwrap(), "Bearer tok");
         assert_eq!(req.headers().get(SOURCE_HEADER).unwrap(), SOURCE_VALUE);
+    }
+
+    /// `{:?}` never prints the bearer — on a tool call it is the caller's own
+    /// credential — but still says whether there is one (#503).
+    #[test]
+    fn debug_never_prints_the_bearer() {
+        const SENTINEL: &str = "sentinel-bearer-3c9e";
+        let client = NotedThatClient::new("http://localhost:8080", SENTINEL).unwrap();
+
+        let printed = format!("{client:?}");
+        assert!(!printed.contains(SENTINEL), "{printed}");
+        assert!(printed.contains("token: Some(\"<redacted>\")"), "{printed}");
+        assert!(printed.contains("localhost:8080"), "{printed}");
+        let anonymous = format!("{:?}", client.anonymous());
+        assert!(anonymous.contains("token: None"), "{anonymous}");
     }
 
     #[test]
