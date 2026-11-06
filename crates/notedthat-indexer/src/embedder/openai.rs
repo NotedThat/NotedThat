@@ -704,8 +704,9 @@ mod tests {
         );
     }
 
-    /// A transport failure's text, which reaches search callers, `/index` and the event
-    /// stream, is its class alone: no URL, host or credential from the query.
+    /// A transport failure's text, which reaches `/index` (`last_failure.summary`) and the
+    /// `object.index_failed` stream, is its class alone: no URL, host or credential from
+    /// the query.
     #[tokio::test]
     async fn transport_error_text_leaves_out_the_url() {
         let mut config = make_config("http://127.0.0.1:1");
