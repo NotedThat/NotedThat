@@ -1396,7 +1396,7 @@ curl -sSf -X POST \
 
 #### Upgrade notes (M4 → M5)
 
-> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. A full rebuild stays a post-v1 feature (D42); `POST …/index/reconcile` (D67) only refreshes objects whose bytes changed, so for this upgrade operators trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
+> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. A full rebuild stays a post-v1 feature (D42), but their chunks have no `mime` field, so `POST …/index/reconcile` (D67) re-indexes them (#346), as does the startup pass on `fs`. To refresh one document sooner, PUT it again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
@@ -1445,8 +1445,8 @@ curl -sSf -X POST \
 > does not find them: an object stored as `text/markdown; charset=utf-8` is not returned for
 > `mime: "text/markdown"`. The filter also matches its own value exactly, so passing the exact
 > raw type (`text/markdown; charset=utf-8`) still finds those chunks, together with any indexed
-> since. `POST …/index/reconcile` only refreshes objects whose bytes changed, so PUT affected
-> documents again, as for M4 → M5 above.
+> since. `POST …/index/reconcile` only refreshes objects whose bytes changed or whose chunks carry
+> no type, so PUT affected documents again.
 
 ---
 

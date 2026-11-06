@@ -338,7 +338,8 @@ impl VectorStore for QdrantClient {
         };
 
         // A chunk with no `etag` field fails the `must_not` match too, so it counts as
-        // disagreeing — the same answer the in-memory store gives. A response with no
+        // disagreeing — the same answer the in-memory store gives. So does a chunk with an
+        // empty or missing `mime`, as in `merge_chunk_etag` (#346). A response with no
         // count confirms nothing, so it answers "not indexed" as well.
         let consistent = self
             .inner()
@@ -346,7 +347,11 @@ impl VectorStore for QdrantClient {
                 CountPointsBuilder::new(collection_name(kb))
                     .filter(Filter {
                         must: vec![Condition::matches("object_key", object_key.to_string())],
-                        must_not: vec![Condition::matches("etag", etag.clone())],
+                        should: vec![
+                            Filter::must_not([Condition::matches("etag", etag.clone())]).into(),
+                            Condition::matches("mime", String::new()),
+                            Condition::is_empty("mime"),
+                        ],
                         ..Filter::default()
                     })
                     .exact(true),

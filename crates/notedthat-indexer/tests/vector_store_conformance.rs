@@ -533,6 +533,7 @@ fn indexed_points() -> Vec<PointStruct> {
     //
     // `notes/legacy.md` was indexed before #327 with an empty `mime`; its `ETag` still
     // matches storage, which is what kept reconciliation from ever re-indexing it (#346).
+    // `notes/m4.md` was written by an M4 server, before chunks had a `mime` field at all.
     [
         ("other/c.md", 0, Some("\"ccc\"")),
         ("notes/b.md", 0, Some("\"bbb\"")),
@@ -545,6 +546,7 @@ fn indexed_points() -> Vec<PointStruct> {
         ("notes/untagged.md", 0, Some("\"x\"")),
         ("notes/untagged.md", 1, None),
         ("notes/legacy.md", 0, Some("\"lll\"")),
+        ("notes/m4.md", 0, Some("\"mmm\"")),
     ]
     .iter()
     .enumerate()
@@ -555,12 +557,15 @@ fn indexed_points() -> Vec<PointStruct> {
         if let Some(etag) = etag {
             payload.insert("etag".to_string(), (*etag).to_string().into());
         }
-        let mime = if *object_key == "notes/legacy.md" {
-            ""
-        } else {
-            "text/markdown"
-        };
-        payload.insert("mime".to_string(), mime.to_string().into());
+        match *object_key {
+            "notes/m4.md" => {}
+            "notes/legacy.md" => {
+                payload.insert("mime".to_string(), String::new().into());
+            }
+            _ => {
+                payload.insert("mime".to_string(), "text/markdown".to_string().into());
+            }
+        }
         payload.insert("text".to_string(), "shared".to_string().into());
         let vectors = HashMap::from([
             ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
@@ -628,6 +633,23 @@ async fn observe_indexed(store: &dyn VectorStore, kb: &KbSlug) -> Observations {
                 .indexed_etag(kb, "notes/untagged.md")
                 .await
                 .expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_legacy_object",
+        format!(
+            "{:?}",
+            store
+                .indexed_etag(kb, "notes/legacy.md")
+                .await
+                .expect("etag")
+        ),
+    ));
+    out.push((
+        "etag_of_m4_object",
+        format!(
+            "{:?}",
+            store.indexed_etag(kb, "notes/m4.md").await.expect("etag")
         ),
     ));
     out.push(("all_objects", render(store.indexed_objects(kb, None).await)));
@@ -899,10 +921,18 @@ fn assert_mixed_object_not_indexed(observations: &Observations) {
             .unwrap_or_else(|| panic!("no observation named '{name}'"));
         value.as_str()
     };
+    assert_eq!(observed("etag_of_indexed_object"), r#"Some("\"aaa\"")"#);
     assert_eq!(observed("etag_of_mixed_object"), "None");
     assert_eq!(observed("etag_of_untagged_object"), "None");
+    assert_eq!(observed("etag_of_legacy_object"), "None");
+    assert_eq!(observed("etag_of_m4_object"), "None");
     for name in ["all_objects", "objects_under_prefix"] {
-        for key in ["notes/mixed.md", "notes/untagged.md", "notes/legacy.md"] {
+        for key in [
+            "notes/mixed.md",
+            "notes/untagged.md",
+            "notes/legacy.md",
+            "notes/m4.md",
+        ] {
             assert!(
                 observed(name)
                     .split(',')

@@ -2267,6 +2267,57 @@ async fn a_refresh_of_changed_content_re_embeds() {
     );
 }
 
+/// Chunks written before #327 carry `mime: ""` but the `ETag` storage still reports, so
+/// a `Refresh` that compared `ETag`s alone would skip them forever (#346).
+#[tokio::test]
+async fn a_refresh_re_indexes_unchanged_chunks_that_carry_no_mime() {
+    let kb = kb();
+    let (store, provisioner) = make_store();
+    provisioner.ensure_collection(&kb, 4).await.unwrap();
+
+    let storage = Arc::new(MockStorage::new());
+    storage.insert(kb.as_str(), "legacy.md", "# Old\n\nBody.", "text/markdown");
+    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
+    refresh_once(
+        storage.clone(),
+        Arc::new(ScriptedEmbedder::new(None, None)),
+        store_arc.clone(),
+        &kb,
+        "legacy.md",
+    )
+    .await;
+
+    // Blank the `mime` on every chunk, keeping its `ETag`: what an old server left behind.
+    let legacy: Vec<PointStruct> = scroll_points(&store, &kb, "legacy.md", false)
+        .await
+        .into_iter()
+        .map(|point| {
+            let mut payload = point.payload;
+            payload.insert("mime".to_string(), String::new().into());
+            let vectors = HashMap::from([("dense".to_string(), Vector::from(vec![0.0_f32; 4]))]);
+            PointStruct::new(point.id.expect("point id"), vectors, payload)
+        })
+        .collect();
+    assert_ne!(legacy.len(), 0, "the first refresh must index the object");
+    store_arc.upsert_points(&kb, legacy).await.unwrap();
+
+    let embedder = Arc::new(ScriptedEmbedder::new(None, None));
+    refresh_once(storage, embedder.clone(), store_arc, &kb, "legacy.md").await;
+
+    assert!(
+        embedder.calls() > 0,
+        "a chunk with no mime must be re-indexed"
+    );
+    let points = scroll_points(&store, &kb, "legacy.md", false).await;
+    assert_ne!(points.len(), 0, "the re-index must leave chunks");
+    assert!(
+        points
+            .iter()
+            .all(|point| string_payload(point, "mime") == "text/markdown"),
+        "the re-index must stamp the resolved type"
+    );
+}
+
 /// A deletion reaches the worker as a `Refresh`, never as a tombstone — that is what stops
 /// a delayed event from outracing a re-create. The conversion happens here.
 #[tokio::test]
