@@ -126,6 +126,7 @@ pub fn sniff_content_type(caller: Option<&str>, path: &ObjectPath) -> String {
                 .to_ascii_lowercase();
             match ext.as_str() {
                 "md" | "markdown" => "text/markdown".to_string(),
+                "txt" => "text/plain".to_string(),
                 _ => "application/octet-stream".to_string(),
             }
         }
@@ -257,6 +258,20 @@ mod tests {
         assert_eq!(
             sniff_content_type(None, &path("test.markdown")),
             "text/markdown"
+        );
+    }
+
+    /// A `.txt` sent with no type, or the generic one, is plain text: as
+    /// `application/octet-stream` the indexer would drop it from search (#345).
+    #[test]
+    fn a_txt_without_a_type_is_plain_text() {
+        assert_eq!(
+            sniff_content_type(None, &path("notes/todo.txt")),
+            "text/plain"
+        );
+        assert_eq!(
+            sniff_content_type(Some("application/octet-stream"), &path("notes/TODO.TXT")),
+            "text/plain"
         );
     }
 
