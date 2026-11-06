@@ -36,7 +36,7 @@ pub(crate) const OIDC_CA_CERT_ENV: &str = "NOTEDTHAT_OIDC_CA_CERT";
 // a live secret on the terminal of anyone who asked for help. Those carry
 // `hide_env_values`, so their variable is named and their value is not.
 #[allow(clippy::doc_markdown)]
-#[derive(Parser, Debug, Default, Clone)]
+#[derive(Parser, Default, Clone)]
 #[command(
     name = "notedthat-server",
     version,
