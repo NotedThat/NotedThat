@@ -1971,7 +1971,8 @@ The content type stored with an object is determined as follows:
    - Anything else → `application/octet-stream`
 
    The same table names the type of a file the `fs` backend finds without a recorded one, and the
-   `mimeType` MCP `resources/read` falls back to. Only `.md`, `.markdown` and `.txt` are indexed.
+   `mimeType` MCP `resources/read` falls back to for text content. Only `.md`, `.markdown` and
+   `.txt` are indexed.
 
 This ensures that WebDAV clients that send `application/octet-stream` for `.md` files (rclone
 default, Finder default) still get indexed correctly by the M5 semantic search indexer.
