@@ -345,9 +345,11 @@ and then streams for hours, so measuring body completion would put hour-long obs
 histogram and pin the in-flight gauge at the subscriber count. A live stream's cost is
 `notedthat_events_subscribers`; a large read's backend cost is `notedthat_storage_*`.
 
-A storage call that answers `404`, `304` or `412` is counted as an outcome, not an error: those are
-how an idempotent delete and every conditional request work, and counting them would make the error
-rate track client caching rather than the backend's health. The vector store is treated the same
+A storage call that answers `404`, `304`, `412` or `416`, or refuses a listing cursor it did not
+issue, is counted as an outcome, not an error: `404` is `outcome="not_found"` and the rest are
+`outcome="precondition"`. Those are how an idempotent delete, every conditional request and a
+client's own bad input work, and counting them would make the error rate track client behaviour
+rather than the backend's health. The vector store is treated the same
 way — a missing collection is `outcome="not_found"`, which both reconcilers handle by skipping the
 pass. What is left is the backend being unreachable, so that is what to alert on:
 
