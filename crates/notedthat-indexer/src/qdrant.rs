@@ -211,7 +211,11 @@ const SCROLL_PAGE: u32 = 1024;
 /// The payload fields reconciliation reads. Vectors and chunk text are never fetched.
 fn indexed_payload_fields() -> PayloadIncludeSelector {
     PayloadIncludeSelector {
-        fields: vec!["object_key".to_string(), "etag".to_string()],
+        fields: vec![
+            "object_key".to_string(),
+            "etag".to_string(),
+            "mime".to_string(),
+        ],
     }
 }
 
@@ -401,7 +405,12 @@ impl VectorStore for QdrantClient {
                 if prefix.is_some_and(|prefix| !object_key.starts_with(prefix)) {
                     continue;
                 }
-                merge_chunk_etag(&mut by_key, object_key, payload_string(point, "etag"));
+                merge_chunk_etag(
+                    &mut by_key,
+                    object_key,
+                    payload_string(point, "etag"),
+                    payload_string(point, "mime").as_deref(),
+                );
             }
 
             match response.next_page_offset {
