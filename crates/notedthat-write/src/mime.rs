@@ -119,19 +119,9 @@ async fn is_utf8(body: &StagedBody) -> Result<bool, std::io::Error> {
 pub fn sniff_content_type(caller: Option<&str>, path: &ObjectPath) -> String {
     match caller {
         Some(ct) if ct != "application/octet-stream" => ct.to_string(),
-        _ => {
-            let ext = path
-                .as_str()
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            match ext.as_str() {
-                "md" | "markdown" => "text/markdown".to_string(),
-                "txt" => "text/plain".to_string(),
-                _ => "application/octet-stream".to_string(),
-            }
-        }
+        _ => notedthat_core::mime::from_key(path.as_str())
+            .unwrap_or("application/octet-stream")
+            .to_string(),
     }
 }
 

@@ -9,7 +9,6 @@ use rmcp::{
     ErrorData as McpError,
     model::{ErrorCode, ReadResourceResult, ResourceContents},
 };
-use std::path::Path;
 use url::Url;
 
 const OCTET_STREAM: &str = "application/octet-stream";
@@ -155,23 +154,23 @@ fn without_utf8_charset(content_type: &str) -> String {
 }
 
 fn detect_mime_type(object_key: &str) -> &'static str {
-    let ext = Path::new(object_key)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    match ext {
-        "md" => "text/markdown",
-        "txt" => "text/plain",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        _ => OCTET_STREAM,
-    }
+    notedthat_core::mime::from_key(object_key).unwrap_or(OCTET_STREAM)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::NotedThatClient;
+
+    /// The key's extension decides regardless of case, as it does everywhere
+    /// else: `Notes.MD` is Markdown, not binary (#344).
+    #[test]
+    fn the_extension_names_the_type_in_any_case() {
+        assert_eq!(detect_mime_type("notes/Notes.MD"), "text/markdown");
+        assert_eq!(detect_mime_type("notes/Draft.markdown"), "text/markdown");
+        assert_eq!(detect_mime_type("img/Photo.JPG"), "image/jpeg");
+        assert_eq!(detect_mime_type("notes/README"), OCTET_STREAM);
+    }
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
