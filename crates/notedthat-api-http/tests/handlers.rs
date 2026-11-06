@@ -47,7 +47,7 @@ fn app_with(
 
 /// A router over `storage`, for a test that seeds it behind the API's back.
 fn app_over(
-    storage: Arc<InMemoryStorage>,
+    storage: Arc<dyn notedthat_core::Storage>,
     max_body_size: u64,
     events: Option<Arc<dyn notedthat_core::EventPublisher>>,
     readiness: ReadinessReceiver,
@@ -3138,4 +3138,45 @@ async fn an_object_modified_past_year_9999_is_served_without_last_modified() {
             "{method}"
         );
     }
+}
+
+/// `replace` answers with the size of the version it wrote, never with a second
+/// lookup's: a write landing in between would pair this version's `ETag` with
+/// another version's size (#443).
+#[tokio::test]
+async fn replace_reports_the_size_of_the_version_it_wrote() {
+    use notedthat_core::testing::{ScriptedStorage, StorageOp};
+
+    // Given: a 12-byte note, and a concurrent writer that replaces it with
+    // 300 bytes the moment `replace`'s own write lands.
+    let storage = ScriptedStorage::with_kbs(declared_kbs().values());
+    storage
+        .inner()
+        .seed(KB, "race.md", "hello, world", None, None)
+        .await;
+    storage.after(StorageOp::PutObject, |store| async move {
+        store.seed(KB, "race.md", "x".repeat(300), None, None).await;
+    });
+    let app = app_over(Arc::new(storage), 1024, None, ready_receiver());
+
+    // When
+    let mut request = authed_request(
+        "POST",
+        format!("/api/v1/knowledgebases/{KB}/replace/race.md"),
+        Body::from(r#"{"old_string":"world","new_string":"there"}"#),
+    );
+    request.headers_mut().insert(
+        "if-match",
+        notedthat_api_http::testing::compute_etag(b"hello, world")
+            .parse()
+            .unwrap(),
+    );
+    let response = app.oneshot(request).await.unwrap();
+
+    // Then: "hello, there" is 12 bytes; 300 is the other writer's version.
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["total_bytes"], 12, "{body}");
+    assert_eq!(body["match_count"], 1, "{body}");
 }
