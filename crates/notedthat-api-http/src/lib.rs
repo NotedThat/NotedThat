@@ -11,6 +11,7 @@ pub mod router;
 pub mod search_route;
 pub mod state;
 pub(crate) mod validators;
+pub use validators::LATEST_FORMATTABLE;
 
 // Exposed under `test-support` feature for integration tests in `tests/*.rs`
 // and under `cfg(test)` for unit tests within `src/`.

@@ -1153,3 +1153,68 @@ async fn head_collection_prefix_trailing_slash_not_rejected() {
         "HEAD on collection path with trailing slash must not be rejected by intercept_read_methods"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unformattable modification times (#484)
+// ---------------------------------------------------------------------------
+
+/// An mtime past 9999-12-31, as a hand-set `fs` mtime can be, is answered with the
+/// last date `Last-Modified` can carry instead of panicking the request.
+#[tokio::test]
+async fn an_object_modified_past_year_9999_is_served() {
+    // Given — around year 11476.
+    let storage = InMemoryStorage::with_kbs(declared_kbs().values());
+    storage
+        .seed("notes", "far.md", "# far\n", Some("text/markdown"), None)
+        .await;
+    storage
+        .set_last_modified(
+            "notes",
+            "far.md",
+            std::time::UNIX_EPOCH + std::time::Duration::from_mins(5_000_000_000),
+        )
+        .await;
+    let app = build_router(make_state_with(storage));
+    let latest = "Fri, 31 Dec 9999 23:59:59 GMT";
+
+    for method in [Method::GET, Method::HEAD] {
+        // When
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.clone())
+                    .uri("/webdav/notes/far.md")
+                    .header("authorization", good_auth())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(response.headers()["last-modified"], latest, "{method}");
+    }
+
+    for (uri, depth) in [("/webdav/notes/far.md", "0"), ("/webdav/notes/", "1")] {
+        // When
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::from_bytes(b"PROPFIND").unwrap())
+                    .uri(uri)
+                    .header("authorization", good_auth())
+                    .header("depth", depth)
+                    .body(Body::from(PROPFIND_BODY))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Then
+        assert_eq!(response.status(), StatusCode::MULTI_STATUS, "{uri}");
+        assert!(body_string(response).await.contains(latest), "{uri}");
+    }
+}
