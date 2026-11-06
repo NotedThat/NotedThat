@@ -87,6 +87,7 @@ fn error_kind(error: &StorageError) -> String {
         StorageError::Other { .. } => "Other".to_string(),
         StorageError::NotModified(_) => "NotModified".to_string(),
         StorageError::PreconditionFailed => "PreconditionFailed".to_string(),
+        StorageError::InvalidCursor => "InvalidCursor".to_string(),
         // Kept: this becomes `Content-Range: bytes */N`, a number both must agree on.
         StorageError::RangeNotSatisfiable { complete_length } => {
             format!("RangeNotSatisfiable({complete_length})")
@@ -738,8 +739,8 @@ pub const PINNED_DIVERGENCES: &[Divergence] = &[
     Divergence {
         name: "garbage_cursor",
         s3: "ok",
-        fs: "BackendUnavailable",
-        memory: "BackendUnavailable",
+        fs: "InvalidCursor",
+        memory: "InvalidCursor",
         why: "A continuation token is opaque and issued by the backend, so what an invalid one \
           does is the backend's to decide and `S3Storage` forwards it verbatim per D19. \
           SeaweedFS accepts an unrecognised token and answers with a page; AWS S3 rejects \

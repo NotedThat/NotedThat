@@ -117,6 +117,12 @@ pub enum StorageError {
         /// The total size of the object in bytes.
         complete_length: u64,
     },
+
+    /// A listing cursor the backend cannot continue from: garbage, issued under
+    /// another prefix, or from an older cursor format. The caller's input, not a
+    /// backend fault (#447).
+    #[error("invalid or expired cursor")]
+    InvalidCursor,
 }
 
 impl StorageError {

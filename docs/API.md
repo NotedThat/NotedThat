@@ -832,14 +832,14 @@ Final page (no more results):
 
 ### Invalid or expired cursor
 
-Passing a cursor that is invalid, expired, or otherwise not recognized by the backend returns:
+Passing a cursor that is invalid, expired, issued under a different `prefix`, or otherwise not recognized by the backend returns:
 
 ```
-HTTP 503 Service Unavailable
-{"error": "backend_unavailable", "message": "...", "request_id": "..."}
+HTTP 400 Bad Request
+{"error": "invalid_request", "message": "invalid or expired cursor", "request_id": "..."}
 ```
 
-The cursor format is opaque and owned by the storage backend. NotedThat does not validate cursor strings; it passes them through unchanged. Clients that receive a 503 should re-fetch from the beginning (cursor=None).
+It carries no `Retry-After`: the same cursor will not work on a retry. Re-fetch from the beginning (no `cursor`). The cursor format is opaque and owned by the storage backend, and NotedThat passes it through unchanged, so some S3-compatible stores (SeaweedFS among them) accept an unrecognised token and answer with a page instead. Before #447 this was a `503 backend_unavailable`.
 
 ### Live listing semantics (non-snapshot)
 

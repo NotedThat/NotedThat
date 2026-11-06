@@ -609,7 +609,7 @@ async fn list_entries_omit_etag_and_content_type_as_on_s3() {
 }
 
 #[tokio::test]
-async fn an_unusable_cursor_is_reported_as_backend_unavailable() {
+async fn an_unusable_cursor_is_reported_as_invalid_cursor() {
     let env = env().await;
     put(&env, "a.md", "x").await;
 
@@ -617,10 +617,7 @@ async fn an_unusable_cursor_is_reported_as_backend_unavailable() {
         .storage
         .list_objects(&env.kb, None, 10, Some("not-a-cursor"))
         .await;
-    assert!(matches!(
-        response,
-        Err(StorageError::BackendUnavailable { .. })
-    ));
+    assert!(matches!(response, Err(StorageError::InvalidCursor)));
 }
 
 #[tokio::test]

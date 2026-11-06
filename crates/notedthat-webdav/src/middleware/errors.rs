@@ -40,6 +40,7 @@ pub(super) fn storage_status(error: &StorageError) -> StatusCode {
         }
         StorageError::BackendUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
         StorageError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+        StorageError::InvalidCursor => StatusCode::BAD_REQUEST,
         StorageError::NotModified(_)
         | StorageError::RangeNotSatisfiable { .. }
         | StorageError::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,

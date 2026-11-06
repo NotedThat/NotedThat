@@ -195,8 +195,10 @@ pub mod outcome {
     pub const OK: &str = "ok";
     /// The object or bucket is not there. Ordinary control flow, not a fault.
     pub const NOT_FOUND: &str = "not_found";
-    /// A conditional request was refused, or the object was unmodified.
-    /// Ordinary control flow: it is how a caller's `If-Match` does its job.
+    /// A conditional request was refused, the object was unmodified, or a
+    /// listing cursor was not one the backend can continue from. Ordinary
+    /// control flow: it is how a caller's `If-Match` does its job, and a bad
+    /// cursor is the caller's input, not a fault (#447).
     pub const PRECONDITION: &str = "precondition";
     /// The backend could not be reached, or answered that it could not serve.
     /// This is the one an operator should alert on.
@@ -365,7 +367,8 @@ pub const HISTOGRAM_BUCKETS: &[(&str, &[f64])] = &[
 /// behaviour: [`StorageError::NotFound`] is how an idempotent delete and every
 /// conditional read work, and `NotModified` / `PreconditionFailed` /
 /// `RangeNotSatisfiable` are HTTP conditional semantics the backend is
-/// answering correctly. Only the remaining variants mean something is wrong,
+/// answering correctly, and `InvalidCursor` is the caller's own cursor refused.
+/// Only the remaining variants mean something is wrong,
 /// which is what makes an alert on `outcome="error"` worth waking someone for.
 #[must_use]
 pub fn storage_outcome<T>(result: &Result<T, StorageError>) -> &'static str {
@@ -375,7 +378,8 @@ pub fn storage_outcome<T>(result: &Result<T, StorageError>) -> &'static str {
         Err(
             StorageError::NotModified(_)
             | StorageError::PreconditionFailed
-            | StorageError::RangeNotSatisfiable { .. },
+            | StorageError::RangeNotSatisfiable { .. }
+            | StorageError::InvalidCursor,
         ) => outcome::PRECONDITION,
         // Its own value, not the catch-all: this is the one an operator alerts
         // on, and `docs/CONFIGURATION.md` names the series. Folded into
@@ -397,7 +401,8 @@ pub fn storage_error_kind(error: &StorageError) -> Option<&'static str> {
         StorageError::NotFound { .. }
         | StorageError::NotModified(_)
         | StorageError::PreconditionFailed
-        | StorageError::RangeNotSatisfiable { .. } => None,
+        | StorageError::RangeNotSatisfiable { .. }
+        | StorageError::InvalidCursor => None,
         StorageError::BucketNotFound { .. } => Some("bucket_not_found"),
         StorageError::BackendUnavailable { .. } => Some("backend_unavailable"),
         StorageError::Other { .. } => Some("other"),
