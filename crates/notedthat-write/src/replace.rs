@@ -62,19 +62,22 @@ pub async fn replace(
         max_size: max_patchable_size,
         caller_content_type,
     };
-    let (put_outcome, match_count) = cas_rewrite(storage, sinks, target, |src| {
-        replace_in(
+    let (put_outcome, (match_count, total_bytes)) = cas_rewrite(storage, sinks, target, |src| {
+        let (bytes, match_count) = replace_in(
             src,
             old_string.as_bytes(),
             new_string.as_bytes(),
             replace_all,
             max_patchable_size,
-        )
+        )?;
+        let total_bytes = bytes.len() as u64;
+        Ok((bytes, (match_count, total_bytes)))
     })
     .await?;
     Ok(ReplaceOutcome {
         put_outcome,
         match_count,
+        total_bytes,
     })
 }
 
