@@ -483,14 +483,14 @@ jobs:
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     environment: release
     permissions:
       contents: write
       pull-requests: read
       id-token: write
       # actions: write is required so the follow-up step can dispatch
-      # release.yml via `gh workflow run` (see below).
+      # release.yml through the workflow dispatch API (see below).
       actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -636,7 +636,12 @@ jobs:
           tag=$(printf '%s' "$RELEASES" | jq -r '..|.tag? // empty | select(test("^v[0-9]"))' | head -n1)
           if [ -n "$tag" ] && [ "$tag" != "null" ]; then
             echo "Dispatching release.yml against tag $tag"
-            gh workflow run release.yml --ref "$tag" --repo "$GITHUB_REPOSITORY"
+            # curl, not `gh workflow run`: the 9xx runner image has no gh.
+            curl --proto '=https' --tlsv1.2 -fsS -X POST \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+              -d "$(jq -cn --arg ref "$tag" '{ref: $ref}')"
           else
             echo "No workspace tag (v*) in release-plz output; nothing to dispatch"
           fi
