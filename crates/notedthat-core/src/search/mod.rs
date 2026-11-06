@@ -29,5 +29,3 @@ mod request;
 pub use request::{
     DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_BYTES, MIN_LIMIT, SearchRequest, ValidatedRequest,
 };
-
-// TODO(m5): populated by T3-T8

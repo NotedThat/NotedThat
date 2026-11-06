@@ -11,11 +11,11 @@ what a `503` means, what to back up, what one instance holds, what a release may
 NotedThat does not do.
 
 **Monitoring** is [its own section below](#monitoring): the alerting rules that ship in
-`docker/prometheus/alerts.yml`, and a runbook for each. They need `GET /metrics`, which exists from
-the release that carries [#164](https://github.com/NotedThat/NotedThat/issues/164); through
-v0.10.0 the operational signals are `/readyz`, the per-knowledge-base index endpoint and the log
-codes, all named below where they matter. The metrics settings and catalogue are
-`docs/CONFIGURATION.md`'s ([Metrics](CONFIGURATION.md#metrics)), not this guide's.
+`docker/prometheus/alerts.yml`, and a runbook for each. They read `GET /metrics` (Prometheus
+exposition format), which the server serves on its own loopback listener; `/readyz`, the
+per-knowledge-base index endpoint and the log codes are the other operational signals, all named
+below where they matter. The metrics settings and catalogue are `docs/CONFIGURATION.md`'s
+([Metrics](CONFIGURATION.md#metrics)), not this guide's.
 
 ---
 
@@ -381,6 +381,11 @@ To upgrade:
    what is wrong.
 5. Expect `503`s while the startup pass runs.
 
+Coming from an old release, three things in this guide did not exist yet: before v0.11.0 there
+was no `GET /metrics` and a session id was not bound to the principal that opened it, and before
+v0.12.0 there was no conditional-write check at startup — so the first start on a backend that
+does not enforce them can refuse ([Known limitations](#known-limitations) names the setting).
+
 Verify the image before running it in production:
 
 ```sh
@@ -452,26 +457,18 @@ connect.
 
 ### MCP session ids
 
-Whether a session id is bound to the principal that opened it depends on your release.
+A session id is bound to the principal that opened it (D68): a request presenting a session id
+whose owner is not the request's own principal is answered exactly as an id the server does not
+know, on all three methods, so another authenticated caller who obtains an id can neither attach
+that session's notification leg nor end it with a `DELETE`. Tool calls are unaffected:
+each acts as the credential presented on its own request.
 
-**Through v0.10.0 it is not** (D66), so treat the id itself as a credential: another
-authenticated caller who obtains one can attach that session's notification leg and watch which
-object URIs it subscribed to and when they change — including objects that caller may not read
-itself — and can end the session with a `DELETE`. Ids are UUIDs, so this is not guessable, and
-tool calls are unaffected: each acts as the credential presented on its own request.
+Two things remain. Every caller presenting no credential is **one** owner, since nothing
+distinguishes two of them — so on a deployment admitting anonymous callers one anonymous client
+can still attach another's leg, though both hold identical read authority. And the session bound
+is **per process, not per principal**, so one caller can hold every slot.
 
-**From the release that carries [#179](https://github.com/NotedThat/NotedThat/issues/179) it is**
-(D68): a request presenting a session id whose owner is not the request's own principal is
-answered exactly as an id the server does not know, on all three methods, so the `DELETE` is
-closed with the rest.
-
-Two things hold either way, and are the residue #179 leaves behind. Every caller presenting no
-credential is **one** owner, since nothing distinguishes two of them — so on a deployment
-admitting anonymous callers one anonymous client can still attach another's leg, though both hold
-identical read authority. And the session bound is **per process, not per principal**, so one
-caller can hold every slot.
-
-Send session ids over TLS and keep them out of logs on any release.
+Send session ids over TLS and keep them out of logs.
 
 ### A read-only root filesystem
 
@@ -750,14 +747,10 @@ committing to the deployment.
   **SeaweedFS < 4.09**, and **RustFS 1.0.0-beta.8** under lock-timeout contention. `PATCH`
   inherits the same exposure, because its final write is a conditional `PUT`.
 
-  Whether the server checks this depends on your release. **Up to and including v0.11.0 it does
-  not**, and verifying a backend is the deployer's gate. **From the release that carries
-  [#190](https://github.com/NotedThat/NotedThat/issues/190) it does** (D70) — that release is the
-  thing to check for, not a version number, so this does not go stale again: at startup each
-  bucket is asked whether it honours a `PUT` whose `If-Match` holds and refuses one whose
-  `If-Match` or `If-None-Match` does not, and one that stores it anyway **refuses startup** — so
-  upgrading a deployment on such a backend
-  stops it until you either move to a backend that enforces them or set
+  The server checks this (D70): at startup each bucket is asked whether it honours a `PUT` whose
+  `If-Match` holds and refuses one whose `If-Match` or `If-None-Match` does not, and one that
+  stores it anyway **refuses startup** — so a deployment on such a backend stops until you either
+  move to a backend that enforces them or set
   `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES=true` to accept the risk. With that setting
   the finding stays visible: `S3_CONDITIONAL_WRITES_NOT_ENFORCED` in the log, `/readyz`
   `degraded` (`preconditions_not_enforced`), and
@@ -768,9 +761,8 @@ committing to the deployment.
   reference for those.
 - **MCP sessions.** A process holds a fixed maximum of sessions and one caller can hold all of
   them; the bound is per process, and a budget per principal is a follow-up. Every anonymous
-  caller is one owner, so they share each other's sessions by construction. Through v0.10.0 a
-  session id is additionally not bound to the principal that opened it at all — see
-  [MCP session ids](#mcp-session-ids). Subscriptions live and die with the session — no replay,
+  caller is one owner, so they share each other's sessions by construction
+  ([MCP session ids](#mcp-session-ids)). Subscriptions live and die with the session — no replay,
   no persistence, and a restart ends every one of them. A client that stops answering the
   keeper's ping has its subscriptions dropped, and a later `subscribe` on that session is refused
   rather than accepted and left silent.
@@ -780,11 +772,9 @@ committing to the deployment.
   intent recorded there is that the HTTP API, the MCP surface, the WebDAV surface, the event
   schema and the `NOTEDTHAT_*` settings would be covered, and the crates' Rust APIs would not; it
   is a proposal until that issue closes.
-- **Monitoring depends on the release.** Through v0.10.0 there is no metrics endpoint, and
-  `/readyz`, the per-knowledge-base index endpoint and the log codes are what exists;
-  [#164](https://github.com/NotedThat/NotedThat/issues/164) adds `GET /metrics` on its own
-  loopback listener, and the alerting rules in [Monitoring](#monitoring) need it. Search latency
-  and the MCP session count are not alerted on yet ([below](#not-alerted-on-yet)).
+- **Monitoring is partial.** `GET /metrics` on its own loopback listener feeds the alerting rules
+  in [Monitoring](#monitoring); search latency and the MCP session count are not alerted on yet
+  ([below](#not-alerted-on-yet)).
 - **Other things NotedThat does not do:** no application rate limiter; no reload signal, so access
   rules need a restart; no object lock, retention or legal hold, and WebDAV `LOCK` is refused; no
   full reindex, so changing the embedding model has its own procedure; no admin API for creating
