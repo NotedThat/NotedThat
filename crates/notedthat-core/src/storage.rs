@@ -130,7 +130,9 @@ impl PutOutcome {
 pub trait Storage: Send + Sync {
     /// Idempotently create the S3 bucket for the given KB.
     ///
-    /// Returns `Ok(())` if the bucket already exists (owned by this account).
+    /// Returns `Ok(())` if the bucket already exists, whether owned by this
+    /// account or merely reported as existing: not every backend (`SeaweedFS`
+    /// with IAM) can tell ownership apart.
     async fn ensure_bucket(&self, kb: &KbSlug) -> Result<(), StorageError>;
 
     /// Confirm the backend is reachable and `kb`'s bucket still exists.

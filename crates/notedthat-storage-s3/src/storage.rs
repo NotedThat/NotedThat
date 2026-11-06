@@ -559,11 +559,12 @@ impl Storage for S3Storage {
                 info!(bucket = %bucket, "bucket created");
                 Ok(())
             }
-            Err(SdkError::ServiceError(e))
-                if e.err().is_bucket_already_owned_by_you()
-                    || e.err().is_bucket_already_exists() =>
-            {
+            Err(SdkError::ServiceError(e)) if e.err().is_bucket_already_owned_by_you() => {
                 info!(bucket = %bucket, "bucket already exists (owned by us)");
+                Ok(())
+            }
+            Err(SdkError::ServiceError(e)) if e.err().is_bucket_already_exists() => {
+                warn!(bucket = %bucket, "bucket already exists; on AWS another account may own the name and every request will be refused, on SeaweedFS this is the normal answer for your own bucket");
                 Ok(())
             }
             Err(e) => Err(StorageError::BackendUnavailable {
