@@ -652,7 +652,7 @@ impl Config {
 pub const DEFAULT_INDEX_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// Server-wide configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// Static Bearer token for API authentication (`NOTEDTHAT_API_TOKEN`).
     pub api_token: String,
@@ -1360,7 +1360,7 @@ fn comma_list(supplied: Option<&str>, default: &[&str]) -> Vec<String> {
 }
 
 /// Qdrant client configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerQdrantConfig {
     /// Qdrant gRPC/HTTP endpoint (`NOTEDTHAT_QDRANT_URL`; required).
     pub url: String,
@@ -1453,7 +1453,7 @@ struct EmbedderParts {
 }
 
 /// Embedder configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EmbedderConfig {
     /// OpenAI-compatible API base URL including its version segment, e.g.
     /// `https://api.openai.com/v1` (`EMBEDDING_ENDPOINT_URL`; required).
@@ -1600,11 +1600,130 @@ fn parse_positive_usize(
     })
 }
 
+// `{:?}` of a configuration must not print a credential (#503). Each impl
+// destructures without `..`, so a new field does not compile until it is
+// decided how to print it.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            api_token: _,
+            kbs,
+            tenant_slug,
+            listen_addr,
+            storage,
+            events,
+            log_format,
+            qdrant,
+            embedder,
+            index_concurrency,
+            webdav_username,
+            webdav_password: _,
+            mcp_http_allowed_origins,
+            mcp_http_allowed_hosts,
+            mcp_anonymous,
+            max_patchable_size,
+            mcp_max_read_bytes,
+            mcp_max_sessions,
+            ready_probe_interval_ms,
+            metrics_listen_addr,
+            request_bounds,
+            staging,
+            oidc,
+        } = self;
+        f.debug_struct("Config")
+            .field("api_token", &"<redacted>")
+            .field("kbs", kbs)
+            .field("tenant_slug", tenant_slug)
+            .field("listen_addr", listen_addr)
+            .field("storage", storage)
+            .field("events", events)
+            .field("log_format", log_format)
+            .field("qdrant", qdrant)
+            .field("embedder", embedder)
+            .field("index_concurrency", index_concurrency)
+            .field("webdav_username", webdav_username)
+            .field("webdav_password", &"<redacted>")
+            .field("mcp_http_allowed_origins", mcp_http_allowed_origins)
+            .field("mcp_http_allowed_hosts", mcp_http_allowed_hosts)
+            .field("mcp_anonymous", mcp_anonymous)
+            .field("max_patchable_size", max_patchable_size)
+            .field("mcp_max_read_bytes", mcp_max_read_bytes)
+            .field("mcp_max_sessions", mcp_max_sessions)
+            .field("ready_probe_interval_ms", ready_probe_interval_ms)
+            .field("metrics_listen_addr", metrics_listen_addr)
+            .field("request_bounds", request_bounds)
+            .field("staging", staging)
+            .field("oidc", oidc)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ServerQdrantConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            url,
+            api_key,
+            timeout_ms,
+            connect_timeout_ms,
+        } = self;
+        f.debug_struct("ServerQdrantConfig")
+            .field("url", url)
+            .field("api_key", &api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout_ms", timeout_ms)
+            .field("connect_timeout_ms", connect_timeout_ms)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for EmbedderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            endpoint_url,
+            model,
+            api_key: _,
+            dimensions,
+            batch_size,
+            timeout_ms,
+            max_retries,
+            max_input_tokens,
+        } = self;
+        f.debug_struct("EmbedderConfig")
+            .field("endpoint_url", endpoint_url)
+            .field("model", model)
+            .field("api_key", &"<redacted>")
+            .field("dimensions", dimensions)
+            .field("batch_size", batch_size)
+            .field("timeout_ms", timeout_ms)
+            .field("max_retries", max_retries)
+            .field("max_input_tokens", max_input_tokens)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory as _;
     use std::collections::BTreeSet;
+
+    /// `{:?}` of the configuration prints none of its credentials, nested ones
+    /// included, and still prints the rest (#503).
+    #[test]
+    fn debug_never_prints_a_credential() {
+        let mut config = Config::for_tests();
+        config.api_token = "sentinel-api-token-71d2".into();
+        config.webdav_password = "sentinel-webdav-password-71d2".into();
+        config.embedder.api_key = "sentinel-embedding-key-71d2".into();
+        config.qdrant.api_key = Some("sentinel-qdrant-key-71d2".into());
+
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("sentinel"), "{printed}");
+        assert!(printed.contains(&config.webdav_username), "{printed}");
+        assert!(printed.contains(&config.qdrant.url), "{printed}");
+        assert!(printed.contains(&config.embedder.model), "{printed}");
+        config.qdrant.api_key = None;
+        assert!(format!("{config:?}").contains("api_key: None"));
+    }
 
     /// A configuration diagnostic has to be actionable from either direction, so
     /// it names the environment variable, the flag that overrides it, and what is
