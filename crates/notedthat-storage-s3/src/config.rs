@@ -58,7 +58,7 @@ fn parse_bool(var: &str, supplied: Option<&str>, default: bool) -> Result<bool, 
 ///
 /// All fields are read directly from the process environment; no credential
 /// chain (no `~/.aws/credentials` file discovery) is used.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Config {
     /// Custom S3-compatible endpoint URL (e.g. `SeaweedFS`, `MinIO`).
     /// If `None`, the standard AWS endpoint is used.
@@ -89,7 +89,7 @@ pub struct S3Config {
 /// sources: `notedthat-server` fills this from its command line and the
 /// environment. `None` means the setting was not supplied at all — an empty
 /// string is a supplied value.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct S3Settings {
     /// `NOTEDTHAT_S3_REGION`.
     pub region: Option<String>,
@@ -105,6 +105,63 @@ pub struct S3Settings {
     pub reconcile: Option<String>,
     /// `NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES`.
     pub allow_unenforced_conditional_writes: Option<String>,
+}
+
+// `{:?}` of a config must not print the secret (#450). Each impl destructures
+// without `..`, so a new field does not compile until it is decided how to print it.
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            endpoint_url,
+            region,
+            access_key_id,
+            secret_access_key: _,
+            force_path_style,
+            reconcile_on_startup,
+            allow_unenforced_conditional_writes,
+        } = self;
+        f.debug_struct("S3Config")
+            .field("endpoint_url", endpoint_url)
+            .field("region", region)
+            .field("access_key_id", access_key_id)
+            .field("secret_access_key", &"<redacted>")
+            .field("force_path_style", force_path_style)
+            .field("reconcile_on_startup", reconcile_on_startup)
+            .field(
+                "allow_unenforced_conditional_writes",
+                allow_unenforced_conditional_writes,
+            )
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for S3Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            region,
+            access_key_id,
+            secret_access_key,
+            endpoint_url,
+            force_path_style,
+            reconcile,
+            allow_unenforced_conditional_writes,
+        } = self;
+        f.debug_struct("S3Settings")
+            .field("region", region)
+            .field("access_key_id", access_key_id)
+            .field(
+                "secret_access_key",
+                &secret_access_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("endpoint_url", endpoint_url)
+            .field("force_path_style", force_path_style)
+            .field("reconcile", reconcile)
+            .field(
+                "allow_unenforced_conditional_writes",
+                allow_unenforced_conditional_writes,
+            )
+            .finish()
+    }
 }
 
 impl S3Config {
@@ -186,6 +243,33 @@ mod tests {
             secret_access_key: Some("test-secret".into()),
             ..S3Settings::default()
         }
+    }
+
+    /// `{:?}` of either struct never prints the secret, and still prints the rest,
+    /// the access key id included: it names the credential, it does not grant it (#450).
+    #[test]
+    fn debug_never_prints_the_secret_access_key() {
+        const SENTINEL: &str = "sentinel-secret-6b1f";
+        let settings = S3Settings {
+            secret_access_key: Some(SENTINEL.into()),
+            ..base()
+        };
+        let config = S3Config::from_settings(settings.clone()).expect("should parse");
+
+        for printed in [format!("{settings:?}"), format!("{config:?}")] {
+            assert!(!printed.contains(SENTINEL), "{printed}");
+            assert!(printed.contains("<redacted>"), "{printed}");
+            assert!(printed.contains("us-east-1"), "{printed}");
+            assert!(printed.contains("test-key"), "{printed}");
+        }
+        let unset = format!(
+            "{:?}",
+            S3Settings {
+                secret_access_key: None,
+                ..base()
+            }
+        );
+        assert!(unset.contains("secret_access_key: None"), "{unset}");
     }
 
     #[test]
