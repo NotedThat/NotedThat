@@ -36,6 +36,9 @@ jobs:
   test:
     name: test (${{ matrix.toolchain }})
     runs-on: 9xx
+    # About 4 minutes on ubuntu-latest; a starved runner should fail the check
+    # quickly instead of holding it for an hour.
+    timeout-minutes: 30
     strategy:
       # Both legs always report. "stable green, MSRV red" is a different
       # diagnosis from "both red", and fail-fast would hide which one it is.
@@ -249,10 +252,11 @@ jobs:
   # today only.
   #
   # Nothing is compiled — cargo-deny reads Cargo.lock and the advisory database
-  # — so there is no toolchain step and no rust-cache, for the same reason
-  # `fmt` has none. It runs alongside `test`, `clippy` and `package`, every one
-  # of which is longer, so it adds nothing to the pull-request feedback time
-  # #87 measured at about six minutes.
+  # — so there is no rust-cache, for the same reason `fmt` has none. The
+  # toolchain step is there only because the 9xx image has rustup but no
+  # default toolchain, and cargo-deny runs `cargo metadata`. It runs alongside
+  # `test`, `clippy` and `package`, every one of which is longer, so it adds
+  # nothing to the pull-request feedback time #87 measured at about six minutes.
   advisories:
     runs-on: 9xx
     # A tripwire on a hung advisory-database fetch, not a budget on the check,
