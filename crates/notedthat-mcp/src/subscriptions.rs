@@ -1093,10 +1093,17 @@ async fn keep_alive(
             );
             return;
         }
-        let ping = peer.send_request_with_option(
-            ServerRequest::PingRequest(PingRequest::default()),
-            PeerRequestOptions::with_timeout(KEEPER_TIMEOUT),
-        );
+        // Sending only queues the ping; `await_response` is what waits for the
+        // answer and enforces `KEEPER_TIMEOUT` (#481).
+        let ping = async {
+            peer.send_request_with_option(
+                ServerRequest::PingRequest(PingRequest::default()),
+                PeerRequestOptions::with_timeout(KEEPER_TIMEOUT),
+            )
+            .await?
+            .await_response()
+            .await
+        };
         let answered = tokio::select! {
             () = cancel.cancelled() => return,
             answer = ping => answer.is_ok(),
@@ -1491,15 +1498,44 @@ pub(crate) mod tests {
             rmcp::service::RunningService<rmcp::RoleClient, Recorder>,
         ),
     ) {
-        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let recorder = Recorder::default();
+        let (peer, services) = connected_to(recorder.clone()).await;
+        (peer, recorder, services)
+    }
+
+    /// A server peer connected to `client` over an in-memory pipe, with both
+    /// running services returned so they outlive the test body.
+    async fn connected_to<C: rmcp::ClientHandler>(
+        client: C,
+    ) -> (
+        Peer<RoleServer>,
+        (
+            rmcp::service::RunningService<RoleServer, Idle>,
+            rmcp::service::RunningService<rmcp::RoleClient, C>,
+        ),
+    ) {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let (server, client) = tokio::join!(
             rmcp::serve_server(Idle, server_io),
-            rmcp::serve_client(recorder.clone(), client_io)
+            rmcp::serve_client(client, client_io)
         );
         let server = server.expect("server handshake");
         let client = client.expect("client handshake");
-        (server.peer().clone(), recorder, (server, client))
+        (server.peer().clone(), (server, client))
+    }
+
+    /// A client that stays connected but never answers a `ping`, as one whose
+    /// event loop is blocked or that ignores server-initiated requests does.
+    #[derive(Clone)]
+    struct Silent;
+    impl rmcp::ClientHandler for Silent {
+        fn ping(
+            &self,
+            _context: rmcp::service::RequestContext<rmcp::RoleClient>,
+        ) -> impl Future<Output = Result<(), McpError>> + rmcp::service::MaybeSendFuture + '_
+        {
+            std::future::pending()
+        }
     }
 
     fn updates(recorder: &Recorder, uri: &str) -> usize {
@@ -1580,7 +1616,7 @@ pub(crate) mod tests {
     /// keeper's ping fails on the closed transport, so it marks the session
     /// gone, cancels its subscriptions, and a later `subscribe` is refused
     /// rather than answered `Ok` and left silent. A client that stays
-    /// connected but never answers is not covered here.
+    /// connected but never answers is the next test.
     #[tokio::test(start_paused = true)]
     async fn a_ping_to_a_hung_up_client_marks_the_session_gone() {
         let (peer, _recorder, (_server, client)) = connected().await;
@@ -1604,6 +1640,29 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(refused, McpToolError::BackendUnavailable.into());
+    }
+
+    /// A client that stays connected but never answers the ping is given
+    /// `KEEPER_TIMEOUT` and then treated like one that hung up (#481):
+    /// otherwise each unanswered ping counts as activity for rmcp's idle timer
+    /// and the session holds its slot for as long as the client lives.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_never_answers_the_ping_is_marked_gone() {
+        let (peer, _services) = connected_to(Silent).await;
+        let subs = kept(&peer);
+        settle().await;
+
+        tokio::time::advance(KEEPER_INTERVAL).await;
+        settle().await;
+        assert!(
+            !subs.gone.load(Ordering::SeqCst),
+            "the ping is still within its timeout"
+        );
+
+        tokio::time::advance(KEEPER_TIMEOUT).await;
+        settle().await;
+        assert!(subs.gone.load(Ordering::SeqCst));
+        assert!(subs.cancel.is_cancelled());
     }
 
     /// Once the last key is unsubscribed the keeper stands down at its next

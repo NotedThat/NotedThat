@@ -2172,8 +2172,9 @@ describes by default, which is what lets it push `notifications/resources/update
 - A session idle for five minutes is closed; one with live subscriptions — a
   `resources/subscribe`, not merely a `resources/list` — is kept alive by a server `ping` every
   60 s for as long as it still has one and the client answers. Unsubscribe the last key and the
-  pings stop, so the session idles out on schedule like any other. A client that stops answering
-  has no working notification leg, so its subscriptions are dropped and a later
+  pings stop, so the session idles out on schedule like any other. A client that does not answer
+  a ping within 30 s — hung up, or connected but not answering — is treated as having no working
+  notification leg, so its subscriptions are dropped and a later
   `resources/subscribe` on that session is refused (`backend_unavailable`) rather than accepted
   and left silent.
 - **A session answers only to the principal that opened it (D68).** The server records the

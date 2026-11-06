@@ -1560,7 +1560,8 @@ A session is not one connection. While it lives it holds:
 
 And it does not necessarily idle out. rmcp's five-minute idle timer counts *messages*, not an open
 leg, so a session with live subscriptions is kept alive by a server `ping` every 60 s and holds its
-slot until the client disappears; a session with none is closed after five minutes idle. Size
+slot until the client disappears or leaves a ping unanswered for 30 s; after that, like a session
+with no subscriptions, it is closed after five minutes idle. Size
 `NOTEDTHAT_MCP_MAX_SESSIONS` against the process's file-descriptor limit and the number of
 knowledge bases clients subscribe in, not against the number of users.
 
