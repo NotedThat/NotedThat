@@ -86,12 +86,20 @@ pub struct IndexedObject {
 ///
 /// The first chunk seen sets the object's `ETag`; any later chunk carrying a different
 /// one (or none) sets it to `""`, which no storage `ETag` equals.
+///
+/// A chunk with no `mime` counts as having no `ETag`. The worker always stamps the
+/// type it resolved, so an empty one was written before #327, and only re-indexing
+/// gives it the right type; reporting it changed is what makes reconciliation do
+/// that (#346).
 pub(crate) fn merge_chunk_etag(
     by_key: &mut BTreeMap<String, String>,
     object_key: String,
     etag: Option<String>,
+    mime: Option<&str>,
 ) {
-    let etag = etag.unwrap_or_default();
+    let etag = etag
+        .filter(|_| mime.is_some_and(|mime| !mime.is_empty()))
+        .unwrap_or_default();
     match by_key.entry(object_key) {
         Entry::Vacant(entry) => {
             entry.insert(etag);
@@ -201,6 +209,9 @@ pub trait VectorStore: Send + Sync {
     /// `ETag` would make that object look indexed whenever the chunk read happened to be a
     /// rewritten one, and the old text would stay in search with nothing left to repair
     /// it. So an implementation must check all of them (issue #276).
+    ///
+    /// A chunk with an empty or missing `mime` counts as disagreeing too, the rule
+    /// `indexed_objects` applies: only a re-index gives it its type (#346).
     ///
     /// # Errors
     ///

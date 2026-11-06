@@ -477,6 +477,22 @@ mod tests {
         assert_eq!(keys(&r), [".notedthat/manifest.json"]);
     }
 
+    /// An indexed object reported with an empty `ETag` — its chunks disagree, or
+    /// carry no `mime` (#346) — is re-read, whatever storage lists for it.
+    #[test]
+    fn an_object_indexed_with_an_empty_etag_counts_as_changed() {
+        let r = compare(
+            stored(&[("a.md", "\"1\""), ("legacy.md", "\"2\"")]),
+            &indexed(&[("a.md", "\"1\""), ("legacy.md", "")]),
+            None,
+        );
+        assert_eq!((r.report.changed, r.report.unchanged), (1, 1));
+        assert_eq!(
+            r.keys.iter().map(ObjectPath::as_str).collect::<Vec<_>>(),
+            ["legacy.md"]
+        );
+    }
+
     #[test]
     fn a_listing_without_an_etag_counts_as_changed() {
         let r = compare(

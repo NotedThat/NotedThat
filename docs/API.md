@@ -1396,7 +1396,7 @@ curl -sSf -X POST \
 
 #### Upgrade notes (M4 → M5)
 
-> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. A full rebuild stays a post-v1 feature (D42); `POST …/index/reconcile` (D67) only refreshes objects whose bytes changed, so for this upgrade operators trigger a rewrite by PUTting existing documents again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
+> **Reindex recommended after upgrading from M4.** The Qdrant payload schema was extended in M5: `mime`, `tags`, `content_hash`, and `text` fields were added, and a `mime` payload index was created. Documents written by an M4 server will not be returned by `mime` filters and will have empty `preview` fields until they are re-written or the KB is reindexed. A full rebuild stays a post-v1 feature (D42), but their chunks have no `mime` field, so `POST …/index/reconcile` (D67) re-indexes them (#346), as does the startup pass on `fs`. To refresh one document sooner, PUT it again via `PUT /api/v1/knowledgebases/{kb_slug}/{path}`.
 >
 > The CHANGELOG for this release is generated automatically by release-plz — do not edit it by hand. This section is the operator-facing source of truth for upgrade guidance.
 
@@ -1407,11 +1407,13 @@ curl -sSf -X POST \
 > used to be indexed as Markdown whatever its key,
 > with an empty `mime` on its chunks. It is now judged by its key: `.md`/`.markdown` are indexed as
 > `text/markdown` and `.txt` as `text/plain`, and both the chunks and `object.indexed` carry that
-> type. Anything else is removed from the index. Chunks indexed before this release keep `mime: ""`
-> until their object is indexed again, so `mime: "text/markdown"` does not find them yet. Likewise,
-> an untyped key with no text suffix that was indexed before (a `README`, say) stays searchable
-> until it is written or deleted. `POST …/index/reconcile` only refreshes objects whose bytes
-> changed, so PUT affected documents again with their type:
+> type. Anything else is removed from the index. Chunks indexed before this release carry
+> `mime: ""`, and the next reconciliation pass re-indexes every object that has such a chunk (#346):
+> the startup pass on `fs`, or `POST …/index/reconcile` on either backend. Each such object is read
+> and embedded once; an object whose chunks already carry a type is still compared by `ETag` alone.
+> Until that pass, `mime: "text/markdown"` does not find them. An untyped key with no text suffix
+> (a `README`, say) is then taken out of the index by that same re-index. To refresh one document
+> sooner, PUT it again with its type:
 >
 > ```bash
 > curl -sSf -X PUT -H "Authorization: Bearer $TOKEN" \
@@ -1443,8 +1445,8 @@ curl -sSf -X POST \
 > does not find them: an object stored as `text/markdown; charset=utf-8` is not returned for
 > `mime: "text/markdown"`. The filter also matches its own value exactly, so passing the exact
 > raw type (`text/markdown; charset=utf-8`) still finds those chunks, together with any indexed
-> since. `POST …/index/reconcile` only refreshes objects whose bytes changed, so PUT affected
-> documents again, as for M4 → M5 above.
+> since. `POST …/index/reconcile` only refreshes objects whose bytes changed or whose chunks carry
+> no type, so PUT affected documents again.
 
 ---
 
