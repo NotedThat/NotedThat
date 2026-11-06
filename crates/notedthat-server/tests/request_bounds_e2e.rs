@@ -539,7 +539,7 @@ fn a_request_id_cannot_change_the_status_code() {
 /// The two deadlines are the whole point. The MCP tool-call client's clock
 /// starts before connect, before the head and before auth; the server's starts
 /// when `bound` runs. So a client deadline merely *equal* to the server's wins
-/// the race, the tool reports `transport error: API unreachable`, and
+/// the race, the tool reports `transport error: internal API call failed`, and
 /// the documented error is unreachable. Give the client back a fixed deadline
 /// no longer than the server's and this test fails.
 #[tokio::test]
