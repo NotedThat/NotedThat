@@ -325,13 +325,15 @@ jobs:
 
   # The Prometheus alerting rules in docker/prometheus (#186): the config that
   # loads them, the rules themselves, and their unit tests in alerts.test.yml.
-  # promtool comes from the same image docker-compose.metrics.yml runs, so the
-  # rules are judged by the Prometheus that will evaluate them; the tag moves
-  # in step with that file's `image:` and DEVELOPMENT.md. Nothing `needs:`
+  # promtool comes from the same release docker-compose.metrics.yml runs, so the
+  # rules are judged by the Prometheus that will evaluate them; the version
+  # moves in step with that file's `image:` and DEVELOPMENT.md. Nothing `needs:`
   # this job: a broken rules file is caught here on the pull request, and it
   # ships no code a release could be held back for.
+  #
+  # The release tarball rather than the image: the 9xx runners have no Docker.
   alerting-rules:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     timeout-minutes: 10
     permissions:
       contents: read
@@ -339,16 +341,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Mounted where docker-compose.metrics.yml mounts it, so `rule_files`
-      # resolves exactly as it does in the stack.
-      - run: |
+      - working-directory: docker/prometheus
+        env:
+          VERSION: 3.7.3
+          SHA256: fc9e5da126817438cf2820d9a7206c75e3122802ba8d20add3a6219a59ca6913
+        run: |
           set -euo pipefail
-          promtool() {
-            docker run --rm --entrypoint promtool -w /etc/prometheus \
-              -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 "$@"
-          }
-          promtool check config prometheus.yml
-          promtool test rules alerts.test.yml
+          tarball="prometheus-${VERSION}.linux-amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/prometheus/prometheus/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" --strip-components=1 "prometheus-${VERSION}.linux-amd64/promtool"
+          # prometheus.yml names its rule file by the path the stack mounts it
+          # at, /etc/prometheus; point that at this directory instead.
+          sed "s#/etc/prometheus/#$PWD/#" prometheus.yml > "$RUNNER_TEMP/prometheus.yml"
+          "$RUNNER_TEMP/promtool" check config "$RUNNER_TEMP/prometheus.yml"
+          "$RUNNER_TEMP/promtool" test rules alerts.test.yml
 
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
