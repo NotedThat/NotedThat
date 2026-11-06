@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Configuration for `OpenAiCompatibleEmbedder`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     /// Base URL of the OpenAI-compatible API, including any version segment
     /// (e.g. `https://api.openai.com/v1`); `/embeddings` is appended.
@@ -23,6 +23,31 @@ pub struct OpenAiCompatibleConfig {
     pub timeout: Duration,
     /// Maximum number of total attempts for retriable failures.
     pub max_retries: u32,
+}
+
+// `{:?}` must not print the API key (#503). Destructured without `..`, so a new
+// field does not compile until it is decided how to print it.
+impl std::fmt::Debug for OpenAiCompatibleConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            endpoint_url,
+            model,
+            api_key: _,
+            dim,
+            max_input_tokens,
+            timeout,
+            max_retries,
+        } = self;
+        f.debug_struct("OpenAiCompatibleConfig")
+            .field("endpoint_url", endpoint_url)
+            .field("model", model)
+            .field("api_key", &"<redacted>")
+            .field("dim", dim)
+            .field("max_input_tokens", max_input_tokens)
+            .field("timeout", timeout)
+            .field("max_retries", max_retries)
+            .finish()
+    }
 }
 
 /// HTTP client for OpenAI-compatible embedding endpoints.
@@ -290,6 +315,19 @@ mod tests {
             timeout: Duration::from_secs(5),
             max_retries: 3,
         }
+    }
+
+    /// `{:?}` never prints the API key, and still prints the rest (#503).
+    #[test]
+    fn debug_never_prints_the_api_key() {
+        let config = OpenAiCompatibleConfig {
+            api_key: "sentinel-embedding-key-9a4c".into(),
+            ..make_config("http://localhost:9")
+        };
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("sentinel"), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+        assert!(printed.contains("test-model"), "{printed}");
     }
 
     fn make_response(embeddings: Vec<Vec<f32>>) -> serde_json::Value {
