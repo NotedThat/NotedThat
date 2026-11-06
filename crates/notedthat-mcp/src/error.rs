@@ -77,7 +77,7 @@ pub enum McpToolError {
     /// Transport-level reqwest error. Displayed as fixed text: `reqwest`'s own
     /// message names the internal API URL, which is not the client's to see
     /// (#342). The full error is logged where it becomes the client's message.
-    #[error("transport error: API unreachable")]
+    #[error("transport error: internal API call failed")]
     Transport(#[from] reqwest::Error),
     /// JSON deserialization error.
     #[error("serialization error: {0}")]
@@ -284,7 +284,7 @@ mod tests {
             (
                 McpToolError::Transport(transport),
                 ErrorCode::INTERNAL_ERROR,
-                "transport error: API unreachable",
+                "transport error: internal API call failed",
             ),
             (
                 McpToolError::Serialization(serialization),
@@ -314,7 +314,7 @@ mod tests {
         for text in [displayed.as_str(), ed.message.as_ref()] {
             assert!(!text.contains("127.0.0.1"), "{text}");
             assert!(!text.contains("secret-kb"), "{text}");
-            assert_eq!(text, "transport error: API unreachable");
+            assert_eq!(text, "transport error: internal API call failed");
         }
     }
 
