@@ -84,8 +84,9 @@ pub(in crate::router) async fn head_object(
 ///
 /// `Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects
 /// lines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`
-/// and `X-Content-Range-Bytes`. A text content type is served with
-/// `; charset=utf-8`.
+/// and `X-Content-Range-Bytes`. The content type is served exactly as stored:
+/// a write labels a textual type `charset=utf-8` only when its bytes are UTF-8
+/// (see the charset rule in docs/API.md).
 #[utoipa::path(
     get,
     path = "/knowledgebases/{kb_slug}/{object_path}",
