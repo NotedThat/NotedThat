@@ -13,7 +13,7 @@ use notedthat_core::{
     ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
     Storage, StorageError, TenantSlug, Validators, derive_bucket_name,
 };
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use tracing::{debug, info, warn};
 
 /// Where [`S3Storage::check_conditional_writes`] puts its scratch object. Under
@@ -23,17 +23,25 @@ pub const PROBE_KEY_PREFIX: &str = ".notedthat/conditional-write-probe-";
 const PROBE_BODY: &[u8] = b"conditional-write probe";
 /// A quoted `ETag` no object can carry: S3 `ETag`s are hex digests, and this is not hex.
 const PROBE_UNMATCHABLE_ETAG: &str = "\"notedthat-conditional-write-probe\"";
-const COPY_SOURCE_ENCODE_SET: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'%')
-    .add(b'<')
-    .add(b'>')
-    .add(b'?')
-    .add(b'`')
-    .add(b'{')
-    .add(b'}');
+/// Everything but the RFC 3986 unreserved bytes, as the AWS SDKs encode this header:
+/// S3 decodes `x-amz-copy-source` like a form value, so a raw `+` would read as a space.
+const COPY_SOURCE_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+/// The `x-amz-copy-source` value for `source` in `bucket`: each key segment
+/// percent-encoded, joined by a literal `/`.
+fn copy_source(bucket: &str, source: &ObjectPath) -> String {
+    let encoded = source
+        .as_str()
+        .split('/')
+        .map(|segment| utf8_percent_encode(segment, COPY_SOURCE_ENCODE_SET).to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{bucket}/{encoded}")
+}
 
 /// Production `Storage` implementation backed by Amazon S3 (or S3-compatible backends
 /// such as `SeaweedFS` 4.18+).
@@ -934,13 +942,7 @@ impl Storage for S3Storage {
         options: CopyObjectOptions,
     ) -> Result<PutOutcome, StorageError> {
         let bucket = self.bucket_name(kb);
-        let encoded_source = source
-            .as_str()
-            .split('/')
-            .map(|segment| utf8_percent_encode(segment, COPY_SOURCE_ENCODE_SET).to_string())
-            .collect::<Vec<_>>()
-            .join("/");
-        let copy_source = format!("{bucket}/{encoded_source}");
+        let copy_source = copy_source(&bucket, source);
         let existed = self
             .key_exists_before_write(
                 &bucket,
@@ -1138,6 +1140,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every byte but the RFC 3986 unreserved ones is escaped, `/` stays a separator,
+    /// and a non-ASCII key is encoded as UTF-8 (#442).
+    #[test]
+    fn copy_source_escapes_every_reserved_byte() {
+        let key = ObjectPath::try_from_str("c++ notes/q&a=1;x@y[0]!$'(),*:~_-.md").expect("key");
+        assert_eq!(
+            copy_source("nt-default-notes", &key),
+            "nt-default-notes/c%2B%2B%20notes/q%26a%3D1%3Bx%40y%5B0%5D%21%24%27%28%29%2C%2A%3A~_-.md"
+        );
+        let key = ObjectPath::try_from_str("文.md").expect("key");
+        assert_eq!(copy_source("b", &key), "b/%E6%96%87.md");
+    }
 
     /// The first hex digit flips — `'0'` to `'1'`, anything else to `'0'` — and every
     /// other character, quotes and multipart suffix included, is kept as it was.
