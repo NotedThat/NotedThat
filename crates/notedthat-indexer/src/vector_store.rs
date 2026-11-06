@@ -210,6 +210,9 @@ pub trait VectorStore: Send + Sync {
     /// rewritten one, and the old text would stay in search with nothing left to repair
     /// it. So an implementation must check all of them (issue #276).
     ///
+    /// A chunk with an empty or missing `mime` counts as disagreeing too, the rule
+    /// `indexed_objects` applies: only a re-index gives it its type (#346).
+    ///
     /// # Errors
     ///
     /// A knowledge base with no collection is [`VectorStoreError::CollectionNotFound`],

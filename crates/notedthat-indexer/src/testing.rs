@@ -600,8 +600,8 @@ impl VectorStore for InMemoryVectorStore {
                 .ok_or_else(|| VectorStoreError::CollectionNotFound {
                     kb: kb.as_str().to_string(),
                 })?;
-        // Every chunk must carry the same `ETag`; a chunk without one disagrees, as it does
-        // in Qdrant's `must_not` count.
+        // Every chunk must carry the same `ETag`; a chunk without one, or without a `mime`,
+        // disagrees, as it does in Qdrant's count and in `merge_chunk_etag` (#346).
         let mut etags = collection
             .points
             .values()
@@ -613,7 +613,15 @@ impl VectorStore for InMemoryVectorStore {
                     .as_deref()
                     == Some(object_key)
             })
-            .map(|point| point.payload.get("etag").and_then(as_string));
+            .map(|point| {
+                point.payload.get("etag").and_then(as_string).filter(|_| {
+                    point
+                        .payload
+                        .get("mime")
+                        .and_then(as_string)
+                        .is_some_and(|mime| !mime.is_empty())
+                })
+            });
         let Some(Some(etag)) = etags.next() else {
             return Ok(None);
         };
