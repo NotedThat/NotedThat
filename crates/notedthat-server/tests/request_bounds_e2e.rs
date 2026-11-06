@@ -753,3 +753,33 @@ async fn webdav_gets_its_own_longer_timeout() {
          not by the WebDAV one"
     );
 }
+
+/// An MCP tool call holds one permit, not two (#446). Its `POST /mcp` answers
+/// with a stream head before the tool runs, which releases that permit, so the
+/// only one the call holds while it works is its loopback `/api/v1` call's.
+/// With a single permit, the call must therefore succeed.
+#[tokio::test]
+async fn an_mcp_tool_call_fits_in_a_single_permit() {
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, in_memory_backends(), |config| {
+        config.request_bounds.max_requests_in_flight = 1;
+    })
+    .await;
+
+    // When: one tool call, which reaches `/api/v1` over loopback.
+    let mcp = McpSession::connect(&server.base_url, API_TOKEN);
+    let answer = mcp
+        .request(
+            1,
+            "tools/call",
+            &serde_json::json!({ "name": "list_knowledgebases", "arguments": {} }),
+        )
+        .await;
+
+    // Then: it answered, its loopback call admitted by the one permit.
+    assert!(answer.get("error").is_none(), "{answer}");
+    assert_ne!(answer["result"]["isError"], true, "{answer}");
+    assert!(
+        answer["result"].to_string().contains(&server.kb),
+        "{answer}"
+    );
+}
