@@ -6,6 +6,7 @@
 //! HTTP headers (Content-Type, If-Match) are accessible for the shared write path.
 
 pub(crate) mod access;
+pub(crate) mod dav_xml;
 pub mod filesystem;
 pub(crate) mod if_header;
 pub mod metadata;
