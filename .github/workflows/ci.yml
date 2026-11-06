@@ -604,6 +604,22 @@ jobs:
             echo "held-back=$(paste -sd' ' - <<<"$held")"
             echo "skip=${skip}"
           } >>"$GITHUB_OUTPUT"
+      # release-plz/action's git-config step calls `gh`; the 9xx image has none.
+      # Keep VERSION/SHA256 in step with the other "Install gh" step.
+      - name: Install gh
+        if: steps.preflight.outputs.skip != 'true'
+        env:
+          VERSION: 2.103.3
+          SHA256: 4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+        run: |
+          set -euo pipefail
+          tarball="gh_${VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/cli/cli/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gh-bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/gh-bin" --strip-components=2 "gh_${VERSION}_linux_amd64/bin/gh"
+          echo "$RUNNER_TEMP/gh-bin" >>"$GITHUB_PATH"
       - name: Run release-plz (release)
         id: release-plz
         # Skipped when every crate is held back; the later steps key off `releases`.
@@ -636,7 +652,6 @@ jobs:
           tag=$(printf '%s' "$RELEASES" | jq -r '..|.tag? // empty | select(test("^v[0-9]"))' | head -n1)
           if [ -n "$tag" ] && [ "$tag" != "null" ]; then
             echo "Dispatching release.yml against tag $tag"
-            # curl, not `gh workflow run`: the 9xx runner image has no gh.
             curl --proto '=https' --tlsv1.2 -fsS -X POST \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
@@ -714,6 +729,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
         with:
           toolchain: stable
+      # release-plz/action's git-config step calls `gh`; the 9xx image has none.
+      # Keep VERSION/SHA256 in step with the other "Install gh" step.
+      - name: Install gh
+        env:
+          VERSION: 2.103.3
+          SHA256: 4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+        run: |
+          set -euo pipefail
+          tarball="gh_${VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/cli/cli/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gh-bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/gh-bin" --strip-components=2 "gh_${VERSION}_linux_amd64/bin/gh"
+          echo "$RUNNER_TEMP/gh-bin" >>"$GITHUB_PATH"
       - name: Run release-plz (release-pr)
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5
         with:
