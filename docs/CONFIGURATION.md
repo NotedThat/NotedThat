@@ -106,6 +106,10 @@ stay open and a proxy in front of it does not:
   every surface. A request that arrives when it is reached is answered at once, not queued, with
   `503 backend_unavailable` and `Retry-After: 5`, like every other capacity refusal on this
   server. A permit is held until the response head, so a download in progress does not hold one.
+  The same goes for an MCP tool call: its `POST /mcp` answers with a stream head before the tool
+  runs, so what the tool holds while it works are the permits of its own loopback `/api/v1`
+  calls — one for most tools, one per knowledge base for a `search` across several (at most 8 at
+  once).
 - **Time to send a request head, and the gap between body frames** —
   `NOTEDTHAT_HEADER_READ_TIMEOUT_MS` (default 30 s). A connection that has not sent a complete
   request head in that time is closed without an answer. The same bound applies to the pause
