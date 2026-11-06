@@ -39,7 +39,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Qdrant client configuration, parsed from `NOTEDTHAT_QDRANT_*` env vars.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QdrantConfig {
     /// Qdrant server URL (e.g., <http://127.0.0.1:6334>).
     pub url: String,
@@ -49,6 +49,25 @@ pub struct QdrantConfig {
     pub timeout: Duration,
     /// Connection-establishment timeout.
     pub connect_timeout: Duration,
+}
+
+// `{:?}` must not print the API key (#503). Destructured without `..`, so a new
+// field does not compile until it is decided how to print it.
+impl std::fmt::Debug for QdrantConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            url,
+            api_key,
+            timeout,
+            connect_timeout,
+        } = self;
+        f.debug_struct("QdrantConfig")
+            .field("url", url)
+            .field("api_key", &api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout", timeout)
+            .field("connect_timeout", connect_timeout)
+            .finish()
+    }
 }
 
 impl Default for QdrantConfig {
@@ -455,6 +474,20 @@ mod tests {
         };
         let _c2 = c.clone();
         let _s = format!("{c:?}");
+    }
+
+    /// `{:?}` never prints the API key, and still says whether there is one (#503).
+    #[test]
+    fn debug_never_prints_the_api_key() {
+        let config = QdrantConfig {
+            url: "http://localhost:6334".into(),
+            api_key: Some("sentinel-qdrant-key-9a4c".into()),
+            ..Default::default()
+        };
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("sentinel"), "{printed}");
+        assert!(printed.contains("Some(\"<redacted>\")"), "{printed}");
+        assert!(printed.contains("localhost:6334"), "{printed}");
     }
 
     #[test]
