@@ -15,13 +15,15 @@ notedthat-indexer = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 memchr.workspace = true
+mime.workspace = true
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["io-util", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
+futures.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lib]

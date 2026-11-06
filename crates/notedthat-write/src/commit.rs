@@ -53,7 +53,14 @@ pub async fn commit<B: Into<StagedBody>>(
     let size = body.len();
     check_size(size, MAX_UPLOAD_BYTES)?;
     crate::manifest::check_staged_manifest(kb, path, &body).await?;
-    let mime = sniff_content_type(caller_content_type, path);
+    let mime =
+        crate::mime::label_staged_charset(sniff_content_type(caller_content_type, path), &body)
+            .await
+            .map_err(|error| {
+                WriteError::Storage(StorageError::Other {
+                    source: Box::new(error),
+                })
+            })?;
     let outcome = storage
         .put_staged_object(kb, path, body, Some(&mime), conditionals)
         .await?;
@@ -359,9 +366,13 @@ pub(crate) async fn cas_rewrite<T>(
         let (new_bytes, extra) = splice(&read.bytes)?;
 
         crate::manifest::check_manifest_bytes(kb, path, &new_bytes)?;
-        let content_type = caller_content_type
-            .or(read.meta.content_type.as_deref())
-            .unwrap_or("application/octet-stream");
+        // The rewrite can change whether the body is UTF-8, so its label is decided again.
+        let content_type = crate::mime::label_charset(
+            caller_content_type
+                .or(read.meta.content_type.as_deref())
+                .unwrap_or("application/octet-stream"),
+            std::str::from_utf8(&new_bytes).is_ok(),
+        );
         let new_size =
             u64::try_from(new_bytes.len()).map_err(|_| WriteError::PatchInvalidRange {
                 message: "buffer length does not fit u64".into(),
@@ -371,7 +382,7 @@ pub(crate) async fn cas_rewrite<T>(
                 kb,
                 path,
                 new_bytes,
-                Some(content_type),
+                Some(&content_type),
                 if_match(&head_etag),
             )
             .await
@@ -384,7 +395,7 @@ pub(crate) async fn cas_rewrite<T>(
             Err(error) => return Err(WriteError::Storage(error)),
         };
 
-        after_write(sinks, kb, path, &outcome, new_size, content_type).await?;
+        after_write(sinks, kb, path, &outcome, new_size, &content_type).await?;
         return Ok((outcome, extra));
     }
 }
@@ -1119,7 +1130,7 @@ mod tests {
             notedthat_core::ObjectEventKind::Written {
                 etag: outcome.etag.expect("etag"),
                 size: 6,
-                mime: "text/markdown".into(),
+                mime: "text/markdown; charset=utf-8".into(),
                 mtime: match &event.kind {
                     notedthat_core::ObjectEventKind::Written { mtime, .. } => *mtime,
                     other => unreachable!("a write publishes object.written, got {other:?}"),

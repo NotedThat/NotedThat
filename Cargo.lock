@@ -2497,7 +2497,6 @@ dependencies = [
  "httpdate",
  "metrics",
  "metrics-util",
- "mime",
  "notedthat-api-http",
  "notedthat-core",
  "notedthat-events",
@@ -2748,7 +2747,9 @@ version = "0.13.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "memchr",
+ "mime",
  "notedthat-core",
  "notedthat-indexer",
  "serde_json",
