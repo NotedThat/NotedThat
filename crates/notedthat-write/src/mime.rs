@@ -113,7 +113,9 @@ async fn is_utf8(body: &StagedBody) -> Result<bool, std::io::Error> {
 /// Select a content type for an object write.
 ///
 /// An explicit caller-provided content type wins unless it is
-/// `application/octet-stream`, in which case markdown extensions are inferred.
+/// `application/octet-stream`, in which case the type is inferred from the key's
+/// extension: `md` and `markdown` give `text/markdown`, `txt` gives `text/plain`,
+/// and anything else stays `application/octet-stream`.
 pub fn sniff_content_type(caller: Option<&str>, path: &ObjectPath) -> String {
     match caller {
         Some(ct) if ct != "application/octet-stream" => ct.to_string(),
