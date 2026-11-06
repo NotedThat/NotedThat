@@ -647,6 +647,7 @@ impl VectorStore for InMemoryVectorStore {
                 &mut by_key,
                 object_key,
                 point.payload.get("etag").and_then(as_string),
+                point.payload.get("mime").and_then(as_string).as_deref(),
             );
         }
         Ok(by_key

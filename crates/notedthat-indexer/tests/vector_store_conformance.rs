@@ -530,6 +530,9 @@ fn indexed_points() -> Vec<PointStruct> {
     // `notes/untagged.md` has one chunk with no `etag` field at all. The tagged chunk
     // has the lower point id, so Qdrant reads an `ETag` at the scroll and must reject
     // it at the count.
+    //
+    // `notes/legacy.md` was indexed before #327 with an empty `mime`; its `ETag` still
+    // matches storage, which is what kept reconciliation from ever re-indexing it (#346).
     [
         ("other/c.md", 0, Some("\"ccc\"")),
         ("notes/b.md", 0, Some("\"bbb\"")),
@@ -541,6 +544,7 @@ fn indexed_points() -> Vec<PointStruct> {
         ("notes/mixed.md", 1, Some("\"new\"")),
         ("notes/untagged.md", 0, Some("\"x\"")),
         ("notes/untagged.md", 1, None),
+        ("notes/legacy.md", 0, Some("\"lll\"")),
     ]
     .iter()
     .enumerate()
@@ -551,6 +555,12 @@ fn indexed_points() -> Vec<PointStruct> {
         if let Some(etag) = etag {
             payload.insert("etag".to_string(), (*etag).to_string().into());
         }
+        let mime = if *object_key == "notes/legacy.md" {
+            ""
+        } else {
+            "text/markdown"
+        };
+        payload.insert("mime".to_string(), mime.to_string().into());
         payload.insert("text".to_string(), "shared".to_string().into());
         let vectors = HashMap::from([
             ("dense".to_string(), Vector::from(vec![1.0_f32, 0.0, 0.0])),
@@ -892,7 +902,7 @@ fn assert_mixed_object_not_indexed(observations: &Observations) {
     assert_eq!(observed("etag_of_mixed_object"), "None");
     assert_eq!(observed("etag_of_untagged_object"), "None");
     for name in ["all_objects", "objects_under_prefix"] {
-        for key in ["notes/mixed.md", "notes/untagged.md"] {
+        for key in ["notes/mixed.md", "notes/untagged.md", "notes/legacy.md"] {
             assert!(
                 observed(name)
                     .split(',')
