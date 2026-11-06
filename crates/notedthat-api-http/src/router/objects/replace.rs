@@ -154,21 +154,24 @@ async fn replace_object(
     .await
     .map_err(|e| err(ApiError::from(e)))?;
 
-    let etag = outcome.put_outcome.etag.unwrap_or_default();
+    let etag = outcome.put_outcome.etag;
     let response = ReplaceResponse {
-        etag: etag.clone(),
+        etag: etag.clone().unwrap_or_default(),
         match_count: outcome.match_count,
         total_bytes: outcome.total_bytes,
     };
-    let content_location = object_location(kb.as_str(), path.as_str());
-
-    Ok((
+    let mut resp = (
         StatusCode::OK,
-        [
-            (axum::http::header::CONTENT_LOCATION, content_location),
-            (axum::http::header::ETAG, etag),
-        ],
+        [(
+            axum::http::header::CONTENT_LOCATION,
+            object_location(kb.as_str(), path.as_str()),
+        )],
         Json(response),
     )
-        .into_response())
+        .into_response();
+    // As on write and patch: no ETag header when the backend returned none.
+    if let Some(value) = etag.and_then(|e| axum::http::HeaderValue::try_from(e).ok()) {
+        resp.headers_mut().insert(axum::http::header::ETAG, value);
+    }
+    Ok(resp)
 }
