@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   advisories:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     timeout-minutes: 10
     permissions:
       contents: read
@@ -42,6 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-deny@0.20.2

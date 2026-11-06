@@ -35,7 +35,16 @@ jobs:
   # exactly the manifest claim that would otherwise ship unverified.
   test:
     name: test (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: 9xx
+    # About 4 minutes on ubuntu-latest; a starved runner should fail the check
+    # quickly instead of holding it for an hour.
+    timeout-minutes: 30
+    # The 9xx runner Pod has a 2 GiB memory limit on a 4-CPU node. Four rustc
+    # and linker processes on debug-info test binaries exceed it, the Pod is
+    # OOM-killed, and the job reports "runner lost communication".
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
     strategy:
       # Both legs always report. "stable green, MSRV red" is a different
       # diagnosis from "both red", and fail-fast would hide which one it is.
@@ -72,7 +81,7 @@ jobs:
       - run: cargo test --workspace --locked
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -102,7 +111,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -127,7 +136,7 @@ jobs:
   # in that crate's Cargo.toml under `[package.metadata.cargo-machete]
   # ignored`, with a reason, never with a flag here.
   machete:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -137,6 +146,7 @@ jobs:
       # Renovate bumps the action SHA but CANNOT see `tool:`, so the
       # cargo-machete version moves by hand, in two places: here and
       # DEVELOPMENT.md.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-machete@0.9.2
@@ -150,7 +160,7 @@ jobs:
   # Cargo unifies features across every member; the packaged crate has only
   # the features its own Cargo.toml asks for.
   package:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: read
     steps:
@@ -248,12 +258,13 @@ jobs:
   # today only.
   #
   # Nothing is compiled — cargo-deny reads Cargo.lock and the advisory database
-  # — so there is no toolchain step and no rust-cache, for the same reason
-  # `fmt` has none. It runs alongside `test`, `clippy` and `package`, every one
-  # of which is longer, so it adds nothing to the pull-request feedback time
-  # #87 measured at about six minutes.
+  # — so there is no rust-cache, for the same reason `fmt` has none. The
+  # toolchain step is there only because the 9xx image has rustup but no
+  # default toolchain, and cargo-deny runs `cargo metadata`. It runs alongside
+  # `test`, `clippy` and `package`, every one of which is longer, so it adds
+  # nothing to the pull-request feedback time #87 measured at about six minutes.
   advisories:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     # A tripwire on a hung advisory-database fetch, not a budget on the check,
     # which takes about a second. Note this CANCELS rather than fails, which is
     # harmless only because nothing `needs:` this job — and is the first thing
@@ -275,6 +286,7 @@ jobs:
       #
       # Renovate bumps the action SHA but CANNOT see `tool:`, so the cargo-deny
       # version moves by hand, in two places: here and DEVELOPMENT.md.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-deny@0.20.2
@@ -313,13 +325,15 @@ jobs:
 
   # The Prometheus alerting rules in docker/prometheus (#186): the config that
   # loads them, the rules themselves, and their unit tests in alerts.test.yml.
-  # promtool comes from the same image docker-compose.metrics.yml runs, so the
-  # rules are judged by the Prometheus that will evaluate them; the tag moves
-  # in step with that file's `image:` and DEVELOPMENT.md. Nothing `needs:`
+  # promtool comes from the same release docker-compose.metrics.yml runs, so the
+  # rules are judged by the Prometheus that will evaluate them; the version
+  # moves in step with that file's `image:` and DEVELOPMENT.md. Nothing `needs:`
   # this job: a broken rules file is caught here on the pull request, and it
   # ships no code a release could be held back for.
+  #
+  # The release tarball rather than the image: the 9xx runners have no Docker.
   alerting-rules:
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     timeout-minutes: 10
     permissions:
       contents: read
@@ -327,16 +341,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Mounted where docker-compose.metrics.yml mounts it, so `rule_files`
-      # resolves exactly as it does in the stack.
-      - run: |
+      - working-directory: docker/prometheus
+        env:
+          VERSION: 3.7.3
+          SHA256: fc9e5da126817438cf2820d9a7206c75e3122802ba8d20add3a6219a59ca6913
+        run: |
           set -euo pipefail
-          promtool() {
-            docker run --rm --entrypoint promtool -w /etc/prometheus \
-              -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 "$@"
-          }
-          promtool check config prometheus.yml
-          promtool test rules alerts.test.yml
+          tarball="prometheus-${VERSION}.linux-amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/prometheus/prometheus/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" --strip-components=1 "prometheus-${VERSION}.linux-amd64/promtool"
+          # prometheus.yml names its rule file by the path the stack mounts it
+          # at, /etc/prometheus; point that at this directory instead.
+          sed "s#/etc/prometheus/#$PWD/#" prometheus.yml > "$RUNNER_TEMP/prometheus.yml"
+          "$RUNNER_TEMP/promtool" check config "$RUNNER_TEMP/prometheus.yml"
+          "$RUNNER_TEMP/promtool" test rules alerts.test.yml
 
   # Dry-run Dockerfile build on every push and PR. Catches breakage before
   # release-plz can tag a broken commit. Runs the reusable docker.yml with
@@ -463,14 +483,14 @@ jobs:
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     environment: release
     permissions:
       contents: write
       pull-requests: read
       id-token: write
       # actions: write is required so the follow-up step can dispatch
-      # release.yml via `gh workflow run` (see below).
+      # release.yml through the workflow dispatch API (see below).
       actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -616,7 +636,12 @@ jobs:
           tag=$(printf '%s' "$RELEASES" | jq -r '..|.tag? // empty | select(test("^v[0-9]"))' | head -n1)
           if [ -n "$tag" ] && [ "$tag" != "null" ]; then
             echo "Dispatching release.yml against tag $tag"
-            gh workflow run release.yml --ref "$tag" --repo "$GITHUB_REPOSITORY"
+            # curl, not `gh workflow run`: the 9xx runner image has no gh.
+            curl --proto '=https' --tlsv1.2 -fsS -X POST \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+              -d "$(jq -cn --arg ref "$tag" '{ref: $ref}')"
           else
             echo "No workspace tag (v*) in release-plz output; nothing to dispatch"
           fi
@@ -674,7 +699,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     permissions:
       contents: write
       pull-requests: write

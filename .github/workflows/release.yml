@@ -46,7 +46,7 @@ permissions:
 jobs:
   plan:
     name: Plan release
-    runs-on: ubuntu-22.04
+    runs-on: 9xx
     outputs:
       manifest: ${{ steps.plan.outputs.manifest }}
       tag: ${{ github.ref_name }}
@@ -56,6 +56,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # dist reads the workspace through `cargo metadata`, and the 9xx image has
+      # rustup but no default toolchain. Same pin as ci.yml's `test` job.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
 
       - name: Install dist
         shell: bash
@@ -163,7 +169,7 @@ jobs:
   build-global-artifacts:
     name: build-global-artifacts
     needs: [plan, build-local-artifacts]
-    runs-on: ubuntu-22.04
+    runs-on: 9xx
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
@@ -171,6 +177,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # dist reads the workspace through `cargo metadata`, and the 9xx image has
+      # rustup but no default toolchain. Same pin as ci.yml's `test` job.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
 
       - name: Install cached dist
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -207,7 +219,7 @@ jobs:
   attest:
     name: Generate binary attestations
     needs: [build-local-artifacts, build-global-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -231,7 +243,7 @@ jobs:
   sign:
     name: Sign binaries
     needs: [build-local-artifacts, build-global-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -299,7 +311,7 @@ jobs:
   release:
     name: Attach artifacts to GitHub Release
     needs: [plan, build-local-artifacts, build-global-artifacts, attest, sign, docker]
-    runs-on: ubuntu-latest
+    runs-on: 9xx
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
