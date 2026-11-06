@@ -26,6 +26,9 @@ pub(crate) fn with_validators(
     builder
 }
 
+/// 9999-12-31T23:59:59Z in Unix seconds — the last instant `httpdate` will format.
+pub const LATEST_FORMATTABLE: u64 = 253_402_300_799;
+
 /// The RFC 7231 IMF-fixdate for `unix_seconds`, or `None` when it has none.
 ///
 /// `httpdate::fmt_http_date` **panics** past year 9999, and `last_modified` is
@@ -33,9 +36,6 @@ pub(crate) fn with_validators(
 /// filesystem stores. A response or a page render must not panic on absurd
 /// metadata, so the value is bounded here rather than trusted.
 pub(crate) fn http_date(unix_seconds: i64) -> Option<String> {
-    /// 9999-12-31T23:59:59Z — the last instant `httpdate` will format.
-    const LATEST_FORMATTABLE: u64 = 253_402_300_799;
-
     let seconds = u64::try_from(unix_seconds).ok()?;
     if seconds > LATEST_FORMATTABLE {
         return None;
