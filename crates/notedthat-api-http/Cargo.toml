@@ -21,6 +21,7 @@ axum = { workspace = true, features = ["http1", "json", "matched-path", "query",
 bytes.workspace = true
 futures.workspace = true
 http.workspace = true
+http-body-util.workspace = true
 httpdate.workspace = true
 metrics.workspace = true
 mime.workspace = true
