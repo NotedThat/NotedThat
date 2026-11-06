@@ -55,9 +55,7 @@ pub(crate) fn encode_cursor(after: &str, prefix: Option<&str>) -> String {
 }
 
 pub(crate) fn decode_cursor(token: &str, prefix: Option<&str>) -> Result<String, StorageError> {
-    let invalid = || StorageError::BackendUnavailable {
-        message: "invalid or expired cursor".to_string(),
-    };
+    let invalid = || StorageError::InvalidCursor;
 
     let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
     let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| invalid())?;

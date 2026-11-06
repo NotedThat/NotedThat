@@ -3078,30 +3078,6 @@ async fn list_route_cursor_round_trip() {
     );
 }
 
-/// AC6: Invalid cursor returns HTTP 503 with standard error body shape.
-#[tokio::test]
-async fn list_route_invalid_cursor_is_503() {
-    let resp = app()
-        .oneshot(authed_request(
-            "GET",
-            format!("/api/v1/knowledgebases/{KB}?cursor=garbage-cursor-that-does-not-exist"),
-            Body::empty(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let json = response_json(resp).await;
-    assert_eq!(
-        json["error"], "backend_unavailable",
-        "error field must be 'backend_unavailable', got: {json:?}"
-    );
-    assert!(
-        json["request_id"].is_string(),
-        "response must include a request_id string, got: {json:?}"
-    );
-    assert_ne!(json["request_id"].as_str().unwrap().len(), 0);
-}
-
 #[tokio::test]
 async fn an_object_modified_past_year_9999_is_served_without_last_modified() {
     // Given — an mtime `httpdate` cannot format, as a hand-set `fs` mtime can be.
@@ -3287,4 +3263,29 @@ async fn the_charset_label_follows_the_written_bytes() {
     // Binary types are never labelled.
     put("blob.bin", "application/octet-stream", b"\xff\xfe").await;
     assert_eq!(served("GET", "blob.bin").await, "application/octet-stream");
+}
+
+/// A cursor is the client's own input: a garbage or stale one is `400`, not
+/// `503` with `Retry-After`, which would tell the client to send the same bad
+/// request again and count as the backend being down (#447).
+#[tokio::test]
+async fn a_bad_cursor_is_the_clients_mistake() {
+    let response = app()
+        .oneshot(authed_request(
+            "GET",
+            format!("/api/v1/knowledgebases/{KB}?cursor=not-a-cursor"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.headers().get(header::RETRY_AFTER).is_none());
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["error"], "invalid_request", "{body}");
+    assert!(
+        body["request_id"].as_str().is_some_and(|id| !id.is_empty()),
+        "the standard error envelope carries a request id: {body}"
+    );
 }
