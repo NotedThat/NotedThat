@@ -74,8 +74,10 @@ pub enum McpToolError {
     /// 500 / other — internal server error.
     #[error("{code}: {0}", code = notedthat_core::ErrorCode::InternalError.as_str())]
     InternalError(String),
-    /// Transport-level reqwest error.
-    #[error("transport error: {0}")]
+    /// Transport-level reqwest error. Displayed as fixed text: `reqwest`'s own
+    /// message names the internal API URL, which is not the client's to see
+    /// (#342). The full error is logged where it becomes the client's message.
+    #[error("transport error: API unreachable")]
     Transport(#[from] reqwest::Error),
     /// JSON deserialization error.
     #[error("serialization error: {0}")]
@@ -85,6 +87,9 @@ pub enum McpToolError {
 impl From<McpToolError> for ErrorData {
     fn from(e: McpToolError) -> Self {
         let code = rmcp_code(&e);
+        if let McpToolError::Transport(error) = &e {
+            tracing::error!(error = ?error, "loopback API call failed in transport");
+        }
         // These two carry a message that already says what is wrong; the code
         // prefix the Display adds is for logs, not for the client.
         let message = match e {
@@ -279,7 +284,7 @@ mod tests {
             (
                 McpToolError::Transport(transport),
                 ErrorCode::INTERNAL_ERROR,
-                "transport error: builder error",
+                "transport error: API unreachable",
             ),
             (
                 McpToolError::Serialization(serialization),
@@ -292,6 +297,24 @@ mod tests {
             let ed: ErrorData = error.into();
             assert_eq!(ed.code, code, "{shown}");
             assert_eq!(ed.message, message, "{shown}");
+        }
+    }
+
+    /// A transport failure on the loopback call reaches the client as fixed
+    /// text: `reqwest`'s own message names the internal API URL (#342).
+    #[tokio::test]
+    async fn a_transport_error_names_no_internal_url() {
+        // Port 9 on loopback refuses the connection, so this fails in transport.
+        let transport = reqwest::get("http://127.0.0.1:9/api/v1/knowledgebases/secret-kb")
+            .await
+            .unwrap_err();
+        let error = McpToolError::Transport(transport);
+        let displayed = error.to_string();
+        let ed: ErrorData = error.into();
+        for text in [displayed.as_str(), ed.message.as_ref()] {
+            assert!(!text.contains("127.0.0.1"), "{text}");
+            assert!(!text.contains("secret-kb"), "{text}");
+            assert_eq!(text, "transport error: API unreachable");
         }
     }
 
