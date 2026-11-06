@@ -84,13 +84,6 @@ pub(in crate::router) async fn head_object(
     let err = &req.err();
 
     // Range header intentionally NOT forwarded on HEAD (RFC 7233 §3.1).
-    // Scope-OUT: Conditional writes (`If-Match`, `If-None-Match`) that succeed at
-    // S3 but return 503 at the indexer queue leave a naive retry in a state
-    // where S3 may return 412 because the object now exists or its ETag changed.
-    // Clients using conditional headers MUST detect the 503 → 412 sequence and
-    // either accept the ghost state or use a stronger consistency mechanism. v1
-    // does not provide automatic replay/repair for conditional-write ghost
-    // states.
     let meta = state
         .storage
         .head_object(req.access.kb(), &req.path, req.conditionals)
