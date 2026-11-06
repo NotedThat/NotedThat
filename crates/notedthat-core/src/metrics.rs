@@ -555,6 +555,7 @@ mod tests {
             StorageError::NotModified(crate::Validators::default()),
             StorageError::PreconditionFailed,
             StorageError::RangeNotSatisfiable { complete_length: 9 },
+            StorageError::InvalidCursor,
         ] {
             let expected = if matches!(error, StorageError::NotFound { .. }) {
                 outcome::NOT_FOUND
