@@ -51,13 +51,13 @@ fn charset(segment: &str) -> Option<&str> {
 }
 
 /// `content_type` split at each `;` outside a quoted string, segments untrimmed.
+/// A quoted string ends at the next `"`, backslash or not, as the mime crate
+/// that gates [`label_charset`] parses it.
 fn split_params(content_type: &str) -> Vec<&str> {
     let mut segments = Vec::new();
-    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    let (mut start, mut quoted) = (0, false);
     for (index, byte) in content_type.bytes().enumerate() {
         match byte {
-            _ if escaped => escaped = false,
-            b'\\' if quoted => escaped = true,
             b'"' => quoted = !quoted,
             b';' if !quoted => {
                 segments.push(&content_type[start..index]);
@@ -188,6 +188,15 @@ mod tests {
         assert_eq!(
             label_charset("text/plain; charset=\"utf-8\"; x=y", true),
             "text/plain; charset=\"utf-8\"; x=y"
+        );
+        // A backslash does not escape the closing quote, as in the mime crate.
+        assert_eq!(
+            label_charset("text/plain; x=\"a\\\"; charset=utf-8", false),
+            "text/plain; x=\"a\\\""
+        );
+        assert_eq!(
+            label_charset("text/plain; x=\"a\\\"; charset=utf-8", true),
+            "text/plain; x=\"a\\\"; charset=utf-8"
         );
     }
 
