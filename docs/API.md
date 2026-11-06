@@ -1407,11 +1407,13 @@ curl -sSf -X POST \
 > used to be indexed as Markdown whatever its key,
 > with an empty `mime` on its chunks. It is now judged by its key: `.md`/`.markdown` are indexed as
 > `text/markdown` and `.txt` as `text/plain`, and both the chunks and `object.indexed` carry that
-> type. Anything else is removed from the index. Chunks indexed before this release keep `mime: ""`
-> until their object is indexed again, so `mime: "text/markdown"` does not find them yet. Likewise,
-> an untyped key with no text suffix that was indexed before (a `README`, say) stays searchable
-> until it is written or deleted. `POST …/index/reconcile` only refreshes objects whose bytes
-> changed, so PUT affected documents again with their type:
+> type. Anything else is removed from the index. Chunks indexed before this release carry
+> `mime: ""`, and the next reconciliation pass re-indexes every object that has such a chunk (#346):
+> the startup pass on `fs`, or `POST …/index/reconcile` on either backend. Each such object is read
+> and embedded once; an object whose chunks already carry a type is still compared by `ETag` alone.
+> Until that pass, `mime: "text/markdown"` does not find them. An untyped key with no text suffix
+> (a `README`, say) is then taken out of the index by that same re-index. To refresh one document
+> sooner, PUT it again with its type:
 >
 > ```bash
 > curl -sSf -X PUT -H "Authorization: Bearer $TOKEN" \
