@@ -79,4 +79,14 @@ bounded by FRONTMATTER_PREFIX_LIMIT (16 MiB; see #79). Stopgap until the \
 parser is replaced: https://github.com/NotedThat/NotedThat/issues/424. \
 Revisit by 2026-12-15; unused-ignored-advisory fails this check once the \
 crate leaves the tree, which is the cue to delete this entry.""" },
+    { id = "RUSTSEC-2026-0440", reason = """
+astral-tokio-tar is unmaintained (informational notice, not a vulnerability) \
+and has no patched version: Astral deprecated every release on 2026-11-03. It \
+is reached only through testcontainers, a dev-dependency that starts Docker \
+containers for the integration tests, so it never ships in a published crate \
+or the server image. testcontainers 0.28.0, the latest release, still depends \
+on it, so an upgrade does not remove it. Revisit by 2027-02-01, or as soon as \
+a testcontainers release drops it; unused-ignored-advisory fails this check \
+once the crate leaves the tree, which is the cue to delete this entry. \
+https://rustsec.org/advisories/RUSTSEC-2026-0440.html""" },
 ]
