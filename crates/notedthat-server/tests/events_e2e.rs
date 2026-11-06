@@ -180,6 +180,35 @@ async fn a_write_is_announced_then_indexed_with_the_same_etag_and_then_searchabl
     assert_eq!(index["state"], "healthy", "{index}");
 }
 
+/// A `.txt` PUT with no `Content-Type` at all is stored as plain text and
+/// indexed, not stored as binary and left out of search (#345).
+#[tokio::test]
+async fn a_txt_put_without_a_content_type_is_searchable() {
+    let (server, _publisher) = server_with_events().await;
+    let mut indexed = subscribe(&server, "?event=indexed").await;
+
+    let response = server
+        .client
+        .put(server.object_url("notes/todo.txt"))
+        .header("Authorization", format!("Bearer {API_TOKEN}"))
+        .body("buy oat milk and lentils")
+        .send()
+        .await
+        .expect("PUT");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let frames = indexed.events(1, WAIT).await;
+    let verdict = frames[0].data.as_ref().unwrap();
+    assert_eq!(frames[0].key(), "notes/todo.txt");
+    assert_eq!(verdict["mime"], "text/plain; charset=utf-8", "{verdict}");
+    let body = search(&server, "oat milk lentils").await;
+    let hits = body["hits"].as_array().unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        hits.iter().any(|hit| hit["object_key"] == "notes/todo.txt"),
+        "{body}"
+    );
+}
+
 /// The index never gains an mp3, so nothing follows its `object.written`.
 #[tokio::test]
 async fn a_non_indexable_upload_is_written_but_never_indexed() {
