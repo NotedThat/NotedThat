@@ -85,9 +85,10 @@ pub(super) async fn run(
         .await
         .map_err(|error| match error {
             McpToolError::PreconditionFailed => McpToolError::InvalidRequest(format!(
-                "precondition_failed: move: destination {} already exists; move does not \
+                "{code}: move: destination {} already exists; move does not \
                  overwrite — delete or rename it first, or pick another destination",
-                args.to
+                args.to,
+                code = notedthat_core::ErrorCode::PreconditionFailed.as_str(),
             )),
             other => other,
         })
