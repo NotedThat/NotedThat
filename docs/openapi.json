@@ -473,7 +473,7 @@
           "objects"
         ],
         "summary": "Read an object, whole or in part.",
-        "description": "`Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects\nlines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`\nand `X-Content-Range-Bytes`. A text content type is served with\n`; charset=utf-8`.",
+        "description": "`Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects\nlines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`\nand `X-Content-Range-Bytes`. The content type is served exactly as stored:\na write labels a textual type `charset=utf-8` only when its bytes are UTF-8\n(see the charset rule in docs/API.md).",
         "operationId": "get_object",
         "parameters": [
           {
