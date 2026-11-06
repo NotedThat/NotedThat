@@ -5,6 +5,10 @@
 //! there would silently drop every later key from PROPFIND and from reconciliation.
 //! `IsTruncated=false` carrying a token is the opposite slip, and the flag wins: the page
 //! is the last one and no cursor is handed out.
+//!
+//! It also pins the `InvalidArgument` refusal: AWS answers a continuation token it did
+//! not issue that way, which is the caller's bad cursor only when a cursor was sent
+//! (#447). `SeaweedFS` accepts any token, so no container test can reach this branch.
 
 use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
@@ -28,10 +32,15 @@ fn list_page(tail: &str) -> String {
 }
 
 async fn storage_listing(tail: &str) -> (MockServer, S3Storage) {
+    storage_answering(ResponseTemplate::new(200).set_body_raw(list_page(tail), "application/xml"))
+        .await
+}
+
+async fn storage_answering(template: ResponseTemplate) -> (MockServer, S3Storage) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(query_param("list-type", "2"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(list_page(tail), "application/xml"))
+        .respond_with(template)
         .mount(&server)
         .await;
     let sdk_config = aws_sdk_s3::config::Builder::new()
@@ -78,4 +87,30 @@ async fn untruncated_page_with_a_token_is_the_last_page() {
     assert_eq!(page.next_cursor, None);
     assert_eq!(page.objects.len(), 1);
     assert_eq!(page.objects[0].key, "a.md");
+}
+
+const INVALID_ARGUMENT: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<Error><Code>InvalidArgument</Code><Message>The continuation token provided is incorrect</Message>\
+<ArgumentName>continuation-token</ArgumentName></Error>";
+
+fn invalid_argument() -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_raw(INVALID_ARGUMENT, "application/xml")
+}
+
+#[tokio::test]
+async fn refused_cursor_is_the_callers_invalid_cursor() {
+    let (_server, storage) = storage_answering(invalid_argument()).await;
+    match storage.list_objects(&kb(), None, 10, Some("x")).await {
+        Err(StorageError::InvalidCursor) => {}
+        other => panic!("a refused cursor should be InvalidCursor, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn invalid_argument_without_a_cursor_is_a_backend_failure() {
+    let (_server, storage) = storage_answering(invalid_argument()).await;
+    match storage.list_objects(&kb(), None, 10, None).await {
+        Err(StorageError::BackendUnavailable { .. }) => {}
+        other => panic!("InvalidArgument with no cursor sent is not the caller's, got {other:?}"),
+    }
 }
