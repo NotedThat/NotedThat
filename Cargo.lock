@@ -2436,6 +2436,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "http-body-util",
  "httpdate",
  "metrics",
  "metrics-util",
