@@ -1064,6 +1064,10 @@ impl Storage for S3Storage {
         let resp = req.send().await.map_err(|e| {
             if is_no_such_bucket_sdk(&e) {
                 bucket_not_found(&bucket)
+            } else if cursor.is_some() && matches!(e.code(), Some("InvalidArgument")) {
+                // AWS refuses a continuation token it did not issue; with a cursor
+                // sent, that is the caller's input (#447).
+                StorageError::InvalidCursor
             } else {
                 StorageError::BackendUnavailable {
                     message: format!("list_objects_v2 failed for {bucket}: {e}"),

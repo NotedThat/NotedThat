@@ -68,7 +68,7 @@ pub struct ListResponse {
     /// next request.
     ///
     /// What an *invalid* token does is backend-defined and must not be relied on. A backend
-    /// that detects one returns `StorageError::BackendUnavailable`; some S3 implementations
+    /// that detects one returns `StorageError::InvalidCursor`; some S3 implementations
     /// accept an unrecognised token and answer with a page instead. Since the token is
     /// opaque and backend-issued, a client has no legitimate reason to send one that did
     /// not come from this API.

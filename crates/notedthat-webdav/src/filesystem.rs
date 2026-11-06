@@ -457,7 +457,9 @@ pub(crate) fn storage_error_to_fs(err: &StorageError) -> FsError {
         StorageError::BackendUnavailable { .. } | StorageError::Other { .. } => {
             FsError::GeneralFailure
         }
-        StorageError::NotModified(_) => FsError::GeneralFailure,
+        // WebDAV pages with cursors the backend itself issued, so one it then
+        // refuses is a fault here, not the client's input.
+        StorageError::NotModified(_) | StorageError::InvalidCursor => FsError::GeneralFailure,
     }
 }
 
