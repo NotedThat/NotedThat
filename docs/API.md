@@ -1963,10 +1963,16 @@ The content type stored with an object is determined as follows:
 
 1. If the request provides a `Content-Type` header that is NOT `application/octet-stream`, that
    value is used verbatim.
-2. Otherwise (header absent or `application/octet-stream`), the extension is used:
+2. Otherwise (header absent or `application/octet-stream`), the extension is used, case-insensitively:
    - `.md` / `.markdown` → `text/markdown`
    - `.txt` → `text/plain`
+   - `.json` → `application/json`
+   - `.png` → `image/png`, `.jpg` / `.jpeg` → `image/jpeg`
    - Anything else → `application/octet-stream`
+
+   The same table names the type of a file the `fs` backend finds without a recorded one, and the
+   `mimeType` MCP `resources/read` falls back to for text content. Only `.md`, `.markdown` and
+   `.txt` are indexed.
 
 This ensures that WebDAV clients that send `application/octet-stream` for `.md` files (rclone
 default, Finder default) still get indexed correctly by the M5 semantic search indexer.
