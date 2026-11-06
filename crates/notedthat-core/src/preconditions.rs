@@ -58,25 +58,6 @@ pub fn unix_seconds_i64(time: SystemTime) -> i64 {
     i64::try_from(unix_seconds(time)).unwrap_or(i64::MAX)
 }
 
-/// Parse an HTTP-date header value, or fail with the error the backends agree on.
-///
-/// Callers evaluate this *before* touching storage, so a malformed date on a missing
-/// object reports the malformed date rather than the missing object.
-///
-/// # Errors
-///
-/// Returns [`StorageError::Other`] wrapping an
-/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) I/O error when `value` is not an
-/// HTTP-date.
-pub fn parse_http_date_or_err(value: &str) -> Result<SystemTime, StorageError> {
-    httpdate::parse_http_date(value).map_err(|error| StorageError::Other {
-        source: Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid HTTP-date '{value}': {error}"),
-        )),
-    })
-}
-
 /// Strong `ETag` comparison, per RFC 7232 §3.1 (`If-Match`).
 ///
 /// `*` matches any existing object. A comma-separated list matches if any member is
@@ -160,8 +141,8 @@ pub fn evaluate_write_preconditions(
 /// Returns [`StorageError::PreconditionFailed`] when `If-Match` does not match or the
 /// object changed after `If-Unmodified-Since`; [`StorageError::NotModified`], carrying the
 /// object's validators, when `If-None-Match` matches or the object is unchanged since
-/// `If-Modified-Since`; and the [`parse_http_date_or_err`] error when a date header that is
-/// evaluated is malformed.
+/// `If-Modified-Since`. A date header that is not a valid HTTP-date is ignored, as
+/// RFC 9110 §13.1.3/§13.1.4 require: a client typo is not a server fault.
 pub fn evaluate_read_preconditions(
     state: ObjectState<'_>,
     conditionals: &ConditionalHeaders,
@@ -174,11 +155,11 @@ pub fn evaluate_read_preconditions(
         return Err(StorageError::PreconditionFailed);
     }
 
-    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since {
-        let threshold = parse_http_date_or_err(if_unmodified_since)?;
-        if unix_seconds(state.last_modified) > unix_seconds(threshold) {
-            return Err(StorageError::PreconditionFailed);
-        }
+    if let Some(if_unmodified_since) = &conditionals.if_unmodified_since
+        && let Ok(threshold) = httpdate::parse_http_date(if_unmodified_since)
+        && unix_seconds(state.last_modified) > unix_seconds(threshold)
+    {
+        return Err(StorageError::PreconditionFailed);
     }
 
     if let Some(if_none_match) = &conditionals.if_none_match
@@ -187,11 +168,11 @@ pub fn evaluate_read_preconditions(
         return Err(state.not_modified());
     }
 
-    if let Some(if_modified_since) = &conditionals.if_modified_since {
-        let threshold = parse_http_date_or_err(if_modified_since)?;
-        if unix_seconds(state.last_modified) <= unix_seconds(threshold) {
-            return Err(state.not_modified());
-        }
+    if let Some(if_modified_since) = &conditionals.if_modified_since
+        && let Ok(threshold) = httpdate::parse_http_date(if_modified_since)
+        && unix_seconds(state.last_modified) <= unix_seconds(threshold)
+    {
+        return Err(state.not_modified());
     }
 
     Ok(())
@@ -252,7 +233,7 @@ pub fn resolve_range(
 mod tests {
     use super::{
         ObjectState, evaluate_read_preconditions, evaluate_write_preconditions, if_range_matches,
-        matches_if_match, matches_if_none_match, parse_http_date_or_err, resolve_range,
+        matches_if_match, matches_if_none_match, resolve_range,
     };
     use crate::conditional::ConditionalHeaders;
     use crate::error::StorageError;
@@ -374,16 +355,13 @@ mod tests {
     }
 
     #[test]
-    fn read_rejects_a_malformed_date() {
+    fn read_ignores_a_malformed_date() {
         let conditionals = ConditionalHeaders {
             if_modified_since: Some("not-a-date".into()),
+            if_unmodified_since: Some("not-a-date".into()),
             ..ConditionalHeaders::default()
         };
-        assert!(matches!(
-            evaluate_read_preconditions(state(), &conditionals),
-            Err(StorageError::Other { .. })
-        ));
-        assert!(parse_http_date_or_err("not-a-date").is_err());
+        assert!(evaluate_read_preconditions(state(), &conditionals).is_ok());
     }
 
     #[test]
