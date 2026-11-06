@@ -1420,9 +1420,10 @@ curl -sSf -X POST \
 > ```
 >
 > Use `text/markdown` for `.md` and `.markdown` keys and `text/plain` for `.txt`. Leaving the header
-> out stores a `.txt` key as `application/octet-stream`, and `curl --data-binary` without `-H` sends
-> `application/x-www-form-urlencoded`. Both types are non-indexable, so either PUT removes the
-> document from search instead of refreshing it.
+> out entirely is fine: the key's extension then decides (`.txt` → `text/plain`, see
+> [MIME sniff behaviour](#mime-sniff-behaviour)). But `curl --data-binary` without `-H` is not
+> header-less: it sends `application/x-www-form-urlencoded`, which is stored as given and is
+> non-indexable, so that PUT removes the document from search instead of refreshing it.
 
 #### Upgrade notes (strict search body)
 
@@ -1964,6 +1965,7 @@ The content type stored with an object is determined as follows:
    value is used verbatim.
 2. Otherwise (header absent or `application/octet-stream`), the extension is used:
    - `.md` / `.markdown` → `text/markdown`
+   - `.txt` → `text/plain`
    - Anything else → `application/octet-stream`
 
 This ensures that WebDAV clients that send `application/octet-stream` for `.md` files (rclone
