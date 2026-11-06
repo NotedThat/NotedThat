@@ -24,4 +24,7 @@ pub struct ReplaceOutcome {
     pub put_outcome: PutOutcome,
     /// Number of old-string matches found in the original object body.
     pub match_count: u64,
+    /// Size of the body this write stored. Taken from the write, never from a later
+    /// lookup, which could describe a newer version (#443).
+    pub total_bytes: u64,
 }
