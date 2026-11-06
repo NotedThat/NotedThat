@@ -66,6 +66,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(delete_if_match_correct_succeeds);
         $emit!(content_range_reflects_object_size);
         $emit!(copy_enforces_both_preconditions);
+        $emit!(copy_source_key_with_reserved_bytes);
         $emit!(list_objects_pagination_walks_cursor);
         $emit!(list_reports_an_etag_that_matches_head);
         $emit!(missing_bucket_is_bucket_not_found);
@@ -884,6 +885,34 @@ pub async fn copy_enforces_both_preconditions(store: &dyn Storage, kb: &KbSlug) 
             .await,
         Err(StorageError::NotFound { .. })
     ));
+}
+
+/// A copy whose source key holds bytes S3 decodes as a form value (`+` becomes a space)
+/// unless the copy-source header encodes them (#442).
+pub async fn copy_source_key_with_reserved_bytes(store: &dyn Storage, kb: &KbSlug) {
+    let source = path("c++ notes/q&a=1;x@y[0]!$'(),*:.md");
+    let copied = path("copied.md");
+
+    store.ensure_bucket(kb).await.expect("ensure bucket");
+    store
+        .put_object(
+            kb,
+            &source,
+            Bytes::from_static(b"reserved bytes\n"),
+            Some("text/plain"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .expect("put reserved-byte source");
+    store
+        .copy_object(kb, &source, &copied, CopyObjectOptions::default())
+        .await
+        .expect("copy from a reserved-byte key");
+    let read = store
+        .get_object(kb, &copied, None, ConditionalHeaders::default())
+        .await
+        .expect("read copy");
+    assert_eq!(read.bytes, Bytes::from_static(b"reserved bytes\n"));
 }
 
 /// Walking a truncated listing must yield every key exactly once, in order.
