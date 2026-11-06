@@ -39,6 +39,12 @@ jobs:
     # About 4 minutes on ubuntu-latest; a starved runner should fail the check
     # quickly instead of holding it for an hour.
     timeout-minutes: 30
+    # The 9xx runner Pod has a 2 GiB memory limit on a 4-CPU node. Four rustc
+    # and linker processes on debug-info test binaries exceed it, the Pod is
+    # OOM-killed, and the job reports "runner lost communication".
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
     strategy:
       # Both legs always report. "stable green, MSRV red" is a different
       # diagnosis from "both red", and fail-fast would hide which one it is.
