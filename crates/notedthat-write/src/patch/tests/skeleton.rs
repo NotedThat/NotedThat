@@ -111,6 +111,28 @@ async fn appends_without_caller_if_match() {
 }
 
 #[tokio::test]
+async fn an_append_that_breaks_utf_8_drops_the_utf_8_label() {
+    let storage = TestStorage::with_body(b"base").await;
+    let append = |body: &'static [u8]| PatchMode::Append {
+        body: Bytes::from_static(body),
+    };
+
+    run_patch(&storage, append("é".as_bytes()), conditionals(None), 1024)
+        .await
+        .expect("UTF-8 append succeeds");
+    assert_eq!(
+        storage.content_type().await.as_deref(),
+        Some("text/plain; charset=utf-8")
+    );
+
+    // A lone Latin-1 "é" makes the note stop being UTF-8.
+    run_patch(&storage, append(b"\xe9"), conditionals(None), 1024)
+        .await
+        .expect("non-UTF-8 append succeeds");
+    assert_eq!(storage.content_type().await.as_deref(), Some("text/plain"));
+}
+
+#[tokio::test]
 async fn byte_patch_without_if_match_requires_a_precondition() {
     let storage = TestStorage::with_body(b"base").await;
 
