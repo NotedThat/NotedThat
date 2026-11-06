@@ -580,9 +580,7 @@ impl Storage for InMemoryStorage {
         // must not break an in-flight listing.
         if let Some(cursor_key) = cursor {
             if !cursor_key.starts_with(CURSOR_PREFIX) {
-                return Err(StorageError::BackendUnavailable {
-                    message: "invalid or expired cursor".into(),
-                });
+                return Err(StorageError::InvalidCursor);
             }
             let after = &cursor_key[CURSOR_PREFIX.len()..];
             matching.retain(|object| object.key.as_str() > after);
@@ -799,7 +797,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_invalid_or_expired_cursor_is_backend_unavailable() {
+    async fn test_list_invalid_or_expired_cursor_is_invalid_cursor() {
         let kb = KbSlug::try_new("test").expect("valid slug");
         let storage = InMemoryStorage::with_kbs([&kb]);
         // Seed a few objects
@@ -820,15 +818,10 @@ mod tests {
         let result = storage
             .list_objects(&kb, None, 10, Some("nonexistent-key.md"))
             .await;
-        match result {
-            Err(StorageError::BackendUnavailable { message }) => {
-                assert!(
-                    message.contains("invalid or expired cursor"),
-                    "expected invalid cursor message, got: {message}"
-                );
-            }
-            other => panic!("expected BackendUnavailable, got: {other:?}"),
-        }
+        assert!(
+            matches!(result, Err(StorageError::InvalidCursor)),
+            "expected InvalidCursor, got: {result:?}"
+        );
     }
 
     #[tokio::test]

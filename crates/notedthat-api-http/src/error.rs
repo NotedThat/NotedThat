@@ -362,6 +362,8 @@ impl ApiError {
             StorageError::Other { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::InternalError)
             }
+            // The caller's own cursor: a `400`, and no `Retry-After` (#447).
+            StorageError::InvalidCursor => (StatusCode::BAD_REQUEST, ErrorCode::InvalidRequest),
         }
     }
 

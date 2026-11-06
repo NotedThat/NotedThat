@@ -110,6 +110,11 @@ pub enum StorageError {
         /// The total size of the object in bytes.
         complete_length: u64,
     },
+
+    /// A listing cursor the backend cannot continue from: garbage, issued under
+    /// another prefix, or from an older cursor format. The caller's input, not a
+    /// backend fault (#447).
+    InvalidCursor,
 }
 
 impl std::fmt::Display for StorageError {
@@ -124,6 +129,7 @@ impl std::fmt::Display for StorageError {
             Self::RangeNotSatisfiable { complete_length } => {
                 write!(f, "range not satisfiable (object size: {complete_length})")
             }
+            Self::InvalidCursor => write!(f, "invalid or expired cursor"),
         }
     }
 }
