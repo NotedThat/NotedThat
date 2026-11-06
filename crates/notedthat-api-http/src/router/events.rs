@@ -287,6 +287,7 @@ pub(super) async fn subscribe_events(
     let kb_label = access.kb().as_str().to_string();
     let filter = EventFilter::parse(query).map_err(err)?;
     let after = parse_last_event_id(&req).map_err(err)?;
+    let request_id = crate::middleware::extract_request_id(req.extensions());
     // Taken before `subscribe` is awaited, so the time it takes does not
     // stretch the credential.
     let expired = expiry(access.valid_until());
@@ -324,7 +325,7 @@ pub(super) async fn subscribe_events(
     let head = futures::stream::once(async {
         Ok::<Event, Infallible>(Event::default().retry(RETRY_HINT).comment("subscribed"))
     });
-    let body = frames(access, filter, stream, expired).map(Ok::<Event, Infallible>);
+    let body = frames(access, filter, stream, expired, request_id).map(Ok::<Event, Infallible>);
 
     let mut response = Sse::new(head.chain(guarded(subscriber, body)))
         .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
@@ -367,8 +368,17 @@ fn frame_for(id: EventId, event: &ObjectEvent) -> Event {
     }
 }
 
+/// The comment a stream ends with when the log fails. A broker failure is
+/// fixed text: the adapter's message can name the broker and its internals,
+/// and every subscriber reads it (#342); [`frames`] logs it in full. A lag
+/// carries only the resume id the client reconnects with.
 fn ended(error: &StreamError) -> Event {
-    Event::default().comment(format!("stream ended: {error}"))
+    match error {
+        StreamError::Broker { .. } => {
+            Event::default().comment("stream ended: event backend failed")
+        }
+        StreamError::Lagged { .. } => Event::default().comment(format!("stream ended: {error}")),
+    }
 }
 
 /// The frame a stream ends with once its credential no longer verifies.
@@ -417,6 +427,7 @@ fn frames(
     filter: EventFilter,
     log: EventStream,
     expired: BoxFuture<'static, ()>,
+    request_id: String,
 ) -> BoxStream<'static, Event> {
     let log = log
         .map(Step::Logged)
@@ -427,6 +438,7 @@ fn frames(
         steps: futures::stream::select(log, expired),
         access,
         filter,
+        request_id,
     };
 
     // The state is `None` once a terminal frame has gone out.
@@ -443,7 +455,16 @@ fn frames(
                     }
                     return Some((frame_for(id, &event), Some(open)));
                 }
-                Step::Logged(Err(error)) => ended(&error),
+                Step::Logged(Err(error)) => {
+                    if let StreamError::Broker { .. } = error {
+                        tracing::error!(
+                            request_id = %open.request_id,
+                            error = %error,
+                            "event stream failed"
+                        );
+                    }
+                    ended(&error)
+                }
                 Step::Expired => credential_expired(),
                 Step::Closed => return None,
             };
@@ -459,6 +480,8 @@ struct Open<S> {
     access: KbAccess,
     filter: EventFilter,
     summary_visible: bool,
+    /// The subscribing request's id, so a broker failure's log line can be found.
+    request_id: String,
 }
 
 impl<S> Open<S> {
@@ -520,6 +543,38 @@ mod tests {
             mime: mime.map(str::to_owned),
         })
         .unwrap()
+    }
+
+    /// The bytes `event` puts on the wire.
+    async fn wire(event: Event) -> String {
+        let sse = Sse::new(futures::stream::iter([Ok::<_, Infallible>(event)]));
+        let body = axum::body::to_bytes(sse.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// A broker failure ends the stream with fixed text: the adapter's own
+    /// message can name the broker and its internals, and every subscriber on
+    /// a `200` stream would read it (#342). A lag keeps its resume id, which a
+    /// client needs to reconnect.
+    #[tokio::test]
+    async fn a_stream_end_names_no_backend_detail() {
+        const DETAIL: &str = "nats://10.0.4.7:4222: connection reset by peer";
+        let broker = wire(ended(&StreamError::Broker {
+            message: DETAIL.into(),
+        }))
+        .await;
+        assert!(!broker.contains("10.0.4.7"), "{broker}");
+        assert!(!broker.contains("connection reset"), "{broker}");
+        assert!(
+            broker.contains(": stream ended: event backend failed"),
+            "{broker}"
+        );
+
+        let resume_after = EventId(41);
+        let lagged = wire(ended(&StreamError::Lagged { resume_after })).await;
+        assert!(lagged.contains(&resume_after.to_string()), "{lagged}");
     }
 
     #[test]
