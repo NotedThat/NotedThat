@@ -66,7 +66,10 @@ impl DavMetaData for WebDavMetaData {
         match self {
             Self::Root { server_start } | Self::Kb { server_start, .. } => Ok(*server_start),
             Self::Object { meta } => {
-                let secs = u64::try_from(meta.last_modified.unwrap_or(0).max(0)).unwrap_or(0);
+                // dav-server formats this date and `httpdate` panics past year 9999.
+                let secs = u64::try_from(meta.last_modified.unwrap_or(0).max(0))
+                    .unwrap_or(0)
+                    .min(notedthat_api_http::LATEST_FORMATTABLE);
                 Ok(UNIX_EPOCH + Duration::from_secs(secs))
             }
         }
