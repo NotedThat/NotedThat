@@ -866,7 +866,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 | Header | Description |
 |--------|-------------|
 | `content-length` | Object size in bytes |
-| `content-type` | MIME type (falls back to `application/octet-stream` if not stored, as on `GET`). Stored `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` types without a charset receive `charset=utf-8`; an explicit stored charset is preserved. |
+| `content-type` | MIME type (falls back to `application/octet-stream` if not stored, as on `GET`). Served exactly as stored: the charset is decided from the bytes when they are written, never at read time. A write through this server labels a `text/*`, `application/json`, `application/*+json`, `application/xml` or `application/*+xml` type that has no charset with `charset=utf-8` when, and only when, the body is valid UTF-8, and drops a `charset=utf-8` the body does not honour; any other stated charset is kept. An object stored before this rule, or put straight into the `fs` folder or the S3 bucket, is served with its bare type until it is next written through the server. |
 | `last-modified` | Last modification time, if available |
 | `etag` | Object ETag, if provided by the backend |
 | `accept-ranges` | `bytes` |
@@ -919,7 +919,7 @@ manifest grants `content`. A supplied invalid credential returns `401`.
 
 | Header | Description |
 |--------|-------------|
-| `content-type` | MIME type (falls back to `application/octet-stream` if not stored). Stored `text/*`, `application/json`, `application/*+json`, `application/xml`, and `application/*+xml` types without a charset receive `charset=utf-8`; an explicit stored charset is preserved. |
+| `content-type` | MIME type (falls back to `application/octet-stream` if not stored). Served exactly as stored: the charset is decided from the bytes when they are written, never at read time. A write through this server labels a `text/*`, `application/json`, `application/*+json`, `application/xml` or `application/*+xml` type that has no charset with `charset=utf-8` when, and only when, the body is valid UTF-8, and drops a `charset=utf-8` the body does not honour; any other stated charset is kept. An object stored before this rule, or put straight into the `fs` folder or the S3 bucket, is served with its bare type until it is next written through the server. |
 | `content-length` | Object size in bytes (or partial size on 206) |
 | `etag` | Object ETag, if provided by the backend |
 | `last-modified` | Last modification time, if available |

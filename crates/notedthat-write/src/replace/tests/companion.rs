@@ -44,7 +44,10 @@ async fn content_type_preserved_from_get_response() {
         .expect("replace preserves GET content type when caller omits one");
 
     let after = storage.read().await;
-    assert_eq!(after.meta.content_type.as_deref(), Some("text/markdown"));
+    assert_eq!(
+        after.meta.content_type.as_deref(),
+        Some("text/markdown; charset=utf-8")
+    );
     assert_eq!(after.bytes, Bytes::from_static(b"hello planet"));
 }
 

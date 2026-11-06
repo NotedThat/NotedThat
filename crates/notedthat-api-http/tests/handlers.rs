@@ -3139,3 +3139,66 @@ async fn an_object_modified_past_year_9999_is_served_without_last_modified() {
         );
     }
 }
+
+/// The charset label comes from the bytes, decided when they are written:
+/// `charset=utf-8` exactly when the body is UTF-8 (#483, keeping #233).
+#[tokio::test]
+async fn the_charset_label_follows_the_written_bytes() {
+    let app = app();
+    let put = |path: &'static str, content_type: &'static str, body: &'static [u8]| {
+        let app = app.clone();
+        async move {
+            let mut request = authed_request(
+                "PUT",
+                format!("/api/v1/knowledgebases/{KB}/{path}"),
+                Body::from(body),
+            );
+            request
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            let status = app.oneshot(request).await.unwrap().status();
+            assert!(status.is_success(), "PUT {path}: {status}");
+        }
+    };
+    let served = |method: &'static str, path: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(authed_request(
+                    method,
+                    format!("/api/v1/knowledgebases/{KB}/{path}"),
+                    Body::empty(),
+                ))
+                .await
+                .unwrap();
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+
+    // Latin-1, under a bare textual type: no UTF-8 claim on either read.
+    put("latin1.csv", "text/csv", b"caf\xe9\n").await;
+    for method in ["GET", "HEAD"] {
+        assert_eq!(served(method, "latin1.csv").await, "text/csv", "{method}");
+    }
+    // UTF-8 under a bare textual type is labelled, as #233 asked.
+    put("note.md", "text/markdown", "café\n".as_bytes()).await;
+    for method in ["GET", "HEAD"] {
+        assert_eq!(
+            served(method, "note.md").await,
+            "text/markdown; charset=utf-8",
+            "{method}"
+        );
+    }
+    // A charset the caller stated is kept.
+    put("old.txt", "text/plain; charset=iso-8859-1", b"caf\xe9").await;
+    assert_eq!(
+        served("GET", "old.txt").await,
+        "text/plain; charset=iso-8859-1"
+    );
+    // Binary types are never labelled.
+    put("blob.bin", "application/octet-stream", b"\xff\xfe").await;
+    assert_eq!(served("GET", "blob.bin").await, "application/octet-stream");
+}

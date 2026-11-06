@@ -23,7 +23,6 @@ futures.workspace = true
 http.workspace = true
 httpdate.workspace = true
 metrics.workspace = true
-mime.workspace = true
 percent-encoding.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
