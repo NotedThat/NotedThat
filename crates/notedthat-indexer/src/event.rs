@@ -1,9 +1,15 @@
 //! `IndexEvent` — the message type on the async indexing queue.
 //!
-//! Producers enqueue events via `mpsc::Sender::try_send` (`notedthat-write`, after
-//! storage acknowledges) or `send` (the `fs` backend's watcher and either backend's
-//! reconciliation pass in `notedthat-server`). Consumer (`IndexerWorker` in this crate) drains via
-//! `mpsc::Receiver::recv`. See §6.12 (Indexing queue) and D38 for semantics.
+//! The queue is [`crate::queue`]: [`index_queue`](crate::index_queue) builds an
+//! [`IndexQueueSender`](crate::IndexQueueSender)/[`IndexQueueReceiver`](crate::IndexQueueReceiver)
+//! pair. Producers enqueue via [`IndexQueueSender::try_send`](crate::IndexQueueSender::try_send)
+//! (`notedthat-write`, after storage acknowledges) or
+//! [`IndexQueueSender::send`](crate::IndexQueueSender::send) (the `fs` backend's watcher and
+//! either backend's reconciliation pass in `notedthat-server`). The consumer is
+//! [`IndexerWorker`](crate::IndexerWorker), which drains
+//! [`IndexQueueReceiver::recv`](crate::IndexQueueReceiver::recv) into per-key FIFO lanes.
+//! See §6.12 (Indexing queue), D38 (a permit per accepted event, bounded ingress) and D73
+//! (per-key lanes) for semantics.
 
 use notedthat_core::{EventSource, KbSlug, ObjectPath};
 
