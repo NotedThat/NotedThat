@@ -18,23 +18,56 @@ fn is_textual(content_type: &mime::Mime) -> bool {
 /// loses a `charset=utf-8` it carries when it does not — an append can make a
 /// UTF-8 note stop being one. Any other charset, and every non-textual type, is
 /// left exactly as given.
+///
+/// The charset is read and removed on the original string, so every other
+/// parameter keeps its bytes (quotes included).
 pub(crate) fn label_charset(content_type: &str, utf8: bool) -> String {
-    let Ok(parsed) = content_type.parse::<mime::Mime>() else {
-        return content_type.to_string();
-    };
-    if !is_textual(&parsed) {
+    if !content_type
+        .parse::<mime::Mime>()
+        .is_ok_and(|parsed| is_textual(&parsed))
+    {
         return content_type.to_string();
     }
-    match parsed.get_param(mime::CHARSET) {
+    let segments = split_params(content_type);
+    match segments.iter().skip(1).find_map(|segment| charset(segment)) {
         None if utf8 => format!("{content_type}; charset=utf-8"),
-        Some(charset) if charset == mime::UTF_8 && !utf8 => parsed
-            .params()
-            .filter(|(name, _)| *name != mime::CHARSET)
-            .fold(parsed.essence_str().to_string(), |label, (name, value)| {
-                format!("{label}; {name}={value}")
-            }),
+        Some(value) if value.eq_ignore_ascii_case("utf-8") && !utf8 => segments
+            .iter()
+            .enumerate()
+            .filter(|(index, segment)| *index == 0 || charset(segment).is_none())
+            .map(|(_, segment)| *segment)
+            .collect::<Vec<_>>()
+            .join(";"),
         _ => content_type.to_string(),
     }
+}
+
+/// The value of `segment` when it is the charset parameter, unquoted.
+fn charset(segment: &str) -> Option<&str> {
+    segment
+        .split_once('=')
+        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("charset"))
+        .map(|(_, value)| value.trim().trim_matches('"'))
+}
+
+/// `content_type` split at each `;` outside a quoted string, segments untrimmed.
+fn split_params(content_type: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (index, byte) in content_type.bytes().enumerate() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' if quoted => escaped = true,
+            b'"' => quoted = !quoted,
+            b';' if !quoted => {
+                segments.push(&content_type[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(&content_type[start..]);
+    segments
 }
 
 /// The stored type for `body` written as `content_type`: [`label_charset`],
@@ -137,6 +170,24 @@ mod tests {
         assert_eq!(
             label_charset("text/markdown; charset=utf-8; variant=GFM", false),
             "text/markdown; variant=GFM"
+        );
+        // Other parameters keep their bytes, quotes and order.
+        assert_eq!(
+            label_charset("text/plain; charset=utf-8; title=\"My notes\"", false),
+            "text/plain; title=\"My notes\""
+        );
+        assert_eq!(
+            label_charset("text/plain; a=1; charset=utf-8; b=\"x;y\"", false),
+            "text/plain; a=1; b=\"x;y\""
+        );
+        // A quoted charset followed by another parameter.
+        assert_eq!(
+            label_charset("text/plain; charset=\"utf-8\"; x=y", false),
+            "text/plain; x=y"
+        );
+        assert_eq!(
+            label_charset("text/plain; charset=\"utf-8\"; x=y", true),
+            "text/plain; charset=\"utf-8\"; x=y"
         );
     }
 

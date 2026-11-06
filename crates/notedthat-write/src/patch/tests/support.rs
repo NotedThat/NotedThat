@@ -89,6 +89,16 @@ impl TestStorage {
             .bytes
     }
 
+    pub(super) async fn content_type(&self) -> Option<String> {
+        self.0
+            .inner()
+            .object(KB, PATH)
+            .await
+            .expect("object exists")
+            .meta
+            .content_type
+    }
+
     pub(super) fn calls(&self) -> Calls {
         Calls {
             head: self.0.count(StorageOp::HeadObject),
