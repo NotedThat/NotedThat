@@ -23,8 +23,11 @@ const MOVE_SOURCE: Retry = Retry {
     queue_full: "destination write succeeded and source deleted from storage, but source search-index tombstone failed — search may return stale entries for the source path until retry or reindex. Send DELETE for the source to re-enqueue its tombstone — DELETE of a missing key is idempotent and still enqueues, whereas a retried MOVE would find no source.",
     publish_failed: "destination copied and source deleted; the source's change event not published. Send DELETE for the source to publish it — DELETE of a missing key is idempotent and still publishes, whereas a retried MOVE would find no source.",
 };
-use super::super::helpers::{object_target_or_collection_error, response_with_optional_etag};
-use super::super::path_validation::parse_webdav_uri_path;
+use super::super::helpers::{
+    TargetError, object_target_or_collection_error, response_with_optional_etag,
+};
+use super::super::path_validation::{parse_webdav_uri_path, parse_webdav_write_target};
+use crate::filesystem::{Named, name_in_storage};
 
 fn single_header(headers: &HeaderMap, name: &'static str) -> Result<Option<String>, ()> {
     let mut values = headers.get_all(name).iter();
@@ -96,10 +99,14 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
                 .into_response();
         }
     }
-    let Ok(src_target) = parse_webdav_uri_path(req.uri().path(), &state.declared_kbs) else {
+    let Ok((src_target, src_as_collection)) =
+        parse_webdav_write_target(req.uri().path(), &state.declared_kbs)
+    else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let Ok(dst_target) = parse_webdav_uri_path(dest_uri.path(), &state.declared_kbs) else {
+    let Ok((dst_target, dst_as_collection)) =
+        parse_webdav_write_target(dest_uri.path(), &state.declared_kbs)
+    else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let (src_kb, src_obj) = match object_target_or_collection_error(src_target) {
@@ -138,16 +145,36 @@ async fn handle_copy_or_move(state: WebDavState, req: Request, delete_source: bo
     let Ok(if_header) = IfHeader::from_headers(req.headers()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let src_meta = match state
-        .storage
-        .head_object(&src_kb, &src_obj, ConditionalHeaders::default())
-        .await
-    {
-        Ok(meta) => meta,
+    // The prefix is asked first: a folder hides an object of the same name, as listings do.
+    let src_named = match name_in_storage(state.storage.as_ref(), &src_kb, &src_obj, true).await {
+        Ok(Named::Nothing) if !src_as_collection => match state
+            .storage
+            .head_object(&src_kb, &src_obj, ConditionalHeaders::default())
+            .await
+        {
+            Ok(meta) => Ok(Named::Object(meta)),
+            Err(err) if err.is_not_found() => Ok(Named::Nothing),
+            Err(err) => Err(err),
+        },
+        named => named,
+    };
+    let src_meta = match src_named {
+        Ok(Named::Object(meta)) => meta,
+        // A folder is a key prefix; there is no atomic prefix rename (#281).
+        Ok(Named::Folder) => return TargetError::Collection.into_response(),
         // Without its preconditions this request would be a 404, so they are ignored
         // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
+        Ok(Named::Nothing) => return StatusCode::NOT_FOUND.into_response(),
         Err(error) => return storage_status(&error).into_response(),
     };
+    // Only the prefix is asked about: a file at the destination is the overwrite
+    // `commit_copy` judges. A destination spelled as a collection must be one.
+    match name_in_storage(state.storage.as_ref(), &dst_kb, &dst_obj, true).await {
+        Ok(Named::Folder) => return TargetError::Collection.into_response(),
+        Ok(Named::Nothing) if dst_as_collection => return StatusCode::BAD_REQUEST.into_response(),
+        Ok(Named::Nothing | Named::Object(_)) => {}
+        Err(error) => return storage_status(&error).into_response(),
+    }
     let Some(source_etag) = src_meta.etag else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
