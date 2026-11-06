@@ -60,13 +60,25 @@ pub(super) fn body_limit_usize(max_body_size: u64) -> usize {
 }
 
 /// Read a request body of at most `limit` bytes; anything larger is `413`.
+/// A body that cannot be read at all — the client reset or stopped mid-upload —
+/// is `400`, not `413`: nothing measured it as too large (#452).
 /// Consumes the request, so read any other header first.
 pub(crate) async fn read_bounded_body(req: Request, limit: u64) -> Result<Bytes, ApiError> {
     let too_large = |size| ApiError::Core(CoreError::PayloadTooLarge { size, limit });
     reject_declared_oversize(req.headers(), limit)?;
     let bytes = axum::body::to_bytes(req.into_body(), body_limit_usize(limit))
         .await
-        .map_err(|_| too_large(limit.saturating_add(1)))?;
+        .map_err(|error| {
+            let over_limit = std::error::Error::source(&error)
+                .is_some_and(<dyn std::error::Error>::is::<http_body_util::LengthLimitError>);
+            if over_limit {
+                too_large(limit.saturating_add(1))
+            } else {
+                ApiError::Core(CoreError::InvalidInput {
+                    message: "request body could not be read".into(),
+                })
+            }
+        })?;
     if bytes.len() as u64 > limit {
         return Err(too_large(bytes.len() as u64));
     }
