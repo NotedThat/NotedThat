@@ -308,18 +308,20 @@ Use the upload, read, and search commands from the Compose flow against this ser
 
 ### Docker image
 
-Once the first tagged release exists, the server image is published to GHCR at `ghcr.io/notedthat/server`, built for `linux/amd64` and `linux/arm64` under one tag. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation on the manifest list, so verifying the tag covers every platform.
+The server image is published to GHCR at `ghcr.io/notedthat/server`, built for `linux/amd64` and `linux/arm64` under one tag. Every published image is cosign-signed (keyless via Sigstore/Fulcio) and carries a SLSA L2 build provenance attestation on the manifest list, so verifying the tag covers every platform.
 
 ```sh
 docker pull ghcr.io/notedthat/server:latest
 
 # Start the storage/index dependencies first. On Linux, use --add-host below.
-docker compose up -d seaweedfs qdrant
+docker compose -f docker-compose.yml -f docker-compose.s3.yml up -d seaweedfs qdrant
 set -a; . ./.env; set +a
 docker run --rm --stop-timeout 45 --add-host=host.docker.internal:host-gateway \
   -p 8080:8080 \
   -e NOTEDTHAT_API_TOKEN -e NOTEDTHAT_KBS \
-  -e NOTEDTHAT_S3_REGION -e NOTEDTHAT_S3_ACCESS_KEY_ID -e NOTEDTHAT_S3_SECRET_ACCESS_KEY \
+  -e NOTEDTHAT_S3_REGION="${NOTEDTHAT_S3_REGION:-us-east-1}" \
+  -e NOTEDTHAT_S3_ACCESS_KEY_ID="${NOTEDTHAT_S3_ACCESS_KEY_ID:-any}" \
+  -e NOTEDTHAT_S3_SECRET_ACCESS_KEY="${NOTEDTHAT_S3_SECRET_ACCESS_KEY:-any}" \
   -e NOTEDTHAT_WEBDAV_USERNAME -e NOTEDTHAT_WEBDAV_PASSWORD \
   -e EMBEDDING_ENDPOINT_URL -e EMBEDDING_MODEL -e EMBEDDING_API_KEY -e EMBEDDING_DIMENSIONS \
   -e NOTEDTHAT_S3_ENDPOINT_URL=http://host.docker.internal:8333 \
@@ -345,7 +347,7 @@ for cleanup behavior and sizing details.
 Verify the signature + provenance before running in production:
 
 ```sh
-gh attestation verify oci://ghcr.io/notedthat/server:0.2.0 --owner NotedThat
+gh attestation verify oci://ghcr.io/notedthat/server:<version> --owner NotedThat
 ```
 
 
