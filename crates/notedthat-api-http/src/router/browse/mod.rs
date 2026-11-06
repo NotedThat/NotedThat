@@ -1,9 +1,11 @@
 //! A server-rendered HTML view of what a caller may read (#100, D52).
 //!
-//! Deliberately thin: it renders directory listings over the same storage and
-//! the same access rules as every other surface, and it links objects at their
-//! existing `/api/v1` representation rather than growing a second download path.
-//! No JavaScript, no accounts, no editing, no search.
+//! Deliberately thin: it renders directory listings and per-knowledge-base GET
+//! search over the same storage and the same access rules as every other
+//! surface, and it links objects at their existing `/api/v1` representation
+//! rather than growing a second download path. Search is gated by `search`;
+//! directory and object links stay gated by `list` and `read` independently.
+//! No JavaScript, no accounts, no editing: read-only.
 //!
 //! # Denials are `404`, not `403`
 //!
