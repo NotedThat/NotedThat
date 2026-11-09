@@ -2,7 +2,8 @@
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use notedthat_core::{Error, setting};
+use notedthat_core::Error;
+use notedthat_core::setting::{parse_bool, setting};
 
 /// AWS region, e.g. `us-east-1`. Required.
 pub const S3_REGION_ENV: &str = "NOTEDTHAT_S3_REGION";
@@ -37,22 +38,6 @@ pub const S3_ENV_VARS: [&str; 7] = [
     S3_RECONCILE_ENV,
     S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV,
 ];
-
-/// A switch that is exactly `true` or `false`, the way the `fs` backend's are: a value
-/// that is neither is a configuration mistake to report, not a `false` to guess.
-fn parse_bool(var: &str, supplied: Option<&str>, default: bool) -> Result<bool, Error> {
-    match supplied.map(str::trim) {
-        None => Ok(default),
-        Some("true") => Ok(true),
-        Some("false") => Ok(false),
-        Some(value) => Err(Error::Config {
-            message: format!(
-                "{} is invalid: expected \"true\" or \"false\", got \"{value}\"",
-                setting(var)
-            ),
-        }),
-    }
-}
 
 /// S3 client config parsed from `NOTEDTHAT_S3_*` env vars.
 ///
@@ -182,16 +167,25 @@ impl S3Config {
         let secret_access_key = settings.secret_access_key.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting(S3_SECRET_ACCESS_KEY_ENV)),
         })?;
+        // Each switch is exactly `true` or `false`: a value that is neither is a
+        // configuration mistake to report, not a `false` to guess. Unlike the `fs`
+        // backend's, these are trimmed first, so blank reads as `got ""`.
         let force_path_style = parse_bool(
             S3_FORCE_PATH_STYLE_ENV,
-            settings.force_path_style.as_deref(),
+            settings.force_path_style.as_deref().map(str::trim),
             false,
         )?;
-        let reconcile_on_startup =
-            parse_bool(S3_RECONCILE_ENV, settings.reconcile.as_deref(), true)?;
+        let reconcile_on_startup = parse_bool(
+            S3_RECONCILE_ENV,
+            settings.reconcile.as_deref().map(str::trim),
+            true,
+        )?;
         let allow_unenforced_conditional_writes = parse_bool(
             S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES_ENV,
-            settings.allow_unenforced_conditional_writes.as_deref(),
+            settings
+                .allow_unenforced_conditional_writes
+                .as_deref()
+                .map(str::trim),
             false,
         )?;
 
@@ -270,6 +264,29 @@ mod tests {
             }
         );
         assert!(unset.contains("secret_access_key: None"), "{unset}");
+    }
+
+    /// The s3 switches trim, so blank reads as `got ""`; pinned before the
+    /// parser moved to `notedthat_core::setting`.
+    #[test]
+    fn switch_messages_are_pinned() {
+        let parse = |value: &str| {
+            S3Config::from_settings(S3Settings {
+                force_path_style: Some(value.into()),
+                ..base()
+            })
+        };
+        assert!(parse(" true ").unwrap().force_path_style);
+        let name = "NOTEDTHAT_S3_FORCE_PATH_STYLE (--s3-force-path-style)";
+        for (value, shown) in [("", ""), ("  ", ""), ("yes", "yes"), (" yes ", "yes")] {
+            let error = parse(value).unwrap_err().to_string();
+            assert!(
+                error.ends_with(&format!(
+                    "{name} is invalid: expected \"true\" or \"false\", got \"{shown}\""
+                )),
+                "{value:?}: {error}"
+            );
+        }
     }
 
     #[test]

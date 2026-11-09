@@ -9,7 +9,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use notedthat_core::{Error, setting};
+use notedthat_core::Error;
+use notedthat_core::setting::{config_error, parse_bool, parse_choice, setting, utf8};
 
 /// The broker URL, which may carry `user:pass@` or `token@`. Required.
 pub const NATS_URL_ENV: &str = "NOTEDTHAT_NATS_URL";
@@ -268,7 +269,7 @@ impl NatsConnectConfig {
         };
         let required = parse_bool(
             NATS_TLS_REQUIRED_ENV,
-            settings.tls_required.as_deref(),
+            utf8(NATS_TLS_REQUIRED_ENV, settings.tls_required.as_deref())?,
             false,
         )?;
 
@@ -285,17 +286,16 @@ impl NatsConnectConfig {
                 setting(NATS_REPLICAS_ENV)
             )));
         }
-        let storage = match utf8(NATS_STORAGE_ENV, settings.storage.as_deref())? {
-            None => None,
-            Some("file") => Some(NatsStorage::File),
-            Some("memory") => Some(NatsStorage::Memory),
-            Some(other) => {
-                return Err(config_error(format!(
-                    "{} is invalid: expected \"file\" or \"memory\", got \"{other}\"",
-                    setting(NATS_STORAGE_ENV)
-                )));
-            }
-        };
+        let storage = parse_choice(
+            NATS_STORAGE_ENV,
+            utf8(NATS_STORAGE_ENV, settings.storage.as_deref())?,
+            |value| match value {
+                "file" => Some(NatsStorage::File),
+                "memory" => Some(NatsStorage::Memory),
+                _ => None,
+            },
+            "\"file\" or \"memory\"",
+        )?;
         let duplicate_window = parse_optional_positive(
             NATS_DUPLICATE_WINDOW_SECS_ENV,
             settings.duplicate_window_secs.as_deref(),
@@ -374,20 +374,6 @@ fn parse_auth(
     })
 }
 
-/// Read a setting as UTF-8, `None` when absent. Empty is an error.
-fn utf8<'a>(var: &str, supplied: Option<&'a OsStr>) -> Result<Option<&'a str>, Error> {
-    let Some(value) = supplied else {
-        return Ok(None);
-    };
-    let value = value
-        .to_str()
-        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
-    if value.is_empty() {
-        return Err(config_error(format!("{} must not be empty", setting(var))));
-    }
-    Ok(Some(value))
-}
-
 fn parse_path(var: &str, supplied: Option<OsString>) -> Result<Option<PathBuf>, Error> {
     match supplied {
         None => Ok(None),
@@ -395,18 +381,6 @@ fn parse_path(var: &str, supplied: Option<OsString>) -> Result<Option<PathBuf>, 
             Err(config_error(format!("{} must not be empty", setting(var))))
         }
         Some(path) => Ok(Some(PathBuf::from(path))),
-    }
-}
-
-fn parse_bool(var: &str, supplied: Option<&OsStr>, default: bool) -> Result<bool, Error> {
-    match utf8(var, supplied)? {
-        None => Ok(default),
-        Some("true") => Ok(true),
-        Some("false") => Ok(false),
-        Some(other) => Err(config_error(format!(
-            "{} is invalid: expected \"true\" or \"false\", got \"{other}\"",
-            setting(var)
-        ))),
     }
 }
 
@@ -422,15 +396,7 @@ pub fn parse_positive(
     default: u64,
     accepted: &str,
 ) -> Result<u64, Error> {
-    let Some(value) = utf8(var, supplied)? else {
-        return Ok(default);
-    };
-    value.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
-        config_error(format!(
-            "{} is invalid: expected {accepted}, got \"{value}\"",
-            setting(var)
-        ))
-    })
+    notedthat_core::setting::parse_positive(var, utf8(var, supplied)?, default, accepted)
 }
 
 /// Credentials carried in a NATS URL's userinfo.
@@ -518,10 +484,6 @@ pub fn parse_stream_name(
     }
 }
 
-fn config_error(message: String) -> Error {
-    Error::Config { message }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +500,37 @@ mod tests {
             url: Some("nats://localhost:4222".into()),
             ..NatsConnectSettings::default()
         }
+    }
+
+    #[cfg(unix)]
+    fn non_utf8() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStrExt as _;
+        std::ffi::OsStr::from_bytes(b"\xff").to_os_string()
+    }
+
+    /// Exact messages for the TLS switch, pinned before the parser moved to
+    /// `notedthat_core::setting`.
+    #[test]
+    fn tls_required_messages_are_pinned() {
+        let error = |value: std::ffi::OsString| {
+            message(
+                NatsConnectConfig::from_settings(NatsConnectSettings {
+                    tls_required: Some(value),
+                    ..with_url()
+                })
+                .unwrap_err(),
+            )
+        };
+        let name = "NOTEDTHAT_NATS_TLS_REQUIRED (--nats-tls-required)";
+        assert_eq!(error("".into()), format!("{name} must not be empty"));
+        for value in [" true ", "yes"] {
+            assert_eq!(
+                error(value.into()),
+                format!("{name} is invalid: expected \"true\" or \"false\", got \"{value}\"")
+            );
+        }
+        #[cfg(unix)]
+        assert_eq!(error(non_utf8()), format!("{name} must be valid UTF-8"));
     }
 
     #[test]

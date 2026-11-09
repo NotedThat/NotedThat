@@ -3,7 +3,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use notedthat_core::{Error, setting};
+use notedthat_core::Error;
+use notedthat_core::setting::{
+    config_error, parse_bool, parse_choice, parse_in_range, setting, utf8,
+};
 
 /// Root directory holding every knowledge base's objects.
 pub const FS_ROOT_ENV: &str = "NOTEDTHAT_FS_ROOT";
@@ -175,25 +178,37 @@ impl FsConfig {
             )));
         }
 
-        let metadata = parse_enum(
+        let metadata = parse_choice(
             FS_METADATA_ENV,
-            settings.metadata.as_deref(),
+            utf8(FS_METADATA_ENV, settings.metadata.as_deref())?,
             MetadataMode::parse,
-            MetadataMode::default(),
             "\"sidecar\"",
-        )?;
+        )?
+        .unwrap_or_default();
         let file_mode = parse_mode(FS_FILE_MODE_ENV, settings.file_mode.as_deref(), 0o644)?;
         let dir_mode = parse_mode(FS_DIR_MODE_ENV, settings.dir_mode.as_deref(), 0o755)?;
         let allow_lossy_names = parse_bool(
             FS_ALLOW_LOSSY_NAMES_ENV,
-            settings.allow_lossy_names.as_deref(),
+            utf8(
+                FS_ALLOW_LOSSY_NAMES_ENV,
+                settings.allow_lossy_names.as_deref(),
+            )?,
             false,
         )?;
-        let watch = parse_bool(FS_WATCH_ENV, settings.watch.as_deref(), true)?;
-        let watch_debounce_ms = parse_millis(
+        let watch = parse_bool(
+            FS_WATCH_ENV,
+            utf8(FS_WATCH_ENV, settings.watch.as_deref())?,
+            true,
+        )?;
+        let watch_debounce_ms = parse_in_range(
             FS_WATCH_DEBOUNCE_MS_ENV,
-            settings.watch_debounce_ms.as_deref(),
+            utf8(
+                FS_WATCH_DEBOUNCE_MS_ENV,
+                settings.watch_debounce_ms.as_deref(),
+            )?,
+            MIN_WATCH_DEBOUNCE_MS..=MAX_WATCH_DEBOUNCE_MS,
             DEFAULT_WATCH_DEBOUNCE_MS,
+            "milliseconds",
         )?;
 
         Ok(Self {
@@ -222,42 +237,10 @@ impl FsConfig {
     }
 }
 
-fn parse_enum<T>(
-    var: &str,
-    supplied: Option<&OsStr>,
-    parse: impl Fn(&str) -> Option<T>,
-    default: T,
-    accepted: &str,
-) -> Result<T, Error> {
-    match supplied {
-        None => Ok(default),
-        Some(value) if value.is_empty() => {
-            Err(config_error(format!("{} must not be empty", setting(var))))
-        }
-        Some(value) => {
-            let value = value
-                .to_str()
-                .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
-            parse(value).ok_or_else(|| {
-                config_error(format!(
-                    "{} is invalid: expected {accepted}, got \"{value}\"",
-                    setting(var)
-                ))
-            })
-        }
-    }
-}
-
 fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, Error> {
-    let Some(value) = supplied else {
+    let Some(value) = utf8(var, supplied)? else {
         return Ok(default);
     };
-    let value = value
-        .to_str()
-        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
-    if value.is_empty() {
-        return Err(config_error(format!("{} must not be empty", setting(var))));
-    }
     let digits = value.strip_prefix("0o").unwrap_or(value);
     u32::from_str_radix(digits, 8)
         .ok()
@@ -268,47 +251,6 @@ fn parse_mode(var: &str, supplied: Option<&OsStr>, default: u32) -> Result<u32, 
                 setting(var)
             ))
         })
-}
-
-fn parse_millis(var: &str, supplied: Option<&OsStr>, default: u64) -> Result<u64, Error> {
-    let Some(value) = supplied else {
-        return Ok(default);
-    };
-    let value = value
-        .to_str()
-        .ok_or_else(|| config_error(format!("{} must be valid UTF-8", setting(var))))?;
-    if value.is_empty() {
-        return Err(config_error(format!("{} must not be empty", setting(var))));
-    }
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|millis| (MIN_WATCH_DEBOUNCE_MS..=MAX_WATCH_DEBOUNCE_MS).contains(millis))
-        .ok_or_else(|| {
-            config_error(format!(
-                "{} is invalid: expected {MIN_WATCH_DEBOUNCE_MS}-{MAX_WATCH_DEBOUNCE_MS} \
-                 milliseconds, got \"{value}\"",
-                setting(var)
-            ))
-        })
-}
-
-fn parse_bool(var: &str, supplied: Option<&OsStr>, default: bool) -> Result<bool, Error> {
-    parse_enum(
-        var,
-        supplied,
-        |value| match value {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        },
-        default,
-        "\"true\" or \"false\"",
-    )
-}
-
-fn config_error(message: String) -> Error {
-    Error::Config { message }
 }
 
 #[cfg(test)]
@@ -324,6 +266,59 @@ mod tests {
 
     fn error_of(settings: FsSettings) -> String {
         FsConfig::from_settings(settings).unwrap_err().to_string()
+    }
+
+    #[cfg(unix)]
+    fn non_utf8() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStrExt as _;
+        std::ffi::OsStr::from_bytes(b"\xff").to_os_string()
+    }
+
+    /// Exact messages for the switch and the debounce, pinned before the
+    /// parsers moved to `notedthat_core::setting`.
+    #[test]
+    fn switch_and_debounce_messages_are_pinned() {
+        let watch = |value: std::ffi::OsString| {
+            error_of(FsSettings {
+                watch: Some(value),
+                ..rooted()
+            })
+        };
+        let debounce = |value: std::ffi::OsString| {
+            error_of(FsSettings {
+                watch_debounce_ms: Some(value),
+                ..rooted()
+            })
+        };
+        let w = "NOTEDTHAT_FS_WATCH (--fs-watch)";
+        let d = "NOTEDTHAT_FS_WATCH_DEBOUNCE_MS (--fs-watch-debounce-ms)";
+        for (got, expected) in [
+            (watch("".into()), format!("{w} must not be empty")),
+            (
+                watch(" true ".into()),
+                format!("{w} is invalid: expected \"true\" or \"false\", got \" true \""),
+            ),
+            (
+                watch("yes".into()),
+                format!("{w} is invalid: expected \"true\" or \"false\", got \"yes\""),
+            ),
+            (debounce("".into()), format!("{d} must not be empty")),
+            (
+                debounce("10".into()),
+                format!("{d} is invalid: expected 50-60000 milliseconds, got \"10\""),
+            ),
+            (
+                debounce(" 100".into()),
+                format!("{d} is invalid: expected 50-60000 milliseconds, got \" 100\""),
+            ),
+        ] {
+            assert!(got.ends_with(&expected), "{got}");
+        }
+        #[cfg(unix)]
+        {
+            assert!(watch(non_utf8()).ends_with(&format!("{w} must be valid UTF-8")));
+            assert!(debounce(non_utf8()).ends_with(&format!("{d} must be valid UTF-8")));
+        }
     }
 
     /// The diagnostic names both ways the root can be supplied, because which
