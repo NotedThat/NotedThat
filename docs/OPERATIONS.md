@@ -715,13 +715,25 @@ A client that re-`initialize`s per request is the usual cause
 ([Capacity](#capacity-what-one-instance-holds), [MCP session ids](#mcp-session-ids)). Otherwise
 raise the cap, weighing [what a session costs](CONFIGURATION.md#what-a-session-costs).
 
+It stays beside [NotedThatMcpSessionsNearlyFull](#notedthatmcpsessionsnearlyfull): a pool that goes
+from under 80% to full faster than that rule's 10 minutes is caught only here.
+
+### NotedThatMcpSessionsNearlyFull
+
+`notedthat_mcp_sessions` has been above 80% of `notedthat_mcp_max_sessions` for 10 minutes. No
+client is refused yet; once the pool is full, new clients cannot `initialize` and
+[NotedThatMcpSessionsRefused](#notedthatmcpsessionsrefused) follows. Idle sessions count until rmcp
+reclaims them after five minutes.
+
+Look for a client that re-`initialize`s per request first
+([MCP session ids](#mcp-session-ids)); otherwise raise `NOTEDTHAT_MCP_MAX_SESSIONS`, weighing
+[what a session costs](CONFIGURATION.md#what-a-session-costs).
+
 ### Not alerted on yet
 
 - **Search latency.** There is no budget to alert against until
   [#177](https://github.com/NotedThat/NotedThat/issues/177) sets one. For a dashboard, the P95 is
   `histogram_quantile(0.95, sum by (le) (rate(notedthat_search_duration_seconds_bucket[5m])))`.
-- **MCP sessions near the cap.** No gauge of open sessions exists, so
-  [NotedThatMcpSessionsRefused](#notedthatmcpsessionsrefused) fires at the cap, not near it.
 - **A readiness probe that hangs.** It is reported by `/readyz` as `timeout` but records no metric
   until it answers, so poll `/readyz` itself if that matters to you.
 

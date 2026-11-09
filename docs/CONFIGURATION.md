@@ -368,7 +368,7 @@ up for their own reasons — but a rising share of it beside rising latency is t
 The full table is in `SPECIFICATIONS.md` §6.15. The families are: HTTP requests
 (`notedthat_http_*`), search (`notedthat_search_*`), embedding (`notedthat_embedding_*`), the index
 queue and worker (`notedthat_index_*`), the vector store (`notedthat_vector_store_*`), object
-change events (`notedthat_events_*`), reconciliation (`notedthat_reconcile_*`), the filesystem
+change events (`notedthat_events_*`), MCP sessions (`notedthat_mcp_sessions`, `notedthat_mcp_max_sessions`), reconciliation (`notedthat_reconcile_*`), the filesystem
 watcher (`notedthat_fs_watch_lost_total`), storage (`notedthat_storage_*`) and
 `notedthat_build_info`.
 

@@ -188,7 +188,8 @@ groups:
       - alert: NotedThatMcpSessionsRefused
         # A 503 on /mcp is either the session cap (NOTEDTHAT_MCP_MAX_SESSIONS)
         # or the in-flight cap; the second is counted on its own, so the
-        # difference is the session cap. No gauge of open sessions exists yet.
+        # difference is the session cap. Kept beside NearlyFull: a pool can go
+        # from under 80% to full faster than that rule's `for`.
         expr: |
           (
             sum by (instance) (increase(notedthat_http_requests_total{route="/mcp",status="503"}[5m]))
@@ -201,3 +202,15 @@ groups:
           summary: "MCP clients are being refused a session"
           description: "/mcp has answered 503 outside the in-flight cap for 5 minutes, most likely because NOTEDTHAT_MCP_MAX_SESSIONS is reached."
           runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsrefused
+
+      - alert: NotedThatMcpSessionsNearlyFull
+        # Both gauges are exported only while metrics and MCP are on; idle
+        # sessions count until rmcp reclaims them (five minutes).
+        expr: notedthat_mcp_sessions / notedthat_mcp_max_sessions > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The MCP session pool is nearly full"
+          description: "More than 80% of NOTEDTHAT_MCP_MAX_SESSIONS has been in use for 10 minutes; new MCP sessions will be refused once it is full."
+          runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsnearlyfull

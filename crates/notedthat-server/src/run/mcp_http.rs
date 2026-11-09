@@ -55,12 +55,19 @@ pub(crate) fn build_router(
     let mcp_config = McpHttpServiceConfig::new(
         config.mcp_http_allowed_hosts.clone(),
         config.mcp_http_allowed_origins.clone(),
-        cancellation_token,
+        cancellation_token.clone(),
     )
     .context("failed to build MCP HTTP service config")?
     .with_max_sessions(config.mcp_max_sessions);
     let mcp_service = McpHttpService::new(client, &mcp_config, events_enabled);
     let sessions = mcp_service.sessions();
+    if config.metrics_listen_addr.is_some() {
+        // Ends with the listener's token; it holds no queue, so nothing waits on it.
+        tokio::spawn(super::metrics::sample_mcp_sessions(
+            sessions.clone(),
+            cancellation_token,
+        ));
+    }
     let anonymous = anonymous_admitted(config.mcp_anonymous, access_policies);
     let auth = Arc::new(McpAuth {
         authenticator,

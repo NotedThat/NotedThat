@@ -244,9 +244,14 @@ impl McpSessions {
         self.max_sessions
     }
 
+    /// The sessions rmcp holds right now, idle ones included until it reclaims them.
+    pub async fn open_sessions(&self) -> usize {
+        self.manager.sessions.read().await.len()
+    }
+
     /// Whether this process already holds as many sessions as it may.
     async fn at_capacity(&self) -> bool {
-        self.manager.sessions.read().await.len() >= self.max_sessions
+        self.open_sessions().await >= self.max_sessions
     }
 
     /// Whether `presented` may act on the session `id` names.
@@ -1260,6 +1265,20 @@ mod caller_identity {
 
             // Then: nothing is left behind.
             assert_eq!(sessions.owner_count().await, 0);
+        }
+
+        #[tokio::test]
+        async fn open_sessions_counts_what_rmcp_holds() {
+            let api = MockServer::start().await;
+            let (app, sessions) = app_parts(&api.uri(), DEFAULT_MAX_SESSIONS);
+            assert_eq!(sessions.open_sessions().await, 0);
+
+            let id = open_session(&app, SERVICE_TOKEN).await;
+            assert_eq!(sessions.open_sessions().await, 1);
+
+            let (status, _, _) = raw(&app, Method::DELETE, Some(SERVICE_TOKEN), Some(&id)).await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            assert_eq!(sessions.open_sessions().await, 0);
         }
 
         #[tokio::test]

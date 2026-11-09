@@ -950,6 +950,7 @@ listener is `404`. Names, label keys and the histogram bucket table live in one 
 | `notedthat_events_publish_deduplicated_total` | counter | — |
 | `notedthat_nats_connected` | gauge | — |
 | `notedthat_nats_reconnects_total` | counter | — |
+| `notedthat_mcp_sessions` / `notedthat_mcp_max_sessions` | gauge | — (sampled; #379) |
 | `notedthat_fs_watch_lost_total` | counter | `reason` |
 | `notedthat_reconcile_passes_total` | counter | `kb`, `cause`, `outcome` |
 | `notedthat_reconcile_duration_seconds` | histogram | `kb` |

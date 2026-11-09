@@ -404,3 +404,26 @@ tests:
               summary: "MCP clients are being refused a session"
               description: "/mcp has answered 503 outside the in-flight cap for 5 minutes, most likely because NOTEDTHAT_MCP_MAX_SESSIONS is reached."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsrefused
+
+  # Gauges, sampled every second from startup: 210 of 256 is over 80%.
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_mcp_sessions{instance="a"}'
+        values: '210x15'
+      - series: 'notedthat_mcp_max_sessions{instance="a"}'
+        values: '256x15'
+      - series: 'notedthat_mcp_sessions{instance="b"}'
+        values: '150x15'
+      - series: 'notedthat_mcp_max_sessions{instance="b"}'
+        values: '256x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NotedThatMcpSessionsNearlyFull
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: a
+            exp_annotations:
+              summary: "The MCP session pool is nearly full"
+              description: "More than 80% of NOTEDTHAT_MCP_MAX_SESSIONS has been in use for 10 minutes; new MCP sessions will be refused once it is full."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatmcpsessionsnearlyfull
