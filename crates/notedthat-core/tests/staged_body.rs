@@ -193,3 +193,38 @@ async fn staged_file_reopens_from_start_without_materializing() {
     assert_eq!(first_bytes, expected);
     assert_eq!(second_bytes, expected);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn staged_file_is_private_and_round_trips() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let config = StagingConfig::new(dir.path().to_path_buf());
+    let body = Bytes::from_static(b"private body");
+    let staged = StagedBody::stage_stream_to_file(
+        stream::iter([Ok::<_, std::io::Error>(body.clone())]),
+        Some(body.len() as u64),
+        u64::MAX,
+        &config,
+    )
+    .await
+    .expect("body stages to a file");
+
+    let path = staged.file_path().expect("staged to a file");
+    let mode = std::fs::metadata(path)
+        .expect("staged file exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "staging file must stay owner-only");
+
+    let mut read = Vec::new();
+    staged
+        .open()
+        .await
+        .expect("staged file reopens")
+        .read_to_end(&mut read)
+        .await
+        .expect("staged file reads");
+    assert_eq!(read, body);
+}
