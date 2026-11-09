@@ -42,9 +42,9 @@ impl<'a> WriteSinks<'a> {
     /// The indexing queue alone, as every deployment without an events backend
     /// runs, attributed to the HTTP API, with nothing keeping a health record.
     #[must_use]
-    pub fn indexer_only(indexer_tx: impl Into<IndexQueueSender>) -> Self {
+    pub fn indexer_only(indexer_tx: &IndexQueueSender) -> Self {
         Self {
-            indexer_tx: indexer_tx.into(),
+            indexer_tx: indexer_tx.clone(),
             events: None,
             index_health: None,
             source: EventSource::Http,

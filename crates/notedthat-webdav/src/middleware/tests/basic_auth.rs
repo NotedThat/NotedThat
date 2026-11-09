@@ -13,7 +13,7 @@ use tower::util::ServiceExt;
 use tower_http::request_id::{MakeRequestUuid, SetRequestIdLayer};
 
 fn test_state() -> WebDavState {
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1024);
     WebDavState {
         authenticator: Arc::new(
             notedthat_core::Authenticator::new("test-service-token")
@@ -24,7 +24,7 @@ fn test_state() -> WebDavState {
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(BTreeMap::new()),
         access_policies: Arc::new(BTreeMap::new()),
-        indexer_tx: (&indexer_tx).into(),
+        indexer_tx: indexer_tx.clone(),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }

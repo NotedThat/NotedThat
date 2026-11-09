@@ -12,7 +12,6 @@ use notedthat_core::KbSlug;
 use notedthat_core::testing::InMemoryStorage;
 use notedthat_webdav::{router::build_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::mpsc;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +47,7 @@ async fn state_with_note(key: &str) -> WebDavState {
 }
 
 fn make_state_with(storage: InMemoryStorage) -> WebDavState {
-    let (tx, _rx) = mpsc::channel(100);
+    let (tx, _rx) = notedthat_indexer::index_queue(100);
     let declared = declared_kbs();
     WebDavState {
         authenticator: Arc::new(
@@ -59,7 +58,7 @@ fn make_state_with(storage: InMemoryStorage) -> WebDavState {
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared.clone()),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared)),
-        indexer_tx: (&tx).into(),
+        indexer_tx: tx.clone(),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }

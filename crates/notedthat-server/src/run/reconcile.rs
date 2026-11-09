@@ -286,7 +286,6 @@ mod tests {
     use notedthat_core::{ConditionalHeaders, ObjectPath};
     use notedthat_indexer::testing::InMemoryVectorStore;
     use std::time::Duration;
-    use tokio::sync::mpsc;
 
     fn kb() -> KbSlug {
         KbSlug::try_new("notes").unwrap()
@@ -314,22 +313,16 @@ mod tests {
         capacity: usize,
     ) -> (
         Arc<Reconciler>,
-        mpsc::Receiver<IndexEvent>,
+        notedthat_indexer::IndexQueueReceiver,
         Arc<IndexHealth>,
     ) {
-        let (tx, rx) = mpsc::channel(capacity);
+        let (tx, rx) = notedthat_indexer::index_queue(capacity);
         let health = Arc::new(IndexHealth::new());
         // Provisioned, as startup leaves it: a pass over a knowledge base with no
         // collection is skipped, by design.
         let store = Arc::new(InMemoryVectorStore::new());
         store.create_collection(&kb(), 3).await.unwrap();
-        let reconciler = Reconciler::new(
-            storage,
-            store,
-            IndexQueueSender::from_mpsc(tx),
-            health.clone(),
-            &[kb()],
-        );
+        let reconciler = Reconciler::new(storage, store, tx, health.clone(), &[kb()]);
         (reconciler, rx, health)
     }
 
@@ -367,7 +360,7 @@ mod tests {
         );
         assert_eq!(summary.scope, None);
         let mut keys = Vec::new();
-        while let Ok(event) = rx.try_recv() {
+        while let Ok(event) = rx.try_recv().map(|queued| queued.event) {
             match event {
                 IndexEvent::Refresh {
                     object_key,
@@ -395,7 +388,8 @@ mod tests {
         let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("a refresh was enqueued")
-            .expect("open");
+            .expect("open")
+            .event;
         assert!(matches!(first, IndexEvent::Refresh { .. }));
         assert_eq!(
             reconciler.trigger(&kb()),
@@ -428,7 +422,10 @@ mod tests {
         let summary = wait_reconciled(&health).await;
         assert_eq!(summary.changed, 1);
         assert!(health.snapshot(kb().as_str()).stale_since.is_none());
-        assert!(matches!(rx.try_recv(), Ok(IndexEvent::Refresh { .. })));
+        assert!(matches!(
+            rx.try_recv().map(|queued| queued.event),
+            Ok(IndexEvent::Refresh { .. })
+        ));
         reconciler.stop().await;
     }
 

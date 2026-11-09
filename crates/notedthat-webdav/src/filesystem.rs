@@ -726,7 +726,7 @@ mod tests {
     use futures::TryStreamExt as _;
     use notedthat_core::Storage;
     use notedthat_core::testing::{ScriptedStorage, StorageCall, StorageOp};
-    use tokio::sync::mpsc;
+
     use tower::ServiceExt as _;
 
     /// Size of every seeded object, so size assertions have a fixed number to check.
@@ -826,7 +826,7 @@ mod tests {
         storage: Arc<dyn Storage>,
         declared_kbs: BTreeMap<String, KbSlug>,
     ) -> Arc<WebDavState> {
-        let (indexer_tx, _rx) = mpsc::channel(16);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(16);
         Arc::new(WebDavState {
             authenticator: Arc::new(
                 notedthat_core::Authenticator::new("test-service-token")
@@ -836,7 +836,7 @@ mod tests {
             staging_config: notedthat_core::StagingConfig::default(),
             access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
             declared_kbs: Arc::new(declared_kbs),
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             events: None,
             index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
         })

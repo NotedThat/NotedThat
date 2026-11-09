@@ -1,6 +1,4 @@
 use notedthat_core::ConditionalHeaders;
-use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc;
 
 use super::TestStorage;
 use crate::replace::{ReplaceRequest, replace};
@@ -41,9 +39,9 @@ pub(in crate::replace::tests) async fn run_replace_with(
     args: ReplaceArgs<'_>,
     caller_conditionals: ConditionalHeaders,
     max_patchable_size: u64,
-    supplied_indexer_tx: Option<mpsc::Sender<IndexEvent>>,
+    supplied_indexer_tx: Option<notedthat_indexer::IndexQueueSender>,
 ) -> Result<crate::ReplaceOutcome, crate::WriteError> {
-    let (indexer_tx, _rx) = mpsc::channel::<IndexEvent>(8);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(8);
     let indexer_tx = supplied_indexer_tx.unwrap_or(indexer_tx);
     let kb = kb();
     let path = path();

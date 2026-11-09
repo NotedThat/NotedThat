@@ -6,7 +6,6 @@ use axum::http::Request;
 use notedthat_core::testing::ScriptedStorage;
 use notedthat_core::{AccessPolicy, AccessRule, KbSlug, KeyPattern, Verb, Who};
 use notedthat_webdav::state::WebDavState;
-use tokio::sync::mpsc;
 
 /// Build a policy granting `verbs` to `who` across the whole knowledge base.
 ///
@@ -39,8 +38,7 @@ pub(super) fn state_with_policies(
     storage: Arc<ScriptedStorage>,
     policies: BTreeMap<String, AccessPolicy>,
 ) -> WebDavState {
-    let (indexer_tx, _indexer_rx) = mpsc::channel(8);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, _indexer_rx) = notedthat_indexer::index_queue(8);
     WebDavState {
         authenticator: Arc::new(
             notedthat_core::Authenticator::new(SERVICE_TOKEN)

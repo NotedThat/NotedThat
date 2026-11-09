@@ -1,10 +1,8 @@
 use super::super::*;
 use notedthat_core::StorageError;
 use notedthat_core::testing::{ScriptedStorage, StorageOp};
-use notedthat_indexer::IndexEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::mpsc;
 
 const KB: &str = "test-kb";
 const PATH: &str = "test.md";
@@ -110,8 +108,8 @@ pub(super) async fn run_patch(
     patch_mode: PatchMode,
     caller_conditionals: ConditionalHeaders,
     max_size: u64,
-) -> Result<(PutOutcome, mpsc::Receiver<IndexEvent>), WriteError> {
-    let (indexer_tx, rx) = mpsc::channel(8);
+) -> Result<(PutOutcome, notedthat_indexer::IndexQueueReceiver), WriteError> {
+    let (indexer_tx, rx) = notedthat_indexer::index_queue(8);
     let kb = kb();
     let path = path();
     let outcome = patch(

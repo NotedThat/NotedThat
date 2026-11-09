@@ -100,7 +100,7 @@ impl AppState {
     /// reports ready, and there is no event log and no reconciler.
     #[must_use]
     pub fn for_tests(storage: Arc<dyn Storage>, declared_kbs: BTreeMap<String, KbSlug>) -> Self {
-        let (indexer_tx, _) = tokio::sync::mpsc::channel(1);
+        let (indexer_tx, _) = notedthat_indexer::index_queue(1);
         Self {
             storage,
             access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
@@ -109,7 +109,7 @@ impl AppState {
             authenticator: Arc::new(Authenticator::new("test-token")),
             max_body_size: 16 * 1024 * 1024,
             max_patchable_size: 16 * 1024 * 1024,
-            indexer_tx: IndexQueueSender::from_mpsc(indexer_tx),
+            indexer_tx,
             searcher: Arc::new(crate::testing::NoopSearcher),
             events: None,
             index_health: Arc::new(IndexHealth::new()),
@@ -126,17 +126,16 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    #[allow(clippy::needless_pass_by_value)]
-    fn minimal_state(tx: tokio::sync::mpsc::Sender<notedthat_indexer::IndexEvent>) -> AppState {
+    fn minimal_state(indexer_tx: notedthat_indexer::IndexQueueSender) -> AppState {
         AppState {
-            indexer_tx: (&tx).into(),
+            indexer_tx,
             ..AppState::for_tests(Arc::new(InMemoryStorage::default()), BTreeMap::new())
         }
     }
 
     #[tokio::test]
     async fn clone_shares_same_channel() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let (tx, mut rx) = notedthat_indexer::index_queue(10);
         let state = minimal_state(tx);
         let cloned = state.clone();
 
@@ -150,7 +149,11 @@ mod tests {
             .await
             .expect("send on cloned tx");
 
-        let received = rx.recv().await.expect("receive on original rx");
+        let received = rx
+            .recv()
+            .await
+            .map(|queued| queued.event)
+            .expect("receive on original rx");
         assert_eq!(
             received, event,
             "cloned Sender must share the same underlying channel"

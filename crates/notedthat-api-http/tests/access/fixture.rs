@@ -78,13 +78,13 @@ pub(super) async fn app_with_reconcile(
     policies: BTreeMap<String, AccessPolicy>,
     reconcile: Option<Arc<dyn ReconcileTrigger>>,
 ) -> axum::Router {
-    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
+    let (indexer_tx, _indexer_rx) = notedthat_indexer::index_queue(16);
     build(
         policies,
         Arc::new(NoopSearcher),
         authenticator(),
         None,
-        notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx),
+        indexer_tx,
         Arc::new(IndexHealth::new()),
         reconcile,
     )
@@ -139,7 +139,7 @@ pub(super) async fn app_with_events_and_authenticator(
 /// hold the queue full or let it drain.
 pub(super) struct IndexSide {
     pub(super) health: Arc<IndexHealth>,
-    pub(super) queue_rx: tokio::sync::mpsc::Receiver<notedthat_indexer::IndexEvent>,
+    pub(super) queue_rx: notedthat_indexer::IndexQueueReceiver,
 }
 
 /// The fixture app with its indexing side exposed. The queue holds
@@ -148,8 +148,7 @@ pub(super) async fn app_with_index_side(
     policies: BTreeMap<String, AccessPolicy>,
     queue_capacity: usize,
 ) -> (axum::Router, IndexSide) {
-    let (indexer_tx, queue_rx) = tokio::sync::mpsc::channel(queue_capacity);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, queue_rx) = notedthat_indexer::index_queue(queue_capacity);
     let health = Arc::new(IndexHealth::new());
     let app = build(
         policies,
@@ -170,13 +169,13 @@ async fn app_with(
     authenticator: Authenticator,
     events: Option<Arc<dyn EventPublisher>>,
 ) -> axum::Router {
-    let (indexer_tx, _indexer_rx) = tokio::sync::mpsc::channel(16);
+    let (indexer_tx, _indexer_rx) = notedthat_indexer::index_queue(16);
     build(
         policies,
         searcher,
         authenticator,
         events,
-        (&indexer_tx).into(),
+        indexer_tx.clone(),
         Arc::new(IndexHealth::new()),
         Some(Arc::new(RecordingReconcile::default())),
     )
