@@ -1,7 +1,7 @@
 //! `ObjectPath` — normalized object storage key with D40 validation rules.
 
 use crate::error::Error;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Returns whether a decoded, knowledge-base-relative path is in the internal namespace.
@@ -47,7 +47,8 @@ pub const RESERVED_KEYS: &[&str] = &["index", "index/reconcile", "events", "sear
 /// folder; [`ObjectPath::try_object_key`] also refuses it as an object key.
 ///
 /// The stored form has no leading slash and uses `/` as the separator.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -159,16 +160,20 @@ impl fmt::Display for ObjectPath {
     }
 }
 
-impl<'de> Deserialize<'de> for ObjectPath {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Self::try_from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deserialize_validates_like_try_from_str() {
+        let path: ObjectPath = serde_json::from_str("\"/docs/a.md\"").unwrap();
+        assert_eq!(path.as_str(), "docs/a.md");
+        let err = serde_json::from_str::<ObjectPath>("\"docs\\\\a.md\"").unwrap_err();
+        let expected = ObjectPath::try_from_str("docs\\a.md")
+            .unwrap_err()
+            .to_string();
+        assert!(err.to_string().starts_with(&expected), "{err}");
+    }
 
     #[test]
     fn internal_path_when_root_namespace_or_descendant() {
