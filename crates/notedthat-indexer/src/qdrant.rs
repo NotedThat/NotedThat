@@ -1,8 +1,7 @@
 //! Thin wrapper around the `qdrant-client` crate.
 //!
-//! Owns the client construction, config parsing, and error mapping. The
-//! provisioner (see `provisioner.rs`) and worker (see `worker.rs`) call into
-//! this module — they do not import `qdrant_client` directly.
+//! `QdrantClient` builds the `qdrant_client::Qdrant` from `QdrantConfig` and
+//! implements `VectorStore` for it; the rest of the crate talks to the trait.
 //!
 //! Per §6.11 dep graph: `notedthat-indexer` is the only crate that
 //! depends on `qdrant-client`.
@@ -69,9 +68,6 @@ pub enum QdrantWrapperError {
     /// Failed to build the Qdrant client.
     #[error("qdrant client build failed: {0}")]
     ClientBuild(String),
-    /// Qdrant operation failed.
-    #[error("qdrant operation failed: {0}")]
-    Operation(String),
 }
 
 /// Thin wrapper: constructs a `Qdrant` client from config.
@@ -106,11 +102,8 @@ impl QdrantClient {
         })
     }
 
-    /// Access the underlying `qdrant_client::Qdrant` for advanced operations.
-    ///
-    /// Kept `pub(crate)` so provisioner + worker can call directly, but the API
-    /// does not leak out of this crate.
-    pub(crate) fn inner(&self) -> &Qdrant {
+    /// The underlying `qdrant_client::Qdrant`, for the `VectorStore` impl below.
+    fn inner(&self) -> &Qdrant {
         &self.inner
     }
 }
