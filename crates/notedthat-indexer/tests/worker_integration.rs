@@ -43,7 +43,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 use tokio::{io::AsyncReadExt, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -113,6 +113,54 @@ impl MockStorage {
     /// worker learns anything about the object.
     fn fail_next_head(&self) {
         self.fail_next_head.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Seeding shorthands over core's [`ScriptedStorage`], in the shape these tests
+/// read. Every object reports the same modification time, so assertions on
+/// `mtime` stay fixed.
+trait Seed {
+    async fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str);
+    async fn insert_bytes(&self, kb: &str, key: &str, content: Bytes, content_type: &str);
+    async fn remove(&self, kb: &str, key: &str);
+    fn stream_calls(&self) -> usize;
+}
+
+const MTIME: u64 = 1_700_000_000;
+
+/// An empty store holding the test knowledge base.
+fn scripted() -> ScriptedStorage {
+    ScriptedStorage::with_kbs([&kb()])
+}
+
+impl Seed for ScriptedStorage {
+    async fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str) {
+        self.insert_bytes(kb, key, Bytes::from(content.to_owned()), content_type)
+            .await;
+    }
+
+    async fn insert_bytes(&self, kb: &str, key: &str, content: Bytes, content_type: &str) {
+        self.inner()
+            .seed(kb, key, content, Some(content_type), None)
+            .await;
+        self.inner()
+            .set_last_modified(kb, key, UNIX_EPOCH + Duration::from_secs(MTIME))
+            .await;
+    }
+
+    async fn remove(&self, kb: &str, key: &str) {
+        self.inner()
+            .delete_object(
+                &KbSlug::try_new(kb).unwrap(),
+                &opath(key),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn stream_calls(&self) -> usize {
+        self.count(StorageOp::GetObjectStream)
     }
 }
 
@@ -585,7 +633,7 @@ async fn storage_with(key: &str, body: &str) -> InMemoryStorage {
 }
 
 fn make_worker(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     rx: IndexQueueReceiver,
@@ -595,7 +643,7 @@ fn make_worker(
 }
 
 fn make_worker_with_batch(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     rx: IndexQueueReceiver,
@@ -603,7 +651,7 @@ fn make_worker_with_batch(
     batch_size: usize,
 ) -> IndexerWorker {
     IndexerWorker::new(
-        storage as Arc<dyn Storage>,
+        storage,
         embedder,
         store,
         rx,
@@ -616,7 +664,7 @@ fn make_worker_with_batch(
 /// A worker over the bounded production queue, running up to `concurrency`
 /// files at once, with its sender.
 fn make_queue_worker(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     shutdown: CancellationToken,
@@ -625,7 +673,7 @@ fn make_queue_worker(
 ) -> (notedthat_indexer::IndexQueueSender, IndexerWorker) {
     let (tx, rx) = index_queue(capacity);
     let worker = IndexerWorker::new(
-        storage as Arc<dyn Storage>,
+        storage,
         embedder,
         store,
         rx,
@@ -644,7 +692,7 @@ fn upsert(kb: &KbSlug, key: &str) -> IndexEvent {
 }
 
 async fn index_once(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     kb: &KbSlug,
@@ -673,7 +721,7 @@ async fn index_once(
 
 /// Drive one `Refresh` through a worker, the way the filesystem watcher does.
 async fn refresh_once(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     kb: &KbSlug,
@@ -838,19 +886,21 @@ async fn a_late_tombstone_keeps_the_points_of_a_live_object() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "doc.md",
-        "# Doc\n\nContent that stays.",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            "test-kb",
+            "doc.md",
+            "# Doc\n\nContent that stays.",
+            "text/markdown",
+        )
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             Arc::new(store.clone()),
             rx,
@@ -928,13 +978,13 @@ async fn not_found_on_reread_implicit_tombstone() {
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
     let mock_server = MockServer::start().await;
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             Arc::new(store.clone()),
             rx,
@@ -980,13 +1030,15 @@ async fn parameterised_content_type_is_found_by_its_media_type() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "hello.md",
-        "# Hello\n\nThis is a test document.",
-        "Text/Markdown; charset=utf-8",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            "test-kb",
+            "hello.md",
+            "# Hello\n\nThis is a test document.",
+            "Text/Markdown; charset=utf-8",
+        )
+        .await;
     index_once(
         storage,
         make_embedder(&mock_server.uri(), 4),
@@ -1035,13 +1087,15 @@ async fn non_markdown_content_type_skipped() {
         .expect(1)
         .mount(&mock_server)
         .await;
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "image.png",
-        "old searchable text",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            "test-kb",
+            "image.png",
+            "old searchable text",
+            "text/markdown",
+        )
+        .await;
 
     let (seed_tx, seed_rx) = index_queue(1);
     seed_tx
@@ -1053,7 +1107,7 @@ async fn non_markdown_content_type_skipped() {
         .unwrap();
     drop(seed_tx);
     make_worker(
-        Arc::clone(&storage),
+        storage.clone(),
         make_embedder(&mock_server.uri(), 4),
         Arc::new(store.clone()),
         seed_rx,
@@ -1063,13 +1117,15 @@ async fn non_markdown_content_type_skipped() {
     .await;
     assert_eq!(count_points(&store, &kb, "image.png").await, 1);
 
-    storage.insert("test-kb", "image.png", "not markdown", "image/png");
+    storage
+        .insert("test-kb", "image.png", "not markdown", "image/png")
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             Arc::new(store.clone()),
             rx,
@@ -1108,7 +1164,7 @@ async fn shrinking_replacement_removes_stale_okf_points() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let replacements = [
         ("large ".repeat(30), "old-tag"),
         ("short".to_owned(), "current-tag"),
@@ -1126,7 +1182,9 @@ async fn shrinking_replacement_removes_stale_okf_points() {
             .mount(&mock)
             .await;
         let raw = format!("---\ntype: Metric\ntags: [{tag}]\n---\n{body}");
-        storage.insert("test-kb", "metric.md", &raw, "text/markdown");
+        storage
+            .insert("test-kb", "metric.md", &raw, "text/markdown")
+            .await;
         let (tx, rx) = index_queue(1);
         tx.send(IndexEvent::Upsert {
             kb: kb.clone(),
@@ -1136,7 +1194,7 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         .unwrap();
         drop(tx);
         make_worker_with_batch(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder_with_limits(&mock.uri(), 4, 32, 1),
             Arc::new(store.clone()),
             rx,
@@ -1171,7 +1229,9 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         previous_count = Some(expected_points);
     }
 
-    storage.insert("test-kb", "metric.md", "", "text/markdown");
+    storage
+        .insert("test-kb", "metric.md", "", "text/markdown")
+        .await;
     let empty_mock = MockServer::start().await;
     let (tx, rx) = index_queue(1);
     tx.send(IndexEvent::Upsert {
@@ -1182,7 +1242,7 @@ async fn shrinking_replacement_removes_stale_okf_points() {
     .unwrap();
     drop(tx);
     make_worker(
-        Arc::clone(&storage),
+        storage.clone(),
         make_embedder(&empty_mock.uri(), 4),
         Arc::new(store.clone()),
         rx,
@@ -1212,14 +1272,16 @@ async fn oversized_chunk_is_split_without_dropping_content() {
         .expect(1)
         .mount(&mock_server)
         .await;
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "large.md", source, "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "large.md", source, "text/markdown")
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder_with_limits(&mock_server.uri(), 4, 20, 3),
             Arc::new(store.clone()),
             rx,
@@ -1291,9 +1353,13 @@ async fn bounded_queue_keeps_active_handlers_within_its_limit() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "one.md", "# One", "text/markdown");
-    storage.insert("test-kb", "two.md", "# Two", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "one.md", "# One", "text/markdown")
+        .await;
+    storage
+        .insert("test-kb", "two.md", "# Two", "text/markdown")
+        .await;
     let embedder = Arc::new(BlockingEmbedder::new());
     let (tx, worker) = make_queue_worker(
         storage,
@@ -1331,10 +1397,12 @@ async fn assert_runs_at_most(limit: usize, files: usize) {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let keys: Vec<String> = (0..files).map(|i| format!("file{i}.md")).collect();
     for key in &keys {
-        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+        storage
+            .insert("test-kb", key, &format!("# {key}"), "text/markdown")
+            .await;
     }
     let embedder = Arc::new(BlockingEmbedder::new());
     let (tx, worker) = make_queue_worker(
@@ -1396,10 +1464,12 @@ async fn files_start_in_the_order_they_became_ready() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let others: Vec<String> = (0..8).map(|i| format!("file{i}.md")).collect();
     for key in others.iter().map(String::as_str).chain(["first.md"]) {
-        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+        storage
+            .insert("test-kb", key, &format!("# {key}"), "text/markdown")
+            .await;
     }
     let embedder = Arc::new(BlockingEmbedder::new());
     let (tx, worker) = make_queue_worker(
@@ -1457,7 +1527,7 @@ async fn a_panicking_file_does_not_stop_the_worker() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let files = [
         ("boom.md", "# boom"),
         ("good1.md", "# Good one"),
@@ -1465,7 +1535,7 @@ async fn a_panicking_file_does_not_stop_the_worker() {
         ("later.md", "# Later"),
     ];
     for (key, body) in files {
-        storage.insert("test-kb", key, body, "text/markdown");
+        storage.insert("test-kb", key, body, "text/markdown").await;
     }
     let health = Arc::new(IndexHealth::new());
     let (tx, worker) = make_queue_worker(
@@ -1514,12 +1584,16 @@ async fn assert_delete_waits_for_update(delete: IndexEvent) {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "a.md", "# A\n\nalpha", "text/markdown");
-    storage.insert("test-kb", "b.md", "# B\n\nbeta", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "a.md", "# A\n\nalpha", "text/markdown")
+        .await;
+    storage
+        .insert("test-kb", "b.md", "# B\n\nbeta", "text/markdown")
+        .await;
     let embedder = Arc::new(BlockingEmbedder::new());
     let (tx, worker) = make_queue_worker(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::clone(&embedder) as Arc<dyn Embedder>,
         Arc::new(store.clone()),
         CancellationToken::new(),
@@ -1530,7 +1604,7 @@ async fn assert_delete_waits_for_update(delete: IndexEvent) {
 
     tx.send(upsert(&kb, "a.md")).await.unwrap();
     embedder.wait_started(1).await;
-    storage.remove("test-kb", "a.md");
+    storage.remove("test-kb", "a.md").await;
     tx.send(delete).await.unwrap();
     tx.send(upsert(&kb, "b.md")).await.unwrap();
     // b.md embeds while a.md is still held: different files overlap.
@@ -1571,11 +1645,13 @@ async fn updates_of_the_same_file_run_in_order_and_keep_the_last_content() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "serial.md", "# First\n\nalpha", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "serial.md", "# First\n\nalpha", "text/markdown")
+        .await;
     let embedder = Arc::new(BlockingEmbedder::new());
     let (tx, worker) = make_queue_worker(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::clone(&embedder) as Arc<dyn Embedder>,
         Arc::new(store.clone()),
         CancellationToken::new(),
@@ -1586,7 +1662,9 @@ async fn updates_of_the_same_file_run_in_order_and_keep_the_last_content() {
 
     tx.send(upsert(&kb, "serial.md")).await.unwrap();
     embedder.wait_started(1).await;
-    storage.insert("test-kb", "serial.md", "# Second\n\nbeta", "text/markdown");
+    storage
+        .insert("test-kb", "serial.md", "# Second\n\nbeta", "text/markdown")
+        .await;
     tx.send(upsert(&kb, "serial.md")).await.unwrap();
     assert!(
         !embedder.another_starts().await,
@@ -1619,10 +1697,12 @@ async fn graceful_shutdown_drains_lanes_and_running_files_with_concurrency() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let keys = ["d0.md", "d1.md", "d2.md", "d3.md"];
     for key in keys {
-        storage.insert("test-kb", key, &format!("# {key}"), "text/markdown");
+        storage
+            .insert("test-kb", key, &format!("# {key}"), "text/markdown")
+            .await;
     }
     let embedder = Arc::new(BlockingEmbedder::new());
     let health = Arc::new(IndexHealth::new());
@@ -1684,21 +1764,23 @@ async fn graceful_shutdown_drains_queue() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     for i in 0..5_u32 {
-        storage.insert(
-            "test-kb",
-            &format!("drain{i}.md"),
-            &format!("# Drain {i}\n\nParagraph."),
-            "text/markdown",
-        );
+        storage
+            .insert(
+                "test-kb",
+                &format!("drain{i}.md"),
+                &format!("# Drain {i}\n\nParagraph."),
+                "text/markdown",
+            )
+            .await;
     }
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             Arc::new(store.clone()),
             rx,
@@ -1749,14 +1831,16 @@ async fn vector_store_failure_logs_indexing_failed() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "down.md", "# Down\n\nContent.", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "down.md", "# Down\n\nContent.", "text/markdown")
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             store,
             rx,
@@ -1795,19 +1879,21 @@ async fn embedder_retry_on_429_succeeds() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "retry.md",
-        "# Retry\n\nContent.",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            "test-kb",
+            "retry.md",
+            "# Retry\n\nContent.",
+            "text/markdown",
+        )
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder(&mock_server.uri(), 4),
             Arc::new(store.clone()),
             rx,
@@ -1845,14 +1931,16 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "fail.md", "# Fail\n\nContent.", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "fail.md", "# Fail\n\nContent.", "text/markdown")
+        .await;
 
     let (tx, rx) = index_queue(100);
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(
         make_worker(
-            Arc::clone(&storage),
+            storage.clone(),
             make_embedder_with_limits(&mock_server.uri(), 4, 8192, 2),
             Arc::new(store.clone()),
             rx,
@@ -1882,14 +1970,16 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let old = (0..8).fold(String::new(), |mut output, index| {
         write!(output, "# Old {index}\nold-{index}\n").expect("write fixture");
         output
     });
-    storage.insert("test-kb", "repair.md", &old, "text/markdown");
+    storage
+        .insert("test-kb", "repair.md", &old, "text/markdown")
+        .await;
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
         &kb,
@@ -1904,10 +1994,12 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
         write!(output, "# New {index}\nnew-{index}\n").expect("write fixture");
         output
     });
-    storage.insert("test-kb", "repair.md", &replacement, "text/markdown");
+    storage
+        .insert("test-kb", "repair.md", &replacement, "text/markdown")
+        .await;
     let embed_failure = Arc::new(ScriptedEmbedder::new(Some(2), None));
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::clone(&embed_failure) as Arc<dyn Embedder>,
         Arc::new(store.clone()),
         &kb,
@@ -1923,7 +2015,7 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     assert_eq!(embed_failure.batch_sizes(), [2, 2]);
 
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
         &kb,
@@ -1939,10 +2031,12 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     );
 
     let newest = replacement.replace("new-", "newest-");
-    storage.insert("test-kb", "repair.md", &newest, "text/markdown");
+    storage
+        .insert("test-kb", "repair.md", &newest, "text/markdown")
+        .await;
     let upsert_failure = Arc::new(ScriptedEmbedder::new(None, Some(2)));
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::clone(&upsert_failure) as Arc<dyn Embedder>,
         Arc::new(store.clone()),
         &kb,
@@ -1958,7 +2052,7 @@ async fn failed_embed_and_upsert_batches_preserve_stale_points_until_repair() {
     );
 
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
         &kb,
@@ -1985,7 +2079,7 @@ async fn refresh_repairs_a_half_written_object_whichever_chunk_sorts_first() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let version = |word: &str| {
         (0..8).fold(String::new(), |mut output, index| {
             write!(output, "# {word} {index}\n{word}-{index}\n").expect("write fixture");
@@ -2000,9 +2094,11 @@ async fn refresh_repairs_a_half_written_object_whichever_chunk_sorts_first() {
             break;
         }
         let key = format!("mix-{attempt}.md");
-        storage.insert("test-kb", &key, &version("old"), "text/markdown");
+        storage
+            .insert("test-kb", &key, &version("old"), "text/markdown")
+            .await;
         index_once(
-            Arc::clone(&storage),
+            storage.clone(),
             Arc::new(ScriptedEmbedder::new(None, None)),
             Arc::new(store.clone()),
             &kb,
@@ -2011,9 +2107,11 @@ async fn refresh_repairs_a_half_written_object_whichever_chunk_sorts_first() {
         )
         .await;
 
-        storage.insert("test-kb", &key, &version("new"), "text/markdown");
+        storage
+            .insert("test-kb", &key, &version("new"), "text/markdown")
+            .await;
         index_once(
-            Arc::clone(&storage),
+            storage.clone(),
             Arc::new(ScriptedEmbedder::new(Some(2), None)),
             Arc::new(store.clone()),
             &kb,
@@ -2041,7 +2139,7 @@ async fn refresh_repairs_a_half_written_object_whichever_chunk_sorts_first() {
 
         let repair = Arc::new(ScriptedEmbedder::new(None, None));
         refresh_once(
-            Arc::clone(&storage),
+            storage.clone(),
             Arc::clone(&repair) as Arc<dyn Embedder>,
             Arc::new(store.clone()),
             &kb,
@@ -2145,13 +2243,15 @@ async fn a_refresh_of_unchanged_content_does_not_re_embed() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        kb.as_str(),
-        "note.md",
-        "# Title\n\nBody text.",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            kb.as_str(),
+            "note.md",
+            "# Title\n\nBody text.",
+            "text/markdown",
+        )
+        .await;
     let embedder = Arc::new(ScriptedEmbedder::new(None, None));
     let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
 
@@ -2182,8 +2282,10 @@ async fn a_refresh_of_changed_content_re_embeds() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "note.md", "first body", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "note.md", "first body", "text/markdown")
+        .await;
     let embedder = Arc::new(ScriptedEmbedder::new(None, None));
     let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
 
@@ -2197,7 +2299,9 @@ async fn a_refresh_of_changed_content_re_embeds() {
     .await;
     let after_first = embedder.calls();
 
-    storage.insert(kb.as_str(), "note.md", "second body", "text/markdown");
+    storage
+        .insert(kb.as_str(), "note.md", "second body", "text/markdown")
+        .await;
     refresh_once(storage, embedder.clone(), store_arc, &kb, "note.md").await;
 
     assert!(
@@ -2224,8 +2328,10 @@ async fn a_refresh_of_a_deleted_object_tombstones_it() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "note.md", "body", "text/markdown")
+        .await;
     let embedder = Arc::new(ScriptedEmbedder::new(None, None));
     let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
 
@@ -2239,7 +2345,7 @@ async fn a_refresh_of_a_deleted_object_tombstones_it() {
     .await;
     assert!(count_points(&store, &kb, "note.md").await > 0);
 
-    storage.remove(kb.as_str(), "note.md");
+    storage.remove(kb.as_str(), "note.md").await;
     refresh_once(storage, embedder, store_arc, &kb, "note.md").await;
 
     assert_eq!(count_points(&store, &kb, "note.md").await, 0);
@@ -2253,8 +2359,10 @@ async fn a_write_upsert_re_embeds_even_when_unchanged() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "note.md", "body", "text/markdown")
+        .await;
     let embedder = Arc::new(ScriptedEmbedder::new(None, None));
     let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
 
@@ -2286,8 +2394,10 @@ async fn a_failed_indexed_etag_lookup_indexes_anyway() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "note.md", "body", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "note.md", "body", "text/markdown")
+        .await;
     let embedder = Arc::new(ScriptedEmbedder::new(None, None));
     let failing: Arc<dyn VectorStore> = Arc::new(FailingEtagLookup {
         inner: store.clone(),
@@ -2385,7 +2495,7 @@ mod announcing {
     /// Run one worker over `events`, with `publisher` as its event log, until the
     /// channel closes.
     async fn drive(
-        storage: Arc<MockStorage>,
+        storage: Arc<dyn Storage>,
         store: Arc<dyn VectorStore>,
         publisher: Arc<MemoryPublisher>,
         events: Vec<IndexEvent>,
@@ -2405,7 +2515,7 @@ mod announcing {
     /// [`drive`] with the embedder and health record chosen by the test, for
     /// the outcomes that need a failing embedder or a look at `/index`'s view.
     async fn drive_with(
-        storage: Arc<MockStorage>,
+        storage: Arc<dyn Storage>,
         embedder: Arc<dyn Embedder>,
         store: Arc<dyn VectorStore>,
         publisher: Arc<MemoryPublisher>,
@@ -3570,7 +3680,7 @@ mod announcing {
 /// Drive one event through a worker that records on `health`, the way the
 /// server wires it, and return once the worker has drained and stopped.
 async fn run_one_with_health(
-    storage: Arc<MockStorage>,
+    storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
     store: Arc<dyn VectorStore>,
     event: IndexEvent,
@@ -3598,7 +3708,7 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
     // `run_one_with_health` records the enqueue itself; the worker's own
     // completion is what brings `pending` back to zero.
     run_one_with_health(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
         IndexEvent::Upsert {
@@ -3634,7 +3744,7 @@ async fn the_worker_records_a_failure_with_the_key_and_the_pipelines_error() {
     let health = Arc::new(IndexHealth::new());
 
     run_one_with_health(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(Some(1), None)),
         Arc::new(store.clone()),
         IndexEvent::Upsert {
@@ -3667,7 +3777,7 @@ async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
     storage.insert("test-kb", "same.md", "# Same\n\nunchanged", "text/markdown");
     let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
     index_once(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::clone(&embedder),
         Arc::new(store.clone()),
         &kb,
@@ -3678,7 +3788,7 @@ async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
 
     let health = Arc::new(IndexHealth::new());
     run_one_with_health(
-        Arc::clone(&storage),
+        storage.clone(),
         embedder,
         Arc::new(store.clone()),
         IndexEvent::Refresh {
@@ -3718,7 +3828,7 @@ async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() 
             let storage = Arc::new(MockStorage::new());
             storage.insert("test-kb", key, "# Earlier\n\nonce text", "text/markdown");
             index_once(
-                Arc::clone(&storage),
+                storage.clone(),
                 Arc::new(ScriptedEmbedder::new(None, None)),
                 Arc::new(store.clone()),
                 &kb,
@@ -3740,7 +3850,7 @@ async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() 
             let health = Arc::new(IndexHealth::new());
 
             run_one_with_health(
-                Arc::clone(&storage),
+                storage.clone(),
                 Arc::new(ScriptedEmbedder::new(None, None)),
                 Arc::new(store.clone()),
                 IndexEvent::Refresh {
@@ -3795,7 +3905,7 @@ async fn an_untyped_markdown_key_is_still_indexed_when_declared(declared: Option
     let health = Arc::new(IndexHealth::new());
 
     run_one_with_health(
-        Arc::clone(&storage),
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
         IndexEvent::Refresh {
