@@ -7,8 +7,8 @@ use axum::http::uri::Authority;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
-    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, ObjectState, Principal, PutOutcome,
-    StorageError, Verb, evaluate_write_preconditions,
+    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectMeta, ObjectPath, ObjectState, Principal,
+    PutOutcome, Storage, StorageError, Verb, evaluate_write_preconditions,
 };
 use notedthat_write::sniff_content_type;
 
@@ -290,38 +290,8 @@ async fn check_source_preconditions(
     let Ok(if_header) = IfHeader::from_headers(headers) else {
         return Err(StatusCode::BAD_REQUEST.into_response());
     };
-    // The prefix is asked first: a folder hides an object of the same name, as listings do.
-    let storage = state.storage.as_ref();
-    let src_named = match name_in_storage(storage, &targets.kb, &targets.source, true).await {
-        Ok(Named::Nothing) if !targets.source_as_collection => match storage
-            .head_object(&targets.kb, &targets.source, ConditionalHeaders::default())
-            .await
-        {
-            Ok(meta) => Ok(Named::Object(meta)),
-            Err(err) if err.is_not_found() => Ok(Named::Nothing),
-            Err(err) => Err(err),
-        },
-        named => named,
-    };
-    let src_meta = match src_named {
-        Ok(Named::Object(meta)) => meta,
-        // A folder is a key prefix; there is no atomic prefix rename (#281).
-        Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
-        // Without its preconditions this request would be a 404, so they are ignored
-        // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
-        Ok(Named::Nothing) => return Err(StatusCode::NOT_FOUND.into_response()),
-        Err(error) => return Err(storage_status(&error).into_response()),
-    };
-    // Only the prefix is asked about: a file at the destination is the overwrite
-    // `commit_copy` judges. A destination spelled as a collection must be one.
-    match name_in_storage(storage, &targets.kb, &targets.destination, true).await {
-        Ok(Named::Folder) => return Err(TargetError::Collection.into_response()),
-        Ok(Named::Nothing) if targets.destination_as_collection => {
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-        Ok(Named::Nothing | Named::Object(_)) => {}
-        Err(error) => return Err(storage_status(&error).into_response()),
-    }
+    let src_meta = find_source(state.storage.as_ref(), targets).await?;
+    refuse_folder_destination(state.storage.as_ref(), targets).await?;
     let Some(source_etag) = src_meta.etag else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
     };
@@ -333,13 +303,72 @@ async fn check_source_preconditions(
     if evaluate_write_preconditions(Some(source_state), &conditionals).is_err() {
         return Err(StatusCode::PRECONDITION_FAILED.into_response());
     }
+    if let Some(header) = &if_header
+        && !if_header_holds(state, header, targets, &source_etag).await
+    {
+        return Err(StatusCode::PRECONDITION_FAILED.into_response());
+    }
+    Ok(Source {
+        etag: source_etag,
+        content_type: src_meta.content_type,
+    })
+}
+
+/// The source's metadata, refusing a folder (#281) and a missing source.
+async fn find_source(storage: &dyn Storage, targets: &Targets) -> Result<ObjectMeta, Response> {
+    // The prefix is asked first: a folder hides an object of the same name, as listings do.
+    let named = match name_in_storage(storage, &targets.kb, &targets.source, true).await {
+        Ok(Named::Nothing) if !targets.source_as_collection => match storage
+            .head_object(&targets.kb, &targets.source, ConditionalHeaders::default())
+            .await
+        {
+            Ok(meta) => Ok(Named::Object(meta)),
+            Err(err) if err.is_not_found() => Ok(Named::Nothing),
+            Err(err) => Err(err),
+        },
+        named => named,
+    };
+    match named {
+        Ok(Named::Object(meta)) => Ok(meta),
+        // A folder is a key prefix; there is no atomic prefix rename (#281).
+        Ok(Named::Folder) => Err(TargetError::Collection.into_response()),
+        // Without its preconditions this request would be a 404, so they are ignored
+        // (RFC 9110 §13.2.1) and a missing source stays 404 even under If-Match.
+        Ok(Named::Nothing) => Err(StatusCode::NOT_FOUND.into_response()),
+        Err(error) => Err(storage_status(&error).into_response()),
+    }
+}
+
+/// Refuses a destination that is a folder, or is spelled as one and is not.
+async fn refuse_folder_destination(
+    storage: &dyn Storage,
+    targets: &Targets,
+) -> Result<(), Response> {
+    // Only the prefix is asked about: a file at the destination is the overwrite
+    // `commit_copy` judges. A destination spelled as a collection must be one.
+    match name_in_storage(storage, &targets.kb, &targets.destination, true).await {
+        Ok(Named::Folder) => Err(TargetError::Collection.into_response()),
+        Ok(Named::Nothing) if targets.destination_as_collection => {
+            Err(StatusCode::BAD_REQUEST.into_response())
+        }
+        Ok(Named::Nothing | Named::Object(_)) => Ok(()),
+        Err(error) => Err(storage_status(&error).into_response()),
+    }
+}
+
+/// Whether the `WebDAV` `If` header holds against the source's `ETag` and, when one of
+/// its tagged lists names the destination, the destination's.
+async fn if_header_holds(
+    state: &WebDavState,
+    header: &IfHeader,
+    targets: &Targets,
+    source_etag: &str,
+) -> bool {
     // The destination is looked up only when a tagged `If` list names it and so needs
     // its ETag. Whether the copy created it comes from the backend (`outcome.created`).
-    let names_destination = if_header.as_ref().is_some_and(|header| {
-        header
-            .resources()
-            .any(|resource| same_object(resource, state, &targets.kb, &targets.destination))
-    });
+    let names_destination = header
+        .resources()
+        .any(|resource| same_object(resource, state, &targets.kb, &targets.destination));
     let dst_etag = if names_destination {
         state
             .storage
@@ -354,25 +383,14 @@ async fn check_source_preconditions(
     } else {
         None
     };
-    if let Some(header) = &if_header {
-        let holds = header.evaluate(|resource| match resource {
-            None => Some(source_etag.as_str()),
-            Some(tag) if same_object(tag, state, &targets.kb, &targets.source) => {
-                Some(source_etag.as_str())
-            }
-            Some(tag) if same_object(tag, state, &targets.kb, &targets.destination) => {
-                dst_etag.as_deref()
-            }
-            // Any other resource is none this request touches; treat it as absent.
-            Some(_) => None,
-        });
-        if !holds {
-            return Err(StatusCode::PRECONDITION_FAILED.into_response());
+    header.evaluate(|resource| match resource {
+        None => Some(source_etag),
+        Some(tag) if same_object(tag, state, &targets.kb, &targets.source) => Some(source_etag),
+        Some(tag) if same_object(tag, state, &targets.kb, &targets.destination) => {
+            dst_etag.as_deref()
         }
-    }
-    Ok(Source {
-        etag: source_etag,
-        content_type: src_meta.content_type,
+        // Any other resource is none this request touches; treat it as absent.
+        Some(_) => None,
     })
 }
 
