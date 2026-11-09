@@ -3,6 +3,7 @@
 #![allow(clippy::result_large_err)]
 
 use axum::extract::Request;
+use axum::http::uri::Authority;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
@@ -194,10 +195,17 @@ fn parse_destination_headers(headers: &HeaderMap) -> Result<(Uri, bool), Rejecti
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
     if let Some(dest_authority) = dest_uri.authority() {
-        let req_host_bare = req_host.split(':').next().unwrap_or(req_host);
-        let dest_host = dest_authority.as_str();
-        let dest_host_bare = dest_host.split(':').next().unwrap_or(dest_host);
-        if !req_host_bare.eq_ignore_ascii_case(dest_host_bare) {
+        // `host()` drops the port and keeps an IPv6 literal whole, brackets included.
+        // An absent `Host` stays "" and so never matches, as before.
+        let req_authority = match req_host {
+            "" => None,
+            host => Some(
+                host.parse::<Authority>()
+                    .map_err(|_| Rejection::BadRequest)?,
+            ),
+        };
+        let req_host = req_authority.as_ref().map_or("", Authority::host);
+        if !req_host.eq_ignore_ascii_case(dest_authority.host()) {
             return Err(Rejection::DifferentServer);
         }
     }
