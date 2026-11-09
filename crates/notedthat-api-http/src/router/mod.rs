@@ -466,7 +466,7 @@ mod patch_route {
         storage: Arc<dyn Storage>,
         kb: KbSlug,
         max_patchable_size: u64,
-        indexer_tx: tokio::sync::mpsc::Sender<IndexEvent>,
+        indexer_tx: notedthat_indexer::IndexQueueSender,
     ) -> axum::Router {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
@@ -474,7 +474,7 @@ mod patch_route {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..AppState::for_tests(storage, kbs)
         })
     }
@@ -952,7 +952,7 @@ mod patch_route {
             let kb = KbSlug::try_new(KB).unwrap();
             let inner = crate::testing::InMemoryStorage::with_kbs([&kb]);
             let etag = object_with_etag(&inner, &kb, b"0123456789").await;
-            let (indexer_tx, _rx) = tokio::sync::mpsc::channel(16);
+            let (indexer_tx, _rx) = notedthat_indexer::index_queue(16);
             let router = router_with_storage(
                 Arc::new(PutPreconditionFailedStorage { inner }),
                 kb,
@@ -986,7 +986,7 @@ mod patch_route {
             let kb = KbSlug::try_new(KB).unwrap();
             let storage = crate::testing::InMemoryStorage::with_kbs([&kb]);
             let etag = object_with_etag(&storage, &kb, b"one\n").await;
-            let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+            let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
             indexer_tx
                 .try_send(IndexEvent::Upsert {
                     kb: kb.clone(),
@@ -1275,14 +1275,14 @@ mod tests {
         let kb = KbSlug::try_new(KB).unwrap();
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
-        let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(16);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         build_router(AppState {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..AppState::for_tests(
                 Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                 kbs,
@@ -1479,7 +1479,7 @@ mod tests {
         let object_path = ObjectPath::try_from_str("cond.md").unwrap();
         let storage = Arc::new(crate::testing::InMemoryStorage::with_kbs([&kb]));
 
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         indexer_tx
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
@@ -1493,7 +1493,7 @@ mod tests {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..AppState::for_tests(storage.clone(), kbs)
         };
         let router = build_router(state);
@@ -1564,7 +1564,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         indexer_tx
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
@@ -1578,7 +1578,7 @@ mod tests {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_body_size: MAX_BODY_BYTES,
             max_patchable_size: MAX_BODY_BYTES,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..AppState::for_tests(storage.clone(), kbs)
         };
         let router = build_router(state);

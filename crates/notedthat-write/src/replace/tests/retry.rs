@@ -1,7 +1,6 @@
 use bytes::Bytes;
 use notedthat_core::StorageError;
 use notedthat_indexer::IndexEvent;
-use tokio::sync::mpsc;
 
 use super::support::{
     ReplaceArgs, Script, TestStorage, conditionals, expect_replace_err, kb, path, run_replace,
@@ -82,7 +81,7 @@ async fn window_412_from_put_surfaces_without_retry() {
 #[tokio::test]
 async fn indexer_channel_full_returns_backpressure_upsert_after_successful_put() {
     let storage = TestStorage::with_body(b"hello world").await;
-    let (indexer_tx, _rx) = mpsc::channel(1);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
     indexer_tx
         .try_send(IndexEvent::Upsert {
             kb: kb(),

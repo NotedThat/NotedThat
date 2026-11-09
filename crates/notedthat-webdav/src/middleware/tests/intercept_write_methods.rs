@@ -12,7 +12,6 @@ use notedthat_core::testing::{
 };
 use notedthat_core::{CopyObjectOptions, KbSlug, ObjectPath, ObjectRead, Storage};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::mpsc;
 use tower::util::ServiceExt;
 
 /// A store with both declared knowledge bases provisioned and nothing in them.
@@ -163,14 +162,13 @@ fn declared_kbs(values: &[&str]) -> BTreeMap<String, KbSlug> {
 }
 
 fn test_state(storage: ScriptedStorage) -> WebDavState {
-    let (indexer_tx, _rx) = mpsc::channel(1024);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1024);
     test_state_with_indexer_tx(storage, indexer_tx)
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn test_state_with_indexer_tx(
     storage: ScriptedStorage,
-    indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
+    indexer_tx: notedthat_indexer::IndexQueueSender,
 ) -> WebDavState {
     let storage: Arc<dyn Storage> = Arc::new(storage);
     WebDavState {
@@ -182,7 +180,7 @@ fn test_state_with_indexer_tx(
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
         access_policies: Arc::new(BTreeMap::new()),
-        indexer_tx: (&indexer_tx).into(),
+        indexer_tx,
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }
@@ -199,7 +197,7 @@ fn app(storage: ScriptedStorage) -> Router {
 
 fn app_with_indexer_tx(
     storage: ScriptedStorage,
-    indexer_tx: mpsc::Sender<notedthat_indexer::IndexEvent>,
+    indexer_tx: notedthat_indexer::IndexQueueSender,
 ) -> Router {
     Router::new()
         .fallback(any(|| async { "inner handler reached" }))
@@ -461,7 +459,7 @@ async fn test_put_to_non_declared_kb_returns_403() {
 #[tokio::test]
 async fn test_put_returns_503_with_retry_after_when_indexer_backpressure() {
     let storage = empty_storage();
-    let (indexer_tx, _rx) = mpsc::channel(1);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
@@ -541,7 +539,7 @@ async fn test_delete_returns_503_with_retry_after_when_indexer_backpressure() {
     storage
         .insert("notes", "y.md", Bytes::from_static(b"y"), "\"old\"")
         .await;
-    let (indexer_tx, _rx) = mpsc::channel(1);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Tombstone {
             kb: kb_slug("notes"),
@@ -709,7 +707,7 @@ async fn test_copy_or_move_maps_destination_indexer_backpressure_to_503() {
     storage
         .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
         .await;
-    let (indexer_tx, _rx) = mpsc::channel(1);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
@@ -744,7 +742,7 @@ async fn test_move_returns_503_when_destination_upsert_backpressured() {
     storage
         .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
         .await;
-    let (indexer_tx, _rx) = mpsc::channel(1);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),
@@ -779,7 +777,7 @@ async fn test_move_returns_503_when_source_tombstone_backpressured_after_destina
     storage
         .insert("notes", "src.md", Bytes::from_static(b"src"), "\"src\"")
         .await;
-    let (indexer_tx, _rx) = mpsc::channel(2);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(2);
     indexer_tx
         .try_send(notedthat_indexer::IndexEvent::Upsert {
             kb: kb_slug("notes"),

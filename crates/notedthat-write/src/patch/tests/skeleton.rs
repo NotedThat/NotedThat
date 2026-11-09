@@ -21,7 +21,11 @@ async fn replaces_byte_range_and_enqueues_event() {
     .expect("byte patch succeeds");
 
     assert_eq!(storage.body().await, Bytes::from_static(b"REPLACEDTAIL"));
-    let event = rx.recv().await.expect("index event enqueued");
+    let event = rx
+        .recv()
+        .await
+        .map(|queued| queued.event)
+        .expect("index event enqueued");
     assert_eq!(event.kb().as_str(), "test-kb");
     assert_eq!(event.object_key().as_str(), "test.md");
 }

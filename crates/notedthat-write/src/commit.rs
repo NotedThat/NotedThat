@@ -515,7 +515,6 @@ mod tests {
         SubscribeError,
     };
     use std::sync::{Arc, Mutex};
-    use tokio::sync::mpsc;
 
     /// A store with the test knowledge base provisioned and nothing in it.
     fn storage() -> ScriptedStorage {
@@ -549,7 +548,7 @@ mod tests {
         let storage = storage();
         let kb = kb();
         let path = path();
-        let (indexer_tx, mut rx) = mpsc::channel(1024);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(1024);
 
         let outcome = commit(
             &storage,
@@ -565,7 +564,11 @@ mod tests {
         assert!(outcome.is_ok());
         assert!(outcome.unwrap().etag.is_some());
 
-        let event = rx.recv().await.expect("event should be enqueued");
+        let event = rx
+            .recv()
+            .await
+            .map(|queued| queued.event)
+            .expect("event should be enqueued");
         assert_eq!(event.kb().as_str(), "test-kb");
         assert_eq!(event.object_key().as_str(), "test.md");
     }
@@ -576,7 +579,7 @@ mod tests {
         let kb = kb();
         let source = path_named("source.md");
         let destination = path_named("destination.md");
-        let (indexer_tx, mut rx) = mpsc::channel(1);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(1);
 
         let outcome = commit_copy(
             &storage,
@@ -590,7 +593,11 @@ mod tests {
         .expect("copy succeeds");
 
         assert!(outcome.etag.is_some());
-        let event = rx.recv().await.expect("destination event");
+        let event = rx
+            .recv()
+            .await
+            .map(|queued| queued.event)
+            .expect("destination event");
         assert_eq!(event.object_key(), &destination);
         assert_eq!(
             storage.count(StorageOp::HeadObject),
@@ -604,7 +611,7 @@ mod tests {
         let storage = storage();
         let kb = kb();
         let path = path();
-        let (indexer_tx, _rx) = mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
 
         let dummy_event = IndexEvent::Upsert {
             kb: kb.clone(),
@@ -639,7 +646,7 @@ mod tests {
         let path_a = path_named("a.md");
         let path_b = path_named("b.md");
         let path_c = path_named("c.md");
-        let (indexer_tx, _rx) = mpsc::channel::<IndexEvent>(2);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(2);
 
         let first = commit(
             storage.as_ref(),
@@ -719,11 +726,11 @@ mod tests {
         let storage = storage();
         let kb = kb();
         let path = path_named("cancelled.md");
-        let (indexer_tx, mut rx) = mpsc::channel(4);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(4);
         let events = NeverAnswers;
         let health = notedthat_indexer::IndexHealth::new();
         let sinks = WriteSinks {
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             events: Some(&events),
             index_health: Some(&health),
             source: EventSource::Http,
@@ -755,7 +762,11 @@ mod tests {
             "the store completed before the publish that was cancelled"
         );
         // … and the index was told about them anyway.
-        match rx.try_recv().expect("an Upsert must have been enqueued") {
+        match rx
+            .try_recv()
+            .map(|queued| queued.event)
+            .expect("an Upsert must have been enqueued")
+        {
             IndexEvent::Upsert { object_key, .. } => assert_eq!(object_key, path),
             other => panic!("expected an Upsert, got {other:?}"),
         }
@@ -783,11 +794,11 @@ mod tests {
             )
             .await
             .expect("prepopulate object");
-        let (indexer_tx, mut rx) = mpsc::channel(4);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(4);
         let events = NeverAnswers;
         let health = notedthat_indexer::IndexHealth::new();
         let sinks = WriteSinks {
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             events: Some(&events),
             index_health: Some(&health),
             source: EventSource::Http,
@@ -813,7 +824,11 @@ mod tests {
             "the delete completed before the publish that was cancelled"
         );
         // … and the index was told to forget it anyway.
-        match rx.try_recv().expect("a Tombstone must have been enqueued") {
+        match rx
+            .try_recv()
+            .map(|queued| queued.event)
+            .expect("a Tombstone must have been enqueued")
+        {
             IndexEvent::Tombstone { object_key, .. } => assert_eq!(object_key, path),
             other => panic!("expected a Tombstone, got {other:?}"),
         }
@@ -841,7 +856,7 @@ mod tests {
             )
             .await
             .expect("prepopulate object");
-        let (indexer_tx, _rx) = mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         indexer_tx
             .try_send(IndexEvent::Tombstone {
                 kb: kb.clone(),
@@ -851,7 +866,7 @@ mod tests {
         let events = NeverAnswers;
         let health = notedthat_indexer::IndexHealth::new();
         let sinks = WriteSinks {
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             events: Some(&events),
             index_health: Some(&health),
             source: EventSource::Http,
@@ -888,7 +903,7 @@ mod tests {
             )
             .await
             .expect("prepopulate object");
-        let (indexer_tx, _rx) = mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         let dummy_event = IndexEvent::Tombstone {
             kb: kb.clone(),
             object_key: path.clone(),
@@ -926,7 +941,7 @@ mod tests {
         let storage = storage();
         let kb = kb();
         let path = path();
-        let (indexer_tx, rx) = mpsc::channel(1024);
+        let (indexer_tx, rx) = notedthat_indexer::index_queue(1024);
 
         drop(rx);
 
@@ -952,7 +967,7 @@ mod tests {
         let storage = storage();
         let kb = kb();
         let path = path();
-        let (indexer_tx, mut rx) = mpsc::channel(1024);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(1024);
 
         let conditionals = ConditionalHeaders {
             if_match: Some("\"wrong-etag\"".to_string()),
@@ -972,7 +987,7 @@ mod tests {
 
         assert!(outcome.is_err(), "put should fail with precondition");
         assert!(
-            rx.try_recv().is_err(),
+            rx.try_recv().map(|queued| queued.event).is_err(),
             "no event should be enqueued on put failure"
         );
     }
@@ -1059,12 +1074,12 @@ mod tests {
     }
 
     fn sinks<'a>(
-        indexer_tx: &'a mpsc::Sender<IndexEvent>,
+        indexer_tx: &'a notedthat_indexer::IndexQueueSender,
         events: &'a RecordingPublisher,
         source: notedthat_core::EventSource,
     ) -> WriteSinks<'a> {
         WriteSinks {
-            indexer_tx: indexer_tx.into(),
+            indexer_tx: indexer_tx.clone(),
             events: Some(events),
             index_health: None,
             source,
@@ -1075,7 +1090,7 @@ mod tests {
     async fn a_committed_write_is_published_with_its_stamp_and_source() {
         let storage = storage();
         let events = RecordingPublisher::recording();
-        let (indexer_tx, mut rx) = mpsc::channel(8);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(8);
 
         let outcome = commit(
             &storage,
@@ -1089,7 +1104,10 @@ mod tests {
         .await
         .expect("write succeeds");
 
-        rx.recv().await.expect("the index event, after the publish");
+        rx.recv()
+            .await
+            .map(|queued| queued.event)
+            .expect("the index event, after the publish");
         let published = events.events();
         assert_eq!(published.len(), 1);
         let event = &published[0];
@@ -1117,7 +1135,7 @@ mod tests {
     async fn a_full_queue_still_refuses_the_write_after_its_event_was_published() {
         let storage = storage();
         let events = RecordingPublisher::recording();
-        let (indexer_tx, _rx) = mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         indexer_tx
             .try_send(IndexEvent::Tombstone {
                 kb: kb(),
@@ -1151,7 +1169,7 @@ mod tests {
     async fn a_refused_publish_fails_the_write_but_the_object_stays_stored() {
         let storage = storage();
         let events = RecordingPublisher::refusing();
-        let (indexer_tx, mut rx) = mpsc::channel(8);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(8);
 
         let err = commit(
             &storage,
@@ -1179,7 +1197,10 @@ mod tests {
             "the bytes were stored before publishing failed"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(IndexEvent::Upsert { .. })),
+            matches!(
+                rx.try_recv().map(|queued| queued.event),
+                Ok(IndexEvent::Upsert { .. })
+            ),
             "the index work was enqueued regardless: the broker is optional, the index is not"
         );
     }
@@ -1190,7 +1211,7 @@ mod tests {
     async fn a_delete_of_a_missing_key_still_publishes_and_enqueues() {
         let storage = storage();
         let events = RecordingPublisher::recording();
-        let (indexer_tx, mut rx) = mpsc::channel(8);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(8);
 
         assert_eq!(
             storage
@@ -1214,14 +1235,17 @@ mod tests {
         .expect("a missing key is not an error");
 
         assert_eq!(events.events().len(), 1);
-        assert!(matches!(rx.try_recv(), Ok(IndexEvent::Tombstone { .. })));
+        assert!(matches!(
+            rx.try_recv().map(|queued| queued.event),
+            Ok(IndexEvent::Tombstone { .. })
+        ));
     }
 
     #[tokio::test]
     async fn a_refused_publish_still_enqueues_the_tombstone() {
         let storage = storage();
         let events = RecordingPublisher::refusing();
-        let (indexer_tx, mut rx) = mpsc::channel(8);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(8);
 
         let err = commit_delete(
             &storage,
@@ -1243,7 +1267,10 @@ mod tests {
             "{err:?}"
         );
         assert!(
-            matches!(rx.try_recv(), Ok(IndexEvent::Tombstone { .. })),
+            matches!(
+                rx.try_recv().map(|queued| queued.event),
+                Ok(IndexEvent::Tombstone { .. })
+            ),
             "the points come out of the index whether or not the deletion was announced"
         );
     }
@@ -1251,7 +1278,7 @@ mod tests {
     #[tokio::test]
     async fn a_delete_publishes_a_deleted_event_and_a_refusal_says_deleted() {
         let storage = storage();
-        let (indexer_tx, _rx) = mpsc::channel(8);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(8);
 
         let events = RecordingPublisher::recording();
         commit_delete(
@@ -1289,7 +1316,7 @@ mod tests {
     #[tokio::test]
     async fn a_copy_heads_the_destination_for_the_stamp_only_when_publishing() {
         let storage = storage_with_source("src.md").await;
-        let (indexer_tx, _rx) = mpsc::channel(8);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(8);
         let events = RecordingPublisher::recording();
 
         let outcome = commit_copy(

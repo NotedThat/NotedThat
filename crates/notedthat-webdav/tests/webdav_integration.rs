@@ -19,7 +19,6 @@ use base64::Engine as _;
 use notedthat_core::{KbSlug, Storage, testing::InMemoryStorage};
 use notedthat_webdav::{router::build_router, state::WebDavState};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -34,7 +33,7 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
         .await
         .expect("ensure_bucket for notes");
 
-    let (tx, _rx) = mpsc::channel(100);
+    let (tx, _rx) = notedthat_indexer::index_queue(100);
 
     let mut declared_kbs = BTreeMap::new();
     declared_kbs.insert("notes".to_string(), KbSlug::try_new("notes").unwrap());
@@ -52,7 +51,7 @@ async fn start_webdav_server() -> (tokio::task::JoinHandle<()>, String, String, 
         staging_config: notedthat_core::StagingConfig::default(),
         access_policies: Arc::new(notedthat_core::signed_in_policies(&declared_kbs)),
         declared_kbs: Arc::new(declared_kbs),
-        indexer_tx: (&tx).into(),
+        indexer_tx: tx.clone(),
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     };

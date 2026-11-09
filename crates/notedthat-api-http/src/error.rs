@@ -806,13 +806,13 @@ mod tests {
         let kb = KbSlug::try_new(KB).unwrap();
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
-        let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (indexer_tx, mut rx) = notedthat_indexer::index_queue(16);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
         crate::router::build_router(crate::state::AppState {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_patchable_size,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..crate::state::AppState::for_tests(
                 Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                 kbs,
@@ -825,14 +825,14 @@ mod tests {
         storage: Arc<dyn Storage>,
         kb: KbSlug,
         max_patchable_size: u64,
-        indexer_tx: tokio::sync::mpsc::Sender<IndexEvent>,
+        indexer_tx: notedthat_indexer::IndexQueueSender,
     ) -> axum::Router {
         let mut kbs = BTreeMap::new();
         kbs.insert(KB.to_string(), kb);
         crate::router::build_router(crate::state::AppState {
             authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
             max_patchable_size,
-            indexer_tx: (&indexer_tx).into(),
+            indexer_tx: indexer_tx.clone(),
             ..crate::state::AppState::for_tests(storage, kbs)
         })
     }
@@ -1406,7 +1406,7 @@ mod tests {
         let kb = KbSlug::try_new(KB).unwrap();
         let storage = crate::testing::InMemoryStorage::with_kbs([&kb]);
         let etag = object_with_etag(&storage, &kb, "hello.md", b"hello world").await;
-        let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (indexer_tx, _rx) = notedthat_indexer::index_queue(1);
         indexer_tx
             .try_send(IndexEvent::Upsert {
                 kb: kb.clone(),
@@ -1757,12 +1757,12 @@ mod tests {
             let kb = KbSlug::try_new(KB).unwrap();
             let mut kbs = BTreeMap::new();
             kbs.insert(KB.to_string(), kb);
-            let (indexer_tx, mut rx) = tokio::sync::mpsc::channel(16);
+            let (indexer_tx, mut rx) = notedthat_indexer::index_queue(16);
             tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
             crate::router::build_router(crate::state::AppState {
                 authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
-                indexer_tx: (&indexer_tx).into(),
+                indexer_tx: indexer_tx.clone(),
                 ..crate::state::AppState::for_tests(
                     Arc::new(crate::testing::InMemoryStorage::with_kbs(kbs.values())),
                     kbs,

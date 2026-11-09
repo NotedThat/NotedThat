@@ -11,11 +11,9 @@ use notedthat_core::testing::InMemoryStorage;
 use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, LineRange, ObjectPath, Storage,
 };
-use notedthat_indexer::IndexEvent;
 use notedthat_write::{
     PatchMode, ReplaceRequest, WriteError, WriteSinks, commit, commit_copy, patch, replace,
 };
-use tokio::sync::mpsc;
 
 const KB: &str = "notes";
 
@@ -62,7 +60,7 @@ fn is_invalid_manifest(error: &WriteError, naming: &str) -> bool {
 #[tokio::test]
 async fn a_full_write_of_the_manifest_is_checked_and_an_ordinary_key_is_not() {
     let storage = storage().await;
-    let (tx, _rx) = mpsc::channel::<IndexEvent>(8);
+    let (tx, _rx) = notedthat_indexer::index_queue(8);
     let sinks = WriteSinks::indexer_only(&tx);
 
     // An ordinary key takes anything.
@@ -121,7 +119,7 @@ async fn a_full_write_of_the_manifest_is_checked_and_an_ordinary_key_is_not() {
 #[tokio::test]
 async fn a_patch_that_breaks_the_manifest_is_refused_before_storage() {
     let storage = storage().await;
-    let (tx, _rx) = mpsc::channel::<IndexEvent>(8);
+    let (tx, _rx) = notedthat_indexer::index_queue(8);
     let sinks = WriteSinks::indexer_only(&tx);
     let good = manifest("fine");
     let etag = storage
@@ -171,7 +169,7 @@ async fn a_patch_that_breaks_the_manifest_is_refused_before_storage() {
 #[tokio::test]
 async fn a_replace_that_breaks_the_manifest_is_refused_before_storage() {
     let storage = storage().await;
-    let (tx, _rx) = mpsc::channel::<IndexEvent>(8);
+    let (tx, _rx) = notedthat_indexer::index_queue(8);
     let sinks = WriteSinks::indexer_only(&tx);
     let good = manifest("fine");
     let etag = storage
@@ -218,7 +216,7 @@ async fn a_replace_that_breaks_the_manifest_is_refused_before_storage() {
 #[tokio::test]
 async fn a_copy_onto_the_manifest_key_is_checked_against_the_source() {
     let storage = storage().await;
-    let (tx, _rx) = mpsc::channel::<IndexEvent>(8);
+    let (tx, _rx) = notedthat_indexer::index_queue(8);
     let sinks = WriteSinks::indexer_only(&tx);
     let bad = ObjectPath::try_from_str("manifest.bad.json").unwrap();
     let good = ObjectPath::try_from_str("manifest.new.json").unwrap();

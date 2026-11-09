@@ -1242,8 +1242,7 @@ async fn delete_enqueues_tombstone_on_success() {
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
-    let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, mut indexer_rx) = notedthat_indexer::index_queue(1024);
     let state = AppState {
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         indexer_tx,
@@ -1275,7 +1274,8 @@ async fn delete_enqueues_tombstone_on_success() {
     let event = tokio::time::timeout(std::time::Duration::from_secs(1), indexer_rx.recv())
         .await
         .expect("timeout waiting for tombstone event")
-        .expect("channel closed");
+        .expect("channel closed")
+        .event;
 
     match event {
         IndexEvent::Tombstone { kb, object_key } => {
@@ -1293,8 +1293,7 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
     let storage = Arc::new(InMemoryStorage::with_kbs(kbs.values()));
-    let (indexer_tx, mut indexer_rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, mut indexer_rx) = notedthat_indexer::index_queue(1024);
     let state = AppState {
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         indexer_tx,
@@ -1315,7 +1314,8 @@ async fn delete_enqueues_tombstone_on_not_found() {
     let event = tokio::time::timeout(std::time::Duration::from_secs(1), indexer_rx.recv())
         .await
         .expect("timeout waiting for event")
-        .expect("channel closed");
+        .expect("channel closed")
+        .event;
 
     match event {
         IndexEvent::Tombstone { kb, object_key } => {
@@ -1949,8 +1949,7 @@ async fn a_declared_kb_whose_bucket_is_missing_is_not_found_on_every_route() {
     // Declared, but never provisioned in storage.
     let mut kbs = BTreeMap::new();
     kbs.insert(KB.to_string(), KbSlug::try_new(KB).unwrap());
-    let (indexer_tx, _rx) = tokio::sync::mpsc::channel(1024);
-    let indexer_tx = notedthat_indexer::IndexQueueSender::from_mpsc(indexer_tx);
+    let (indexer_tx, _rx) = notedthat_indexer::index_queue(1024);
     let app = build_router(AppState {
         authenticator: Arc::new(notedthat_core::Authenticator::new(TOKEN)),
         indexer_tx,
