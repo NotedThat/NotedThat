@@ -1,3 +1,4 @@
+use super::pipeline::PipelineError;
 use crate::chunker;
 use crate::mime::essence;
 use notedthat_core::{ObjectMeta, ObjectPath, search::ConceptMetadata};
@@ -11,13 +12,12 @@ pub(super) fn build_points(
     meta: &ObjectMeta,
     content_hash: &str,
     metadata: Option<&ConceptMetadata>,
-) -> Result<Vec<PointStruct>, String> {
+) -> Result<Vec<PointStruct>, PipelineError> {
     if chunks.len() != embeddings.len() {
-        return Err(format!(
-            "embedding count mismatch: chunks={} embeddings={}",
-            chunks.len(),
-            embeddings.len()
-        ));
+        return Err(PipelineError::PointCount {
+            chunks: chunks.len(),
+            embeddings: embeddings.len(),
+        });
     }
 
     Ok(chunks

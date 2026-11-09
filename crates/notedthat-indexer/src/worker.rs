@@ -411,7 +411,11 @@ impl IndexerWorker {
         }
     }
 
-    async fn handle_tombstone(&self, kb: KbSlug, object_key: ObjectPath) -> Result<(), String> {
+    async fn handle_tombstone(
+        &self,
+        kb: KbSlug,
+        object_key: ObjectPath,
+    ) -> Result<(), pipeline::PipelineError> {
         self.store
             .delete_points(
                 &kb,
@@ -420,7 +424,7 @@ impl IndexerWorker {
                 },
             )
             .await
-            .map_err(|err| format!("vector store delete failed: {err}"))?;
+            .map_err(pipeline::PipelineError::Delete)?;
 
         tracing::info!(
             target: "notedthat::indexing",
