@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   advisories:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

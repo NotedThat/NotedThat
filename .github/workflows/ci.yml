@@ -35,13 +35,12 @@ jobs:
   # exactly the manifest claim that would otherwise ship unverified.
   test:
     name: test (${{ matrix.toolchain }})
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     # About 4 minutes on ubuntu-latest; a starved runner should fail the check
     # quickly instead of holding it for an hour.
     timeout-minutes: 30
-    # The 9xx runner Pod has a 2 GiB memory limit on a 4-CPU node. Four rustc
-    # and linker processes on debug-info test binaries exceed it, the Pod is
-    # OOM-killed, and the job reports "runner lost communication".
+    # Kept from the self-hosted 9xx runners (2 GiB Pod memory limit): four rustc
+    # and linker processes on debug-info test binaries got the Pod OOM-killed.
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -81,7 +80,7 @@ jobs:
       - run: cargo test --workspace --locked
 
   clippy:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -111,7 +110,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   fmt:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -136,7 +135,7 @@ jobs:
   # in that crate's Cargo.toml under `[package.metadata.cargo-machete]
   # ignored`, with a reason, never with a flag here.
   machete:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -160,7 +159,7 @@ jobs:
   # Cargo unifies features across every member; the packaged crate has only
   # the features its own Cargo.toml asks for.
   package:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -259,12 +258,12 @@ jobs:
   #
   # Nothing is compiled — cargo-deny reads Cargo.lock and the advisory database
   # — so there is no rust-cache, for the same reason `fmt` has none. The
-  # toolchain step is there only because the 9xx image has rustup but no
-  # default toolchain, and cargo-deny runs `cargo metadata`. It runs alongside
+  # toolchain step is kept from the self-hosted 9xx runners, whose image had rustup
+  # but no default toolchain, and cargo-deny runs `cargo metadata`. It runs alongside
   # `test`, `clippy` and `package`, every one of which is longer, so it adds
   # nothing to the pull-request feedback time #87 measured at about six minutes.
   advisories:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     # A tripwire on a hung advisory-database fetch, not a budget on the check,
     # which takes about a second. Note this CANCELS rather than fails, which is
     # harmless only because nothing `needs:` this job — and is the first thing
@@ -331,9 +330,9 @@ jobs:
   # this job: a broken rules file is caught here on the pull request, and it
   # ships no code a release could be held back for.
   #
-  # The release tarball rather than the image: the 9xx runners have no Docker.
+  # The release tarball rather than the image: kept from the self-hosted 9xx runners, which had no Docker.
   alerting-rules:
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -483,7 +482,7 @@ jobs:
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: write
@@ -604,7 +603,7 @@ jobs:
             echo "held-back=$(paste -sd' ' - <<<"$held")"
             echo "skip=${skip}"
           } >>"$GITHUB_OUTPUT"
-      # release-plz/action's git-config step calls `gh`; the 9xx image has none.
+      # release-plz/action's git-config step calls `gh`; kept from the self-hosted 9xx runners, which had none.
       # Keep VERSION/SHA256 in step with the other "Install gh" step.
       - name: Install gh
         if: steps.preflight.outputs.skip != 'true'
@@ -714,7 +713,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && github.repository == 'NotedThat/NotedThat'
       && contains(fromJSON('["success", "failure"]'), needs.release-plz-release.result)
-    runs-on: 9xx
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
@@ -729,7 +728,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
         with:
           toolchain: stable
-      # release-plz/action's git-config step calls `gh`; the 9xx image has none.
+      # release-plz/action's git-config step calls `gh`; kept from the self-hosted 9xx runners, which had none.
       # Keep VERSION/SHA256 in step with the other "Install gh" step.
       - name: Install gh
         env:
