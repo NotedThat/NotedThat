@@ -3,13 +3,16 @@ use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
 use super::{IndexerWorker, Skip, Told, content_type_from_key, is_indexable};
 use crate::chunker;
-use crate::vector_store::PointSelector;
+use crate::embedder::EmbedderError;
+use crate::vector_store::{PointSelector, VectorStoreError};
 use futures::StreamExt;
 use notedthat_core::{
-    ConditionalHeaders, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StagedBody, StorageError,
-    search::ConceptMetadata,
+    ConditionalHeaders, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StageError, StagedBody,
+    StorageError, search::ConceptMetadata,
 };
+use std::io;
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinError;
 
 const FRONTMATTER_PREFIX_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_UTF8_BYTES_PER_SCALAR: usize = 4;
@@ -40,6 +43,59 @@ pub(super) enum PipelineOutcome {
     /// nothing — and any previous points are gone. Also what an explicit
     /// `Tombstone` maps to.
     Tombstoned,
+}
+
+/// Why a pipeline stage failed. Each message is single-line and is the text the
+/// failure summary has always carried, so `/index` and `object.index_failed`
+/// read the same while a caller can now tell the causes apart.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PipelineError {
+    #[error("embedder input limit must be greater than zero")]
+    ZeroInputLimit,
+    #[error("chunk count exceeds supported numeric range")]
+    ChunkCountRange,
+    #[error("storage.head_object returned no ETag for stable snapshot")]
+    MissingEtag,
+    #[error("storage.get_object_stream failed: {0}")]
+    Stream(#[source] StorageError),
+    #[error("streamed snapshot ETag differs from preceding HEAD")]
+    EtagChanged,
+    #[error("staging index snapshot failed: {0}")]
+    Staging(#[source] StageError),
+    #[error("index snapshot observer lock poisoned")]
+    ObserverPoisoned,
+    #[error("snapshot inspection failed: {0}")]
+    SnapshotInspection(#[source] io::Error),
+    #[error("streaming chunk read failed: {0}")]
+    ChunkRead(#[source] io::Error),
+    #[error("chunk index overflow")]
+    ChunkIndexOverflow,
+    #[error(
+        "chunk {index} is {bytes} UTF-8 bytes, exceeding conservative embedder bound {maximum}"
+    )]
+    ChunkTooLarge {
+        index: usize,
+        bytes: usize,
+        maximum: usize,
+    },
+    #[error("chunk iterator task failed: {0}")]
+    ChunkIteratorTask(#[source] JoinError),
+    #[error("chunk iterator setup failed: {0}")]
+    ChunkIteratorSetup(#[source] io::Error),
+    #[error("chunk batch task failed: {0}")]
+    ChunkBatchTask(#[source] JoinError),
+    #[error("embedder.embed failed: {0}")]
+    Embed(#[source] EmbedderError),
+    #[error("embedder returned {returned} embeddings for {sent} chunks")]
+    EmbeddingCount { returned: usize, sent: usize },
+    #[error("embedding count mismatch: chunks={chunks} embeddings={embeddings}")]
+    PointCount { chunks: usize, embeddings: usize },
+    #[error("vector store upsert failed: {0}")]
+    Upsert(#[source] VectorStoreError),
+    #[error("obsolete chunk cleanup failed: {0}")]
+    Cleanup(#[source] VectorStoreError),
+    #[error("vector store delete failed: {0}")]
+    Delete(#[source] VectorStoreError),
 }
 
 /// Why the pipeline stopped, with what `HEAD` had established by then.
@@ -94,7 +150,7 @@ impl IndexerWorker {
                 .handle_tombstone(kb, object_key)
                 .await
                 .map(|()| PipelineOutcome::Tombstoned)
-                .map_err(PipelineFailure::before_head);
+                .map_err(|err| PipelineFailure::before_head(err.to_string()));
         }
         let head = match self
             .storage
@@ -124,7 +180,7 @@ impl IndexerWorker {
                     .handle_tombstone(kb, object_key)
                     .await
                     .map(|()| PipelineOutcome::Tombstoned)
-                    .map_err(PipelineFailure::before_head);
+                    .map_err(|err| PipelineFailure::before_head(err.to_string()));
             }
             // A `Tombstone` is the write path saying the delete is committed, and
             // nothing repairs a failure here: it is terminal and silent, and the
@@ -146,7 +202,7 @@ impl IndexerWorker {
                     .handle_tombstone(kb, object_key)
                     .await
                     .map(|()| PipelineOutcome::Tombstoned)
-                    .map_err(PipelineFailure::before_head);
+                    .map_err(|err| PipelineFailure::before_head(err.to_string()));
             }
             Err(err) => {
                 return Err(PipelineFailure::before_head(format!(
@@ -187,8 +243,8 @@ impl IndexerWorker {
         let failure_mime = Some(mime.clone()).filter(|mime| !mime.is_empty());
         self.index_head(kb, object_key, head, mime, skip)
             .await
-            .map_err(|message| PipelineFailure {
-                message,
+            .map_err(|err| PipelineFailure {
+                message: err.to_string(),
                 etag: failure_etag,
                 mime: failure_mime,
                 after_head: true,
@@ -204,7 +260,7 @@ impl IndexerWorker {
         head: ObjectMeta,
         mime: String,
         skip: Skip,
-    ) -> Result<PipelineOutcome, String> {
+    ) -> Result<PipelineOutcome, PipelineError> {
         if !is_indexable(&mime) {
             tracing::debug!(
                 target: "notedthat::indexing",
@@ -239,7 +295,7 @@ impl IndexerWorker {
 
         let max_input_tokens = self.embedder.max_input_tokens();
         if max_input_tokens == 0 {
-            return Err("embedder input limit must be greater than zero".to_owned());
+            return Err(PipelineError::ZeroInputLimit);
         }
         let mut snapshot = self.stage_snapshot(&kb, &object_key, head).await?;
         // The chunks carry the type the event reports, so a `mime` search filter
@@ -260,8 +316,7 @@ impl IndexerWorker {
             self.handle_tombstone(kb, object_key).await?;
             return Ok(PipelineOutcome::Tombstoned);
         }
-        let chunks = u32::try_from(new_count)
-            .map_err(|_| "chunk count exceeds supported numeric range".to_owned())?;
+        let chunks = u32::try_from(new_count).map_err(|_| PipelineError::ChunkCountRange)?;
         self.cleanup_obsolete(&kb, &object_key, chunks).await?;
 
         tracing::info!(
@@ -321,11 +376,8 @@ impl IndexerWorker {
         kb: &KbSlug,
         object_key: &ObjectPath,
         head: ObjectMeta,
-    ) -> Result<PreparedSnapshot, String> {
-        let head_etag = head
-            .etag
-            .clone()
-            .ok_or_else(|| "storage.head_object returned no ETag for stable snapshot".to_owned())?;
+    ) -> Result<PreparedSnapshot, PipelineError> {
+        let head_etag = head.etag.clone().ok_or(PipelineError::MissingEtag)?;
         let object_stream = self
             .storage
             .get_object_stream(
@@ -338,7 +390,7 @@ impl IndexerWorker {
                 },
             )
             .await
-            .map_err(|err| format!("storage.get_object_stream failed: {err}"))?;
+            .map_err(PipelineError::Stream)?;
         if object_stream.meta.etag.as_deref() != Some(head_etag.as_str()) {
             // Deliberately not retried: retrying would only race the same writer again,
             // from further behind. Where the filesystem watcher is running, the change
@@ -349,7 +401,7 @@ impl IndexerWorker {
             // and no dead-letter queue. On S3, or on the filesystem with
             // NOTEDTHAT_FS_WATCH=false, nothing re-enqueues it and the object stays stale
             // in the index until it is next written.
-            return Err("streamed snapshot ETag differs from preceding HEAD".to_owned());
+            return Err(PipelineError::EtagChanged);
         }
         let object_meta = object_stream.meta;
         let observer = Arc::new(Mutex::new(SnapshotObserver::new(FRONTMATTER_PREFIX_LIMIT)));
@@ -375,13 +427,13 @@ impl IndexerWorker {
                 &self.staging,
             )
             .await
-            .map_err(|err| format!("staging index snapshot failed: {err}"))?,
+            .map_err(PipelineError::Staging)?,
         );
         let facts = observer
             .lock()
-            .map_err(|_| "index snapshot observer lock poisoned".to_owned())?
+            .map_err(|_| PipelineError::ObserverPoisoned)?
             .finish()
-            .map_err(|err| format!("snapshot inspection failed: {err}"))?;
+            .map_err(PipelineError::SnapshotInspection)?;
         let (metadata, body_start) = crate::okf::concept_prefix(object_key.as_str(), &facts.prefix)
             .map_or((None, 0), |(metadata, body_start)| {
                 (Some(metadata), body_start)
@@ -402,13 +454,13 @@ impl IndexerWorker {
         object_key: &ObjectPath,
         snapshot: &PreparedSnapshot,
         mut cursor: ChunkCursor,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, PipelineError> {
         let batch_size = self.batch_size.max(1);
         loop {
             let (next_cursor, batch) =
                 tokio::task::spawn_blocking(move || take_chunk_batch(cursor, batch_size))
                     .await
-                    .map_err(|err| format!("chunk batch task failed: {err}"))??;
+                    .map_err(PipelineError::ChunkBatchTask)??;
             cursor = next_cursor;
             if batch.is_empty() {
                 break;
@@ -419,13 +471,12 @@ impl IndexerWorker {
                 .embedder
                 .embed(&texts)
                 .await
-                .map_err(|err| format!("embedder.embed failed: {err}"))?;
+                .map_err(PipelineError::Embed)?;
             if embeddings.len() != texts.len() {
-                return Err(format!(
-                    "embedder returned {} embeddings for {} chunks",
-                    embeddings.len(),
-                    texts.len()
-                ));
+                return Err(PipelineError::EmbeddingCount {
+                    returned: embeddings.len(),
+                    sent: texts.len(),
+                });
             }
             let points = build_points(
                 &batch,
@@ -438,7 +489,7 @@ impl IndexerWorker {
             self.store
                 .upsert_points(kb, points)
                 .await
-                .map_err(|err| format!("vector store upsert failed: {err}"))?;
+                .map_err(PipelineError::Upsert)?;
         }
         Ok(cursor.next_index)
     }
@@ -448,7 +499,7 @@ impl IndexerWorker {
         kb: &KbSlug,
         object_key: &ObjectPath,
         from_chunk_index: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), PipelineError> {
         self.store
             .delete_points(
                 kb,
@@ -458,6 +509,133 @@ impl IndexerWorker {
                 },
             )
             .await
-            .map_err(|err| format!("obsolete chunk cleanup failed: {err}"))
+            .map_err(PipelineError::Cleanup)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_failure_reads_as_the_text_the_summary_has_always_carried() {
+        // Given: one of each failure, the sources built with known messages.
+        let io = || io::Error::other("disk");
+        let storage = || StorageError::BackendUnavailable {
+            message: "down".to_owned(),
+        };
+        let store = || VectorStoreError::Backend {
+            message: "gone".to_owned(),
+        };
+        let cases = [
+            (
+                PipelineError::ZeroInputLimit,
+                "embedder input limit must be greater than zero",
+            ),
+            (
+                PipelineError::ChunkCountRange,
+                "chunk count exceeds supported numeric range",
+            ),
+            (
+                PipelineError::MissingEtag,
+                "storage.head_object returned no ETag for stable snapshot",
+            ),
+            (
+                PipelineError::Stream(storage()),
+                "storage.get_object_stream failed: backend unavailable: down",
+            ),
+            (
+                PipelineError::EtagChanged,
+                "streamed snapshot ETag differs from preceding HEAD",
+            ),
+            (
+                PipelineError::Staging(StageError::TooLarge { size: 2, limit: 1 }),
+                "staging index snapshot failed: body is 2 bytes, exceeding limit 1",
+            ),
+            (
+                PipelineError::ObserverPoisoned,
+                "index snapshot observer lock poisoned",
+            ),
+            (
+                PipelineError::SnapshotInspection(io()),
+                "snapshot inspection failed: disk",
+            ),
+            (
+                PipelineError::ChunkRead(io()),
+                "streaming chunk read failed: disk",
+            ),
+            (PipelineError::ChunkIndexOverflow, "chunk index overflow"),
+            (
+                PipelineError::ChunkTooLarge {
+                    index: 3,
+                    bytes: 9,
+                    maximum: 8,
+                },
+                "chunk 3 is 9 UTF-8 bytes, exceeding conservative embedder bound 8",
+            ),
+            (
+                PipelineError::ChunkIteratorSetup(io()),
+                "chunk iterator setup failed: disk",
+            ),
+            (
+                PipelineError::Embed(EmbedderError::Transport("refused".to_owned())),
+                "embedder.embed failed: embedder transport error: refused",
+            ),
+            (
+                PipelineError::EmbeddingCount {
+                    returned: 1,
+                    sent: 2,
+                },
+                "embedder returned 1 embeddings for 2 chunks",
+            ),
+            (
+                PipelineError::PointCount {
+                    chunks: 2,
+                    embeddings: 1,
+                },
+                "embedding count mismatch: chunks=2 embeddings=1",
+            ),
+            (
+                PipelineError::Upsert(store()),
+                "vector store upsert failed: vector store backend error: gone",
+            ),
+            (
+                PipelineError::Cleanup(store()),
+                "obsolete chunk cleanup failed: vector store backend error: gone",
+            ),
+            (
+                PipelineError::Delete(store()),
+                "vector store delete failed: vector store backend error: gone",
+            ),
+        ];
+
+        // When / Then: each renders exactly as the old `format!` did.
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_task_keeps_its_stage_prefix() {
+        // Given: a `JoinError`, whose own text names a task id, so only the prefix is pinned.
+        let cancelled = || async {
+            let task = tokio::spawn(std::future::pending::<()>());
+            task.abort();
+            task.await.expect_err("an aborted task fails")
+        };
+
+        // When: it is wrapped by either task stage.
+        let iterator = PipelineError::ChunkIteratorTask(cancelled().await).to_string();
+        let batch = PipelineError::ChunkBatchTask(cancelled().await).to_string();
+
+        // Then: each reads as the old `format!` did.
+        assert!(
+            iterator.starts_with("chunk iterator task failed: task "),
+            "{iterator}"
+        );
+        assert!(
+            batch.starts_with("chunk batch task failed: task "),
+            "{batch}"
+        );
     }
 }

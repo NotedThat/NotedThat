@@ -1,3 +1,4 @@
+use super::pipeline::PipelineError;
 use super::snapshot::BodyReader;
 use crate::chunker;
 use notedthat_core::StagedBody;
@@ -13,18 +14,18 @@ pub(super) struct ChunkCursor {
 pub(super) fn take_chunk_batch(
     mut cursor: ChunkCursor,
     batch_size: usize,
-) -> Result<(ChunkCursor, Vec<(usize, chunker::Chunk)>), String> {
+) -> Result<(ChunkCursor, Vec<(usize, chunker::Chunk)>), PipelineError> {
     let mut batch = Vec::with_capacity(batch_size);
     for _ in 0..batch_size {
         let Some(chunk) = cursor.chunks.next() else {
             break;
         };
-        let chunk = chunk.map_err(|err| format!("streaming chunk read failed: {err}"))?;
+        let chunk = chunk.map_err(PipelineError::ChunkRead)?;
         let chunk_index = cursor.next_index;
         cursor.next_index = cursor
             .next_index
             .checked_add(1)
-            .ok_or_else(|| "chunk index overflow".to_owned())?;
+            .ok_or(PipelineError::ChunkIndexOverflow)?;
         batch.push((chunk_index, chunk));
     }
     Ok((cursor, batch))
@@ -33,12 +34,13 @@ pub(super) fn take_chunk_batch(
 pub(super) fn validate_chunk_byte_bound(
     batch: &[(usize, chunker::Chunk)],
     maximum: usize,
-) -> Result<(), String> {
+) -> Result<(), PipelineError> {
     if let Some((index, chunk)) = batch.iter().find(|(_, chunk)| chunk.text.len() > maximum) {
-        return Err(format!(
-            "chunk {index} is {} UTF-8 bytes, exceeding conservative embedder bound {maximum}",
-            chunk.text.len()
-        ));
+        return Err(PipelineError::ChunkTooLarge {
+            index: *index,
+            bytes: chunk.text.len(),
+            maximum,
+        });
     }
     Ok(())
 }
@@ -47,7 +49,7 @@ pub(super) async fn open_chunk_cursor(
     body: Arc<StagedBody>,
     body_start: usize,
     max_chars: usize,
-) -> Result<ChunkCursor, String> {
+) -> Result<ChunkCursor, PipelineError> {
     tokio::task::spawn_blocking(move || {
         let reader = body.open_blocking()?;
         let body_offset = u64::try_from(body_start).map_err(|_| {
@@ -64,8 +66,8 @@ pub(super) async fn open_chunk_cursor(
         })
     })
     .await
-    .map_err(|err| format!("chunk iterator task failed: {err}"))?
-    .map_err(|err| format!("chunk iterator setup failed: {err}"))
+    .map_err(PipelineError::ChunkIteratorTask)?
+    .map_err(PipelineError::ChunkIteratorSetup)
 }
 
 #[cfg(test)]
