@@ -18,7 +18,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use notedthat_core::KbSlug;
-use notedthat_server::config::{Config, EmbedderConfig, ServerQdrantConfig, StorageConfig};
+use notedthat_indexer::QdrantConfig;
+use notedthat_server::config::{Config, EmbedderConfig, StorageConfig};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -52,13 +53,13 @@ fn config(endpoint: &str, allow_unenforced: bool) -> Config {
         listen_addr: notedthat_api_http::testing::reserve_addr(),
         storage: StorageConfig::S3(s3),
         // Startup must give up on the unroutable Qdrant and embedder quickly.
-        qdrant: ServerQdrantConfig {
-            timeout_ms: 2_000,
-            connect_timeout_ms: 1_000,
+        qdrant: QdrantConfig {
+            timeout: Duration::from_secs(2),
+            connect_timeout: Duration::from_secs(1),
             ..base.qdrant
         },
         embedder: EmbedderConfig {
-            timeout_ms: 2_000,
+            timeout: Duration::from_secs(2),
             max_retries: 0,
             ..base.embedder
         },

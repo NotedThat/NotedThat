@@ -70,8 +70,8 @@ impl OidcSettings {
     pub const DEFAULT_USERNAME_CLAIM: &'static str = "preferred_username";
     /// The default groups claim.
     pub const DEFAULT_GROUPS_CLAIM: &'static str = "groups";
-    /// The default HTTP timeout, in milliseconds.
-    pub const DEFAULT_HTTP_TIMEOUT_MS: u64 = 5_000;
+    /// The default HTTP timeout.
+    pub const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// The URL the discovery document is fetched from.
     pub fn discovery_url(&self) -> String {
@@ -498,7 +498,6 @@ fn cache_keys(jwks: &JwkSet) -> Vec<CachedKey> {
 pub mod test_support {
     use super::{JwkSet, OidcSettings};
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use std::time::Duration;
 
     /// The `kid` the fixture key is published under.
     pub const KID: &str = "test-2026";
@@ -522,7 +521,7 @@ pub mod test_support {
             audiences: vec!["notedthat".to_string()],
             username_claim: OidcSettings::DEFAULT_USERNAME_CLAIM.to_string(),
             groups_claim: OidcSettings::DEFAULT_GROUPS_CLAIM.to_string(),
-            http_timeout: Duration::from_millis(OidcSettings::DEFAULT_HTTP_TIMEOUT_MS),
+            http_timeout: OidcSettings::DEFAULT_HTTP_TIMEOUT,
             resource: None,
             ca_cert: None,
         }

@@ -210,7 +210,7 @@ async fn wait_for_readyz(base: &str, status: u16) -> serde_json::Value {
 async fn readyz_follows_the_backends_without_a_restart() {
     let bound_addr = notedthat_api_http::testing::reserve_addr();
     let mut config = test_config(bound_addr);
-    config.ready_probe_interval_ms = 20;
+    config.ready_probe_interval = Duration::from_millis(20);
     let storage = InMemoryStorage::default();
     let store = InMemoryVectorStore::new();
     let backends = Backends {
