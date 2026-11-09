@@ -6,7 +6,7 @@
 
 mod chunks;
 mod last_seen;
-mod pipeline;
+pub(crate) mod pipeline;
 mod points;
 mod snapshot;
 
@@ -102,7 +102,7 @@ impl IndexerWorker {
     /// report it.
     #[must_use]
     pub fn with_health(mut self, health: Arc<IndexHealth>) -> Self {
-        self.pipeline.health = health;
+        self.pipeline = self.pipeline.with_health(health);
         self
     }
 
@@ -110,14 +110,14 @@ impl IndexerWorker {
     /// or refresh, on the given event log.
     #[must_use]
     pub fn with_event_publisher(mut self, events: Option<Arc<dyn EventPublisher>>) -> Self {
-        self.pipeline.events = events;
+        self.pipeline = self.pipeline.with_event_publisher(events);
         self
     }
 
     /// Use the validated shared staging directory for index snapshots.
     #[must_use]
     pub fn with_staging_config(mut self, staging: StagingConfig) -> Self {
-        self.pipeline.staging = staging;
+        self.pipeline = self.pipeline.with_staging_config(staging);
         self
     }
 
@@ -208,7 +208,10 @@ impl IndexerWorker {
 }
 
 impl Pipeline {
-    async fn handle(&self, event: IndexEvent) {
+    /// Index, refresh or tombstone one file, recording exactly one outcome on
+    /// the health record and, for an upsert or refresh, the event log (D65).
+    /// A panic in the pipeline is recorded as this file's failure.
+    pub async fn handle(&self, event: IndexEvent) {
         let kb = event.kb().clone();
         let object_key = event.object_key().clone();
         let kind = event.kind();

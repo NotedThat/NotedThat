@@ -14,13 +14,14 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use notedthat_core::testing::{InMemoryStorage, ScriptedStorage, StorageOp};
 use notedthat_core::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
     ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
     Storage, StorageError,
 };
 use notedthat_indexer::chunker::stream_chunks;
-use notedthat_indexer::testing::InMemoryVectorStore;
+use notedthat_indexer::testing::{InMemoryVectorStore, Pipeline};
 use notedthat_indexer::vector_store::{
     HybridQuery, IndexedObject, PayloadFieldKind, PointSelector, VectorStore, VectorStoreError,
 };
@@ -57,8 +58,6 @@ struct MockStorage {
     objects: Mutex<HashMap<(String, String), StorageObject>>,
     stream_calls: AtomicUsize,
     fail_next_head: AtomicBool,
-    fail_stream_precondition: AtomicBool,
-    fail_stream_midway: AtomicBool,
 }
 
 impl MockStorage {
@@ -67,8 +66,6 @@ impl MockStorage {
             objects: Mutex::new(HashMap::new()),
             stream_calls: AtomicUsize::new(0),
             fail_next_head: AtomicBool::new(false),
-            fail_stream_precondition: AtomicBool::new(false),
-            fail_stream_midway: AtomicBool::new(false),
         }
     }
 
@@ -116,14 +113,6 @@ impl MockStorage {
     /// worker learns anything about the object.
     fn fail_next_head(&self) {
         self.fail_next_head.store(true, Ordering::SeqCst);
-    }
-
-    fn fail_next_stream_precondition(&self) {
-        self.fail_stream_precondition.store(true, Ordering::SeqCst);
-    }
-
-    fn fail_next_stream_midway(&self) {
-        self.fail_stream_midway.store(true, Ordering::SeqCst);
     }
 }
 
@@ -353,9 +342,6 @@ impl Storage for MockStorage {
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectStream, StorageError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        if self.fail_stream_precondition.swap(false, Ordering::SeqCst) {
-            return Err(StorageError::PreconditionFailed);
-        }
         let (bytes, content_type) = self
             .objects
             .lock()
@@ -369,17 +355,11 @@ impl Storage for MockStorage {
         if conditionals.if_match.as_deref() != Some(etag.as_str()) {
             return Err(StorageError::PreconditionFailed);
         }
-        let mut chunks = bytes
+        let chunks = bytes
             .chunks(3)
             .map(Bytes::copy_from_slice)
             .map(Ok)
             .collect::<Vec<Result<Bytes, StorageError>>>();
-        if self.fail_stream_midway.swap(false, Ordering::SeqCst) {
-            chunks.truncate(1);
-            chunks.push(Err(StorageError::BackendUnavailable {
-                message: "injected stream failure".to_owned(),
-            }));
-        }
         Ok(ObjectStream {
             chunks: Box::pin(futures::stream::iter(chunks)),
             meta: ObjectMeta {
@@ -578,6 +558,30 @@ fn make_embedder_with_limits(
         })
         .expect("embedder construction failed"),
     )
+}
+
+/// One file's pipeline over `storage`, the seam per-file tests drive directly.
+fn pipeline(
+    storage: impl Storage + 'static,
+    embedder: Arc<dyn Embedder>,
+    store: &InMemoryVectorStore,
+) -> Pipeline {
+    Pipeline::new(
+        Arc::new(storage),
+        embedder,
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+}
+
+/// A store holding the test knowledge base, with `key` seeded as markdown.
+async fn storage_with(key: &str, body: &str) -> InMemoryStorage {
+    let storage = InMemoryStorage::with_kbs([&kb()]);
+    storage
+        .seed("test-kb", key, body.to_owned(), Some("text/markdown"), None)
+        .await;
+    storage
 }
 
 fn make_worker(
@@ -789,37 +793,10 @@ async fn happy_path_upsert_creates_qdrant_point() {
         .mount(&mock_server)
         .await;
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "hello.md",
-        "# Hello\n\nThis is a test document.",
-        "text/markdown",
-    );
-
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            Arc::clone(&storage),
-            make_embedder(&mock_server.uri(), 4),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: opath("hello.md"),
-    })
-    .await
-    .unwrap();
-
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    let storage = storage_with("hello.md", "# Hello\n\nThis is a test document.").await;
+    pipeline(storage, make_embedder(&mock_server.uri(), 4), &store)
+        .handle(upsert(&kb, "hello.md"))
+        .await;
 
     let points = scroll_points(&store, &kb, "hello.md", true).await;
     let n = points.len();
@@ -920,39 +897,26 @@ async fn a_tombstone_of_a_gone_object_removes_its_points() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "doc.md",
-        "# Doc\n\nContent to be tombstoned.",
-        "text/markdown",
-    );
-    let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
-    let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
-
-    index_once(
+    let storage = storage_with("doc.md", "# Doc\n\nContent to be tombstoned.").await;
+    let pipeline = pipeline(
         storage.clone(),
-        embedder.clone(),
-        store_arc.clone(),
-        &kb,
-        "doc.md",
-        32,
-    )
-    .await;
+        Arc::new(ScriptedEmbedder::new(None, None)),
+        &store,
+    );
+
+    pipeline.handle(upsert(&kb, "doc.md")).await;
     assert!(count_points(&store, &kb, "doc.md").await > 0);
 
-    storage.remove("test-kb", "doc.md");
-    run_one_with_health(
-        storage,
-        embedder,
-        store_arc,
-        IndexEvent::Tombstone {
+    storage
+        .delete_object(&kb, &opath("doc.md"), ConditionalHeaders::default())
+        .await
+        .unwrap();
+    pipeline
+        .handle(IndexEvent::Tombstone {
             kb: kb.clone(),
             object_key: opath("doc.md"),
-        },
-        Arc::new(IndexHealth::new()),
-    )
-    .await;
+        })
+        .await;
 
     assert_eq!(count_points(&store, &kb, "doc.md").await, 0);
 }
@@ -2113,69 +2077,54 @@ async fn unstable_or_invalid_stream_preserves_last_complete_index_until_repair()
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "stable.md", "old stable", "text/markdown");
-    index_once(
-        Arc::clone(&storage),
+    let storage = ScriptedStorage::with_kbs([&kb]);
+    let seed = |body: &'static [u8]| {
+        let storage = storage.clone();
+        async move {
+            storage
+                .inner()
+                .seed("test-kb", "stable.md", body, Some("text/markdown"), None)
+                .await;
+        }
+    };
+    seed(b"old stable").await;
+    pipeline(
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::new(store.clone()),
-        &kb,
-        "stable.md",
-        2,
+        &store,
     )
+    .handle(upsert(&kb, "stable.md"))
     .await;
 
-    storage.insert("test-kb", "stable.md", "new stable", "text/markdown");
+    seed(b"new stable").await;
     let unused_embedder = Arc::new(ScriptedEmbedder::new(None, None));
-    storage.fail_next_stream_precondition();
-    index_once(
-        Arc::clone(&storage),
+    let unused = pipeline(
+        storage.clone(),
         Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::new(store.clone()),
-        &kb,
-        "stable.md",
-        2,
-    )
-    .await;
-    storage.fail_next_stream_midway();
-    index_once(
-        Arc::clone(&storage),
-        Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::new(store.clone()),
-        &kb,
-        "stable.md",
-        2,
-    )
-    .await;
-    storage.insert_bytes(
-        "test-kb",
-        "stable.md",
-        Bytes::from_static(b"new\xffstable"),
-        "text/markdown",
+        &store,
     );
-    index_once(
-        Arc::clone(&storage),
-        Arc::clone(&unused_embedder) as Arc<dyn Embedder>,
-        Arc::new(store.clone()),
-        &kb,
-        "stable.md",
-        2,
-    )
-    .await;
+    storage.fail_next(StorageOp::GetObjectStream, 1, || {
+        StorageError::PreconditionFailed
+    });
+    unused.handle(upsert(&kb, "stable.md")).await;
+    storage.fail_next_stream_after(3, || StorageError::BackendUnavailable {
+        message: "injected stream failure".to_owned(),
+    });
+    unused.handle(upsert(&kb, "stable.md")).await;
+    seed(b"new\xffstable").await;
+    unused.handle(upsert(&kb, "stable.md")).await;
     assert_eq!(unused_embedder.batch_sizes().len(), 0);
     let preserved = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(preserved.len(), 1);
     assert_eq!(string_payload(&preserved[0], "text"), "old stable");
 
-    storage.insert("test-kb", "stable.md", "new stable", "text/markdown");
-    index_once(
-        Arc::clone(&storage),
+    seed(b"new stable").await;
+    pipeline(
+        storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
-        Arc::new(store.clone()),
-        &kb,
-        "stable.md",
-        2,
+        &store,
     )
+    .handle(upsert(&kb, "stable.md"))
     .await;
     let repaired = scroll_points(&store, &kb, "stable.md", false).await;
     assert_eq!(repaired.len(), 1);

@@ -128,7 +128,7 @@ impl PipelineFailure {
 /// report one outcome. Cheap to clone, and every clone shares the same
 /// last-seen record and health view.
 #[derive(Clone)]
-pub(super) struct Pipeline {
+pub struct Pipeline {
     /// Object storage used to re-read source documents before indexing.
     pub(super) storage: Arc<dyn Storage>,
     /// Embedding endpoint used to turn chunks into dense vectors.
@@ -157,7 +157,9 @@ pub(super) struct Pipeline {
 }
 
 impl Pipeline {
-    pub(super) fn new(
+    /// A pipeline with default staging, no event log and its own health record.
+    #[must_use]
+    pub fn new(
         storage: Arc<dyn Storage>,
         embedder: Arc<dyn Embedder>,
         store: Arc<dyn VectorStore>,
@@ -175,6 +177,29 @@ impl Pipeline {
             last_seen: Arc::new(Mutex::new(LastSeen::default())),
             health: Arc::new(IndexHealth::new()),
         }
+    }
+
+    /// Record outcomes on a health record shared with the surfaces that
+    /// report it.
+    #[must_use]
+    pub fn with_health(mut self, health: Arc<IndexHealth>) -> Self {
+        self.health = health;
+        self
+    }
+
+    /// Announce detected changes, and the outcome of every upsert or refresh,
+    /// on the given event log.
+    #[must_use]
+    pub fn with_event_publisher(mut self, events: Option<Arc<dyn EventPublisher>>) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// Use the validated shared staging directory for index snapshots.
+    #[must_use]
+    pub fn with_staging_config(mut self, staging: StagingConfig) -> Self {
+        self.staging = staging;
+        self
     }
 
     /// `told` is what the log already says about the key. A change this worker
