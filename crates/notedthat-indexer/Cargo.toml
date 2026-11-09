@@ -38,6 +38,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The crate's own tests exercise the in-memory VectorStore.
 notedthat-indexer = { path = ".", features = ["test-support"] }
+# InMemoryStorage and ScriptedStorage, the storage the per-file tests run over.
+notedthat-core = { path = "../notedthat-core", features = ["test-support"] }
 # The memory event log, to assert what the worker announces for detected changes.
 notedthat-events = { path = "../notedthat-events" }
 # One Qdrant container, for vector_store_conformance.rs only: it is what keeps

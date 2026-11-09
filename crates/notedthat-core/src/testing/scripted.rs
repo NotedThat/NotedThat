@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use tokio::io::AsyncReadExt;
 
@@ -143,6 +144,8 @@ struct Script {
     after: HashMap<StorageOp, Vec<Hook>>,
     discard_staged_bodies: bool,
     max_page: Option<u32>,
+    /// The next stream's body is cut after this many bytes and ends in the error.
+    stream_failure: Option<(usize, ErrorFactory)>,
 }
 
 /// An [`InMemoryStorage`] with a script: every call is recorded, and any operation can
@@ -232,6 +235,17 @@ impl ScriptedStorage {
     {
         let hook: Hook = Arc::new(move |store| Box::pin(hook(store)));
         lock(&self.script).after.entry(op).or_default().push(hook);
+    }
+
+    /// Let the next `get_object_stream` succeed, but end its body with the error
+    /// `error` builds after `bytes` bytes — a backend dropping the connection
+    /// partway through a read.
+    pub fn fail_next_stream_after(
+        &self,
+        bytes: usize,
+        error: impl Fn() -> StorageError + Send + Sync + 'static,
+    ) {
+        lock(&self.script).stream_failure = Some((bytes, Arc::new(error)));
     }
 
     /// Drain a disk-staged body and store it empty instead of reading it into memory,
@@ -423,6 +437,20 @@ impl Storage for ScriptedStorage {
             .inner
             .get_object_stream(kb, path, range, conditionals)
             .await;
+        let failure = lock(&self.script).stream_failure.take();
+        let result = match (failure, result) {
+            (Some((bytes, error)), Ok(mut stream)) => {
+                let mut body = Vec::new();
+                while let Some(chunk) = stream.chunks.next().await {
+                    body.extend_from_slice(&chunk?);
+                }
+                body.truncate(bytes);
+                stream.chunks =
+                    Box::pin(futures::stream::iter([Ok(Bytes::from(body)), Err(error())]));
+                Ok(stream)
+            }
+            (_, result) => result,
+        };
         self.leave(StorageOp::GetObjectStream, result).await
     }
 
@@ -778,5 +806,39 @@ mod tests {
         assert_eq!(*len, 7);
         let stored = storage.inner().object("test-kb", "big.bin").await.unwrap();
         assert_eq!(stored.bytes.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stream_scripted_to_break_yields_its_first_bytes_then_the_error() {
+        let storage = ScriptedStorage::with_kbs([&kb()]);
+        storage
+            .inner()
+            .seed("test-kb", "a.md", "abcdef", None, None)
+            .await;
+        storage.fail_next_stream_after(2, || StorageError::BackendUnavailable {
+            message: "cut".to_owned(),
+        });
+        let read = |storage: ScriptedStorage| async move {
+            let stream = storage
+                .get_object_stream(&kb(), &path("a.md"), None, ConditionalHeaders::default())
+                .await
+                .unwrap();
+            stream.chunks.collect::<Vec<_>>().await
+        };
+
+        let chunks = read(storage.clone()).await;
+        assert_eq!(chunks.len(), 2, "{chunks:?}");
+        assert_eq!(chunks[0].as_ref().unwrap().as_ref(), b"ab");
+        assert!(matches!(
+            chunks[1],
+            Err(StorageError::BackendUnavailable { .. })
+        ));
+
+        let again: Vec<u8> = read(storage)
+            .await
+            .into_iter()
+            .flat_map(|chunk| chunk.unwrap().to_vec())
+            .collect();
+        assert_eq!(again, b"abcdef", "only the next stream breaks");
     }
 }

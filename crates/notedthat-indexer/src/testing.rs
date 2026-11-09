@@ -39,6 +39,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
+pub use crate::worker::pipeline::Pipeline;
+
 /// Rank constant for Reciprocal Rank Fusion, matching Qdrant's default.
 const RRF_K: f32 = 60.0;
 
