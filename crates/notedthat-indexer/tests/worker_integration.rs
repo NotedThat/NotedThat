@@ -3425,6 +3425,51 @@ mod announcing {
         assert_eq!(events[0].source, EventSource::FsWatch);
     }
 
+    /// Files handled concurrently share one record of what was announced, so an
+    /// echo handled by a different handler than its write is still kept quiet.
+    #[tokio::test]
+    async fn concurrent_handlers_share_what_was_announced() {
+        let (store, provisioner) = make_store();
+        provisioner.ensure_collection(&kb(), 4).await.unwrap();
+        let storage = Arc::new(MockStorage::new());
+        for key in ["a.mp3", "b.mp3"] {
+            storage.insert_bytes(
+                kb().as_str(),
+                key,
+                Bytes::from_static(b"ID3\x03"),
+                "audio/mpeg",
+            );
+        }
+        let publisher = Arc::new(MemoryPublisher::new(16));
+        let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
+        let (tx, worker) = make_queue_worker(
+            storage,
+            embedder,
+            Arc::new(store),
+            CancellationToken::new(),
+            4,
+            2,
+        );
+        for event in [
+            upsert("a.mp3"),
+            upsert("b.mp3"),
+            refresh("a.mp3", RefreshOrigin::Watch),
+            refresh("b.mp3", RefreshOrigin::Watch),
+        ] {
+            tx.send(event).await.unwrap();
+        }
+        drop(tx);
+        worker
+            .with_event_publisher(Some(publisher.clone() as Arc<dyn EventPublisher>))
+            .run()
+            .await;
+
+        assert!(
+            announced(&publisher).await.is_empty(),
+            "each echo carries the stamp its write already announced"
+        );
+    }
+
     #[tokio::test]
     async fn a_deletion_the_server_made_is_not_announced_again_by_its_echo() {
         let (store, provisioner) = make_store();

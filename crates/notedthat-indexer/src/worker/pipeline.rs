@@ -1,18 +1,21 @@
 use super::chunks::{ChunkCursor, open_chunk_cursor, take_chunk_batch, validate_chunk_byte_bound};
+use super::last_seen::LastSeen;
 use super::points::build_points;
 use super::snapshot::{SnapshotFacts, SnapshotObserver};
-use super::{IndexerWorker, Skip, Told, content_type_from_key, is_indexable};
+use super::{Skip, Told, content_type_from_key, is_indexable};
 use crate::chunker;
-use crate::embedder::EmbedderError;
-use crate::vector_store::{PointSelector, VectorStoreError};
+use crate::embedder::{Embedder, EmbedderError};
+use crate::health::IndexHealth;
+use crate::vector_store::{PointSelector, VectorStore, VectorStoreError};
 use futures::StreamExt;
 use notedthat_core::{
-    ConditionalHeaders, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StageError, StagedBody,
-    StorageError, search::ConceptMetadata,
+    ConditionalHeaders, EventPublisher, KbSlug, ObjectEvent, ObjectMeta, ObjectPath, StageError,
+    StagedBody, StagingConfig, Storage, StorageError, search::ConceptMetadata,
 };
 use std::io;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinError;
+use tokio_util::sync::CancellationToken;
 
 const FRONTMATTER_PREFIX_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_UTF8_BYTES_PER_SCALAR: usize = 4;
@@ -121,7 +124,59 @@ impl PipelineFailure {
     }
 }
 
-impl IndexerWorker {
+/// Everything one file's indexing needs: read, chunk, embed, write, and
+/// report one outcome. Cheap to clone, and every clone shares the same
+/// last-seen record and health view.
+#[derive(Clone)]
+pub(super) struct Pipeline {
+    /// Object storage used to re-read source documents before indexing.
+    pub(super) storage: Arc<dyn Storage>,
+    /// Embedding endpoint used to turn chunks into dense vectors.
+    pub(super) embedder: Arc<dyn Embedder>,
+    /// Vector store used for point writes and deletes.
+    pub(super) store: Arc<dyn VectorStore>,
+    /// Cancellation token that triggers graceful draining.
+    pub(super) shutdown: CancellationToken,
+    /// Maximum number of chunks sent to the embedder per request.
+    pub(super) batch_size: usize,
+    /// Directory configuration for private index snapshots.
+    pub(super) staging: StagingConfig,
+    /// Where detected changes and indexing outcomes are published, when an
+    /// events backend is configured.
+    ///
+    /// Only a `Refresh` announces a *change*: a write through `NotedThat` was
+    /// announced by the write path before its `Upsert` was even enqueued. Every
+    /// `Upsert` and `Refresh` then reports what became of it — `object.indexed`
+    /// or `object.index_failed` (D65) — once the health record has been stamped.
+    pub(super) events: Option<Arc<dyn EventPublisher>>,
+    /// The last stamp any handler saw for each key, so the `fs` watcher's echo
+    /// of a write the server made itself is not announced a second time.
+    pub(super) last_seen: Arc<Mutex<LastSeen>>,
+    /// Where each event's outcome is recorded for the health view (#97).
+    pub(super) health: Arc<IndexHealth>,
+}
+
+impl Pipeline {
+    pub(super) fn new(
+        storage: Arc<dyn Storage>,
+        embedder: Arc<dyn Embedder>,
+        store: Arc<dyn VectorStore>,
+        shutdown: CancellationToken,
+        batch_size: usize,
+    ) -> Self {
+        Self {
+            storage,
+            embedder,
+            store,
+            shutdown,
+            batch_size,
+            staging: StagingConfig::default(),
+            events: None,
+            last_seen: Arc::new(Mutex::new(LastSeen::default())),
+            health: Arc::new(IndexHealth::new()),
+        }
+    }
+
     /// `told` is what the log already says about the key. A change this worker
     /// detected rather than was told about is announced from the `HEAD` result,
     /// before any indexability check, so an mp3 dropped into the tree is
@@ -397,7 +452,7 @@ impl IndexerWorker {
             // that lost us this race raises its own event and re-enqueues the key.
             //
             // That repair is configuration-dependent, and this error is terminal —
-            // `IndexerWorker::handle` logs INDEXING_FAILED and drops it, with no backoff
+            // `Pipeline::handle` logs INDEXING_FAILED and drops it, with no backoff
             // and no dead-letter queue. On S3, or on the filesystem with
             // NOTEDTHAT_FS_WATCH=false, nothing re-enqueues it and the object stays stale
             // in the index until it is next written.
