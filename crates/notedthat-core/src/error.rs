@@ -71,27 +71,31 @@ pub struct Validators {
 
 /// Storage-layer error — distinct from [`enum@Error`] so that different backends
 /// (S3, in-memory mock, future prefix-per-KB) share a stable failure surface.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     /// The requested object was not found in storage.
+    #[error("object not found: {key}")]
     NotFound {
         /// The key of the missing object.
         key: String,
     },
 
     /// The storage bucket for the KB was not found.
+    #[error("bucket not found: {bucket}")]
     BucketNotFound {
         /// The bucket name that was not found.
         bucket: String,
     },
 
     /// The storage backend is temporarily unavailable.
+    #[error("backend unavailable: {message}")]
     BackendUnavailable {
         /// The underlying error message from the backend.
         message: String,
     },
 
     /// An unexpected storage error. The inner error provides details.
+    #[error("storage error: {source}")]
     Other {
         /// The root cause.
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -99,43 +103,20 @@ pub enum StorageError {
 
     /// The read's preconditions answered 304 Not Modified. Carries the object's
     /// validators, which the 304 must repeat (RFC 9110 §15.4.5).
+    #[error("not modified")]
     NotModified(Validators),
 
     /// S3 backend returned 412 Precondition Failed.
+    #[error("precondition failed")]
     PreconditionFailed,
 
     /// S3 backend returned 416 Range Not Satisfiable. `complete_length` is the total object size
     /// extracted from the `Content-Range: bytes */N` header in the error response.
+    #[error("range not satisfiable (object size: {complete_length})")]
     RangeNotSatisfiable {
         /// The total size of the object in bytes.
         complete_length: u64,
     },
-}
-
-impl std::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound { key } => write!(f, "object not found: {key}"),
-            Self::BucketNotFound { bucket } => write!(f, "bucket not found: {bucket}"),
-            Self::BackendUnavailable { message } => write!(f, "backend unavailable: {message}"),
-            Self::Other { source } => write!(f, "storage error: {source}"),
-            Self::NotModified(_) => write!(f, "not modified"),
-            Self::PreconditionFailed => write!(f, "precondition failed"),
-            Self::RangeNotSatisfiable { complete_length } => {
-                write!(f, "range not satisfiable (object size: {complete_length})")
-            }
-        }
-    }
-}
-
-impl std::error::Error for StorageError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let Self::Other { source } = self {
-            Some(source.as_ref())
-        } else {
-            None
-        }
-    }
 }
 
 impl StorageError {
@@ -233,6 +214,50 @@ mod tests {
             message: "test".into(),
         };
         assert_std_error(&e);
+    }
+
+    #[test]
+    fn test_storage_error_display_and_source_are_pinned() {
+        use std::error::Error as _;
+        let cases = [
+            (
+                StorageError::NotFound { key: "k".into() },
+                "object not found: k",
+            ),
+            (
+                StorageError::BucketNotFound { bucket: "b".into() },
+                "bucket not found: b",
+            ),
+            (
+                StorageError::BackendUnavailable {
+                    message: "m".into(),
+                },
+                "backend unavailable: m",
+            ),
+            (
+                StorageError::Other {
+                    source: "boom".into(),
+                },
+                "storage error: boom",
+            ),
+            (
+                StorageError::NotModified(Validators::default()),
+                "not modified",
+            ),
+            (StorageError::PreconditionFailed, "precondition failed"),
+            (
+                StorageError::RangeNotSatisfiable { complete_length: 5 },
+                "range not satisfiable (object size: 5)",
+            ),
+        ];
+        for (error, text) in cases {
+            assert_eq!(error.to_string(), text);
+            assert_eq!(
+                error.source().is_some(),
+                matches!(error, StorageError::Other { .. }),
+                "only Other carries a source: {error}"
+            );
+        }
     }
 
     #[test]
