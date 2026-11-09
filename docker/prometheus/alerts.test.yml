@@ -251,6 +251,9 @@ tests:
         values: '1+1x20'
       - series: 'notedthat_index_events_completed_total{instance="a",kb="drafts",outcome="failed"}'
         values: '0x20'
+      # The process started with the test, so the new-series arm is open.
+      - series: 'notedthat_process_start_time_seconds{instance="a"}'
+        values: '0x20'
     alert_rule_test:
       - eval_time: 1m
         alertname: NotedThatIndexingFailures
@@ -267,6 +270,20 @@ tests:
               description: "Indexing events for notes failed recently (INDEXING_FAILED). Those objects are stored but not searchable; GET /api/v1/knowledgebases/notes/index names the last failure."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatindexingfailures
       - eval_time: 18m
+        alertname: NotedThatIndexingFailures
+        exp_alerts: []
+
+  # A Prometheus that stopped scraping for half an hour sees an old count again
+  # with no sample a window back. The process is older than the window, so the
+  # new-series arm is closed and nothing pages on that old count (#382).
+  - interval: 1m
+    input_series:
+      - series: 'notedthat_index_events_completed_total{instance="a",kb="notes",outcome="failed"}'
+        values: '3x20 _x30 3x30'
+      - series: 'notedthat_process_start_time_seconds{instance="a"}'
+        values: '0x20 _x30 0x30'
+    alert_rule_test:
+      - eval_time: 52m
         alertname: NotedThatIndexingFailures
         exp_alerts: []
 
@@ -303,6 +320,8 @@ tests:
       - series: 'notedthat_fs_watch_lost_total{instance="b",reason="error"}'
         values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
       - series: 'notedthat_fs_watch_lost_total{instance="c",reason="max_files_watch"}'
+        values: '0x19'
+      - series: 'notedthat_process_start_time_seconds{instance="a"}'
         values: '0x19'
     alert_rule_test:
       - eval_time: 1m
@@ -344,6 +363,8 @@ tests:
         values: '0x16'
       - series: 'notedthat_reconcile_passes_total{instance="a",kb="drafts",cause="startup",outcome="completed"}'
         values: '_ 1x15'
+      - series: 'notedthat_process_start_time_seconds{instance="a"}'
+        values: '0x16'
     alert_rule_test:
       - eval_time: 0m
         alertname: NotedThatReconcileIncomplete

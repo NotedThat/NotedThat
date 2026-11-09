@@ -124,6 +124,8 @@ pub mod name {
 
     /// Always `1`; carries what this build is as labels.
     pub const BUILD_INFO: &str = "notedthat_build_info";
+    /// When the process installed its recorder, in unix seconds (#382).
+    pub const PROCESS_START_TIME_SECONDS: &str = "notedthat_process_start_time_seconds";
 }
 
 /// Label keys.
@@ -452,6 +454,7 @@ mod tests {
         name::STORAGE_ERRORS,
         name::STORAGE_CONDITIONAL_WRITES_ENFORCED,
         name::BUILD_INFO,
+        name::PROCESS_START_TIME_SECONDS,
     ];
 
     /// Prometheus reads `_total` as a counter's suffix and the unit from the
@@ -505,7 +508,10 @@ mod tests {
         // Every `_seconds` metric is a histogram here, so the table must cover
         // each one. `notedthat_search_hits` and `..._texts` are histograms too
         // and are asserted by name.
-        for metric in ALL_NAMES.iter().filter(|m| m.ends_with("_seconds")) {
+        for metric in ALL_NAMES
+            .iter()
+            .filter(|m| m.ends_with("_seconds") && **m != name::PROCESS_START_TIME_SECONDS)
+        {
             assert!(
                 HISTOGRAM_BUCKETS.iter().any(|(name, _)| name == metric),
                 "{metric} is a duration histogram with no buckets registered"

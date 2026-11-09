@@ -961,6 +961,7 @@ listener is `404`. Names, label keys and the histogram bucket table live in one 
 | `notedthat_storage_errors_total` | counter | `backend`, `op`, `error_kind` |
 | `notedthat_storage_conditional_writes_enforced` | gauge (`0`/`1`, set once at startup, `s3` only) | `kb` (D70) |
 | `notedthat_build_info` | gauge (`1`) | `version`, `revision`, `backend`, `events_backend` |
+| `notedthat_process_start_time_seconds` | gauge (unix seconds) | — (set once; #382) |
 
 Label values are literals from closed sets, or a knowledge base slug declared at startup, so
 cardinality is bounded by configuration and not by traffic. `route` is the matched *pattern*,

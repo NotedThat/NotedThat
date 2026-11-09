@@ -106,6 +106,11 @@ fn shared_handle() -> anyhow::Result<PrometheusHandle> {
         .context("failed to install the Prometheus recorder")?;
     let _ = HANDLE.set(handle.clone());
     describe_all();
+    // Once per process, here rather than per server start: tests start many.
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    metrics::gauge!(name::PROCESS_START_TIME_SECONDS).set(started.as_secs_f64());
     Ok(handle)
 }
 
@@ -211,6 +216,11 @@ fn describe_all() {
         "Times the NATS connection was re-established after a loss."
     );
 
+    describe_gauge!(
+        name::PROCESS_START_TIME_SECONDS,
+        metrics::Unit::Seconds,
+        "When the process started, in unix seconds."
+    );
     describe_gauge!(
         name::MCP_SESSIONS,
         "MCP sessions held, idle ones included until they expire."
@@ -611,6 +621,24 @@ mod tests {
                 .expect("the exposition names its content type"),
             EXPOSITION_CONTENT_TYPE
         );
+    }
+
+    /// The alerts' new-series arm is gated on this gauge (#382), so it has to
+    /// be there from the recorder's install, holding about now.
+    #[test]
+    fn the_process_start_time_is_exported_once_installed() {
+        let rendered = shared_handle().expect("a recorder is available").render();
+        let value: f64 = rendered
+            .lines()
+            .find_map(|line| line.strip_prefix("notedthat_process_start_time_seconds "))
+            .unwrap_or_else(|| panic!("no start time in:\n{rendered}"))
+            .parse()
+            .expect("a number");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs_f64();
+        assert!((now - value).abs() < 600.0, "start time {value}, now {now}");
     }
 
     /// The series the alerts watch for one increment are scraped at `0`
