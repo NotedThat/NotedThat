@@ -6,16 +6,19 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use notedthat_core::{
-    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, ObjectState, PutOutcome,
-    StorageError, evaluate_write_preconditions,
+    ConditionalHeaders, CopyObjectOptions, KbSlug, ObjectPath, ObjectState, Principal, PutOutcome,
+    StorageError, Verb, evaluate_write_preconditions,
 };
 use notedthat_write::sniff_content_type;
 
+use crate::access::policy_for;
 use crate::dav_xml;
 use crate::if_header::IfHeader;
 use crate::state::WebDavState;
 
+use super::super::access::{extract_request_id, forbidden};
 use super::super::errors::{Retry, storage_status, write_error_response};
+use super::super::principal_of;
 
 const COPY: Retry = Retry {
     queue_full: "destination write succeeded but destination index event failed. Retry COPY to re-enqueue destination index event.",
@@ -112,9 +115,19 @@ pub(crate) async fn handle_copy(state: WebDavState, req: Request) -> Response {
 }
 
 async fn handle_transfer(state: WebDavState, req: Request, transfer: Transfer) -> Response {
-    match transfer_object(&state, req.headers(), req.uri(), transfer).await {
+    let caller = Caller {
+        principal: principal_of(&req),
+        request_id: extract_request_id(&req),
+    };
+    match transfer_object(&state, req.headers(), req.uri(), &caller, transfer).await {
         Ok(response) | Err(response) => response,
     }
+}
+
+/// Who sent the request, for authorizing the destination.
+struct Caller {
+    principal: Principal,
+    request_id: String,
 }
 
 /// Each step returns the response for its first failing check as `Err`.
@@ -122,10 +135,20 @@ async fn transfer_object(
     state: &WebDavState,
     headers: &HeaderMap,
     uri: &Uri,
+    caller: &Caller,
     transfer: Transfer,
 ) -> Result<Response, Response> {
     let targets =
         resolve_targets(state, headers, uri.path(), transfer).map_err(Rejection::into_response)?;
+    // The middleware authorized the source only; a transfer also writes the destination
+    // (#441). Checked before any storage call, so a denial costs nothing.
+    if !policy_for(state, &targets.kb).allows(
+        &caller.principal,
+        Verb::Write,
+        targets.destination.as_str(),
+    ) {
+        return Err(forbidden(&caller.request_id));
+    }
     let source = check_source_preconditions(state, headers, &targets).await?;
     let outcome = copy_to_destination(state, &targets, &source, transfer).await?;
     if let Transfer::Move = transfer {
