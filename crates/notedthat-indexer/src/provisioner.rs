@@ -1,23 +1,24 @@
 //! Qdrant collection provisioning (§6.11) with idempotent create + manifest cross-check.
 
-use crate::qdrant::QdrantWrapperError;
 use crate::vector_store::{PayloadFieldKind, VectorStore, VectorStoreError};
 use notedthat_core::{KbManifest, KbSlug, ManifestEmbedding};
 use std::sync::Arc;
 
 /// Errors returned by Qdrant collection provisioning and manifest cross-checks.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProvisionError {
-    /// Error from the local Qdrant wrapper.
-    Wrapper(QdrantWrapperError),
     /// Error returned by the Qdrant API.
+    #[error("qdrant API error for kb={kb}: {source}")]
     Qdrant {
         /// Knowledge-base slug.
         kb: String,
-        /// Error message from Qdrant.
-        source: String,
+        /// The vector-store failure.
+        source: VectorStoreError,
     },
     /// Stored manifest embedding configuration does not match current runtime configuration.
+    #[error(
+        "manifest embedding mismatch for kb={kb}: manifest={manifest_model}/{manifest_dim} env={env_model}/{env_dim}"
+    )]
     ManifestMismatch {
         /// Knowledge-base slug.
         kb: String,
@@ -30,40 +31,6 @@ pub enum ProvisionError {
         /// Embedding dimension from environment.
         env_dim: u32,
     },
-}
-
-impl std::fmt::Display for ProvisionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Wrapper(err) => write!(f, "qdrant wrapper error: {err}"),
-            Self::Qdrant { kb, source } => write!(f, "qdrant API error for kb={kb}: {source}"),
-            Self::ManifestMismatch {
-                kb,
-                manifest_model,
-                manifest_dim,
-                env_model,
-                env_dim,
-            } => write!(
-                f,
-                "manifest embedding mismatch for kb={kb}: manifest={manifest_model}/{manifest_dim} env={env_model}/{env_dim}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ProvisionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Wrapper(err) => Some(err),
-            Self::Qdrant { .. } | Self::ManifestMismatch { .. } => None,
-        }
-    }
-}
-
-impl From<QdrantWrapperError> for ProvisionError {
-    fn from(value: QdrantWrapperError) -> Self {
-        Self::Wrapper(value)
-    }
 }
 
 /// Every payload index the search surface relies on.
@@ -116,13 +83,13 @@ impl QdrantProvisioner {
             .store
             .collection_exists(kb)
             .await
-            .map_err(|err| provision_error(kb, &err))?;
+            .map_err(|err| provision_error(kb, err))?;
 
         if !exists {
             self.store
                 .create_collection(kb, dense_dim)
                 .await
-                .map_err(|err| provision_error(kb, &err))?;
+                .map_err(|err| provision_error(kb, err))?;
         }
 
         // Deliberately no waiting: the backend builds payload indexes in the
@@ -133,7 +100,7 @@ impl QdrantProvisioner {
             self.store
                 .create_payload_index(kb, field, kind)
                 .await
-                .map_err(|err| provision_error(kb, &err))?;
+                .map_err(|err| provision_error(kb, err))?;
         }
 
         Ok(())
@@ -181,10 +148,10 @@ impl QdrantProvisioner {
 }
 
 /// Map a vector-store failure onto the provisioning error surface.
-fn provision_error(kb: &KbSlug, err: &VectorStoreError) -> ProvisionError {
+fn provision_error(kb: &KbSlug, source: VectorStoreError) -> ProvisionError {
     ProvisionError::Qdrant {
         kb: kb.as_str().to_string(),
-        source: err.to_string(),
+        source,
     }
 }
 
@@ -210,6 +177,29 @@ mod tests {
             endpoint_url_hint: None,
         });
         manifest
+    }
+
+    #[test]
+    fn provision_error_display_is_pinned() {
+        let kb = KbSlug::try_new("test-kb").expect("valid kb slug");
+        let qdrant = provision_error(&kb, VectorStoreError::backend("down"));
+        assert_eq!(
+            qdrant.to_string(),
+            "qdrant API error for kb=test-kb: vector store backend error: down"
+        );
+        assert!(std::error::Error::source(&qdrant).is_some());
+        let mismatch = ProvisionError::ManifestMismatch {
+            kb: "test-kb".into(),
+            manifest_model: "a".into(),
+            manifest_dim: 1,
+            env_model: "b".into(),
+            env_dim: 2,
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "manifest embedding mismatch for kb=test-kb: manifest=a/1 env=b/2"
+        );
+        assert!(std::error::Error::source(&mismatch).is_none());
     }
 
     #[test]
