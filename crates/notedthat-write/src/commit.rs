@@ -612,10 +612,14 @@ mod tests {
         indexer_tx
             .try_send(dummy_event)
             .expect("first send should succeed");
+        let health = notedthat_indexer::IndexHealth::new();
 
         let outcome = commit(
             &storage,
-            &WriteSinks::indexer_only(&indexer_tx),
+            &WriteSinks {
+                index_health: Some(&health),
+                ..WriteSinks::indexer_only(&indexer_tx)
+            },
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -629,6 +633,9 @@ mod tests {
             matches!(err, WriteError::IndexerBackpressureUpsert),
             "expected IndexerBackpressureUpsert, got {err:?}"
         );
+        let snapshot = health.snapshot(kb.as_str());
+        assert!(snapshot.last_backpressure_at.is_some());
+        assert_eq!(snapshot.state, notedthat_indexer::IndexState::Backpressured);
     }
 
     #[tokio::test]
@@ -903,10 +910,14 @@ mod tests {
         indexer_tx
             .try_send(dummy_event)
             .expect("first send should succeed");
+        let health = notedthat_indexer::IndexHealth::new();
 
         let outcome = commit_delete(
             &storage,
-            &WriteSinks::indexer_only(&indexer_tx),
+            &WriteSinks {
+                index_health: Some(&health),
+                ..WriteSinks::indexer_only(&indexer_tx)
+            },
             &kb,
             &path,
             ConditionalHeaders::default(),
@@ -918,6 +929,9 @@ mod tests {
             matches!(err, WriteError::IndexerBackpressureTombstone),
             "expected IndexerBackpressureTombstone, got {err:?}"
         );
+        let snapshot = health.snapshot(kb.as_str());
+        assert!(snapshot.last_backpressure_at.is_some());
+        assert_eq!(snapshot.state, notedthat_indexer::IndexState::Backpressured);
         assert!(
             storage
                 .inner()
@@ -936,10 +950,14 @@ mod tests {
         let (indexer_tx, rx) = notedthat_indexer::index_queue(1024);
 
         drop(rx);
+        let health = notedthat_indexer::IndexHealth::new();
 
         let outcome = commit(
             &storage,
-            &WriteSinks::indexer_only(&indexer_tx),
+            &WriteSinks {
+                index_health: Some(&health),
+                ..WriteSinks::indexer_only(&indexer_tx)
+            },
             &kb,
             &path,
             Bytes::from_static(b"# Test"),
@@ -952,6 +970,53 @@ mod tests {
             outcome.is_ok(),
             "write should succeed even if queue is closed"
         );
+        assert!(!health.snapshot(kb.as_str()).worker_alive);
+    }
+
+    #[tokio::test]
+    async fn commit_delete_closed_queue_returns_success() {
+        let storage = storage();
+        let kb = kb();
+        let path = path_named("delete-closed.md");
+        storage
+            .put_object(
+                &kb,
+                &path,
+                Bytes::from_static(b"# Delete"),
+                Some("text/markdown"),
+                ConditionalHeaders::default(),
+            )
+            .await
+            .expect("prepopulate object");
+        let (indexer_tx, rx) = notedthat_indexer::index_queue(1024);
+        drop(rx);
+        let health = notedthat_indexer::IndexHealth::new();
+
+        let outcome = commit_delete(
+            &storage,
+            &WriteSinks {
+                index_health: Some(&health),
+                ..WriteSinks::indexer_only(&indexer_tx)
+            },
+            &kb,
+            &path,
+            ConditionalHeaders::default(),
+        )
+        .await;
+
+        assert!(
+            outcome.is_ok(),
+            "delete should succeed even if queue is closed: {outcome:?}"
+        );
+        assert!(
+            storage
+                .inner()
+                .object("test-kb", "delete-closed.md")
+                .await
+                .is_none(),
+            "the object is deleted"
+        );
+        assert!(!health.snapshot(kb.as_str()).worker_alive);
     }
 
     #[tokio::test]
