@@ -4,8 +4,8 @@
 use crate::embedder::Embedder;
 use crate::vector_store::{HybridQuery, VectorStore, VectorStoreError};
 use async_trait::async_trait;
-use notedthat_core::KbSlug;
-use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse, ValidatedRequest};
+use notedthat_core::search::{SearchError, SearchHit, SearchResponse, ValidatedRequest};
+use notedthat_core::{KbSlug, ObjectPath};
 use qdrant_client::qdrant::ScoredPoint;
 use std::sync::Arc;
 
@@ -193,7 +193,7 @@ fn point_to_hit(point: ScoredPoint) -> Result<SearchHit, SearchError> {
             _ => None,
         })
         .ok_or_else(|| SearchError::internal("hit missing object_key"))?;
-    let object_key = ObjectKey::try_new(object_key_str)
+    let object_key = ObjectPath::try_from_str(&object_key_str)
         .map_err(|err| SearchError::internal(format!("invalid object_key: {err}")))?;
 
     let byte_start = payload

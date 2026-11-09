@@ -6,14 +6,14 @@ use tower::ServiceExt;
 
 use super::fixture::{app, app_with_searcher, body, get, grant, grant_under, hrefs, policy};
 use notedthat_api_http::testing::MockSearcher;
-use notedthat_core::search::{ObjectKey, SearchHit, SearchResponse};
-use notedthat_core::{AccessRule, KeyPattern, Verb, Who};
+use notedthat_core::search::{SearchHit, SearchResponse};
+use notedthat_core::{AccessRule, KeyPattern, ObjectPath, Verb, Who};
 use std::sync::Arc;
 
 fn searcher_returning(key: &str) -> Arc<MockSearcher> {
     let searcher = Arc::new(MockSearcher::default());
     searcher.push_response(Ok(SearchResponse::new(vec![SearchHit {
-        object_key: ObjectKey::try_new(key).expect("valid key"),
+        object_key: ObjectPath::try_from_str(key).expect("valid key"),
         byte_start: 0,
         byte_end: 7,
         heading_path: Vec::new(),

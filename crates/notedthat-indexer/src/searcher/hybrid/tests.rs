@@ -128,7 +128,7 @@ fn point_to_hit_missing_object_key_returns_error() {
 #[test]
 fn point_to_hit_invalid_object_key_returns_error() {
     let mut payload = HashMap::new();
-    payload.insert("object_key".to_string(), "/docs/a.md".to_string().into());
+    payload.insert("object_key".to_string(), "docs/../a.md".to_string().into());
 
     let err = point_to_hit(scored_point(payload, 0.5)).expect_err("invalid object key");
 
