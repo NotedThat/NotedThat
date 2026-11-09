@@ -18,16 +18,15 @@ use crate::{
     vector_store::{PointSelector, VectorStore},
 };
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
-use last_seen::LastSeen;
 use notedthat_core::{
     EventPublisher, EventSource, KbSlug, ObjectEvent, ObjectPath, StagingConfig, Storage,
 };
-use pipeline::{PipelineFailure, PipelineOutcome};
+use pipeline::{Pipeline, PipelineFailure, PipelineOutcome};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -71,37 +70,12 @@ pub(crate) enum Told {
     Nothing(EventSource),
 }
 
-/// Async indexing worker.
+/// Async indexing worker: schedules queued events across per-key lanes and
+/// runs each file through a [`Pipeline`].
 pub struct IndexerWorker {
-    /// Object storage used to re-read source documents before indexing.
-    pub storage: Arc<dyn Storage>,
-    /// Embedding endpoint used to turn chunks into dense vectors.
-    pub embedder: Arc<dyn Embedder>,
-    /// Vector store used for point writes and deletes.
-    pub store: Arc<dyn VectorStore>,
-    /// Event receiver drained by the worker loop.
-    pub rx: Option<crate::IndexQueueReceiver>,
-    /// Cancellation token that triggers graceful draining.
-    pub shutdown: CancellationToken,
-    /// Maximum number of chunks sent to the embedder per request.
-    pub batch_size: usize,
-    /// Maximum complete file handlers executing at once.
-    pub index_concurrency: NonZeroUsize,
-    /// Directory configuration for private index snapshots.
-    pub staging: StagingConfig,
-    /// Where detected changes and indexing outcomes are published, when an
-    /// events backend is configured.
-    ///
-    /// Only a `Refresh` announces a *change*: a write through `NotedThat` was
-    /// announced by the write path before its `Upsert` was even enqueued. Every
-    /// `Upsert` and `Refresh` then reports what became of it — `object.indexed`
-    /// or `object.index_failed` (D65) — once the health record has been stamped.
-    pub events: Option<Arc<dyn EventPublisher>>,
-    /// The last stamp this worker saw for each key, so the `fs` watcher's echo
-    /// of a write the server made itself is not announced a second time.
-    last_seen: Arc<Mutex<LastSeen>>,
-    /// Where each event's outcome is recorded for the health view (#97).
-    health: Arc<IndexHealth>,
+    pipeline: Pipeline,
+    rx: crate::IndexQueueReceiver,
+    index_concurrency: NonZeroUsize,
 }
 
 impl IndexerWorker {
@@ -118,17 +92,9 @@ impl IndexerWorker {
         index_concurrency: NonZeroUsize,
     ) -> Self {
         Self {
-            storage,
-            embedder,
-            store,
-            rx: Some(rx),
-            shutdown,
-            batch_size,
+            pipeline: Pipeline::new(storage, embedder, store, shutdown, batch_size),
+            rx,
             index_concurrency,
-            staging: StagingConfig::default(),
-            events: None,
-            last_seen: Arc::new(Mutex::new(LastSeen::default())),
-            health: Arc::new(IndexHealth::new()),
         }
     }
 
@@ -136,7 +102,7 @@ impl IndexerWorker {
     /// report it.
     #[must_use]
     pub fn with_health(mut self, health: Arc<IndexHealth>) -> Self {
-        self.health = health;
+        self.pipeline.health = health;
         self
     }
 
@@ -144,14 +110,14 @@ impl IndexerWorker {
     /// or refresh, on the given event log.
     #[must_use]
     pub fn with_event_publisher(mut self, events: Option<Arc<dyn EventPublisher>>) -> Self {
-        self.events = events;
+        self.pipeline.events = events;
         self
     }
 
     /// Use the validated shared staging directory for index snapshots.
     #[must_use]
     pub fn with_staging_config(mut self, staging: StagingConfig) -> Self {
-        self.staging = staging;
+        self.pipeline.staging = staging;
         self
     }
 
@@ -167,7 +133,7 @@ impl IndexerWorker {
         // Whatever ends the loop, a return or an unwind, nothing drains the
         // queue from here on, and the health view says so rather than
         // reporting `indexing` forever (#255).
-        let _stopped = Stopped(Arc::clone(&self.health));
+        let _stopped = Stopped(Arc::clone(&self.pipeline.health));
         self.run_loop().await;
     }
 
@@ -181,10 +147,9 @@ impl IndexerWorker {
             if !receiver_open && lanes.is_idle() && running.is_empty() {
                 break;
             }
-            let rx = self.rx.as_mut().expect("running workers have receivers");
             tokio::select! {
-                () = self.shutdown.cancelled() => {
-                    while let Ok(queued) = rx.try_recv() {
+                () = self.pipeline.shutdown.cancelled() => {
+                    while let Ok(queued) = self.rx.try_recv() {
                         lanes.accept(queued);
                     }
                     if tokio::time::timeout(DRAIN_TIMEOUT, self.drain(&mut lanes, &mut running)).await.is_err() {
@@ -196,7 +161,7 @@ impl IndexerWorker {
                     lanes.finish(key);
                     set_in_flight(running.len());
                 }
-                queued = rx.recv(), if receiver_open => match queued {
+                queued = self.rx.recv(), if receiver_open => match queued {
                     Some(queued) => lanes.accept(queued),
                     None => receiver_open = false,
                 },
@@ -214,7 +179,7 @@ impl IndexerWorker {
             let Some((key, queued)) = lanes.start_next() else {
                 break;
             };
-            let pipeline = self.pipeline_context();
+            let pipeline = self.pipeline.clone();
             running.push(Box::pin(async move {
                 // Rebound whole: the block would otherwise capture only
                 // `queued.event` and drop the permit before the handler runs.
@@ -240,23 +205,9 @@ impl IndexerWorker {
             }
         }
     }
+}
 
-    fn pipeline_context(&self) -> Self {
-        Self {
-            storage: self.storage.clone(),
-            embedder: self.embedder.clone(),
-            store: self.store.clone(),
-            rx: None,
-            shutdown: self.shutdown.clone(),
-            batch_size: self.batch_size,
-            index_concurrency: self.index_concurrency,
-            staging: self.staging.clone(),
-            events: self.events.clone(),
-            last_seen: self.last_seen.clone(),
-            health: self.health.clone(),
-        }
-    }
-
+impl Pipeline {
     async fn handle(&self, event: IndexEvent) {
         let kb = event.kb().clone();
         let object_key = event.object_key().clone();
