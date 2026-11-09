@@ -1,12 +1,13 @@
 //! `KbSlug` and `TenantSlug` — validated lowercase-alphanumeric-hyphen identifiers.
 
 use crate::error::Error;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// A knowledge-base slug: `[a-z0-9-]{1,40}` (ASCII only, no leading/trailing hyphen).
 /// See SPECIFICATIONS.md §6.8 and decision D24.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "openapi",
@@ -66,13 +67,6 @@ impl TryFrom<String> for KbSlug {
     }
 }
 
-impl<'de> Deserialize<'de> for KbSlug {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Self::try_new(s).map_err(serde::de::Error::custom)
-    }
-}
-
 /// A tenant slug: `[a-z0-9]{1,20}` (ASCII only, no hyphen at all).
 ///
 /// A knowledge-base slug may contain hyphens; a tenant slug may not. That asymmetry is
@@ -80,7 +74,8 @@ impl<'de> Deserialize<'de> for KbSlug {
 /// after the prefix always ends the tenant, so `(acme, my-notes)` and `(acme-my, notes)`
 /// cannot both become `nt-acme-my-notes`. See SPECIFICATIONS.md §6.6 and decisions
 /// D24, D58.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct TenantSlug(String);
 
 impl TenantSlug {
@@ -150,13 +145,6 @@ impl TryFrom<String> for TenantSlug {
     type Error = Error;
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::try_new(value)
-    }
-}
-
-impl<'de> Deserialize<'de> for TenantSlug {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Self::try_new(s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -331,6 +319,16 @@ mod tests {
         let json = serde_json::to_string(&slug).unwrap();
         let restored: TenantSlug = serde_json::from_str(&json).unwrap();
         assert_eq!(slug, restored);
+    }
+
+    #[test]
+    fn deserialize_errors_carry_the_validation_message() {
+        let kb = serde_json::from_str::<KbSlug>("\"UPPER\"").unwrap_err();
+        let expected = KbSlug::try_new("UPPER").unwrap_err().to_string();
+        assert!(kb.to_string().starts_with(&expected), "{kb}");
+        let tenant = serde_json::from_str::<TenantSlug>("\"acme-my\"").unwrap_err();
+        let expected = TenantSlug::try_new("acme-my").unwrap_err().to_string();
+        assert!(tenant.to_string().starts_with(&expected), "{tenant}");
     }
 
     #[test]
