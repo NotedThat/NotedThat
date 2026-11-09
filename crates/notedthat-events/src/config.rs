@@ -8,10 +8,10 @@
 use std::ffi::{OsStr, OsString};
 use std::time::Duration;
 
-use notedthat_core::{Error, setting};
+use notedthat_core::Error;
+use notedthat_core::setting::{config_error, parse_positive, setting, utf8};
 use notedthat_nats::{
-    MIN_NATS_DUPLICATE_WINDOW_SECS, NatsConnectConfig, NatsConnectSettings, parse_positive,
-    parse_stream_name,
+    MIN_NATS_DUPLICATE_WINDOW_SECS, NatsConnectConfig, NatsConnectSettings, parse_stream_name,
 };
 
 /// Events the `memory` ring keeps before the oldest is dropped.
@@ -68,7 +68,7 @@ impl MemoryConfig {
     pub fn from_settings(settings: &MemorySettings) -> Result<Self, Error> {
         let capacity = parse_positive(
             EVENTS_MEMORY_CAPACITY_ENV,
-            settings.capacity.as_deref(),
+            utf8(EVENTS_MEMORY_CAPACITY_ENV, settings.capacity.as_deref())?,
             DEFAULT_MEMORY_CAPACITY as u64,
             "a positive number of events",
         )?;
@@ -144,7 +144,7 @@ impl NatsConfig {
         let stream = parse_stream_name(NATS_STREAM_ENV, stream, DEFAULT_NATS_STREAM)?;
         let max_age_secs = parse_positive(
             NATS_MAX_AGE_SECS_ENV,
-            max_age_secs,
+            utf8(NATS_MAX_AGE_SECS_ENV, max_age_secs)?,
             DEFAULT_NATS_MAX_AGE_SECS,
             "a positive number of seconds",
         )?;
@@ -179,10 +179,6 @@ impl NatsConfig {
     }
 }
 
-fn config_error(message: String) -> Error {
-    Error::Config { message }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +194,36 @@ mod tests {
         match err {
             Error::Config { message } => message,
             other => panic!("expected a config error, got {other:?}"),
+        }
+    }
+
+    /// Exact messages for the capacity, pinned before the parser moved to
+    /// `notedthat_core::setting`.
+    #[test]
+    fn capacity_messages_are_pinned() {
+        let error = |value: OsString| {
+            message(
+                MemoryConfig::from_settings(&MemorySettings {
+                    capacity: Some(value),
+                })
+                .unwrap_err(),
+            )
+        };
+        let name = "NOTEDTHAT_EVENTS_MEMORY_CAPACITY (--events-memory-capacity)";
+        assert_eq!(error("".into()), format!("{name} must not be empty"));
+        for value in ["0", " 5", "x"] {
+            assert_eq!(
+                error(value.into()),
+                format!("{name} is invalid: expected a positive number of events, got \"{value}\"")
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            assert_eq!(
+                error(OsStr::from_bytes(b"\xff").to_os_string()),
+                format!("{name} must be valid UTF-8")
+            );
         }
     }
 

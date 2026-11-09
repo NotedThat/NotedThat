@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use notedthat_core::Error;
+use notedthat_core::setting::config_error;
 
 use crate::config::{FS_ALLOW_LOSSY_NAMES_ENV, FS_ROOT_ENV, FsConfig};
 use crate::layout::{LOCK_FILE, META_DIR};
@@ -218,10 +219,6 @@ fn claim(root: PathBuf) -> Result<RootLock, Error> {
         .and_then(|()| file.sync_all());
 
     Ok(RootLock { _file: file, root })
-}
-
-fn config_error(message: String) -> Error {
-    Error::Config { message }
 }
 
 #[cfg(test)]
