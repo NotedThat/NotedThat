@@ -1850,9 +1850,10 @@ its own methods:
 | --- | --- |
 | `PROPFIND` | `list` |
 | `GET`, `HEAD` | `read` |
-| `PUT`, `MKCOL`, `COPY` | `write` |
+| `PUT`, `MKCOL` | `write` |
+| `COPY` | `write` at the source and the destination |
 | `DELETE` | `delete` |
-| `MOVE` | `write` at the destination, `delete` at the source |
+| `MOVE` | `write` and `delete` at the source, `write` at the destination |
 | `OPTIONS` | none; it reports what the others allow |
 
 `PROPFIND` maps to `list` at every depth, including `Depth: 0` on a single file, where the HTTP

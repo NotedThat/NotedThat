@@ -732,8 +732,8 @@ OIDC issuer starts, and logs `ACCESS_RULES_IDENTITY_WITHOUT_OIDC` naming the kno
 | --- | --- | --- |
 | `list` | `GET /api/v1/knowledgebases/{kb_slug}` | `PROPFIND` |
 | `read` | `GET`, `HEAD` on an object | `GET`, `HEAD` |
-| `write` | `PUT`, `PATCH`, `POST .../replace/...` | `PUT`, `MKCOL`, `COPY`, `MOVE` destination |
-| `delete` | `DELETE` | `DELETE`, `MOVE` source |
+| `write` | `PUT`, `PATCH`, `POST .../replace/...` | `PUT`, `MKCOL`, `COPY` and `MOVE` at the source and the destination |
+| `delete` | `DELETE` | `DELETE`, `MOVE` at the source |
 | `search` | `POST /api/v1/knowledgebases/{kb_slug}/search` | Not applicable |
 
 A rule carries exactly one of `may` and `may_not`. Private by default; a verb is allowed on a key
