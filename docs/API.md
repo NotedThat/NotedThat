@@ -577,7 +577,7 @@ Readiness probe. Returns `200 OK` while every backend the server needs is there,
 What it covers:
 
 - **`storage`** — the selected backend (`s3` or `fs`) is reachable, probed through the bucket
-  (or directory) of the knowledge base whose slug sorts first.
+  (or directory) of every knowledge base. An unreachable backend outranks a missing bucket.
 - **`search`** — Qdrant answers its health check.
 - **`conditional_writes`** — present only on the `s3` backend. Not probed: it repeats what the
   startup check found about whether each bucket enforces `If-Match` and `If-None-Match` on a

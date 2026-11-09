@@ -1175,12 +1175,11 @@ and `READINESS_RESTORED`), never to the unauthenticated response. See [`docs/API
 
 What each probe is:
 
-- **`s3`** — `HeadBucket` on the bucket of the knowledge base whose slug sorts first
-  (`NOTEDTHAT_KBS` is held sorted, so `notes,archive` probes `archive`). It needs
-  `s3:ListBucket` on that bucket, which `ListObjectsV2` already requires, so no new grant in
-  practice. Some S3-compatible stores answer `403` rather than `404` for a bucket that does not
+- **`s3`** — `HeadBucket` on the bucket of every knowledge base, concurrently, so one probe
+  per knowledge base per interval. It needs `s3:ListBucket` on each bucket, which
+  `ListObjectsV2` already requires, so no new grant in practice. Some S3-compatible stores answer `403` rather than `404` for a bucket that does not
   exist; that is reported as `unreachable` rather than `not_found`, and is still a `503`.
-- **`fs`** — a stat of that same knowledge base's directory under `NOTEDTHAT_FS_ROOT`.
+- **`fs`** — a stat of each knowledge base's directory under `NOTEDTHAT_FS_ROOT`.
   It cannot see a read-only remount or a full disk; readiness means reachable, not writable.
 - **`qdrant`** — the `HealthCheck` RPC, through the same channel and API key as every other call.
 - **events** — the broker's connection state, when an events backend is configured.

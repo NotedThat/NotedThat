@@ -196,16 +196,14 @@ fn readiness_poller(
     readiness::ReadinessPoller,
     notedthat_api_http::readiness::ReadinessReceiver,
 )> {
-    // `config.kbs` is a `BTreeMap`, so this is the knowledge base whose slug sorts first;
-    // its bucket stands in for "storage is reachable". The docs say so in those words.
-    let witness = kb_list
-        .first()
-        .cloned()
-        .context("at least one knowledge base is declared")?;
+    anyhow::ensure!(
+        !kb_list.is_empty(),
+        "at least one knowledge base is declared"
+    );
     Ok(readiness::ReadinessPoller::new(
         storage.clone(),
         store.clone(),
-        witness,
+        kb_list.to_vec(),
         config.storage.kind().as_str(),
         config.ready_probe_interval,
         conditional_writes,

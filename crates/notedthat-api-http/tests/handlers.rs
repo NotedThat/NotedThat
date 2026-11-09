@@ -246,7 +246,7 @@ async fn readyz_is_unavailable_while_search_times_out() {
 }
 
 #[tokio::test]
-async fn readyz_stays_ready_when_the_witness_bucket_is_gone() {
+async fn readyz_stays_ready_when_a_bucket_is_gone() {
     // The backend answered — it is up, and every other knowledge base keeps
     // serving — so the replica stays in the load balancer; the check says why.
     let (status, json) = readyz(app_reporting(ReadinessSnapshot {

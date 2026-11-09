@@ -21,7 +21,6 @@ authors.workspace = true
 # binary compiling its own copy leaves whatever that binary does not call as
 # dead code, which the workspace forbids (#304).
 test-support = [
-  "dep:futures",
   "notedthat-api-http/test-support",
   "notedthat-indexer/test-support",
   "notedthat-mcp/test-support",
@@ -65,8 +64,8 @@ reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 url.workspace = true
-# `testing::sse` reads an event stream chunk by chunk. Only with `test-support`.
-futures = { workspace = true, optional = true }
+# The readiness poller probes every bucket at once; `testing::sse` reads an event stream.
+futures.workspace = true
 
 [lib]
 path = "src/lib.rs"
