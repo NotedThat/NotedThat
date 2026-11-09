@@ -7,7 +7,8 @@ use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime_api::http::Response as HttpResponse;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::StreamExt;
 use notedthat_core::{
     ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
     ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
@@ -393,6 +394,23 @@ enum Answer {
     Unsupported,
 }
 
+/// The `ObjectMeta` a HEAD or GET response describes.
+fn object_meta(
+    key: &str,
+    content_length: Option<i64>,
+    last_modified: Option<&aws_smithy_types::DateTime>,
+    content_type: Option<&str>,
+    etag: Option<&str>,
+) -> ObjectMeta {
+    ObjectMeta {
+        key: key.to_string(),
+        size: u64::try_from(content_length.unwrap_or(0)).unwrap_or(0),
+        last_modified: last_modified.map(aws_smithy_types::DateTime::secs),
+        content_type: content_type.map(str::to_string),
+        etag: etag.map(str::to_string),
+    }
+}
+
 /// Convert an HTTP-date string (e.g., "Thu, 01 Jan 1970 00:00:00 GMT") to an
 /// `aws_smithy_types::DateTime` for use with conditional request builders.
 ///
@@ -703,13 +721,13 @@ impl Storage for S3Storage {
             .await
             .map_err(|e| map_head_error(&e, &bucket, key))?;
 
-        Ok(ObjectMeta {
-            key: key.to_string(),
-            size: u64::try_from(resp.content_length().unwrap_or(0)).unwrap_or(0),
-            last_modified: resp.last_modified().map(aws_smithy_types::DateTime::secs),
-            content_type: resp.content_type().map(str::to_string),
-            etag: resp.e_tag().map(str::to_string),
-        })
+        Ok(object_meta(
+            key,
+            resp.content_length(),
+            resp.last_modified(),
+            resp.content_type(),
+            resp.e_tag(),
+        ))
     }
 
     async fn get_object(
@@ -719,59 +737,18 @@ impl Storage for S3Storage {
         range: Option<ByteRange>,
         conditionals: ConditionalHeaders,
     ) -> Result<ObjectRead, StorageError> {
-        let bucket = self.bucket_name(kb);
-        let key = path.as_str();
-
-        // RFC 9110 §13.2.2 precedence, identical on every backend.
-        let conditionals = conditionals.for_read();
-        let mut req = self.client.get_object().bucket(&bucket).key(key);
-
-        if let Some(range) = &range {
-            req = req.range(range.to_http_string());
+        let stream = self
+            .get_object_stream(kb, path, range, conditionals)
+            .await?;
+        let mut bytes = BytesMut::new();
+        let mut chunks = stream.chunks;
+        while let Some(chunk) = chunks.next().await {
+            bytes.extend_from_slice(&chunk?);
         }
-        if let Some(v) = conditionals.if_match {
-            req = req.if_match(v);
-        }
-        if let Some(v) = conditionals.if_none_match {
-            req = req.if_none_match(v);
-        }
-        if let Some(v) = &conditionals.if_modified_since {
-            req = req.if_modified_since(parse_http_date_to_smithy(v)?);
-        }
-        if let Some(v) = &conditionals.if_unmodified_since {
-            req = req.if_unmodified_since(parse_http_date_to_smithy(v)?);
-        }
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_get_error(&e, &bucket, key))?;
-
-        let content_type = resp.content_type().map(str::to_string);
-        let last_modified = resp.last_modified().map(aws_smithy_types::DateTime::secs);
-        let content_range = resp.content_range().map(str::to_string);
-        let etag = resp.e_tag().map(str::to_string);
-        let size = u64::try_from(resp.content_length().unwrap_or(0)).unwrap_or(0);
-
-        let body = resp
-            .body
-            .collect()
-            .await
-            .map_err(|e| StorageError::BackendUnavailable {
-                message: format!("reading body for {key} from {bucket}: {e}"),
-            })?;
-        let bytes = body.into_bytes();
-
         Ok(ObjectRead {
-            bytes,
-            meta: ObjectMeta {
-                key: key.to_string(),
-                size,
-                last_modified,
-                content_type,
-                etag,
-            },
-            content_range,
+            bytes: bytes.freeze(),
+            meta: stream.meta,
+            content_range: stream.content_range,
         })
     }
 
@@ -806,13 +783,13 @@ impl Storage for S3Storage {
             .send()
             .await
             .map_err(|error| map_get_error(&error, &bucket, key))?;
-        let meta = ObjectMeta {
-            key: key.to_string(),
-            size: u64::try_from(resp.content_length().unwrap_or(0)).unwrap_or(0),
-            last_modified: resp.last_modified().map(aws_smithy_types::DateTime::secs),
-            content_type: resp.content_type().map(str::to_string),
-            etag: resp.e_tag().map(str::to_string),
-        };
+        let meta = object_meta(
+            key,
+            resp.content_length(),
+            resp.last_modified(),
+            resp.content_type(),
+            resp.e_tag(),
+        );
         let content_range = resp.content_range().map(str::to_string);
         let chunks = futures::stream::unfold(resp.body, |mut body| async move {
             body.next().await.map(|result| {
