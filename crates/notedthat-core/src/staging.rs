@@ -285,11 +285,8 @@ async fn create_private_file(
             message: format!("staging file task failed: {error}"),
         })?
         .map_err(|source| StageError::Write { source })?;
-    let path = named.into_temp_path();
-    let file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .await
-        .map_err(|source| StageError::Write { source })?;
-    Ok((file, path))
+    // Keep the descriptor NamedTempFile opened (O_EXCL, 0600); reopening by
+    // path would follow whatever sits at that name in a shared directory.
+    let (file, path) = named.into_parts();
+    Ok((tokio::fs::File::from_std(file), path))
 }
