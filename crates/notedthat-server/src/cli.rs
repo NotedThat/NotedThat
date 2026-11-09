@@ -24,6 +24,51 @@ pub(crate) const QDRANT_URL_ENV: &str = "NOTEDTHAT_QDRANT_URL";
 /// The OIDC issuer's CA bundle, named by discovery errors as well as parsed here.
 pub(crate) const OIDC_CA_CERT_ENV: &str = "NOTEDTHAT_OIDC_CA_CERT";
 
+// Every other setting this binary owns, each named once here and referenced by
+// its `env = ...` binding below and by `crate::config`.
+pub(crate) const API_TOKEN_ENV: &str = "NOTEDTHAT_API_TOKEN";
+pub(crate) const KBS_ENV: &str = "NOTEDTHAT_KBS";
+pub(crate) const LISTEN_ADDR_ENV: &str = "NOTEDTHAT_LISTEN_ADDR";
+pub(crate) const METRICS_ENABLED_ENV: &str = "NOTEDTHAT_METRICS_ENABLED";
+pub(crate) const METRICS_LISTEN_ADDR_ENV: &str = "NOTEDTHAT_METRICS_LISTEN_ADDR";
+pub(crate) const LOG_FORMAT_ENV: &str = "NOTEDTHAT_LOG_FORMAT";
+pub(crate) const MAX_PATCHABLE_SIZE_ENV: &str = "NOTEDTHAT_MAX_PATCHABLE_SIZE";
+pub(crate) const READY_PROBE_INTERVAL_MS_ENV: &str = "NOTEDTHAT_READY_PROBE_INTERVAL_MS";
+pub(crate) const REQUEST_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_REQUEST_TIMEOUT_MS";
+pub(crate) const WEBDAV_REQUEST_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS";
+pub(crate) const MAX_REQUESTS_IN_FLIGHT_ENV: &str = "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT";
+pub(crate) const HEADER_READ_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_HEADER_READ_TIMEOUT_MS";
+pub(crate) const WEBDAV_USERNAME_ENV: &str = "NOTEDTHAT_WEBDAV_USERNAME";
+pub(crate) const WEBDAV_PASSWORD_ENV: &str = "NOTEDTHAT_WEBDAV_PASSWORD";
+pub(crate) const MCP_HTTP_ALLOWED_ORIGINS_ENV: &str = "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS";
+pub(crate) const MCP_HTTP_ALLOWED_HOSTS_ENV: &str = "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS";
+pub(crate) const MCP_ANONYMOUS_ENV: &str = "NOTEDTHAT_MCP_ANONYMOUS";
+pub(crate) const MCP_MAX_READ_BYTES_ENV: &str = "NOTEDTHAT_MCP_MAX_READ_BYTES";
+pub(crate) const MCP_MAX_SESSIONS_ENV: &str = "NOTEDTHAT_MCP_MAX_SESSIONS";
+pub(crate) const OIDC_ISSUER_ENV: &str = "NOTEDTHAT_OIDC_ISSUER";
+pub(crate) const OIDC_AUDIENCE_ENV: &str = "NOTEDTHAT_OIDC_AUDIENCE";
+pub(crate) const OIDC_USERNAME_CLAIM_ENV: &str = "NOTEDTHAT_OIDC_USERNAME_CLAIM";
+pub(crate) const OIDC_GROUPS_CLAIM_ENV: &str = "NOTEDTHAT_OIDC_GROUPS_CLAIM";
+pub(crate) const OIDC_HTTP_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS";
+pub(crate) const OIDC_RESOURCE_ENV: &str = "NOTEDTHAT_OIDC_RESOURCE";
+pub(crate) const STORAGE_BACKEND_ENV: &str = "NOTEDTHAT_STORAGE_BACKEND";
+pub(crate) const EVENTS_BACKEND_ENV: &str = "NOTEDTHAT_EVENTS_BACKEND";
+pub(crate) const QDRANT_API_KEY_ENV: &str = "NOTEDTHAT_QDRANT_API_KEY";
+pub(crate) const QDRANT_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_QDRANT_TIMEOUT_MS";
+pub(crate) const QDRANT_CONNECT_TIMEOUT_MS_ENV: &str = "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS";
+pub(crate) const EMBEDDING_ENDPOINT_URL_ENV: &str = "EMBEDDING_ENDPOINT_URL";
+pub(crate) const EMBEDDING_MODEL_ENV: &str = "EMBEDDING_MODEL";
+pub(crate) const EMBEDDING_API_KEY_ENV: &str = "EMBEDDING_API_KEY";
+pub(crate) const EMBEDDING_DIMENSIONS_ENV: &str = "EMBEDDING_DIMENSIONS";
+pub(crate) const EMBEDDING_BATCH_SIZE_ENV: &str = "EMBEDDING_BATCH_SIZE";
+pub(crate) const INDEX_CONCURRENCY_ENV: &str = "NOTEDTHAT_INDEX_CONCURRENCY";
+pub(crate) const EMBEDDING_TIMEOUT_MS_ENV: &str = "EMBEDDING_TIMEOUT_MS";
+pub(crate) const EMBEDDING_MAX_RETRIES_ENV: &str = "EMBEDDING_MAX_RETRIES";
+pub(crate) const EMBEDDING_MAX_INPUT_TOKENS_ENV: &str = "EMBEDDING_MAX_INPUT_TOKENS";
+pub(crate) const WEBDAV_LISTEN_ADDR_ENV: &str = "NOTEDTHAT_WEBDAV_LISTEN_ADDR";
+pub(crate) const MCP_HTTP_BIND_ENV: &str = "NOTEDTHAT_MCP_HTTP_BIND";
+pub(crate) const MCP_HTTP_ENABLED_ENV: &str = "NOTEDTHAT_MCP_HTTP_ENABLED";
+
 /// Command-line arguments, each mirroring one environment variable.
 ///
 /// Construct it with [`clap::Parser::parse`] in a binary.
@@ -53,24 +98,24 @@ pub struct ServerCli {
     /// Static Bearer token for authenticated API access and every HTTP write.
     #[arg(
         long,
-        env = "NOTEDTHAT_API_TOKEN",
+        env = API_TOKEN_ENV,
         value_name = "TOKEN",
         hide_env_values = true
     )]
     pub api_token: Option<String>,
 
     /// Comma-separated knowledge base slugs to declare, e.g. `notes,scratch`.
-    #[arg(long, env = "NOTEDTHAT_KBS", value_name = "SLUGS")]
+    #[arg(long, env = KBS_ENV, value_name = "SLUGS")]
     pub kbs: Option<String>,
 
     /// Address and port the server binds to [default: 0.0.0.0:8080].
-    #[arg(long, env = "NOTEDTHAT_LISTEN_ADDR", value_name = "HOST:PORT")]
+    #[arg(long, env = LISTEN_ADDR_ENV, value_name = "HOST:PORT")]
     pub listen_addr: Option<String>,
 
     /// Serve the Prometheus exposition on its own listener [default: false].
     #[arg(
         long,
-        env = "NOTEDTHAT_METRICS_ENABLED",
+        env = METRICS_ENABLED_ENV,
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = BOOL_FLAG,
@@ -79,43 +124,43 @@ pub struct ServerCli {
 
     /// Address and port the metrics listener binds to; loopback by default,
     /// because the exposition is unauthenticated [default: 127.0.0.1:9090].
-    #[arg(long, env = "NOTEDTHAT_METRICS_LISTEN_ADDR", value_name = "HOST:PORT")]
+    #[arg(long, env = METRICS_LISTEN_ADDR_ENV, value_name = "HOST:PORT")]
     pub metrics_listen_addr: Option<String>,
 
     /// Log output format: `pretty` or `json` [default: pretty].
-    #[arg(long, env = "NOTEDTHAT_LOG_FORMAT", value_name = "FORMAT")]
+    #[arg(long, env = LOG_FORMAT_ENV, value_name = "FORMAT")]
     pub log_format: Option<String>,
 
     /// Largest object eligible for PATCH, in bytes [default: 104857600].
-    #[arg(long, env = "NOTEDTHAT_MAX_PATCHABLE_SIZE", value_name = "BYTES")]
+    #[arg(long, env = MAX_PATCHABLE_SIZE_ENV, value_name = "BYTES")]
     pub max_patchable_size: Option<String>,
 
     /// How often /readyz probes the storage backend and Qdrant, in milliseconds;
     /// also each probe's deadline [default: 5000].
-    #[arg(long, env = "NOTEDTHAT_READY_PROBE_INTERVAL_MS", value_name = "MS")]
+    #[arg(long, env = READY_PROBE_INTERVAL_MS_ENV, value_name = "MS")]
     pub ready_probe_interval_ms: Option<String>,
 
     /// Longest a request may take to produce its response head, in
     /// milliseconds; past it the answer is `504`. `GET /mcp` and the events
     /// route are exempt [default: 30000].
-    #[arg(long, env = "NOTEDTHAT_REQUEST_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = REQUEST_TIMEOUT_MS_ENV, value_name = "MS")]
     pub request_timeout_ms: Option<String>,
 
     /// The same bound for `/webdav`, whose `PROPFIND` walks a whole collection
     /// before answering [default: 120000].
-    #[arg(long, env = "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = WEBDAV_REQUEST_TIMEOUT_MS_ENV, value_name = "MS")]
     pub webdav_request_timeout_ms: Option<String>,
 
     /// Most requests the listener works on at once; past it the answer is
     /// `503` with `Retry-After`. The two streaming routes do not count
     /// [default: 512].
-    #[arg(long, env = "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT", value_name = "COUNT")]
+    #[arg(long, env = MAX_REQUESTS_IN_FLIGHT_ENV, value_name = "COUNT")]
     pub max_requests_in_flight: Option<String>,
 
     /// Longest a connection may take to send a complete request head, in
     /// milliseconds, before it is closed; also how long an idle kept-alive
     /// connection stays open [default: 30000].
-    #[arg(long, env = "NOTEDTHAT_HEADER_READ_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = HEADER_READ_TIMEOUT_MS_ENV, value_name = "MS")]
     pub header_read_timeout_ms: Option<String>,
 
     /// Private staging directory for uploads and index snapshots [default: the
@@ -124,13 +169,13 @@ pub struct ServerCli {
     pub upload_tmp_dir: Option<OsString>,
 
     /// HTTP Basic auth username for WebDAV.
-    #[arg(long, env = "NOTEDTHAT_WEBDAV_USERNAME", value_name = "USER")]
+    #[arg(long, env = WEBDAV_USERNAME_ENV, value_name = "USER")]
     pub webdav_username: Option<String>,
 
     /// HTTP Basic auth password for WebDAV.
     #[arg(
         long,
-        env = "NOTEDTHAT_WEBDAV_PASSWORD",
+        env = WEBDAV_PASSWORD_ENV,
         value_name = "PASSWORD",
         hide_env_values = true
     )]
@@ -139,53 +184,53 @@ pub struct ServerCli {
     /// Allowed `Origin` values for MCP over HTTP [default: null, i.e. loopback only].
     #[arg(
         long,
-        env = "NOTEDTHAT_MCP_HTTP_ALLOWED_ORIGINS",
+        env = MCP_HTTP_ALLOWED_ORIGINS_ENV,
         value_name = "ORIGINS"
     )]
     pub mcp_http_allowed_origins: Option<String>,
 
     /// Allowed `Host` values for MCP over HTTP [default: 127.0.0.1,localhost,::1].
-    #[arg(long, env = "NOTEDTHAT_MCP_HTTP_ALLOWED_HOSTS", value_name = "HOSTS")]
+    #[arg(long, env = MCP_HTTP_ALLOWED_HOSTS_ENV, value_name = "HOSTS")]
     pub mcp_http_allowed_hosts: Option<String>,
 
     /// Whether `/mcp` admits a request with no credential: `auto` (yes, when a
     /// knowledge base grants `anyone` something) or `never` [default: auto].
-    #[arg(long, env = "NOTEDTHAT_MCP_ANONYMOUS", value_name = "MODE")]
+    #[arg(long, env = MCP_ANONYMOUS_ENV, value_name = "MODE")]
     pub mcp_anonymous: Option<String>,
 
     /// Most bytes one MCP object read may fetch; larger objects are read in
     /// slices [default: 16777216].
-    #[arg(long, env = "NOTEDTHAT_MCP_MAX_READ_BYTES", value_name = "BYTES")]
+    #[arg(long, env = MCP_MAX_READ_BYTES_ENV, value_name = "BYTES")]
     pub mcp_max_read_bytes: Option<String>,
 
     /// Most MCP sessions this process holds at once; a `POST` that would open
     /// another is refused until one ends [default: 256].
-    #[arg(long, env = "NOTEDTHAT_MCP_MAX_SESSIONS", value_name = "COUNT")]
+    #[arg(long, env = MCP_MAX_SESSIONS_ENV, value_name = "COUNT")]
     pub mcp_max_sessions: Option<String>,
 
     /// OIDC issuer URL, spelled exactly as the provider's `iss` claim. Enables
     /// identity-provider bearer tokens.
-    #[arg(long, env = "NOTEDTHAT_OIDC_ISSUER", value_name = "URL")]
+    #[arg(long, env = OIDC_ISSUER_ENV, value_name = "URL")]
     pub oidc_issuer: Option<String>,
 
     /// Comma-separated audiences an identity token may carry (usually the client id).
-    #[arg(long, env = "NOTEDTHAT_OIDC_AUDIENCE", value_name = "AUDIENCES")]
+    #[arg(long, env = OIDC_AUDIENCE_ENV, value_name = "AUDIENCES")]
     pub oidc_audience: Option<String>,
 
     /// The claim `user:` rules match against [default: preferred_username].
-    #[arg(long, env = "NOTEDTHAT_OIDC_USERNAME_CLAIM", value_name = "CLAIM")]
+    #[arg(long, env = OIDC_USERNAME_CLAIM_ENV, value_name = "CLAIM")]
     pub oidc_username_claim: Option<String>,
 
     /// The claim `group:` rules match against [default: groups].
-    #[arg(long, env = "NOTEDTHAT_OIDC_GROUPS_CLAIM", value_name = "CLAIM")]
+    #[arg(long, env = OIDC_GROUPS_CLAIM_ENV, value_name = "CLAIM")]
     pub oidc_groups_claim: Option<String>,
 
     /// Timeout for discovery and key-set requests to the issuer [default: 5000].
-    #[arg(long, env = "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = OIDC_HTTP_TIMEOUT_MS_ENV, value_name = "MS")]
     pub oidc_http_timeout_ms: Option<String>,
 
     /// This deployment's public URL; publishes RFC 9728 metadata for MCP clients.
-    #[arg(long, env = "NOTEDTHAT_OIDC_RESOURCE", value_name = "URL")]
+    #[arg(long, env = OIDC_RESOURCE_ENV, value_name = "URL")]
     pub oidc_resource: Option<String>,
 
     /// PEM bundle of extra CA certificates to trust when reaching the issuer —
@@ -194,7 +239,7 @@ pub struct ServerCli {
     pub oidc_ca_cert: Option<OsString>,
 
     /// Object store to run on: `s3` or `fs` [default: s3].
-    #[arg(long, env = "NOTEDTHAT_STORAGE_BACKEND", value_name = "BACKEND")]
+    #[arg(long, env = STORAGE_BACKEND_ENV, value_name = "BACKEND")]
     pub storage_backend: Option<OsString>,
 
     /// S3 region. Required with the `s3` backend, even behind a custom endpoint.
@@ -299,7 +344,7 @@ pub struct ServerCli {
     pub fs_watch_debounce_ms: Option<OsString>,
 
     /// Object change event log: `none`, `memory` or `nats` [default: none].
-    #[arg(long, env = "NOTEDTHAT_EVENTS_BACKEND", value_name = "BACKEND")]
+    #[arg(long, env = EVENTS_BACKEND_ENV, value_name = "BACKEND")]
     pub events_backend: Option<OsString>,
 
     /// Events the `memory` log retains for replay [default: 10000].
@@ -389,33 +434,33 @@ pub struct ServerCli {
     /// API key for an authenticated Qdrant instance.
     #[arg(
         long,
-        env = "NOTEDTHAT_QDRANT_API_KEY",
+        env = QDRANT_API_KEY_ENV,
         value_name = "KEY",
         hide_env_values = true
     )]
     pub qdrant_api_key: Option<String>,
 
     /// Per-RPC Qdrant timeout in milliseconds [default: 30000].
-    #[arg(long, env = "NOTEDTHAT_QDRANT_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = QDRANT_TIMEOUT_MS_ENV, value_name = "MS")]
     pub qdrant_timeout_ms: Option<String>,
 
     /// Qdrant connection-establishment timeout in milliseconds [default: 10000].
-    #[arg(long, env = "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = QDRANT_CONNECT_TIMEOUT_MS_ENV, value_name = "MS")]
     pub qdrant_connect_timeout_ms: Option<String>,
 
     /// Base URL of the OpenAI-compatible API, including its version segment
     /// (e.g. `https://api.openai.com/v1`); `/embeddings` is appended.
-    #[arg(long, env = "EMBEDDING_ENDPOINT_URL", value_name = "URL")]
+    #[arg(long, env = EMBEDDING_ENDPOINT_URL_ENV, value_name = "URL")]
     pub embedding_endpoint_url: Option<String>,
 
     /// Embedding model name, e.g. `text-embedding-3-small`.
-    #[arg(long, env = "EMBEDDING_MODEL", value_name = "MODEL")]
+    #[arg(long, env = EMBEDDING_MODEL_ENV, value_name = "MODEL")]
     pub embedding_model: Option<String>,
 
     /// Bearer token for the embedding endpoint.
     #[arg(
         long,
-        env = "EMBEDDING_API_KEY",
+        env = EMBEDDING_API_KEY_ENV,
         value_name = "KEY",
         hide_env_values = true
     )]
@@ -423,27 +468,27 @@ pub struct ServerCli {
 
     /// Output vector dimensions. Must match the model and is baked into the
     /// Qdrant collection at first provisioning.
-    #[arg(long, env = "EMBEDDING_DIMENSIONS", value_name = "N")]
+    #[arg(long, env = EMBEDDING_DIMENSIONS_ENV, value_name = "N")]
     pub embedding_dimensions: Option<String>,
 
     /// Text chunks per embedding request [default: 32].
-    #[arg(long, env = "EMBEDDING_BATCH_SIZE", value_name = "N")]
+    #[arg(long, env = EMBEDDING_BATCH_SIZE_ENV, value_name = "N")]
     pub embedding_batch_size: Option<String>,
 
     /// Complete files indexed concurrently [default: 8].
-    #[arg(long, env = "NOTEDTHAT_INDEX_CONCURRENCY", value_name = "N")]
+    #[arg(long, env = INDEX_CONCURRENCY_ENV, value_name = "N")]
     pub index_concurrency: Option<String>,
 
     /// Per-request embedding HTTP timeout in milliseconds [default: 30000].
-    #[arg(long, env = "EMBEDDING_TIMEOUT_MS", value_name = "MS")]
+    #[arg(long, env = EMBEDDING_TIMEOUT_MS_ENV, value_name = "MS")]
     pub embedding_timeout_ms: Option<String>,
 
     /// Retry attempts on HTTP 429 or 5xx from the embedder [default: 3].
-    #[arg(long, env = "EMBEDDING_MAX_RETRIES", value_name = "N")]
+    #[arg(long, env = EMBEDDING_MAX_RETRIES_ENV, value_name = "N")]
     pub embedding_max_retries: Option<String>,
 
     /// Chunks longer than this are dropped rather than truncated [default: 8192].
-    #[arg(long, env = "EMBEDDING_MAX_INPUT_TOKENS", value_name = "N")]
+    #[arg(long, env = EMBEDDING_MAX_INPUT_TOKENS_ENV, value_name = "N")]
     pub embedding_max_input_tokens: Option<String>,
 
     // The three settings below were removed when the API, WebDAV and MCP
@@ -454,15 +499,15 @@ pub struct ServerCli {
     // do next. Removing them from the parser entirely would make the flag form
     // less helpful than the variable form.
     /// Removed: WebDAV is served at /webdav on the main listener.
-    #[arg(long, env = "NOTEDTHAT_WEBDAV_LISTEN_ADDR", hide = true)]
+    #[arg(long, env = WEBDAV_LISTEN_ADDR_ENV, hide = true)]
     pub webdav_listen_addr: Option<OsString>,
 
     /// Removed: MCP HTTP is served at /mcp on the main listener.
-    #[arg(long, env = "NOTEDTHAT_MCP_HTTP_BIND", hide = true)]
+    #[arg(long, env = MCP_HTTP_BIND_ENV, hide = true)]
     pub mcp_http_bind: Option<OsString>,
 
     /// Removed: MCP HTTP is always served at /mcp on the main listener.
-    #[arg(long, env = "NOTEDTHAT_MCP_HTTP_ENABLED", hide = true)]
+    #[arg(long, env = MCP_HTTP_ENABLED_ENV, hide = true)]
     pub mcp_http_enabled: Option<OsString>,
 }
 

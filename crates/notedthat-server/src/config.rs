@@ -5,7 +5,19 @@
 //! — and hands the raw values here; nothing in this module reads the
 //! environment itself. See `docs/CONFIGURATION.md` for the full reference.
 
-use crate::cli::ServerCli;
+use crate::cli::{
+    API_TOKEN_ENV, EMBEDDING_API_KEY_ENV, EMBEDDING_BATCH_SIZE_ENV, EMBEDDING_DIMENSIONS_ENV,
+    EMBEDDING_ENDPOINT_URL_ENV, EMBEDDING_MAX_INPUT_TOKENS_ENV, EMBEDDING_MAX_RETRIES_ENV,
+    EMBEDDING_MODEL_ENV, EMBEDDING_TIMEOUT_MS_ENV, EVENTS_BACKEND_ENV, HEADER_READ_TIMEOUT_MS_ENV,
+    INDEX_CONCURRENCY_ENV, KBS_ENV, LISTEN_ADDR_ENV, MAX_PATCHABLE_SIZE_ENV,
+    MAX_REQUESTS_IN_FLIGHT_ENV, MCP_ANONYMOUS_ENV, MCP_HTTP_BIND_ENV, MCP_HTTP_ENABLED_ENV,
+    MCP_MAX_READ_BYTES_ENV, MCP_MAX_SESSIONS_ENV, METRICS_ENABLED_ENV, METRICS_LISTEN_ADDR_ENV,
+    OIDC_AUDIENCE_ENV, OIDC_GROUPS_CLAIM_ENV, OIDC_HTTP_TIMEOUT_MS_ENV, OIDC_ISSUER_ENV,
+    OIDC_RESOURCE_ENV, OIDC_USERNAME_CLAIM_ENV, QDRANT_CONNECT_TIMEOUT_MS_ENV,
+    QDRANT_TIMEOUT_MS_ENV, READY_PROBE_INTERVAL_MS_ENV, REQUEST_TIMEOUT_MS_ENV,
+    STORAGE_BACKEND_ENV, ServerCli, WEBDAV_LISTEN_ADDR_ENV, WEBDAV_PASSWORD_ENV,
+    WEBDAV_REQUEST_TIMEOUT_MS_ENV, WEBDAV_USERNAME_ENV,
+};
 use crate::oidc::OidcSettings;
 use notedthat_core::setting::{parse_bool, parse_choice, utf8};
 use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
@@ -343,10 +355,9 @@ fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKin
 /// `false`, and the `SeaweedFS` or `MinIO` deployment it was set for then failed with DNS
 /// errors naming nothing.
 fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBackendKind>, Error> {
-    const VAR: &str = "NOTEDTHAT_STORAGE_BACKEND";
     parse_choice(
-        VAR,
-        utf8(VAR, supplied)?,
+        STORAGE_BACKEND_ENV,
+        utf8(STORAGE_BACKEND_ENV, supplied)?,
         |value| match value {
             "s3" => Some(StorageBackendKind::S3),
             "fs" => Some(StorageBackendKind::Fs),
@@ -361,10 +372,9 @@ fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBacke
 /// Strict for the same reason as [`parse_storage_backend`]: a mis-spelled selector
 /// that fell back to `none` would start cleanly and simply never announce anything.
 fn parse_events_backend(supplied: Option<&OsStr>) -> Result<Option<EventsBackendKind>, Error> {
-    const VAR: &str = "NOTEDTHAT_EVENTS_BACKEND";
     parse_choice(
-        VAR,
-        utf8(VAR, supplied)?,
+        EVENTS_BACKEND_ENV,
+        utf8(EVENTS_BACKEND_ENV, supplied)?,
         |value| match value {
             "none" => Some(EventsBackendKind::None),
             "memory" => Some(EventsBackendKind::Memory),
@@ -393,7 +403,7 @@ fn parse_mcp_anonymous(supplied: Option<&str>) -> Result<McpAnonymous, Error> {
         other => Err(Error::Config {
             message: format!(
                 "{} is invalid: expected \"auto\" or \"never\", got \"{other}\"",
-                setting("NOTEDTHAT_MCP_ANONYMOUS")
+                setting(MCP_ANONYMOUS_ENV)
             ),
         }),
     }
@@ -430,12 +440,12 @@ fn parse_metrics(
     // points at that, where quoting `""` back does not.
     if supplied == Some("") {
         return Err(Error::Config {
-            message: format!("{} must not be empty", setting("NOTEDTHAT_METRICS_ENABLED")),
+            message: format!("{} must not be empty", setting(METRICS_ENABLED_ENV)),
         });
     }
     // Absent and `false` are the same state — off — and the refusal below is
     // what tells the two apart, where the difference is worth a word.
-    let enabled = parse_bool("NOTEDTHAT_METRICS_ENABLED", supplied, false)?;
+    let enabled = parse_bool(METRICS_ENABLED_ENV, supplied, false)?;
 
     // Normalised once, before either branch reads it. The enabled path below
     // used to trim and filter while this one tested the raw value, so the same
@@ -454,13 +464,13 @@ fn parse_metrics(
                     "{enabled_name} {state}, but {addr_name} would be ignored: no metrics \
                      listener is opened. Unset it or set NOTEDTHAT_METRICS_ENABLED=true to \
                      start the server.",
-                    enabled_name = setting("NOTEDTHAT_METRICS_ENABLED"),
+                    enabled_name = setting(METRICS_ENABLED_ENV),
                     state = if supplied.is_some() {
                         "is false"
                     } else {
                         "is unset, so metrics are off"
                     },
-                    addr_name = setting("NOTEDTHAT_METRICS_LISTEN_ADDR"),
+                    addr_name = setting(METRICS_LISTEN_ADDR_ENV),
                 ),
             });
         }
@@ -469,10 +479,7 @@ fn parse_metrics(
 
     let supplied = listen_addr.unwrap_or(DEFAULT_METRICS_LISTEN_ADDR);
     let addr: SocketAddr = supplied.parse().map_err(|e| Error::Config {
-        message: format!(
-            "{} is invalid: {e}",
-            setting("NOTEDTHAT_METRICS_LISTEN_ADDR")
-        ),
+        message: format!("{} is invalid: {e}", setting(METRICS_LISTEN_ADDR_ENV)),
     })?;
     Ok(Some(addr))
 }
@@ -743,7 +750,7 @@ impl RequestBoundsConfig {
         header_read_timeout_ms: Option<&str>,
     ) -> Result<Self, Error> {
         let max_requests_in_flight = positive(
-            "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+            MAX_REQUESTS_IN_FLIGHT_ENV,
             max_requests_in_flight,
             Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT,
         )?;
@@ -753,25 +760,25 @@ impl RequestBoundsConfig {
             return Err(Error::Config {
                 message: format!(
                     "{} must be at most {}",
-                    setting("NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT"),
+                    setting(MAX_REQUESTS_IN_FLIGHT_ENV),
                     tokio::sync::Semaphore::MAX_PERMITS
                 ),
             });
         }
         Ok(Self {
             request_timeout: parse_duration_ms(
-                "NOTEDTHAT_REQUEST_TIMEOUT_MS",
+                REQUEST_TIMEOUT_MS_ENV,
                 request_timeout_ms,
                 Self::DEFAULT_REQUEST_TIMEOUT,
             )?,
             webdav_request_timeout: parse_duration_ms(
-                "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
+                WEBDAV_REQUEST_TIMEOUT_MS_ENV,
                 webdav_request_timeout_ms,
                 Self::DEFAULT_WEBDAV_REQUEST_TIMEOUT,
             )?,
             max_requests_in_flight,
             header_read_timeout: parse_duration_ms(
-                "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
+                HEADER_READ_TIMEOUT_MS_ENV,
                 header_read_timeout_ms,
                 Self::DEFAULT_HEADER_READ_TIMEOUT,
             )?,
@@ -810,15 +817,15 @@ fn non_blank(supplied: Option<&str>) -> Option<&str> {
 /// replacement, not "unexpected argument".
 const REMOVED_LISTENER_ENV_VARS: [(&str, &str); 3] = [
     (
-        "NOTEDTHAT_WEBDAV_LISTEN_ADDR",
+        WEBDAV_LISTEN_ADDR_ENV,
         "WebDAV is always served at /webdav on NOTEDTHAT_LISTEN_ADDR",
     ),
     (
-        "NOTEDTHAT_MCP_HTTP_BIND",
+        MCP_HTTP_BIND_ENV,
         "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
     ),
     (
-        "NOTEDTHAT_MCP_HTTP_ENABLED",
+        MCP_HTTP_ENABLED_ENV,
         "MCP HTTP is always served at /mcp on NOTEDTHAT_LISTEN_ADDR",
     ),
 ];
@@ -866,22 +873,22 @@ impl Config {
         let oidc = parse_oidc(&cli)?;
 
         let api_token = cli.api_token.take().ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("NOTEDTHAT_API_TOKEN")),
+            message: format!("{} is required", setting(API_TOKEN_ENV)),
         })?;
         if api_token.trim().is_empty() {
             return Err(Error::Config {
-                message: format!("{} must not be empty", setting("NOTEDTHAT_API_TOKEN")),
+                message: format!("{} must not be empty", setting(API_TOKEN_ENV)),
             });
         }
 
         let kbs_raw = cli.kbs.take().ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("NOTEDTHAT_KBS")),
+            message: format!("{} is required", setting(KBS_ENV)),
         })?;
         if kbs_raw.trim().is_empty() {
             return Err(Error::Config {
                 message: format!(
                     "{} must declare at least one knowledge base",
-                    setting("NOTEDTHAT_KBS")
+                    setting(KBS_ENV)
                 ),
             });
         }
@@ -893,10 +900,7 @@ impl Config {
             })?;
             if kbs.insert(slug.as_str().to_string(), slug).is_some() {
                 return Err(Error::Config {
-                    message: format!(
-                        "duplicate KB slug in {}: {token:?}",
-                        setting("NOTEDTHAT_KBS")
-                    ),
+                    message: format!("duplicate KB slug in {}: {token:?}", setting(KBS_ENV)),
                 });
             }
         }
@@ -904,7 +908,7 @@ impl Config {
             return Err(Error::Config {
                 message: format!(
                     "{} must declare at least one knowledge base",
-                    setting("NOTEDTHAT_KBS")
+                    setting(KBS_ENV)
                 ),
             });
         }
@@ -921,19 +925,19 @@ impl Config {
             .take()
             .unwrap_or_else(|| "0.0.0.0:8080".to_string());
         let listen_addr: SocketAddr = listen_addr_str.parse().map_err(|e| Error::Config {
-            message: format!("{} is invalid: {e}", setting("NOTEDTHAT_LISTEN_ADDR")),
+            message: format!("{} is invalid: {e}", setting(LISTEN_ADDR_ENV)),
         })?;
 
         let selected = parse_storage_backend(cli.storage_backend.as_deref())?;
         reject_unselected_settings(
-            "NOTEDTHAT_STORAGE_BACKEND",
+            STORAGE_BACKEND_ENV,
             selected,
             StorageBackendKind::S3,
             backend_owned_settings(&cli),
         )?;
         let selected_events = parse_events_backend(cli.events_backend.as_deref())?;
         reject_unselected_settings(
-            "NOTEDTHAT_EVENTS_BACKEND",
+            EVENTS_BACKEND_ENV,
             selected_events,
             EventsBackendKind::None,
             events_owned_settings(&cli),
@@ -1013,33 +1017,31 @@ impl Config {
             max_input_tokens: cli.embedding_max_input_tokens,
         })?;
         // `optional_positive` has refused zero, so `NonZeroUsize::new` cannot fail.
-        let index_concurrency = optional_positive::<usize>(
-            "NOTEDTHAT_INDEX_CONCURRENCY",
-            cli.index_concurrency.as_deref(),
-        )?
-        .and_then(NonZeroUsize::new)
-        .unwrap_or(DEFAULT_INDEX_CONCURRENCY);
+        let index_concurrency =
+            optional_positive::<usize>(INDEX_CONCURRENCY_ENV, cli.index_concurrency.as_deref())?
+                .and_then(NonZeroUsize::new)
+                .unwrap_or(DEFAULT_INDEX_CONCURRENCY);
 
         let webdav_username = cli.webdav_username.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_USERNAME")),
+            message: format!("{} is required", setting(WEBDAV_USERNAME_ENV)),
         })?;
         if webdav_username.is_empty() {
             return Err(Error::Config {
                 message: format!(
                     "{} is required and must not be empty",
-                    setting("NOTEDTHAT_WEBDAV_USERNAME")
+                    setting(WEBDAV_USERNAME_ENV)
                 ),
             });
         }
 
         let webdav_password = cli.webdav_password.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_PASSWORD")),
+            message: format!("{} is required", setting(WEBDAV_PASSWORD_ENV)),
         })?;
         if webdav_password.is_empty() {
             return Err(Error::Config {
                 message: format!(
                     "{} is required and must not be empty",
-                    setting("NOTEDTHAT_WEBDAV_PASSWORD")
+                    setting(WEBDAV_PASSWORD_ENV)
                 ),
             });
         }
@@ -1053,7 +1055,7 @@ impl Config {
         let mcp_anonymous = parse_mcp_anonymous(cli.mcp_anonymous.as_deref())?;
 
         let max_patchable_size = positive(
-            "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+            MAX_PATCHABLE_SIZE_ENV,
             cli.max_patchable_size.as_deref(),
             Self::DEFAULT_MAX_PATCHABLE_SIZE,
         )?;
@@ -1061,25 +1063,25 @@ impl Config {
             return Err(Error::Config {
                 message: format!(
                     "{} must not exceed MAX_UPLOAD_BYTES (5 GiB)",
-                    setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")
+                    setting(MAX_PATCHABLE_SIZE_ENV)
                 ),
             });
         }
 
         let mcp_max_read_bytes = positive(
-            "NOTEDTHAT_MCP_MAX_READ_BYTES",
+            MCP_MAX_READ_BYTES_ENV,
             cli.mcp_max_read_bytes.as_deref(),
             notedthat_mcp::DEFAULT_MAX_READ_BYTES,
         )?;
         // Neither `fs` nor `s3` owns this one, so it is deliberately absent
         // from `backend_owned_settings`: it bounds the transport, not a backend.
         let mcp_max_sessions = positive(
-            "NOTEDTHAT_MCP_MAX_SESSIONS",
+            MCP_MAX_SESSIONS_ENV,
             cli.mcp_max_sessions.as_deref(),
             notedthat_mcp::DEFAULT_MAX_SESSIONS,
         )?;
         let ready_probe_interval = parse_duration_ms(
-            "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
+            READY_PROBE_INTERVAL_MS_ENV,
             cli.ready_probe_interval_ms.as_deref(),
             Self::DEFAULT_READY_PROBE_INTERVAL,
         )?;
@@ -1134,20 +1136,11 @@ impl Config {
 /// The `NOTEDTHAT_OIDC_*` settings that only mean something once an issuer is set.
 fn oidc_dependent_settings(cli: &ServerCli) -> [(&'static str, bool); 6] {
     [
-        ("NOTEDTHAT_OIDC_AUDIENCE", cli.oidc_audience.is_some()),
-        (
-            "NOTEDTHAT_OIDC_USERNAME_CLAIM",
-            cli.oidc_username_claim.is_some(),
-        ),
-        (
-            "NOTEDTHAT_OIDC_GROUPS_CLAIM",
-            cli.oidc_groups_claim.is_some(),
-        ),
-        (
-            "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
-            cli.oidc_http_timeout_ms.is_some(),
-        ),
-        ("NOTEDTHAT_OIDC_RESOURCE", cli.oidc_resource.is_some()),
+        (OIDC_AUDIENCE_ENV, cli.oidc_audience.is_some()),
+        (OIDC_USERNAME_CLAIM_ENV, cli.oidc_username_claim.is_some()),
+        (OIDC_GROUPS_CLAIM_ENV, cli.oidc_groups_claim.is_some()),
+        (OIDC_HTTP_TIMEOUT_MS_ENV, cli.oidc_http_timeout_ms.is_some()),
+        (OIDC_RESOURCE_ENV, cli.oidc_resource.is_some()),
         (crate::cli::OIDC_CA_CERT_ENV, cli.oidc_ca_cert.is_some()),
     ]
 }
@@ -1173,7 +1166,7 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
             message: format!(
                 "{} is unset, so identity tokens are not accepted, but {} {} set; set the \
                  issuer or unset {}",
-                setting("NOTEDTHAT_OIDC_ISSUER"),
+                setting(OIDC_ISSUER_ENV),
                 offenders.join(", "),
                 if offenders.len() == 1 { "is" } else { "are" },
                 if offenders.len() == 1 { "it" } else { "them" },
@@ -1181,15 +1174,15 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         });
     };
 
-    let issuer_url = absolute_http_url("NOTEDTHAT_OIDC_ISSUER", issuer)?;
+    let issuer_url = absolute_http_url(OIDC_ISSUER_ENV, issuer)?;
     let audiences = comma_list(cli.oidc_audience.as_deref(), &[]);
     if audiences.is_empty() {
         return Err(Error::Config {
             message: format!(
                 "{} is required when {} is set: name the audience the provider puts in \
                  its tokens, usually the client id",
-                setting("NOTEDTHAT_OIDC_AUDIENCE"),
-                setting("NOTEDTHAT_OIDC_ISSUER"),
+                setting(OIDC_AUDIENCE_ENV),
+                setting(OIDC_ISSUER_ENV),
             ),
         });
     }
@@ -1203,17 +1196,17 @@ fn parse_oidc(cli: &ServerCli) -> Result<Option<OidcSettings>, Error> {
         }
     };
     let username_claim = claim(
-        "NOTEDTHAT_OIDC_USERNAME_CLAIM",
+        OIDC_USERNAME_CLAIM_ENV,
         cli.oidc_username_claim.as_deref(),
         OidcSettings::DEFAULT_USERNAME_CLAIM,
     )?;
     let groups_claim = claim(
-        "NOTEDTHAT_OIDC_GROUPS_CLAIM",
+        OIDC_GROUPS_CLAIM_ENV,
         cli.oidc_groups_claim.as_deref(),
         OidcSettings::DEFAULT_GROUPS_CLAIM,
     )?;
     let http_timeout = parse_duration_ms(
-        "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
+        OIDC_HTTP_TIMEOUT_MS_ENV,
         cli.oidc_http_timeout_ms.as_deref(),
         OidcSettings::DEFAULT_HTTP_TIMEOUT,
     )?;
@@ -1263,12 +1256,12 @@ fn parse_oidc_resource(raw: Option<&str>) -> Result<Option<String>, Error> {
     let Some(raw) = raw.map(str::trim) else {
         return Ok(None);
     };
-    absolute_http_url("NOTEDTHAT_OIDC_RESOURCE", raw)?;
+    absolute_http_url(OIDC_RESOURCE_ENV, raw)?;
     if url::Url::parse(raw).is_ok_and(|url| url.query().is_some() || url.fragment().is_some()) {
         return Err(Error::Config {
             message: format!(
                 "{} must not carry a query or a fragment",
-                setting("NOTEDTHAT_OIDC_RESOURCE")
+                setting(OIDC_RESOURCE_ENV)
             ),
         });
     }
@@ -1334,12 +1327,12 @@ fn qdrant_from_parts(
         url,
         api_key,
         timeout: parse_duration_ms(
-            "NOTEDTHAT_QDRANT_TIMEOUT_MS",
+            QDRANT_TIMEOUT_MS_ENV,
             timeout_ms,
             notedthat_indexer::qdrant::DEFAULT_TIMEOUT,
         )?,
         connect_timeout: parse_duration_ms(
-            "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
+            QDRANT_CONNECT_TIMEOUT_MS_ENV,
             connect_timeout_ms,
             notedthat_indexer::qdrant::DEFAULT_CONNECT_TIMEOUT,
         )?,
@@ -1449,7 +1442,7 @@ impl EmbedderConfig {
     /// including an `EMBEDDING_ENDPOINT_URL` that is not an absolute http(s) URL.
     fn from_parts(parts: EmbedderParts) -> Result<Self, Error> {
         let endpoint_url = parts.endpoint_url.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("EMBEDDING_ENDPOINT_URL")),
+            message: format!("{} is required", setting(EMBEDDING_ENDPOINT_URL_ENV)),
         })?;
         // The embedder appends `/embeddings` to this URL's path and reqwest sends only http(s),
         // so a value it cannot parse (`api.openai.com`, no scheme) or with another scheme
@@ -1461,19 +1454,19 @@ impl EmbedderConfig {
             return Err(Error::Config {
                 message: format!(
                     "{} must be an absolute http(s) URL, e.g. https://api.openai.com/v1",
-                    setting("EMBEDDING_ENDPOINT_URL")
+                    setting(EMBEDDING_ENDPOINT_URL_ENV)
                 ),
             });
         }
         let model = parts.model.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("EMBEDDING_MODEL")),
+            message: format!("{} is required", setting(EMBEDDING_MODEL_ENV)),
         })?;
         let api_key = parts.api_key.ok_or_else(|| Error::Config {
-            message: format!("{} is required", setting("EMBEDDING_API_KEY")),
+            message: format!("{} is required", setting(EMBEDDING_API_KEY_ENV)),
         })?;
-        let dimensions = optional_positive("EMBEDDING_DIMENSIONS", parts.dimensions.as_deref())?
+        let dimensions = optional_positive(EMBEDDING_DIMENSIONS_ENV, parts.dimensions.as_deref())?
             .ok_or_else(|| Error::Config {
-                message: format!("{} is required", setting("EMBEDDING_DIMENSIONS")),
+                message: format!("{} is required", setting(EMBEDDING_DIMENSIONS_ENV)),
             })?;
         Ok(Self {
             endpoint_url,
@@ -1481,24 +1474,24 @@ impl EmbedderConfig {
             api_key,
             dimensions,
             batch_size: positive(
-                "EMBEDDING_BATCH_SIZE",
+                EMBEDDING_BATCH_SIZE_ENV,
                 parts.batch_size.as_deref(),
                 Self::DEFAULT_BATCH_SIZE,
             )?,
             timeout: parse_duration_ms(
-                "EMBEDDING_TIMEOUT_MS",
+                EMBEDDING_TIMEOUT_MS_ENV,
                 parts.timeout_ms.as_deref(),
                 Self::DEFAULT_TIMEOUT,
             )?,
             // The one numeric setting where zero means something: no retries.
             max_retries: parse_integer(
-                "EMBEDDING_MAX_RETRIES",
+                EMBEDDING_MAX_RETRIES_ENV,
                 parts.max_retries.as_deref(),
                 "non-negative",
             )?
             .unwrap_or(Self::DEFAULT_MAX_RETRIES),
             max_input_tokens: positive(
-                "EMBEDDING_MAX_INPUT_TOKENS",
+                EMBEDDING_MAX_INPUT_TOKENS_ENV,
                 parts.max_input_tokens.as_deref(),
                 Self::DEFAULT_MAX_INPUT_TOKENS,
             )?,
