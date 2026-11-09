@@ -557,41 +557,6 @@ impl Storage for FsStorage {
         })
     }
 
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let bucket = self.bucket(kb);
-        let key = key_of(path).to_string();
-        let content_type = content_type.map(str::to_string);
-        log_ignored_write_dates(&conditionals);
-
-        let _guard = self.inner.locks.key(&bucket, &key).await;
-        self.blocking(move |inner| {
-            inner.require_bucket(&bucket)?;
-            let current = inner.current(&bucket, &key)?;
-            evaluate_write_preconditions(
-                current
-                    .as_ref()
-                    .map(|(metadata, attrs)| Inner::state(attrs, metadata)),
-                &conditionals,
-            )?;
-            let etag = inner.store(&bucket, &key, content_type.as_deref(), |file, hasher| {
-                hasher.update(&bytes);
-                file.write_all(&bytes)
-            })?;
-            Ok(PutOutcome {
-                etag: Some(etag),
-                created: current.is_none(),
-            })
-        })
-        .await
-    }
-
     async fn put_staged_object(
         &self,
         kb: &KbSlug,
@@ -603,6 +568,7 @@ impl Storage for FsStorage {
         let bucket = self.bucket(kb);
         let key = key_of(path).to_string();
         let content_type = content_type.map(str::to_string);
+        log_ignored_write_dates(&conditionals);
 
         let _guard = self.inner.locks.key(&bucket, &key).await;
         self.blocking(move |inner| {

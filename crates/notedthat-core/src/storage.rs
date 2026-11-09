@@ -196,7 +196,16 @@ pub trait Storage: Send + Sync {
         bytes: Bytes,
         content_type: Option<&str>,
         conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError>;
+    ) -> Result<PutOutcome, StorageError> {
+        self.put_staged_object(
+            kb,
+            path,
+            StagedBody::from(bytes),
+            content_type,
+            conditionals,
+        )
+        .await
+    }
 
     /// Store an owned staged body without loading file-backed bodies into memory.
     async fn put_staged_object(

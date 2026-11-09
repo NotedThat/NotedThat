@@ -821,57 +821,6 @@ impl Storage for S3Storage {
         })
     }
 
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let bucket = self.bucket_name(kb);
-        let key = path.as_str();
-        let existed = self
-            .key_exists_before_write(
-                &bucket,
-                key,
-                conditionals.if_match.as_deref(),
-                conditionals.if_none_match.as_deref(),
-            )
-            .await;
-
-        let mut req = self
-            .client
-            .put_object()
-            .bucket(&bucket)
-            .key(key)
-            .body(ByteStream::from(bytes));
-
-        if let Some(ct) = content_type {
-            req = req.content_type(ct);
-        }
-        if let Some(v) = conditionals.if_match {
-            req = req.if_match(v);
-        }
-        if let Some(v) = conditionals.if_none_match {
-            req = req.if_none_match(v);
-        }
-        if conditionals.if_modified_since.is_some() {
-            debug!("if_modified_since ignored on PUT (not supported by S3 API)");
-        }
-        if conditionals.if_unmodified_since.is_some() {
-            debug!("if_unmodified_since ignored on PUT (not supported by S3 API)");
-        }
-
-        let resp = req.send().await.map_err(|e| map_put_error(&e, &bucket))?;
-
-        info!(bucket = %bucket, key = %key, "object stored");
-        Ok(PutOutcome {
-            etag: resp.e_tag().map(str::to_string),
-            created: !existed,
-        })
-    }
-
     async fn put_staged_object(
         &self,
         kb: &KbSlug,
@@ -917,10 +866,17 @@ impl Storage for S3Storage {
         if let Some(value) = conditionals.if_none_match {
             req = req.if_none_match(value);
         }
+        if conditionals.if_modified_since.is_some() {
+            debug!("if_modified_since ignored on PUT (not supported by S3 API)");
+        }
+        if conditionals.if_unmodified_since.is_some() {
+            debug!("if_unmodified_since ignored on PUT (not supported by S3 API)");
+        }
         let resp = req
             .send()
             .await
             .map_err(|error| map_put_error(&error, &bucket))?;
+        info!(bucket = %bucket, key = %key, "object stored");
         Ok(PutOutcome {
             etag: resp.e_tag().map(str::to_string),
             created: !existed,
