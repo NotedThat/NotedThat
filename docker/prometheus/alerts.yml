@@ -21,12 +21,14 @@
 # arm, `x unless x offset <window>`, which catches a series that had no sample
 # a window ago and is above 0 now. A series exported at 0 stays quiet.
 #
-# Trade-off: "no sample a window ago" also holds when Prometheus did not scrape
-# then. After a Prometheus restart or outage, a scrape gap longer than the 5m
-# lookback, a fresh TSDB or a newly added scrape job, those three alerts can
-# fire once, for up to their window, on counts from before the gap. Their
-# annotations therefore claim no count. BucketMissing has no such arm, so a
-# critical alert cannot page on an old count. The readiness probe checks only
+# "No sample a window ago" also holds when Prometheus did not scrape then (a
+# restart, an outage, a fresh TSDB, a new scrape job). So the arm is open only
+# during the process's first window, judged by
+# notedthat_process_start_time_seconds (#382): after that, every watched series
+# was either exported at 0 or scraped before, and `increase()` sees any step.
+# What remains is a Prometheus gap inside a process's first window, which can
+# still fire once on a count from before it; the annotations therefore claim
+# no count. BucketMissing has no such arm. The readiness probe checks only
 # the witness bucket (the first knowledge base by slug) and repeats every few
 # seconds while it is gone, so `increase()` sees it from the second scrape on.
 # Any other knowledge base's bucket shows up only through request traffic. The
@@ -138,10 +140,13 @@ groups:
       - alert: NotedThatIndexingFailures
         expr: |
           sum by (instance, kb) (increase(notedthat_index_events_completed_total{outcome="failed"}[15m])) > 0
-            or sum by (instance, kb) (
-              notedthat_index_events_completed_total{outcome="failed"}
-                unless notedthat_index_events_completed_total{outcome="failed"} offset 15m
-            ) > 0
+            or (
+              sum by (instance, kb) (
+                notedthat_index_events_completed_total{outcome="failed"}
+                  unless notedthat_index_events_completed_total{outcome="failed"} offset 15m
+              ) > 0
+                and on (instance) (time() - notedthat_process_start_time_seconds < 15 * 60)
+            )
         labels:
           severity: warning
         annotations:
@@ -163,7 +168,10 @@ groups:
       - alert: NotedThatFsWatchLost
         expr: |
           sum by (instance, reason) (increase(notedthat_fs_watch_lost_total[10m])) > 0
-            or sum by (instance, reason) (notedthat_fs_watch_lost_total unless notedthat_fs_watch_lost_total offset 10m) > 0
+            or (
+              sum by (instance, reason) (notedthat_fs_watch_lost_total unless notedthat_fs_watch_lost_total offset 10m) > 0
+                and on (instance) (time() - notedthat_process_start_time_seconds < 10 * 60)
+            )
         labels:
           severity: warning
         annotations:
@@ -174,10 +182,13 @@ groups:
       - alert: NotedThatReconcileIncomplete
         expr: |
           sum by (instance, kb, cause) (increase(notedthat_reconcile_passes_total{outcome="incomplete"}[1h])) > 0
-            or sum by (instance, kb, cause) (
-              notedthat_reconcile_passes_total{outcome="incomplete"}
-                unless notedthat_reconcile_passes_total{outcome="incomplete"} offset 1h
-            ) > 0
+            or (
+              sum by (instance, kb, cause) (
+                notedthat_reconcile_passes_total{outcome="incomplete"}
+                  unless notedthat_reconcile_passes_total{outcome="incomplete"} offset 1h
+              ) > 0
+                and on (instance) (time() - notedthat_process_start_time_seconds < 60 * 60)
+            )
         labels:
           severity: warning
         annotations:

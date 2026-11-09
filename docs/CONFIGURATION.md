@@ -374,7 +374,7 @@ The full table is in `SPECIFICATIONS.md` §6.15. The families are: HTTP requests
 queue and worker (`notedthat_index_*`), the vector store (`notedthat_vector_store_*`), object
 change events (`notedthat_events_*`), MCP sessions (`notedthat_mcp_sessions`, `notedthat_mcp_max_sessions`), reconciliation (`notedthat_reconcile_*`), the filesystem
 watcher (`notedthat_fs_watch_lost_total`), storage (`notedthat_storage_*`) and
-`notedthat_build_info`.
+`notedthat_build_info` with `notedthat_process_start_time_seconds`.
 
 One storage gauge is set once, at startup, and never again:
 `notedthat_storage_conditional_writes_enforced{kb}` is `1` for each knowledge base whose bucket

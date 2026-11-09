@@ -563,12 +563,15 @@ cause its backend can produce, and `notedthat_fs_watch_lost_total` for both reas
 watcher runs. An event before the first scrape still arrives at 1, so those three rules also fire
 on a series that had no sample one window ago. An absent series, or one at 0, is quiet, not firing.
 
-That second arm cannot tell a series new to the process from one new to Prometheus. After a
-Prometheus restart or outage, a scrape gap longer than five minutes, a fresh TSDB or a newly added
-scrape job, [NotedThatIndexingFailures](#notedthatindexingfailures),
+That second arm cannot tell a series new to the process from one new to Prometheus, so it is open
+only during the process's first window (15 minutes, 10 minutes and an hour for
+[NotedThatIndexingFailures](#notedthatindexingfailures),
 [NotedThatFsWatchLost](#notedthatfswatchlost) and
-[NotedThatReconcileIncomplete](#notedthatreconcileincomplete) can fire once, for up to their
-window, on counts from before the gap. Check the log or `GET …/index` for when it happened.
+[NotedThatReconcileIncomplete](#notedthatreconcileincomplete)), judged by
+`notedthat_process_start_time_seconds`. After that window every series they watch has been exported
+at 0 or scraped before, so a Prometheus restart, outage or scrape gap does not page on an old count.
+A Prometheus gap inside a process's first window still can, once, for up to that window; check the
+log or `GET …/index` for when it happened.
 [NotedThatBucketMissing](#notedthatbucketmissing) has no such arm, so it never pages on an old
 count. The readiness probe checks only the witness bucket, the first knowledge base by slug, and
 repeats every few seconds while it is gone, so the alert fires from the second scrape. Any other
