@@ -91,6 +91,11 @@ pub mod name {
     /// Times the NATS connection was re-established after a loss.
     pub const NATS_RECONNECTS: &str = "notedthat_nats_reconnects_total";
 
+    /// MCP sessions the process holds right now, sampled (#379).
+    pub const MCP_SESSIONS: &str = "notedthat_mcp_sessions";
+    /// The most MCP sessions the process may hold (`NOTEDTHAT_MCP_MAX_SESSIONS`).
+    pub const MCP_MAX_SESSIONS: &str = "notedthat_mcp_max_sessions";
+
     /// Filesystem watches lost at runtime (D50).
     pub const FS_WATCH_LOST: &str = "notedthat_fs_watch_lost_total";
 
@@ -435,6 +440,8 @@ mod tests {
         name::EVENTS_PUBLISH_DEDUPLICATED,
         name::NATS_CONNECTED,
         name::NATS_RECONNECTS,
+        name::MCP_SESSIONS,
+        name::MCP_MAX_SESSIONS,
         name::FS_WATCH_LOST,
         name::RECONCILE_PASSES,
         name::RECONCILE_DURATION,

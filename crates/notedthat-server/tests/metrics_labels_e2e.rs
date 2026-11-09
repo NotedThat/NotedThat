@@ -234,6 +234,8 @@ async fn the_exposition_names_no_key_principal_credential_or_subscriber_filter()
         "notedthat_events_subscribers",
         "notedthat_storage_operations_total",
         "notedthat_storage_operation_duration_seconds",
+        "notedthat_mcp_sessions",
+        "notedthat_mcp_max_sessions",
         "notedthat_build_info",
     ] {
         assert!(

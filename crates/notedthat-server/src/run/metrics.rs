@@ -211,6 +211,15 @@ fn describe_all() {
         "Times the NATS connection was re-established after a loss."
     );
 
+    describe_gauge!(
+        name::MCP_SESSIONS,
+        "MCP sessions held, idle ones included until they expire."
+    );
+    describe_gauge!(
+        name::MCP_MAX_SESSIONS,
+        "The most MCP sessions the process may hold."
+    );
+
     describe_counter!(name::FS_WATCH_LOST, "Filesystem watches lost at runtime.");
 
     describe_counter!(name::RECONCILE_PASSES, "Reconciliation passes run.");
@@ -293,6 +302,29 @@ pub(crate) async fn sample_queue_depth(
                 #[allow(clippy::cast_precision_loss)]
                 metrics::gauge!(name::INDEX_QUEUE_DEPTH)
                     .set((capacity - sender.capacity()) as f64);
+            }
+        }
+    }
+}
+
+/// Sample the MCP session table until `shutdown` (#379).
+///
+/// Sampled, not counted on open and close: rmcp reclaims idle sessions on its
+/// own, so an up/down counter kept here would drift from what it holds.
+pub(crate) async fn sample_mcp_sessions(
+    sessions: std::sync::Arc<notedthat_mcp::http::McpSessions>,
+    shutdown: CancellationToken,
+) {
+    #[allow(clippy::cast_precision_loss)]
+    metrics::gauge!(name::MCP_MAX_SESSIONS).set(sessions.max_sessions() as f64);
+    let mut ticker = tokio::time::interval(QUEUE_SAMPLE_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            _ = ticker.tick() => {
+                #[allow(clippy::cast_precision_loss)]
+                metrics::gauge!(name::MCP_SESSIONS).set(sessions.open_sessions().await as f64);
             }
         }
     }
