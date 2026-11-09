@@ -61,17 +61,19 @@ tests:
               description: "s3 `probe` calls have been failing as unreachable for 5 minutes. /readyz answers 503 while the probe fails."
               runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatstorageunavailable
 
-  # A missing witness bucket fails every readiness probe, so its counter keeps
-  # climbing; the alert fires from the second scrape that sees it, and clears
-  # five minutes after the bucket is back. Another knowledge base's bucket is
-  # seen only through requests: a single failed call that is never repeated
-  # stays quiet (a documented limit, not a guarantee), as do other storage
-  # errors.
+  # The readiness probe checks every knowledge base's bucket, so a missing one
+  # fails every probe and its counter keeps climbing, whichever knowledge base
+  # it belongs to (#384): `a` lost its first knowledge base's bucket, `b` a
+  # later one, beside a healthy first. The alert fires from the second scrape
+  # that sees it and clears five minutes after the bucket is back. A request
+  # that failed once is not what pages (`d`), and other storage errors are quiet.
   - interval: 1m
     input_series:
       - series: 'notedthat_storage_errors_total{instance="a",backend="s3",op="probe",error_kind="bucket_not_found"}'
         values: '_ _ 12 24 36 48 60 60 60 60 60 60 60 60'
-      - series: 'notedthat_storage_errors_total{instance="b",backend="s3",op="head_object",error_kind="bucket_not_found"}'
+      - series: 'notedthat_storage_errors_total{instance="b",backend="s3",op="probe",error_kind="bucket_not_found"}'
+        values: '_ _ 12 24 36 48 60 60 60 60 60 60 60 60'
+      - series: 'notedthat_storage_errors_total{instance="d",backend="s3",op="head_object",error_kind="bucket_not_found"}'
         values: '_ _ 1 1 1 1 1 1 1 1 1 1 1 1'
       - series: 'notedthat_storage_errors_total{instance="c",backend="s3",op="probe",error_kind="backend_unavailable"}'
         values: '1+1x13'
@@ -85,6 +87,14 @@ tests:
           - exp_labels:
               severity: critical
               instance: a
+              backend: s3
+            exp_annotations:
+              summary: "A knowledge base's bucket is gone"
+              description: "The s3 backend answered, but a bucket NotedThat was configured with does not exist. /readyz reports storage degraded."
+              runbook_url: https://github.com/NotedThat/NotedThat/blob/main/docs/OPERATIONS.md#notedthatbucketmissing
+          - exp_labels:
+              severity: critical
+              instance: b
               backend: s3
             exp_annotations:
               summary: "A knowledge base's bucket is gone"

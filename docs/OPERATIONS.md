@@ -573,12 +573,10 @@ at 0 or scraped before, so a Prometheus restart, outage or scrape gap does not p
 A Prometheus gap inside a process's first window still can, once, for up to that window; check the
 log or `GET …/index` for when it happened.
 [NotedThatBucketMissing](#notedthatbucketmissing) has no such arm, so it never pages on an old
-count. The readiness probe checks only the witness bucket, the first knowledge base by slug, and
-repeats every few seconds while it is gone, so the alert fires from the second scrape. Any other
-knowledge base's missing bucket shows up only through requests to it. The counter has no `kb` label
-and never expires, so the alert fires only once the same kind of call (the same op) fails again
-after Prometheus has scraped an earlier failure, whenever that is; a knowledge base nobody uses
-stays silent.
+count. It needs none: the readiness probe checks every knowledge base's bucket every few seconds,
+so a missing one keeps failing and the alert fires from the second scrape, whichever knowledge base
+it belongs to. That costs one probe per knowledge base per interval (`HeadBucket` on `s3`, a stat on
+`fs`).
 
 ### NotedThatDown
 
