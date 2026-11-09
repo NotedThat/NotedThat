@@ -65,7 +65,7 @@ pub(crate) async fn check_staged_manifest(
     validate_manifest_bytes(kb, &bytes)
 }
 
-fn check_size(size: u64) -> Result<(), WriteError> {
+pub(crate) fn check_size(size: u64) -> Result<(), WriteError> {
     if size > MANIFEST_MAX_BYTES {
         return Err(WriteError::InvalidManifest {
             message: format!(

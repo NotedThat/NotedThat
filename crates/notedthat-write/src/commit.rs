@@ -90,15 +90,7 @@ pub async fn commit_copy(
         let meta = storage
             .head_object(kb, source, ConditionalHeaders::default())
             .await?;
-        if meta.size > crate::manifest::MANIFEST_MAX_BYTES {
-            return Err(WriteError::InvalidManifest {
-                message: format!(
-                    "manifest is {} bytes; a manifest is at most {}",
-                    meta.size,
-                    crate::manifest::MANIFEST_MAX_BYTES
-                ),
-            });
-        }
+        crate::manifest::check_size(meta.size)?;
         let read = storage
             .get_object(kb, source, None, ConditionalHeaders::default())
             .await?;

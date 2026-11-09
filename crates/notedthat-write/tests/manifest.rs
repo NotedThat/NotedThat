@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 
 use bytes::Bytes;
-use notedthat_core::testing::InMemoryStorage;
+use notedthat_core::testing::{InMemoryStorage, ScriptedStorage, StorageOp};
 use notedthat_core::{
     ConditionalHeaders, CopyObjectOptions, KbManifest, KbSlug, LineRange, ObjectPath, Storage,
 };
@@ -257,4 +257,41 @@ async fn a_copy_onto_the_manifest_key_is_checked_against_the_source() {
     .await
     .expect("a valid source copies into place");
     assert!(stored(&storage, &manifest_key()).await.is_some());
+}
+
+#[tokio::test]
+async fn a_copy_of_an_oversized_source_onto_the_manifest_key_is_refused() {
+    let storage = ScriptedStorage::with_kbs([&kb()]);
+    let (tx, _rx) = notedthat_indexer::index_queue(8);
+    let sinks = WriteSinks::indexer_only(&tx);
+    let huge = ObjectPath::try_from_str("manifest.huge.json").unwrap();
+    let size = notedthat_write::MANIFEST_MAX_BYTES + 1;
+    storage
+        .inner()
+        .put_object(
+            &kb(),
+            &huge,
+            Bytes::from(vec![b' '; usize::try_from(size).unwrap()]),
+            Some("application/json"),
+            ConditionalHeaders::default(),
+        )
+        .await
+        .unwrap();
+
+    let error = commit_copy(
+        &storage,
+        &sinks,
+        &kb(),
+        &huge,
+        &manifest_key(),
+        CopyObjectOptions::default(),
+    )
+    .await
+    .expect_err("the source is over the manifest size bound");
+    let expected = format!("manifest is {size} bytes; a manifest is at most");
+    assert!(is_invalid_manifest(&error, &expected), "{error}");
+    assert_eq!(stored(storage.inner(), &manifest_key()).await, None);
+    // The size bound is checked from the HEAD, before the source is read.
+    assert_eq!(storage.count(StorageOp::GetObject), 0);
+    assert_eq!(storage.count(StorageOp::GetObjectStream), 0);
 }
