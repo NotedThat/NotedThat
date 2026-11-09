@@ -1,5 +1,5 @@
 use notedthat_core::testing::StorageOp;
-use notedthat_core::{Verb, Who};
+use notedthat_core::{AccessPolicy, AccessRule, KeyPattern, Verb, Who};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -187,4 +187,81 @@ async fn real_router_manual_denial_qa_scenario() {
                 | StorageOp::CopyObject
         )
     }));
+}
+
+/// Write under `drafts/**`, read-only under `published/**` (#441).
+fn drafts_writable_published_read_only() -> BTreeMap<String, AccessPolicy> {
+    let pattern = |source| KeyPattern::parse(source).expect("valid pattern");
+    BTreeMap::from([(
+        "discoverable".to_string(),
+        [
+            AccessRule::new(
+                Who::SignedIn,
+                [Verb::List, Verb::Read, Verb::Write, Verb::Delete],
+            )
+            .under([pattern("drafts/**")]),
+            AccessRule::new(Who::SignedIn, [Verb::List, Verb::Read])
+                .under([pattern("published/**")]),
+        ]
+        .into_iter()
+        .collect(),
+    )])
+}
+
+fn signed_in_transfer(method: &str, from: &str, to: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/webdav/discoverable/{from}"))
+        .header("Authorization", "Basic dXNlcjpwYXNz")
+        .header("Host", "localhost")
+        .header("Destination", format!("/webdav/discoverable/{to}"))
+        .body(Body::empty())
+        .expect("valid request")
+}
+
+#[tokio::test]
+async fn copy_and_move_into_a_read_only_prefix_are_forbidden_before_storage() {
+    for method in ["MOVE", "COPY"] {
+        // Given
+        let storage = Arc::new(memory_storage([("discoverable", "drafts/a.md")]).await);
+        let app = build_router(state_with_policies(
+            Arc::clone(&storage),
+            drafts_writable_published_read_only(),
+        ));
+
+        // When
+        let response = app
+            .oneshot(signed_in_transfer(method, "drafts/a.md", "published/a.md"))
+            .await
+            .expect("router response");
+
+        // Then
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "method={method}");
+        assert!(
+            storage.ops().is_empty(),
+            "method={method} calls: {:?}",
+            storage.ops()
+        );
+    }
+}
+
+#[tokio::test]
+async fn move_within_a_writable_prefix_still_succeeds() {
+    // Given
+    let storage = Arc::new(memory_storage([("discoverable", "drafts/a.md")]).await);
+    let app = build_router(state_with_policies(
+        Arc::clone(&storage),
+        drafts_writable_published_read_only(),
+    ));
+
+    // When
+    let response = app
+        .oneshot(signed_in_transfer("MOVE", "drafts/a.md", "drafts/b.md"))
+        .await
+        .expect("router response");
+
+    // Then: authorized, so the copy reaches storage. The fixture's index queue has no
+    // receiver, so the request ends in 503 after the copy; that is not what is pinned.
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(storage.count(StorageOp::CopyObject), 1);
 }

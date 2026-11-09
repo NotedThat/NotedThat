@@ -38,7 +38,7 @@ fn challenge(request_id: &str) -> Response {
     response
 }
 
-fn forbidden(request_id: &str) -> Response {
+pub(super) fn forbidden(request_id: &str) -> Response {
     let mut response = (
         StatusCode::FORBIDDEN,
         "the knowledge base's access rules do not grant this operation",

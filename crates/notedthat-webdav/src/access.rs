@@ -48,8 +48,8 @@ pub(crate) fn verbs_for_method(method: &str) -> &'static [Verb] {
         "PROPFIND" => &[Verb::List],
         "GET" | "HEAD" => &[Verb::Read],
         "DELETE" => &[Verb::Delete],
-        // A move is a write at the destination and a delete at the source; the
-        // handler checks each against its own key.
+        // These verbs are checked at the source key. A COPY or MOVE also writes
+        // its destination; the copy/move handler checks Write there (#441).
         "MOVE" => &[Verb::Write, Verb::Delete],
         // `PUT`, `MKCOL`, `COPY`, and everything unrecognised. Lumping the
         // unknown in with the writes is the fail-closed reading, and it is what

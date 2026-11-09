@@ -179,32 +179,64 @@ fn test_state_with_indexer_tx(
         storage,
         staging_config: notedthat_core::StagingConfig::default(),
         declared_kbs: Arc::new(declared_kbs(&["notes", "scratch"])),
-        access_policies: Arc::new(BTreeMap::new()),
+        // These tests drive the write interceptor alone, as a caller the auth layer
+        // already admitted (see `signed_in`), so the policies grant every verb.
+        access_policies: Arc::new(
+            ["notes", "scratch"]
+                .into_iter()
+                .map(|kb| (kb.to_string(), Arc::new(grant_everything())))
+                .collect(),
+        ),
         indexer_tx,
         events: None,
         index_health: Arc::new(notedthat_indexer::IndexHealth::new()),
     }
 }
 
+fn grant_everything() -> notedthat_core::AccessPolicy {
+    use notedthat_core::{AccessRule, Verb, Who};
+    [AccessRule::new(
+        Who::SignedIn,
+        [Verb::List, Verb::Read, Verb::Write, Verb::Delete],
+    )]
+    .into_iter()
+    .collect()
+}
+
+/// Admits every request as the service token, the way `basic_auth_middleware` would.
+fn signed_in(router: Router) -> Router {
+    router.layer(axum::middleware::map_request(
+        |mut req: Request| async move {
+            req.extensions_mut()
+                .insert(notedthat_core::Principal::service_token());
+            req
+        },
+    ))
+}
+
 fn app(storage: ScriptedStorage) -> Router {
-    Router::new()
-        .fallback(any(|| async { "inner handler reached" }))
-        .layer(from_fn_with_state(
-            test_state(storage),
-            intercept_write_methods,
-        ))
+    signed_in(
+        Router::new()
+            .fallback(any(|| async { "inner handler reached" }))
+            .layer(from_fn_with_state(
+                test_state(storage),
+                intercept_write_methods,
+            )),
+    )
 }
 
 fn app_with_indexer_tx(
     storage: ScriptedStorage,
     indexer_tx: notedthat_indexer::IndexQueueSender,
 ) -> Router {
-    Router::new()
-        .fallback(any(|| async { "inner handler reached" }))
-        .layer(from_fn_with_state(
-            test_state_with_indexer_tx(storage, indexer_tx),
-            intercept_write_methods,
-        ))
+    signed_in(
+        Router::new()
+            .fallback(any(|| async { "inner handler reached" }))
+            .layer(from_fn_with_state(
+                test_state_with_indexer_tx(storage, indexer_tx),
+                intercept_write_methods,
+            )),
+    )
 }
 
 fn app_with_staging_config(
@@ -213,9 +245,11 @@ fn app_with_staging_config(
 ) -> Router {
     let mut state = test_state(storage);
     state.staging_config = staging_config;
-    Router::new()
-        .fallback(any(|| async { "inner handler reached" }))
-        .layer(from_fn_with_state(state, intercept_write_methods))
+    signed_in(
+        Router::new()
+            .fallback(any(|| async { "inner handler reached" }))
+            .layer(from_fn_with_state(state, intercept_write_methods)),
+    )
 }
 
 fn object_path(value: &str) -> ObjectPath {
