@@ -52,6 +52,21 @@ other Rust program keeps it. Every other setting on this page has a flag.
 Which storage variables are required depends on the selected backend — see
 [Storage backend](#storage-backend).
 
+### Numeric settings
+
+The numeric settings the server parses itself (timeouts, sizes, counts) follow one rule. An empty
+or whitespace-only value means unset, so the default applies (Compose expands an unset `${VAR-}` to
+the empty string); for `EMBEDDING_DIMENSIONS`, which has no default, it reports that the setting is
+required. Any other value is trimmed and must be a whole number. `0` refuses startup, naming the
+setting, everywhere except `EMBEDDING_MAX_RETRIES`, where `0` means no retries.
+
+The exceptions are the numbers the storage and event adapters parse:
+`NOTEDTHAT_FS_WATCH_DEBOUNCE_MS`, `NOTEDTHAT_EVENTS_MEMORY_CAPACITY`,
+`NOTEDTHAT_NATS_MAX_AGE_SECS`, `NOTEDTHAT_NATS_DUPLICATE_WINDOW_SECS` and
+`NOTEDTHAT_NATS_REPLICAS`. An empty value for one of these refuses startup with "must not be
+empty" rather than applying the default, and the value is not trimmed; leave the variable unset to
+get its default.
+
 ## Required environment variables
 
 These must be set. The server exits with a non-zero status and a descriptive error message if any
@@ -147,7 +162,7 @@ below what the node can serve or a backend has slowed down; `timeout` on the sea
 means the embedding endpoint is slow.
 
 Each value must be a positive integer; `0` or anything unparseable refuses startup. Unset or empty
-means the default.
+means the default (see [Numeric settings](#numeric-settings)).
 
 ## Storage backend
 
@@ -1406,8 +1421,8 @@ NotedThat ships no embedding model: you set one up and point the server at it. T
 | `EMBEDDING_DIMENSIONS` | `--embedding-dimensions` | Yes | | Output vector dimensions. Must match the model's actual output and is baked into the Qdrant collection at first provisioning. |
 | `EMBEDDING_BATCH_SIZE` | `--embedding-batch-size` | No | `32` | Number of text chunks per HTTP embedding request |
 | `NOTEDTHAT_INDEX_CONCURRENCY` | `--index-concurrency` | No | `8` | Complete file indexing handlers allowed to run in parallel; `1` indexes one file at a time. Must be a positive integer; unset or empty uses the default |
-| `EMBEDDING_TIMEOUT_MS` | `--embedding-timeout-ms` | No | `30000` | Per-request HTTP timeout (milliseconds) |
-| `EMBEDDING_MAX_RETRIES` | `--embedding-max-retries` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses |
+| `EMBEDDING_TIMEOUT_MS` | `--embedding-timeout-ms` | No | `30000` | Per-request HTTP timeout (milliseconds). Must be > 0. |
+| `EMBEDDING_MAX_RETRIES` | `--embedding-max-retries` | No | `3` | Number of retry attempts on HTTP 429 or 5xx responses; `0` disables retries |
 | `EMBEDDING_MAX_INPUT_TOKENS` | `--embedding-max-input-tokens` | No | `8192` | Chunks exceeding this character count are dropped (with a WARN log) rather than truncated |
 
 ### Examples

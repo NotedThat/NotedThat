@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Which storage backend the server runs on.
@@ -736,20 +737,16 @@ impl RequestBoundsConfig {
     /// Takes the four settings rather than the whole [`ServerCli`], which
     /// [`Config::from_cli`] has partly moved out of by the time it gets here.
     fn from_settings(
-        request_timeout_ms: Option<&String>,
-        webdav_request_timeout_ms: Option<&String>,
-        max_requests_in_flight: Option<&String>,
-        header_read_timeout_ms: Option<&String>,
+        request_timeout_ms: Option<&str>,
+        webdav_request_timeout_ms: Option<&str>,
+        max_requests_in_flight: Option<&str>,
+        header_read_timeout_ms: Option<&str>,
     ) -> Result<Self, Error> {
-        let millis = |var: &str, supplied: Option<&String>, default: Duration| {
-            parse_duration_ms(var, non_blank(supplied), default)
-        };
-        let max_requests_in_flight = parse_positive_usize(
+        let max_requests_in_flight = positive(
             "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
-            non_blank(max_requests_in_flight),
-            const { NonZeroUsize::new(Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT).unwrap() },
-        )?
-        .get();
+            max_requests_in_flight,
+            Self::DEFAULT_MAX_REQUESTS_IN_FLIGHT,
+        )?;
         // A semaphore holds at most this many permits; asking for more panics
         // at startup rather than refusing it with a name attached.
         if max_requests_in_flight > tokio::sync::Semaphore::MAX_PERMITS {
@@ -762,18 +759,18 @@ impl RequestBoundsConfig {
             });
         }
         Ok(Self {
-            request_timeout: millis(
+            request_timeout: parse_duration_ms(
                 "NOTEDTHAT_REQUEST_TIMEOUT_MS",
                 request_timeout_ms,
                 Self::DEFAULT_REQUEST_TIMEOUT,
             )?,
-            webdav_request_timeout: millis(
+            webdav_request_timeout: parse_duration_ms(
                 "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
                 webdav_request_timeout_ms,
                 Self::DEFAULT_WEBDAV_REQUEST_TIMEOUT,
             )?,
             max_requests_in_flight,
-            header_read_timeout: millis(
+            header_read_timeout: parse_duration_ms(
                 "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
                 header_read_timeout_ms,
                 Self::DEFAULT_HEADER_READ_TIMEOUT,
@@ -793,12 +790,11 @@ impl Default for RequestBoundsConfig {
     }
 }
 
-/// A supplied value, or `None` when it is absent, empty or blank — Compose
-/// passes an unset variable through as `${VAR-}`, an empty string.
-fn non_blank(supplied: Option<&String>) -> Option<&str> {
-    supplied
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
+/// A supplied value, trimmed, or `None` when it is absent, empty or blank —
+/// Compose passes an unset variable through as `${VAR-}`, an empty string, so
+/// every numeric setting reads blank as its default.
+fn non_blank(supplied: Option<&str>) -> Option<&str> {
+    supplied.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// Settings removed when the API, `WebDAV`, and MCP surfaces moved onto one
@@ -1016,11 +1012,13 @@ impl Config {
             max_retries: cli.embedding_max_retries,
             max_input_tokens: cli.embedding_max_input_tokens,
         })?;
-        let index_concurrency = parse_positive_usize(
+        // `optional_positive` has refused zero, so `NonZeroUsize::new` cannot fail.
+        let index_concurrency = optional_positive::<usize>(
             "NOTEDTHAT_INDEX_CONCURRENCY",
-            non_blank(cli.index_concurrency.as_ref()),
-            DEFAULT_INDEX_CONCURRENCY,
-        )?;
+            cli.index_concurrency.as_deref(),
+        )?
+        .and_then(NonZeroUsize::new)
+        .unwrap_or(DEFAULT_INDEX_CONCURRENCY);
 
         let webdav_username = cli.webdav_username.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("NOTEDTHAT_WEBDAV_USERNAME")),
@@ -1054,21 +1052,11 @@ impl Config {
         );
         let mcp_anonymous = parse_mcp_anonymous(cli.mcp_anonymous.as_deref())?;
 
-        let max_patchable_size = cli
-            .max_patchable_size
-            .unwrap_or_else(|| Self::DEFAULT_MAX_PATCHABLE_SIZE.to_string())
-            .parse::<u64>()
-            .map_err(|_e: std::num::ParseIntError| Error::Config {
-                message: format!(
-                    "{} must be a valid u64 integer",
-                    setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")
-                ),
-            })?;
-        if max_patchable_size == 0 {
-            return Err(Error::Config {
-                message: format!("{} must be > 0", setting("NOTEDTHAT_MAX_PATCHABLE_SIZE")),
-            });
-        }
+        let max_patchable_size = positive(
+            "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+            cli.max_patchable_size.as_deref(),
+            Self::DEFAULT_MAX_PATCHABLE_SIZE,
+        )?;
         if max_patchable_size > MAX_UPLOAD_BYTES {
             return Err(Error::Config {
                 message: format!(
@@ -1078,22 +1066,18 @@ impl Config {
             });
         }
 
-        // Empty or blank is the default, as for every sibling NOTEDTHAT_MCP_*
-        // setting: Compose passes them through as `${VAR-}`, so a deployment
-        // that never set this hands the server an empty string.
-        let mcp_max_read_bytes = parse_positive_u64(
+        let mcp_max_read_bytes = positive(
             "NOTEDTHAT_MCP_MAX_READ_BYTES",
-            non_blank(cli.mcp_max_read_bytes.as_ref()),
+            cli.mcp_max_read_bytes.as_deref(),
             notedthat_mcp::DEFAULT_MAX_READ_BYTES,
         )?;
         // Neither `fs` nor `s3` owns this one, so it is deliberately absent
         // from `backend_owned_settings`: it bounds the transport, not a backend.
-        let mcp_max_sessions = parse_positive_usize(
+        let mcp_max_sessions = positive(
             "NOTEDTHAT_MCP_MAX_SESSIONS",
-            non_blank(cli.mcp_max_sessions.as_ref()),
-            const { NonZeroUsize::new(notedthat_mcp::DEFAULT_MAX_SESSIONS).unwrap() },
-        )?
-        .get();
+            cli.mcp_max_sessions.as_deref(),
+            notedthat_mcp::DEFAULT_MAX_SESSIONS,
+        )?;
         let ready_probe_interval = parse_duration_ms(
             "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
             cli.ready_probe_interval_ms.as_deref(),
@@ -1103,10 +1087,10 @@ impl Config {
         // Like the session bound, these bound the transport rather than a
         // backend, so none of them is in `backend_owned_settings`.
         let request_bounds = RequestBoundsConfig::from_settings(
-            cli.request_timeout_ms.as_ref(),
-            cli.webdav_request_timeout_ms.as_ref(),
-            cli.max_requests_in_flight.as_ref(),
-            cli.header_read_timeout_ms.as_ref(),
+            cli.request_timeout_ms.as_deref(),
+            cli.webdav_request_timeout_ms.as_deref(),
+            cli.max_requests_in_flight.as_deref(),
+            cli.header_read_timeout_ms.as_deref(),
         )?;
 
         let metrics_listen_addr = parse_metrics(
@@ -1362,16 +1346,29 @@ fn qdrant_from_parts(
     })
 }
 
-/// Parse a positive integer setting — a millisecond duration or a byte count —
-/// falling back to `default` when it is not supplied and rejecting zero.
-fn parse_positive_u64(var: &str, supplied: Option<&str>, default: u64) -> Result<u64, Error> {
-    let Some(raw) = supplied else {
-        return Ok(default);
-    };
-    let value = raw.parse::<u64>().map_err(|_| Error::Config {
-        message: format!("{} must be a valid u64 integer", setting(var)),
-    })?;
-    if value == 0 {
+/// Parse an integer setting: blank is `None` (see [`non_blank`]), anything else
+/// is trimmed and must parse.
+fn parse_integer<T: FromStr>(
+    var: &str,
+    supplied: Option<&str>,
+    kind: &str,
+) -> Result<Option<T>, Error> {
+    non_blank(supplied)
+        .map(|raw| {
+            raw.parse::<T>().map_err(|_| Error::Config {
+                message: format!("{} must be a valid {kind} integer", setting(var)),
+            })
+        })
+        .transpose()
+}
+
+/// [`parse_integer`] for a setting where zero means nothing, so is refused.
+fn optional_positive<T: FromStr + Default + PartialEq>(
+    var: &str,
+    supplied: Option<&str>,
+) -> Result<Option<T>, Error> {
+    let value = parse_integer::<T>(var, supplied, "positive")?;
+    if value == Some(T::default()) {
         return Err(Error::Config {
             message: format!("{} must be > 0", setting(var)),
         });
@@ -1379,16 +1376,22 @@ fn parse_positive_u64(var: &str, supplied: Option<&str>, default: u64) -> Result
     Ok(value)
 }
 
-/// [`parse_positive_u64`] for a millisecond setting held as a [`Duration`].
+/// [`optional_positive`], `default` when blank or absent.
+fn positive<T: FromStr + Default + PartialEq>(
+    var: &str,
+    supplied: Option<&str>,
+    default: T,
+) -> Result<T, Error> {
+    Ok(optional_positive(var, supplied)?.unwrap_or(default))
+}
+
+/// [`positive`] for a millisecond setting held as a [`Duration`].
 fn parse_duration_ms(
     var: &str,
     supplied: Option<&str>,
     default: Duration,
 ) -> Result<Duration, Error> {
-    match supplied {
-        None => Ok(default),
-        some => parse_positive_u64(var, some, 0).map(Duration::from_millis),
-    }
+    Ok(optional_positive(var, supplied)?.map_or(default, Duration::from_millis))
 }
 
 /// The raw embedder settings, before validation.
@@ -1468,7 +1471,7 @@ impl EmbedderConfig {
         let api_key = parts.api_key.ok_or_else(|| Error::Config {
             message: format!("{} is required", setting("EMBEDDING_API_KEY")),
         })?;
-        let dimensions = parse_number("EMBEDDING_DIMENSIONS", parts.dimensions.as_deref())?
+        let dimensions = optional_positive("EMBEDDING_DIMENSIONS", parts.dimensions.as_deref())?
             .ok_or_else(|| Error::Config {
                 message: format!("{} is required", setting("EMBEDDING_DIMENSIONS")),
             })?;
@@ -1477,17 +1480,28 @@ impl EmbedderConfig {
             model,
             api_key,
             dimensions,
-            batch_size: parse_number("EMBEDDING_BATCH_SIZE", parts.batch_size.as_deref())?
-                .unwrap_or(Self::DEFAULT_BATCH_SIZE),
-            timeout: parse_number("EMBEDDING_TIMEOUT_MS", parts.timeout_ms.as_deref())?
-                .map_or(Self::DEFAULT_TIMEOUT, Duration::from_millis),
-            max_retries: parse_number("EMBEDDING_MAX_RETRIES", parts.max_retries.as_deref())?
-                .unwrap_or(Self::DEFAULT_MAX_RETRIES),
-            max_input_tokens: parse_number(
+            batch_size: positive(
+                "EMBEDDING_BATCH_SIZE",
+                parts.batch_size.as_deref(),
+                Self::DEFAULT_BATCH_SIZE,
+            )?,
+            timeout: parse_duration_ms(
+                "EMBEDDING_TIMEOUT_MS",
+                parts.timeout_ms.as_deref(),
+                Self::DEFAULT_TIMEOUT,
+            )?,
+            // The one numeric setting where zero means something: no retries.
+            max_retries: parse_integer(
+                "EMBEDDING_MAX_RETRIES",
+                parts.max_retries.as_deref(),
+                "non-negative",
+            )?
+            .unwrap_or(Self::DEFAULT_MAX_RETRIES),
+            max_input_tokens: positive(
                 "EMBEDDING_MAX_INPUT_TOKENS",
                 parts.max_input_tokens.as_deref(),
-            )?
-            .unwrap_or(Self::DEFAULT_MAX_INPUT_TOKENS),
+                Self::DEFAULT_MAX_INPUT_TOKENS,
+            )?,
         })
     }
 }
@@ -1522,36 +1536,6 @@ impl EmbedderConfig {
         }
         self.endpoint_url_redacted()
     }
-}
-
-/// Parse an optional integer setting, naming it on failure.
-fn parse_number<T>(var: &str, supplied: Option<&str>) -> Result<Option<T>, Error>
-where
-    T: std::str::FromStr<Err = std::num::ParseIntError>,
-{
-    supplied
-        .map(|raw| {
-            raw.parse::<T>().map_err(|e| Error::Config {
-                message: format!("{} is invalid: {e}", setting(var)),
-            })
-        })
-        .transpose()
-}
-
-fn parse_positive_usize(
-    var: &str,
-    supplied: Option<&str>,
-    default: NonZeroUsize,
-) -> Result<NonZeroUsize, Error> {
-    let Some(value) = supplied else {
-        return Ok(default);
-    };
-    let parsed = value.parse::<usize>().map_err(|_| Error::Config {
-        message: format!("{} must be a valid positive integer", setting(var)),
-    })?;
-    NonZeroUsize::new(parsed).ok_or_else(|| Error::Config {
-        message: format!("{} must be > 0", setting(var)),
-    })
 }
 
 // `{:?}` of a configuration must not print a credential (#503). Each impl
@@ -1990,7 +1974,10 @@ mod tests {
 
     #[test]
     fn mcp_max_read_bytes_rejects_zero_and_non_numbers() {
-        for (value, fragment) in [("0", "must be > 0"), ("lots", "must be a valid u64")] {
+        for (value, fragment) in [
+            ("0", "must be > 0"),
+            ("lots", "must be a valid positive integer"),
+        ] {
             let result = parse_config(&[("NOTEDTHAT_MCP_MAX_READ_BYTES", Some(value))]);
             assert!(matches!(result, Err(Error::Config { .. })));
             assert!(names_setting(
@@ -2121,11 +2108,7 @@ mod tests {
     #[test]
     fn request_bounds_refuse_zero_and_non_numbers() {
         for name in REQUEST_BOUND_SETTINGS {
-            let not_a_number = if name == "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT" {
-                "must be a valid positive integer"
-            } else {
-                "must be a valid u64"
-            };
+            let not_a_number = "must be a valid positive integer";
             for (value, fragment) in [
                 ("0", "must be > 0"),
                 ("-1", not_a_number),
@@ -2180,7 +2163,10 @@ mod tests {
 
     #[test]
     fn ready_probe_interval_rejects_zero_and_nonsense() {
-        for (value, complaint) in [("0", "must be > 0"), ("soon", "must be a valid u64")] {
+        for (value, complaint) in [
+            ("0", "must be > 0"),
+            ("soon", "must be a valid positive integer"),
+        ] {
             let error =
                 parse_config(&[("NOTEDTHAT_READY_PROBE_INTERVAL_MS", Some(value))]).unwrap_err();
             assert!(
@@ -2235,7 +2221,7 @@ mod tests {
         assert!(names_setting(
             &result.unwrap_err().to_string(),
             "NOTEDTHAT_MAX_PATCHABLE_SIZE",
-            "must be a valid u64 integer"
+            "must be a valid positive integer"
         ));
     }
 
@@ -2275,29 +2261,146 @@ mod tests {
         assert_eq!(cfg.qdrant.url, "http://qdrant.example.com:6334");
     }
 
-    /// Pins today's zero and blank handling, which differs per setting until
-    /// the numeric parsers share one rule.
+    type ReadBack = fn(&Config) -> u64;
+    type Overrides = &'static [(&'static str, Option<&'static str>)];
+
+    const OIDC_ON: Overrides = &[
+        ("NOTEDTHAT_OIDC_ISSUER", Some("https://idp.example")),
+        ("NOTEDTHAT_OIDC_AUDIENCE", Some("notedthat")),
+    ];
+
+    fn ms(d: Duration) -> u64 {
+        u64::try_from(d.as_millis()).unwrap()
+    }
+
+    /// Every numeric setting, how to read it back, and what else it needs.
+    fn numeric_settings() -> [(&'static str, ReadBack, Overrides); 17] {
+        [
+            ("NOTEDTHAT_QDRANT_TIMEOUT_MS", |c| ms(c.qdrant.timeout), &[]),
+            (
+                "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
+                |c| ms(c.qdrant.connect_timeout),
+                &[],
+            ),
+            (
+                "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
+                |c| ms(c.ready_probe_interval),
+                &[],
+            ),
+            (
+                "NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS",
+                |c| ms(c.oidc.as_ref().unwrap().http_timeout),
+                OIDC_ON,
+            ),
+            (
+                "NOTEDTHAT_REQUEST_TIMEOUT_MS",
+                |c| ms(c.request_bounds.request_timeout),
+                &[],
+            ),
+            (
+                "NOTEDTHAT_WEBDAV_REQUEST_TIMEOUT_MS",
+                |c| ms(c.request_bounds.webdav_request_timeout),
+                &[],
+            ),
+            (
+                "NOTEDTHAT_HEADER_READ_TIMEOUT_MS",
+                |c| ms(c.request_bounds.header_read_timeout),
+                &[],
+            ),
+            (
+                "NOTEDTHAT_MAX_REQUESTS_IN_FLIGHT",
+                |c| c.request_bounds.max_requests_in_flight as u64,
+                &[],
+            ),
+            (
+                "NOTEDTHAT_INDEX_CONCURRENCY",
+                |c| c.index_concurrency.get() as u64,
+                &[],
+            ),
+            (
+                "NOTEDTHAT_MAX_PATCHABLE_SIZE",
+                |c| c.max_patchable_size,
+                &[],
+            ),
+            (
+                "NOTEDTHAT_MCP_MAX_READ_BYTES",
+                |c| c.mcp_max_read_bytes,
+                &[],
+            ),
+            (
+                "NOTEDTHAT_MCP_MAX_SESSIONS",
+                |c| c.mcp_max_sessions as u64,
+                &[],
+            ),
+            (
+                "EMBEDDING_DIMENSIONS",
+                |c| u64::from(c.embedder.dimensions),
+                &[],
+            ),
+            (
+                "EMBEDDING_BATCH_SIZE",
+                |c| c.embedder.batch_size as u64,
+                &[],
+            ),
+            ("EMBEDDING_TIMEOUT_MS", |c| ms(c.embedder.timeout), &[]),
+            (
+                "EMBEDDING_MAX_RETRIES",
+                |c| u64::from(c.embedder.max_retries),
+                &[],
+            ),
+            (
+                "EMBEDDING_MAX_INPUT_TOKENS",
+                |c| c.embedder.max_input_tokens as u64,
+                &[],
+            ),
+        ]
+    }
+
+    /// One rule for every numeric setting: blank is the default (or "is
+    /// required"), the value is trimmed, zero is refused except for
+    /// `EMBEDDING_MAX_RETRIES`, and garbage names the setting.
     #[test]
-    fn timeout_zero_and_blank_handling_is_pinned_per_setting() {
-        assert!(parse_config(&[("EMBEDDING_TIMEOUT_MS", Some("0"))]).is_ok());
-        for var in [
-            "NOTEDTHAT_QDRANT_TIMEOUT_MS",
-            "NOTEDTHAT_QDRANT_CONNECT_TIMEOUT_MS",
-            "NOTEDTHAT_READY_PROBE_INTERVAL_MS",
-        ] {
-            for (value, complaint) in [
-                ("", "must be a valid u64 integer"),
-                ("abc", "must be a valid u64 integer"),
-                ("0", "must be > 0"),
-            ] {
-                let error = parse_config(&[(var, Some(value))]).unwrap_err();
+    fn every_numeric_setting_follows_the_blank_and_zero_rule() {
+        let message = |result: Result<Config, Error>| match result {
+            Err(Error::Config { message }) => message,
+            other => panic!("expected a config error, got {other:?}"),
+        };
+        for (var, read, extra) in numeric_settings() {
+            let parse = |value: Option<&str>| {
+                let mut overrides = extra.to_vec();
+                overrides.push((var, value));
+                parse_config(&overrides)
+            };
+            let default = (var != "EMBEDDING_DIMENSIONS").then(|| read(&parse(None).unwrap()));
+            for blank in ["", "  "] {
+                if var == "EMBEDDING_DIMENSIONS" {
+                    assert_eq!(
+                        message(parse(Some(blank))),
+                        format!("{} is required", setting(var))
+                    );
+                } else {
+                    assert_eq!(
+                        Some(read(&parse(Some(blank)).unwrap())),
+                        default,
+                        "{var}={blank:?}"
+                    );
+                }
+            }
+            assert_eq!(read(&parse(Some(" 5 ")).unwrap()), 5, "{var}");
+            if var == "EMBEDDING_MAX_RETRIES" {
+                assert_eq!(read(&parse(Some("0")).unwrap()), 0);
                 assert_eq!(
-                    error.to_string(),
-                    Error::Config {
-                        message: format!("{} {complaint}", setting(var))
-                    }
-                    .to_string(),
-                    "{var}={value:?}"
+                    message(parse(Some("x"))),
+                    format!("{} must be a valid non-negative integer", setting(var))
+                );
+            } else {
+                assert_eq!(
+                    message(parse(Some("0"))),
+                    format!("{} must be > 0", setting(var))
+                );
+                assert_eq!(
+                    message(parse(Some("x"))),
+                    format!("{} must be a valid positive integer", setting(var))
                 );
             }
         }
