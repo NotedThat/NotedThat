@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn new_constructor_sets_hits() {
-        // We can't construct SearchHit without ObjectKey, but we can test the constructor path
+        // We can't construct SearchHit without an ObjectPath, but we can test the constructor path
         let r = SearchResponse::new(vec![]);
         assert_eq!(r.hits.len(), 0);
         let r2 = SearchResponse::empty();

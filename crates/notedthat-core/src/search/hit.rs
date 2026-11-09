@@ -1,6 +1,7 @@
 //! `SearchHit` — one hit in a search result set.
 
-use super::{ConceptMetadata, ObjectKey};
+use super::ConceptMetadata;
+use crate::ObjectPath;
 use serde::{Deserialize, Serialize};
 
 /// One hit in a search result set.
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SearchHit {
     /// The object's key (its path within the knowledge base).
-    pub object_key: ObjectKey,
+    pub object_key: ObjectPath,
     /// Byte offset of the start of this chunk in the original object.
     pub byte_start: u64,
     /// Byte offset of the end (exclusive) of this chunk in the original object.
@@ -35,7 +36,7 @@ mod tests {
 
     fn make_hit() -> SearchHit {
         SearchHit {
-            object_key: ObjectKey::try_new("docs/rfc/7231.md").unwrap(),
+            object_key: ObjectPath::try_from_str("docs/rfc/7231.md").unwrap(),
             byte_start: 1024,
             byte_end: 2048,
             heading_path: vec!["Section 1".into(), "Subsection 1.2".into()],
@@ -61,7 +62,7 @@ mod tests {
     #[test]
     fn empty_heading_path_omitted_in_json() {
         let hit = SearchHit {
-            object_key: ObjectKey::try_new("notes/a.md").unwrap(),
+            object_key: ObjectPath::try_from_str("notes/a.md").unwrap(),
             byte_start: 0,
             byte_end: 100,
             heading_path: vec![],
@@ -76,6 +77,17 @@ mod tests {
     }
 
     #[test]
+    fn object_key_follows_the_object_path_grammar() {
+        let backslash =
+            r#"{"object_key":"docs\\a.md","byte_start":0,"byte_end":1,"score":0.5,"preview":"p"}"#;
+        assert!(serde_json::from_str::<SearchHit>(backslash).is_err());
+        let leading =
+            r#"{"object_key":"/docs/a.md","byte_start":0,"byte_end":1,"score":0.5,"preview":"p"}"#;
+        let hit: SearchHit = serde_json::from_str(leading).unwrap();
+        assert_eq!(hit.object_key.as_str(), "docs/a.md");
+    }
+
+    #[test]
     fn missing_heading_path_deserializes_as_empty() {
         let json = r#"{"object_key":"notes/a.md","byte_start":0,"byte_end":100,"score":0.5,"preview":"hello"}"#;
         let hit: SearchHit = serde_json::from_str(json).unwrap();
@@ -86,7 +98,7 @@ mod tests {
     #[test]
     fn emoji_in_preview_survives_round_trip() {
         let hit = SearchHit {
-            object_key: ObjectKey::try_new("notes/b.md").unwrap(),
+            object_key: ObjectPath::try_from_str("notes/b.md").unwrap(),
             byte_start: 0,
             byte_end: 50,
             heading_path: vec![],

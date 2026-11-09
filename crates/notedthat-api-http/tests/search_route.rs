@@ -9,8 +9,8 @@ use notedthat_api_http::router::build_router;
 use notedthat_api_http::search_route::SEARCH_BODY_MAX_BYTES;
 use notedthat_api_http::state::AppState;
 use notedthat_api_http::testing::{InMemoryStorage, MockSearcher};
-use notedthat_core::KbSlug;
-use notedthat_core::search::{ObjectKey, SearchError, SearchHit, SearchResponse};
+use notedthat_core::search::{SearchError, SearchHit, SearchResponse};
+use notedthat_core::{KbSlug, ObjectPath};
 use tower::util::ServiceExt;
 
 const TOKEN: &str = "test-token-abc";
@@ -113,7 +113,7 @@ async fn test2_mock_searcher_returns_two_hits_with_correct_shape() {
     let mock = Arc::new(MockSearcher::new());
     mock.push_response(Ok(SearchResponse::new(vec![
         SearchHit {
-            object_key: ObjectKey::try_new("docs/install.md").unwrap(),
+            object_key: ObjectPath::try_from_str("docs/install.md").unwrap(),
             byte_start: 0,
             byte_end: 256,
             heading_path: vec!["Getting Started".into()],
@@ -122,7 +122,7 @@ async fn test2_mock_searcher_returns_two_hits_with_correct_shape() {
             okf: None,
         },
         SearchHit {
-            object_key: ObjectKey::try_new("docs/setup.md").unwrap(),
+            object_key: ObjectPath::try_from_str("docs/setup.md").unwrap(),
             byte_start: 512,
             byte_end: 768,
             heading_path: vec![],

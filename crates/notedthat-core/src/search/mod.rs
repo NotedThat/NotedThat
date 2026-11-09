@@ -7,9 +7,6 @@
 //! §6.13 (route contract), D41 (top-k only, limit clamping),
 //! D43 (error mapping), D44 (preview truncation).
 
-mod object_key;
-pub use object_key::ObjectKey;
-
 mod filter;
 pub use filter::SearchFilter;
 

@@ -1747,10 +1747,6 @@
         ],
         "description": "What happened to the key.\n\nSerialised with an `event` tag so the JSON payload is self-describing on\nits own, without the SSE `event:` field or the broker subject around it."
       },
-      "ObjectKey": {
-        "type": "string",
-        "description": "An object's key: its path within the knowledge base, without a leading `/`."
-      },
       "ObjectListResponse": {
         "type": "object",
         "description": "One page of a knowledge base's objects.",
@@ -2060,7 +2056,7 @@
         ],
         "properties": {
           "object_key": {
-            "$ref": "#/components/schemas/ObjectKey",
+            "$ref": "#/components/schemas/ObjectPath",
             "description": "The object's key (its path within the knowledge base)."
           },
           "byte_start": {

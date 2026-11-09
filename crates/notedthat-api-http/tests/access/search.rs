@@ -4,8 +4,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use notedthat_api_http::testing::MockSearcher;
-use notedthat_core::search::{ObjectKey, SearchHit, SearchResponse};
-use notedthat_core::{AccessPolicy, Verb, Who};
+use notedthat_core::search::{SearchHit, SearchResponse};
+use notedthat_core::{AccessPolicy, ObjectPath, Verb, Who};
 use tower::ServiceExt;
 
 use super::fixture::{app_with_searcher, grant, grant_under, json, policy};
@@ -18,7 +18,7 @@ fn notes(
 
 fn hit(key: &str) -> SearchHit {
     SearchHit {
-        object_key: ObjectKey::try_new(key).expect("valid key"),
+        object_key: ObjectPath::try_from_str(key).expect("valid key"),
         byte_start: 0,
         byte_end: 7,
         heading_path: Vec::new(),
