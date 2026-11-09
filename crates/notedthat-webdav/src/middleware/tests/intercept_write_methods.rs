@@ -865,6 +865,67 @@ async fn test_move_cross_server_returns_502_destination_different_server() {
     );
 }
 
+/// A MOVE of a missing source from `host` to `destination`: 404 means the host check
+/// passed and the request reached storage, 502 that it was refused as another server.
+async fn move_status_between(host: &str, destination: &str) -> StatusCode {
+    app(empty_storage())
+        .oneshot(
+            HttpRequest::builder()
+                .method("MOVE")
+                .uri("/webdav/notes/source.md")
+                .header("host", host)
+                .header("destination", destination)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn destination_host_is_compared_as_a_parsed_authority() {
+    let same = StatusCode::NOT_FOUND;
+    let other = StatusCode::BAD_GATEWAY;
+    for (host, destination, expected) in [
+        ("[::1]:8080", "http://[::1]:8080/webdav/notes/b.md", same),
+        (
+            "[::1]:8080",
+            "http://[2001:db8::1]:8080/webdav/notes/b.md",
+            other,
+        ),
+        // `split(':')` reduced both of these to "[".
+        ("[::1]:8080", "http://[::2]:8080/webdav/notes/b.md", other),
+        (
+            "[::1]:8080",
+            "http://localhost:8080/webdav/notes/b.md",
+            other,
+        ),
+        // The port is not part of the comparison, as before.
+        ("[::1]:8080", "http://[::1]/webdav/notes/b.md", same),
+        (
+            "example.test:8080",
+            "http://EXAMPLE.test/webdav/notes/b.md",
+            same,
+        ),
+        ("example.test", "http://other.test/webdav/notes/b.md", other),
+    ] {
+        assert_eq!(
+            move_status_between(host, destination).await,
+            expected,
+            "Host: {host}, Destination: {destination}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unparseable_host_is_400() {
+    assert_eq!(
+        move_status_between("[::1", "http://[::1]/webdav/notes/b.md").await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
 #[tokio::test]
 async fn test_move_cross_kb_returns_403_cannot_modify_source() {
     let storage = empty_storage();
