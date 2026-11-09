@@ -14,12 +14,8 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use notedthat_core::testing::{InMemoryStorage, ScriptedStorage, StorageOp};
-use notedthat_core::{
-    ByteRange, ConditionalHeaders, CopyObjectOptions, DeleteOutcome, KbManifest, KbSlug,
-    ListResponse, ObjectMeta, ObjectPath, ObjectRead, ObjectStream, PutOutcome, StagedBody,
-    Storage, StorageError,
-};
+use notedthat_core::testing::{InMemoryStorage, ScriptedStorage, StorageOp, compute_etag};
+use notedthat_core::{ConditionalHeaders, KbSlug, ObjectPath, Storage, StorageError};
 use notedthat_indexer::chunker::stream_chunks;
 use notedthat_indexer::testing::{InMemoryVectorStore, Pipeline};
 use notedthat_indexer::vector_store::{
@@ -41,80 +37,16 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, UNIX_EPOCH},
 };
-use tokio::{io::AsyncReadExt, sync::Semaphore};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
-
-type StorageObject = (Bytes, Option<String>);
-
-struct MockStorage {
-    objects: Mutex<HashMap<(String, String), StorageObject>>,
-    stream_calls: AtomicUsize,
-    fail_next_head: AtomicBool,
-}
-
-impl MockStorage {
-    fn new() -> Self {
-        Self {
-            objects: Mutex::new(HashMap::new()),
-            stream_calls: AtomicUsize::new(0),
-            fail_next_head: AtomicBool::new(false),
-        }
-    }
-
-    /// An `ETag` derived from the bytes, the way a real backend produces one.
-    ///
-    /// A constant would make every object look unchanged forever, which is precisely
-    /// the condition `Skip::IfUnchanged` turns on — so the stub has to vary it.
-    fn etag_for(bytes: &[u8]) -> String {
-        use sha2::{Digest, Sha256};
-        format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
-    }
-
-    fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str) {
-        self.insert_bytes(kb, key, Bytes::from(content.to_owned()), content_type);
-    }
-
-    fn remove(&self, kb: &str, key: &str) {
-        self.objects
-            .lock()
-            .unwrap()
-            .remove(&(kb.to_string(), key.to_string()));
-    }
-
-    fn insert_bytes(&self, kb: &str, key: &str, content: Bytes, content_type: &str) {
-        self.objects.lock().unwrap().insert(
-            (kb.to_string(), key.to_string()),
-            (content, Some(content_type.to_owned())),
-        );
-    }
-
-    /// An object with no recorded type, as the fs backend reports a file written
-    /// outside the server whose extension it does not recognise.
-    fn insert_untyped(&self, kb: &str, key: &str, content: Bytes) {
-        self.objects
-            .lock()
-            .unwrap()
-            .insert((kb.to_string(), key.to_string()), (content, None));
-    }
-
-    fn stream_calls(&self) -> usize {
-        self.stream_calls.load(Ordering::SeqCst)
-    }
-
-    /// The next `HEAD` fails as an unreachable backend would, before the
-    /// worker learns anything about the object.
-    fn fail_next_head(&self) {
-        self.fail_next_head.store(true, Ordering::SeqCst);
-    }
-}
 
 /// Seeding shorthands over core's [`ScriptedStorage`], in the shape these tests
 /// read. Every object reports the same modification time, so assertions on
@@ -122,8 +54,14 @@ impl MockStorage {
 trait Seed {
     async fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str);
     async fn insert_bytes(&self, kb: &str, key: &str, content: Bytes, content_type: &str);
+    /// An object with no recorded type, as the fs backend reports a file written
+    /// outside the server whose extension it does not recognise.
+    async fn insert_untyped(&self, kb: &str, key: &str, content: Bytes);
     async fn remove(&self, kb: &str, key: &str);
     fn stream_calls(&self) -> usize;
+    /// The next `HEAD` fails as an unreachable backend would, before the
+    /// worker learns anything about the object.
+    fn fail_next_head(&self);
 }
 
 const MTIME: u64 = 1_700_000_000;
@@ -148,6 +86,13 @@ impl Seed for ScriptedStorage {
             .await;
     }
 
+    async fn insert_untyped(&self, kb: &str, key: &str, content: Bytes) {
+        self.inner().seed(kb, key, content, None, None).await;
+        self.inner()
+            .set_last_modified(kb, key, UNIX_EPOCH + Duration::from_secs(MTIME))
+            .await;
+    }
+
     async fn remove(&self, kb: &str, key: &str) {
         self.inner()
             .delete_object(
@@ -161,6 +106,14 @@ impl Seed for ScriptedStorage {
 
     fn stream_calls(&self) -> usize {
         self.count(StorageOp::GetObjectStream)
+    }
+
+    fn fail_next_head(&self) {
+        self.fail_next(StorageOp::HeadObject, 1, || {
+            StorageError::BackendUnavailable {
+                message: "injected head failure".to_owned(),
+            }
+        });
     }
 }
 
@@ -303,245 +256,6 @@ impl Embedder for BlockingEmbedder {
 
     fn model_id(&self) -> &'static str {
         "blocking-test"
-    }
-}
-
-#[async_trait]
-impl Storage for MockStorage {
-    async fn probe(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn ensure_bucket(&self, _kb: &KbSlug) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn read_manifest(&self, _kb: &KbSlug) -> Result<KbManifest, StorageError> {
-        Err(StorageError::NotFound {
-            key: ".notedthat/manifest.json".to_string(),
-        })
-    }
-
-    async fn write_manifest(
-        &self,
-        _kb: &KbSlug,
-        _manifest: &KbManifest,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn head_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<ObjectMeta, StorageError> {
-        if self.fail_next_head.swap(false, Ordering::SeqCst) {
-            return Err(StorageError::BackendUnavailable {
-                message: "injected head failure".to_owned(),
-            });
-        }
-        let guard = self.objects.lock().unwrap();
-        match guard.get(&(kb.as_str().to_string(), path.as_str().to_string())) {
-            Some((bytes, content_type)) => Ok(ObjectMeta {
-                key: path.as_str().to_string(),
-                size: bytes.len() as u64,
-                last_modified: Some(1_700_000_000),
-                content_type: content_type.clone(),
-                etag: Some(Self::etag_for(bytes)),
-            }),
-            None => Err(StorageError::NotFound {
-                key: path.as_str().to_string(),
-            }),
-        }
-    }
-
-    async fn get_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _range: Option<ByteRange>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<ObjectRead, StorageError> {
-        let guard = self.objects.lock().unwrap();
-        match guard.get(&(kb.as_str().to_string(), path.as_str().to_string())) {
-            Some((bytes, content_type)) => Ok(ObjectRead {
-                bytes: bytes.clone(),
-                meta: ObjectMeta {
-                    key: path.as_str().to_string(),
-                    size: bytes.len() as u64,
-                    last_modified: Some(1_700_000_000),
-                    content_type: content_type.clone(),
-                    etag: Some(Self::etag_for(bytes)),
-                },
-                content_range: None,
-            }),
-            None => Err(StorageError::NotFound {
-                key: path.as_str().to_string(),
-            }),
-        }
-    }
-
-    async fn get_object_stream(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _range: Option<ByteRange>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<ObjectStream, StorageError> {
-        self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        let (bytes, content_type) = self
-            .objects
-            .lock()
-            .unwrap()
-            .get(&(kb.as_str().to_string(), path.as_str().to_string()))
-            .cloned()
-            .ok_or_else(|| StorageError::NotFound {
-                key: path.as_str().to_string(),
-            })?;
-        let etag = Self::etag_for(&bytes);
-        if conditionals.if_match.as_deref() != Some(etag.as_str()) {
-            return Err(StorageError::PreconditionFailed);
-        }
-        let chunks = bytes
-            .chunks(3)
-            .map(Bytes::copy_from_slice)
-            .map(Ok)
-            .collect::<Vec<Result<Bytes, StorageError>>>();
-        Ok(ObjectStream {
-            chunks: Box::pin(futures::stream::iter(chunks)),
-            meta: ObjectMeta {
-                key: path.as_str().to_string(),
-                size: bytes.len() as u64,
-                last_modified: Some(1_700_000_000),
-                content_type,
-                etag: Some(etag),
-            },
-            content_range: None,
-        })
-    }
-
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let replaced = self.objects.lock().unwrap().insert(
-            (kb.as_str().to_string(), path.as_str().to_string()),
-            (bytes, content_type.map(str::to_string)),
-        );
-        Ok(PutOutcome {
-            etag: Some("\"test-etag\"".to_string()),
-            created: replaced.is_none(),
-        })
-    }
-
-    async fn put_staged_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        body: StagedBody,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        let mut reader = body.open().await.map_err(|source| StorageError::Other {
-            source: Box::new(source),
-        })?;
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|source| StorageError::Other {
-                source: Box::new(source),
-            })?;
-        self.put_object(kb, path, Bytes::from(bytes), content_type, conditionals)
-            .await
-    }
-
-    async fn copy_object(
-        &self,
-        kb: &KbSlug,
-        source: &ObjectPath,
-        destination: &ObjectPath,
-        options: CopyObjectOptions,
-    ) -> Result<PutOutcome, StorageError> {
-        let mut objects = self.objects.lock().unwrap();
-        let source_key = (kb.as_str().to_owned(), source.as_str().to_owned());
-        let destination_key = (kb.as_str().to_owned(), destination.as_str().to_owned());
-        let (bytes, source_type) =
-            objects
-                .get(&source_key)
-                .cloned()
-                .ok_or_else(|| StorageError::NotFound {
-                    key: source.as_str().to_owned(),
-                })?;
-        if options
-            .source_if_match
-            .as_deref()
-            .is_some_and(|etag| etag != Self::etag_for(&bytes))
-            || (options.destination_if_none_match.as_deref() == Some("*")
-                && objects.contains_key(&destination_key))
-        {
-            return Err(StorageError::PreconditionFailed);
-        }
-        let etag = Self::etag_for(&bytes);
-        let replaced = objects.insert(
-            destination_key,
-            (bytes, options.content_type.or(source_type)),
-        );
-        Ok(PutOutcome {
-            etag: Some(etag),
-            created: replaced.is_none(),
-        })
-    }
-
-    async fn delete_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        _conditionals: ConditionalHeaders,
-    ) -> Result<DeleteOutcome, StorageError> {
-        let removed = self
-            .objects
-            .lock()
-            .unwrap()
-            .remove(&(kb.as_str().to_string(), path.as_str().to_string()));
-        Ok(match removed {
-            Some(_) => DeleteOutcome::Deleted,
-            None => DeleteOutcome::NotFound,
-        })
-    }
-
-    async fn list_objects(
-        &self,
-        kb: &KbSlug,
-        prefix: Option<&str>,
-        limit: u32,
-        _cursor: Option<&str>,
-    ) -> Result<ListResponse, StorageError> {
-        let guard = self.objects.lock().unwrap();
-        let kb_str = kb.as_str().to_string();
-        let objects: Vec<ObjectMeta> = guard
-            .iter()
-            .filter(|((k, p), _)| k == &kb_str && prefix.is_none_or(|pfx| p.starts_with(pfx)))
-            .take(limit as usize)
-            .map(|((_, key), (bytes, ct))| ObjectMeta {
-                key: key.clone(),
-                size: bytes.len() as u64,
-                last_modified: Some(1_700_000_000),
-                content_type: ct.clone(),
-                etag: Some(Self::etag_for(bytes)),
-            })
-            .collect();
-        let truncated = objects.len() == limit as usize;
-        Ok(ListResponse {
-            objects,
-            truncated,
-            next_cursor: None,
-        })
     }
 }
 
@@ -2572,9 +2286,11 @@ mod announcing {
     async fn a_detected_mp3_is_announced_even_though_it_is_never_indexed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         // No type: the fs backend records none for a file dropped into the tree.
-        storage.insert_untyped(kb().as_str(), "memo.mp3", Bytes::from_static(b"ID3\x03"));
+        storage
+            .insert_untyped(kb().as_str(), "memo.mp3", Bytes::from_static(b"ID3\x03"))
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2592,7 +2308,7 @@ mod announcing {
         assert_eq!(
             events[0].kind,
             ObjectEventKind::Written {
-                etag: MockStorage::etag_for(b"ID3\x03"),
+                etag: compute_etag(b"ID3\x03"),
                 size: 4,
                 mime: String::new(),
                 mtime: 1_700_000_000,
@@ -2613,8 +2329,10 @@ mod announcing {
         ] {
             let (store, provisioner) = make_store();
             provisioner.ensure_collection(&kb(), 4).await.unwrap();
-            let storage = Arc::new(MockStorage::new());
-            storage.insert(kb().as_str(), key, body, "text/markdown");
+            let storage = Arc::new(scripted());
+            storage
+                .insert(kb().as_str(), key, body, "text/markdown")
+                .await;
             let publisher = Arc::new(MemoryPublisher::new(16));
 
             drive(
@@ -2641,16 +2359,18 @@ mod announcing {
     async fn rewriting_a_note_blank_removes_its_points() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         let publisher = Arc::new(MemoryPublisher::new(16));
         let store_dyn: Arc<dyn VectorStore> = Arc::new(store.clone());
 
-        storage.insert(
-            kb().as_str(),
-            "note.md",
-            "# Title\n\nSome words.\n",
-            "text/markdown",
-        );
+        storage
+            .insert(
+                kb().as_str(),
+                "note.md",
+                "# Title\n\nSome words.\n",
+                "text/markdown",
+            )
+            .await;
         drive(
             storage.clone(),
             store_dyn.clone(),
@@ -2660,7 +2380,9 @@ mod announcing {
         .await;
         assert!(count_points(&store, &kb(), "note.md").await > 0);
 
-        storage.insert(kb().as_str(), "note.md", "\n  \n", "text/markdown");
+        storage
+            .insert(kb().as_str(), "note.md", "\n  \n", "text/markdown")
+            .await;
         drive(
             storage.clone(),
             store_dyn,
@@ -2678,7 +2400,7 @@ mod announcing {
     async fn a_detected_deletion_is_announced_as_deleted_with_its_origin() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2702,8 +2424,10 @@ mod announcing {
     async fn a_write_upsert_is_not_announced_but_its_outcome_is() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2723,7 +2447,7 @@ mod announcing {
         assert_eq!(
             events[0].kind,
             ObjectEventKind::Indexed {
-                etag: MockStorage::etag_for(b"body"),
+                etag: compute_etag(b"body"),
                 mime: "text/markdown".into(),
                 chunks: u32::try_from(points).unwrap(),
             },
@@ -2739,8 +2463,10 @@ mod announcing {
     async fn an_untyped_markdown_key_is_reported_and_stored_under_the_same_type() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "notes/Draft.MD", "# Draft\n\nbody", "");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "notes/Draft.MD", "# Draft\n\nbody", "")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2779,13 +2505,15 @@ mod announcing {
     async fn back_to_back_writes_announce_only_the_latest_etag_as_indexed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         // By the time the worker takes the first upsert, the second write has
         // already replaced the bytes.
-        storage.insert(kb().as_str(), "note.md", "second version", "text/markdown");
+        storage
+            .insert(kb().as_str(), "note.md", "second version", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
-        let first = MockStorage::etag_for(b"first version");
-        let second = MockStorage::etag_for(b"second version");
+        let first = compute_etag(b"first version");
+        let second = compute_etag(b"second version");
 
         drive(
             storage.clone(),
@@ -2817,8 +2545,10 @@ mod announcing {
     async fn a_refresh_that_re_embeds_publishes_written_then_indexed_with_the_same_etag() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2844,8 +2574,10 @@ mod announcing {
     async fn a_refresh_skipped_for_an_unchanged_etag_publishes_nothing() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2876,14 +2608,18 @@ mod announcing {
     async fn an_upsert_the_pipeline_tombstones_publishes_nothing() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "empty.md", "", "text/markdown");
-        storage.insert_bytes(
-            kb().as_str(),
-            "pic.png",
-            Bytes::from_static(b"\x89PNG"),
-            "image/png",
-        );
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "empty.md", "", "text/markdown")
+            .await;
+        storage
+            .insert_bytes(
+                kb().as_str(),
+                "pic.png",
+                Bytes::from_static(b"\x89PNG"),
+                "image/png",
+            )
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2904,8 +2640,10 @@ mod announcing {
     async fn a_tombstone_of_a_gone_key_publishes_nothing() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2916,7 +2654,7 @@ mod announcing {
         )
         .await;
         let before = announced(&publisher).await.len();
-        storage.remove(kb().as_str(), "note.md");
+        storage.remove(kb().as_str(), "note.md").await;
         drive(
             storage.clone(),
             Arc::new(store.clone()),
@@ -2945,8 +2683,10 @@ mod announcing {
     async fn a_tombstone_of_a_live_changed_object_reindexes_and_publishes_indexed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "old body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -2957,7 +2697,9 @@ mod announcing {
         )
         .await;
         let before = announced(&publisher).await.len();
-        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        storage
+            .insert(kb().as_str(), "note.md", "new body", "text/markdown")
+            .await;
         drive(
             storage.clone(),
             Arc::new(store.clone()),
@@ -2969,7 +2711,7 @@ mod announcing {
         )
         .await;
 
-        let new_etag = MockStorage::etag_for(b"new body");
+        let new_etag = compute_etag(b"new body");
         let events = announced(&publisher).await;
         assert_eq!(events.len(), before + 1, "{events:?}");
         let last = events.last().unwrap();
@@ -2991,8 +2733,10 @@ mod announcing {
     async fn a_tombstone_of_a_live_object_whose_reindex_fails_publishes_index_failed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "old body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "old body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
         let health = Arc::new(IndexHealth::new());
         // The first embedding call indexes the old body; the second fails.
@@ -3008,7 +2752,9 @@ mod announcing {
         )
         .await;
         let before = announced(&publisher).await.len();
-        storage.insert(kb().as_str(), "note.md", "new body", "text/markdown");
+        storage
+            .insert(kb().as_str(), "note.md", "new body", "text/markdown")
+            .await;
         drive_with(
             storage.clone(),
             embedder,
@@ -3027,10 +2773,7 @@ mod announcing {
         let ObjectEventKind::IndexFailed { etag, .. } = &events.last().unwrap().kind else {
             panic!("expected object.index_failed, got {:?}", events.last());
         };
-        assert_eq!(
-            etag.as_deref(),
-            Some(MockStorage::etag_for(b"new body").as_str())
-        );
+        assert_eq!(etag.as_deref(), Some(compute_etag(b"new body").as_str()));
     }
 
     /// A subscriber waiting on `object.indexed` would otherwise wait forever.
@@ -3040,8 +2783,10 @@ mod announcing {
     async fn a_failed_upsert_publishes_index_failed_and_no_indexed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "broken.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "broken.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
         let health = Arc::new(IndexHealth::new());
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(1), None));
@@ -3069,10 +2814,7 @@ mod announcing {
         else {
             panic!("expected object.index_failed, got {:?}", events[0].kind);
         };
-        assert_eq!(
-            etag.as_deref(),
-            Some(MockStorage::etag_for(b"body").as_str())
-        );
+        assert_eq!(etag.as_deref(), Some(compute_etag(b"body").as_str()));
         assert_eq!(mime.as_deref(), Some("text/markdown"));
         let summary = summary.as_deref().expect("the log holds the summary");
         assert!(
@@ -3094,8 +2836,10 @@ mod announcing {
     async fn a_panicking_upsert_publishes_index_failed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "boom.md", "# boom", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "boom.md", "# boom", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
         let health = Arc::new(IndexHealth::new());
 
@@ -3142,7 +2886,7 @@ mod announcing {
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
 
         drive_with(
-            Arc::new(MockStorage::new()),
+            Arc::new(scripted()),
             embedder,
             Arc::new(PanickingDelete { inner: store }),
             publisher.clone(),
@@ -3171,8 +2915,10 @@ mod announcing {
     async fn a_panic_after_success_is_not_a_second_outcome() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let health = Arc::new(IndexHealth::new());
         let (tx, rx) = index_queue(1);
         tx.send(upsert("note.md")).await.unwrap();
@@ -3209,8 +2955,10 @@ mod announcing {
     async fn a_panicking_publisher_still_leaves_the_worker_reported_stopped() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "boom.md", "# boom", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "boom.md", "# boom", "text/markdown")
+            .await;
         let health = Arc::new(IndexHealth::new());
         let (tx, rx) = index_queue(1);
         tx.send(upsert("boom.md")).await.unwrap();
@@ -3337,8 +3085,10 @@ mod announcing {
     async fn a_retry_after_a_failure_publishes_indexed() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "flaky.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "flaky.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(Some(1), None));
 
@@ -3368,8 +3118,10 @@ mod announcing {
     async fn a_failure_before_head_carries_no_stamp() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         storage.fail_next_head();
         let publisher = Arc::new(MemoryPublisher::new(16));
 
@@ -3401,8 +3153,10 @@ mod announcing {
     async fn a_tombstone_whose_head_fails_still_removes_the_points() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -3415,7 +3169,7 @@ mod announcing {
         assert!(count_points(&store, &kb(), "note.md").await > 0);
         let before = announced(&publisher).await.len();
 
-        storage.remove(kb().as_str(), "note.md");
+        storage.remove(kb().as_str(), "note.md").await;
         storage.fail_next_head();
         drive(
             storage.clone(),
@@ -3439,13 +3193,15 @@ mod announcing {
     async fn the_watchers_echo_of_an_upsert_is_not_announced_again() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert_bytes(
-            kb().as_str(),
-            "memo.mp3",
-            Bytes::from_static(b"ID3\x03"),
-            "audio/mpeg",
-        );
+        let storage = Arc::new(scripted());
+        storage
+            .insert_bytes(
+                kb().as_str(),
+                "memo.mp3",
+                Bytes::from_static(b"ID3\x03"),
+                "audio/mpeg",
+            )
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -3466,12 +3222,14 @@ mod announcing {
         );
 
         // A genuinely new stamp is news again.
-        storage.insert_bytes(
-            kb().as_str(),
-            "memo.mp3",
-            Bytes::from_static(b"ID3\x04"),
-            "audio/mpeg",
-        );
+        storage
+            .insert_bytes(
+                kb().as_str(),
+                "memo.mp3",
+                Bytes::from_static(b"ID3\x04"),
+                "audio/mpeg",
+            )
+            .await;
         drive(
             storage.clone(),
             Arc::new(store.clone()),
@@ -3490,14 +3248,16 @@ mod announcing {
     async fn concurrent_handlers_share_what_was_announced() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         for key in ["a.mp3", "b.mp3"] {
-            storage.insert_bytes(
-                kb().as_str(),
-                key,
-                Bytes::from_static(b"ID3\x03"),
-                "audio/mpeg",
-            );
+            storage
+                .insert_bytes(
+                    kb().as_str(),
+                    key,
+                    Bytes::from_static(b"ID3\x03"),
+                    "audio/mpeg",
+                )
+                .await;
         }
         let publisher = Arc::new(MemoryPublisher::new(16));
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
@@ -3533,7 +3293,7 @@ mod announcing {
     async fn a_deletion_the_server_made_is_not_announced_again_by_its_echo() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -3560,7 +3320,7 @@ mod announcing {
     async fn an_upsert_that_finds_the_key_gone_leaves_the_deletion_for_the_watcher() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
+        let storage = Arc::new(scripted());
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -3583,13 +3343,15 @@ mod announcing {
     async fn a_tombstone_that_finds_the_key_live_leaves_the_write_for_the_watcher() {
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert_bytes(
-            kb().as_str(),
-            "memo.mp3",
-            Bytes::from_static(b"ID3\x03"),
-            "audio/mpeg",
-        );
+        let storage = Arc::new(scripted());
+        storage
+            .insert_bytes(
+                kb().as_str(),
+                "memo.mp3",
+                Bytes::from_static(b"ID3\x03"),
+                "audio/mpeg",
+            )
+            .await;
         let publisher = Arc::new(MemoryPublisher::new(16));
 
         drive(
@@ -3646,9 +3408,13 @@ mod announcing {
 
         let (store, provisioner) = make_store();
         provisioner.ensure_collection(&kb(), 4).await.unwrap();
-        let storage = Arc::new(MockStorage::new());
-        storage.insert(kb().as_str(), "note.md", "body", "text/markdown");
-        storage.insert(kb().as_str(), "other.md", "more", "text/markdown");
+        let storage = Arc::new(scripted());
+        storage
+            .insert(kb().as_str(), "note.md", "body", "text/markdown")
+            .await;
+        storage
+            .insert(kb().as_str(), "other.md", "more", "text/markdown")
+            .await;
         let (tx, rx) = index_queue(2);
         // One announcement and two outcomes refused; neither path may fail
         // the indexing itself.
@@ -3701,8 +3467,10 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "ok.md", "# Fine\n\nindexed", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "ok.md", "# Fine\n\nindexed", "text/markdown")
+        .await;
     let health = Arc::new(IndexHealth::new());
 
     // `run_one_with_health` records the enqueue itself; the worker's own
@@ -3734,13 +3502,15 @@ async fn the_worker_records_a_failure_with_the_key_and_the_pipelines_error() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(
-        "test-kb",
-        "broken.md",
-        "# Broken\n\nwill not embed",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(
+            "test-kb",
+            "broken.md",
+            "# Broken\n\nwill not embed",
+            "text/markdown",
+        )
+        .await;
     let health = Arc::new(IndexHealth::new());
 
     run_one_with_health(
@@ -3773,8 +3543,10 @@ async fn a_refresh_that_finds_nothing_to_do_still_counts_as_a_success() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert("test-kb", "same.md", "# Same\n\nunchanged", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert("test-kb", "same.md", "# Same\n\nunchanged", "text/markdown")
+        .await;
     let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
     index_once(
         storage.clone(),
@@ -3825,8 +3597,10 @@ async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() 
             let kb = kb();
             let (store, provisioner) = make_store();
             provisioner.ensure_collection(&kb, 4).await.unwrap();
-            let storage = Arc::new(MockStorage::new());
-            storage.insert("test-kb", key, "# Earlier\n\nonce text", "text/markdown");
+            let storage = Arc::new(scripted());
+            storage
+                .insert("test-kb", key, "# Earlier\n\nonce text", "text/markdown")
+                .await;
             index_once(
                 storage.clone(),
                 Arc::new(ScriptedEmbedder::new(None, None)),
@@ -3843,8 +3617,12 @@ async fn an_untyped_non_text_key_is_removed_from_the_index_without_being_read() 
 
             let content = Bytes::from_static(bytes);
             match declared {
-                None => storage.insert_untyped("test-kb", key, content),
-                Some(content_type) => storage.insert_bytes("test-kb", key, content, content_type),
+                None => storage.insert_untyped("test-kb", key, content).await,
+                Some(content_type) => {
+                    storage
+                        .insert_bytes("test-kb", key, content, content_type)
+                        .await;
+                }
             }
             let reads_before = storage.stream_calls();
             let health = Arc::new(IndexHealth::new());
@@ -3894,12 +3672,18 @@ async fn an_untyped_markdown_key_is_still_indexed_when_declared(declared: Option
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
+    let storage = Arc::new(scripted());
     let content = Bytes::from_static(b"# Draft\n\nstill indexed");
     match declared {
-        None => storage.insert_untyped("test-kb", "notes/Draft.MD", content),
+        None => {
+            storage
+                .insert_untyped("test-kb", "notes/Draft.MD", content)
+                .await;
+        }
         Some(content_type) => {
-            storage.insert_bytes("test-kb", "notes/Draft.MD", content, content_type);
+            storage
+                .insert_bytes("test-kb", "notes/Draft.MD", content, content_type)
+                .await;
         }
     }
     let health = Arc::new(IndexHealth::new());
@@ -3941,14 +3725,18 @@ async fn a_refresh_of_a_reserved_key_removes_its_index_entries() {
     let kb = kb();
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "search", "# Legacy\n\nBody.", "text/markdown");
-    storage.insert(
-        kb.as_str(),
-        "search/a.md",
-        "# Folder\n\nBody.",
-        "text/markdown",
-    );
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "search", "# Legacy\n\nBody.", "text/markdown")
+        .await;
+    storage
+        .insert(
+            kb.as_str(),
+            "search/a.md",
+            "# Folder\n\nBody.",
+            "text/markdown",
+        )
+        .await;
 
     let fields: HashMap<String, qdrant_client::qdrant::Value> = HashMap::from([
         ("object_key".to_owned(), "search".into()),
