@@ -406,38 +406,6 @@ impl Storage for InMemoryStorage {
         })
     }
 
-    async fn put_object(
-        &self,
-        kb: &KbSlug,
-        path: &ObjectPath,
-        bytes: Bytes,
-        content_type: Option<&str>,
-        conditionals: ConditionalHeaders,
-    ) -> Result<PutOutcome, StorageError> {
-        self.check_reachable()?;
-        let mut inner = self.inner.write().await;
-        inner.require_bucket(kb)?;
-        let key = (kb.as_str().to_string(), path.as_str().to_string());
-        let existing = inner.objects.get(&key);
-        evaluate_write_preconditions(existing.map(object_state), &conditionals)?;
-        let created = existing.is_none();
-
-        let etag = compute_etag(&bytes);
-        inner.objects.insert(
-            key,
-            StoredObject {
-                bytes,
-                content_type: content_type.map(str::to_string),
-                etag: etag.clone(),
-                last_modified: SystemTime::now(),
-            },
-        );
-        Ok(PutOutcome {
-            etag: Some(etag),
-            created,
-        })
-    }
-
     async fn put_staged_object(
         &self,
         kb: &KbSlug,
@@ -465,8 +433,27 @@ impl Storage for InMemoryStorage {
                 })?;
             Bytes::from(bytes)
         };
-        self.put_object(kb, path, bytes, content_type, conditionals)
-            .await
+        let mut inner = self.inner.write().await;
+        inner.require_bucket(kb)?;
+        let key = (kb.as_str().to_string(), path.as_str().to_string());
+        let existing = inner.objects.get(&key);
+        evaluate_write_preconditions(existing.map(object_state), &conditionals)?;
+        let created = existing.is_none();
+
+        let etag = compute_etag(&bytes);
+        inner.objects.insert(
+            key,
+            StoredObject {
+                bytes,
+                content_type: content_type.map(str::to_string),
+                etag: etag.clone(),
+                last_modified: SystemTime::now(),
+            },
+        );
+        Ok(PutOutcome {
+            etag: Some(etag),
+            created,
+        })
     }
 
     async fn copy_object(
