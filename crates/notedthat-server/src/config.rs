@@ -7,6 +7,7 @@
 
 use crate::cli::ServerCli;
 use crate::oidc::OidcSettings;
+use notedthat_core::setting::{parse_bool, parse_choice, utf8};
 use notedthat_core::{Error, KbSlug, StagingConfig, TenantSlug, setting};
 use notedthat_events::{MemoryConfig, MemorySettings, NatsConfig, NatsSettings};
 use notedthat_indexer::QdrantConfig;
@@ -341,25 +342,17 @@ fn events_owned_settings(cli: &ServerCli) -> Vec<(&'static str, EventsBackendKin
 /// `false`, and the `SeaweedFS` or `MinIO` deployment it was set for then failed with DNS
 /// errors naming nothing.
 fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBackendKind>, Error> {
-    let Some(value) = supplied else {
-        return Ok(None);
-    };
-    let name = setting("NOTEDTHAT_STORAGE_BACKEND");
-    let value = value.to_str().ok_or_else(|| Error::Config {
-        message: format!("{name} must be valid UTF-8"),
-    })?;
-    if value.is_empty() {
-        return Err(Error::Config {
-            message: format!("{name} must not be empty"),
-        });
-    }
-    match value {
-        "s3" => Ok(Some(StorageBackendKind::S3)),
-        "fs" => Ok(Some(StorageBackendKind::Fs)),
-        other => Err(Error::Config {
-            message: format!("{name} is invalid: expected \"s3\" or \"fs\", got \"{other}\""),
-        }),
-    }
+    const VAR: &str = "NOTEDTHAT_STORAGE_BACKEND";
+    parse_choice(
+        VAR,
+        utf8(VAR, supplied)?,
+        |value| match value {
+            "s3" => Some(StorageBackendKind::S3),
+            "fs" => Some(StorageBackendKind::Fs),
+            _ => None,
+        },
+        "\"s3\" or \"fs\"",
+    )
 }
 
 /// Parse the events backend selector, returning `None` when it was not supplied.
@@ -367,28 +360,18 @@ fn parse_storage_backend(supplied: Option<&OsStr>) -> Result<Option<StorageBacke
 /// Strict for the same reason as [`parse_storage_backend`]: a mis-spelled selector
 /// that fell back to `none` would start cleanly and simply never announce anything.
 fn parse_events_backend(supplied: Option<&OsStr>) -> Result<Option<EventsBackendKind>, Error> {
-    let Some(value) = supplied else {
-        return Ok(None);
-    };
-    let name = setting("NOTEDTHAT_EVENTS_BACKEND");
-    let value = value.to_str().ok_or_else(|| Error::Config {
-        message: format!("{name} must be valid UTF-8"),
-    })?;
-    if value.is_empty() {
-        return Err(Error::Config {
-            message: format!("{name} must not be empty"),
-        });
-    }
-    match value {
-        "none" => Ok(Some(EventsBackendKind::None)),
-        "memory" => Ok(Some(EventsBackendKind::Memory)),
-        "nats" => Ok(Some(EventsBackendKind::Nats)),
-        other => Err(Error::Config {
-            message: format!(
-                "{name} is invalid: expected \"none\", \"memory\" or \"nats\", got \"{other}\""
-            ),
-        }),
-    }
+    const VAR: &str = "NOTEDTHAT_EVENTS_BACKEND";
+    parse_choice(
+        VAR,
+        utf8(VAR, supplied)?,
+        |value| match value {
+            "none" => Some(EventsBackendKind::None),
+            "memory" => Some(EventsBackendKind::Memory),
+            "nats" => Some(EventsBackendKind::Nats),
+            _ => None,
+        },
+        "\"none\", \"memory\" or \"nats\"",
+    )
 }
 
 /// Parse `NOTEDTHAT_MCP_ANONYMOUS`.
@@ -441,28 +424,17 @@ fn parse_metrics(
     listen_addr: Option<&str>,
 ) -> Result<Option<SocketAddr>, Error> {
     let supplied = enabled.map(str::trim);
-    let enabled = match supplied {
-        // Absent and `false` are the same state — off — and the refusal below
-        // is what tells the two apart, where the difference is worth a word.
-        None | Some("false") => false,
-        Some("true") => true,
-        // Named apart from the generic refusal below: an empty value is almost
-        // always a variable that was passed through without one, and "must not
-        // be empty" points at that, where quoting `""` back does not.
-        Some("") => {
-            return Err(Error::Config {
-                message: format!("{} must not be empty", setting("NOTEDTHAT_METRICS_ENABLED")),
-            });
-        }
-        Some(value) => {
-            return Err(Error::Config {
-                message: format!(
-                    "{} is invalid: expected \"true\" or \"false\", got \"{value}\"",
-                    setting("NOTEDTHAT_METRICS_ENABLED")
-                ),
-            });
-        }
-    };
+    // Named apart from the generic refusal: an empty value is almost always a
+    // variable that was passed through without one, and "must not be empty"
+    // points at that, where quoting `""` back does not.
+    if supplied == Some("") {
+        return Err(Error::Config {
+            message: format!("{} must not be empty", setting("NOTEDTHAT_METRICS_ENABLED")),
+        });
+    }
+    // Absent and `false` are the same state — off — and the refusal below is
+    // what tells the two apart, where the difference is worth a word.
+    let enabled = parse_bool("NOTEDTHAT_METRICS_ENABLED", supplied, false)?;
 
     // Normalised once, before either branch reads it. The enabled path below
     // used to trim and filter while this one tested the raw value, so the same
@@ -1759,6 +1731,58 @@ mod tests {
             .get_arguments()
             .filter_map(|arg| Some(arg.get_env()?.to_string_lossy().into_owned()))
             .collect()
+    }
+
+    /// Exact messages for the backend selectors and the metrics switch, pinned
+    /// before they moved onto `notedthat_core::setting`.
+    #[test]
+    fn selector_and_switch_messages_are_pinned() {
+        let expected_true_false = "expected \"true\" or \"false\"";
+        for (var, value, complaint) in [
+            (
+                "NOTEDTHAT_STORAGE_BACKEND",
+                "",
+                "must not be empty".to_string(),
+            ),
+            (
+                "NOTEDTHAT_STORAGE_BACKEND",
+                " fs",
+                "is invalid: expected \"s3\" or \"fs\", got \" fs\"".to_string(),
+            ),
+            (
+                "NOTEDTHAT_EVENTS_BACKEND",
+                "",
+                "must not be empty".to_string(),
+            ),
+            (
+                "NOTEDTHAT_EVENTS_BACKEND",
+                "yes",
+                "is invalid: expected \"none\", \"memory\" or \"nats\", got \"yes\"".to_string(),
+            ),
+            (
+                "NOTEDTHAT_METRICS_ENABLED",
+                "  ",
+                "must not be empty".to_string(),
+            ),
+            (
+                "NOTEDTHAT_METRICS_ENABLED",
+                " yes ",
+                format!("is invalid: {expected_true_false}, got \"yes\""),
+            ),
+        ] {
+            let error = parse_config(&[(var, Some(value))]).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("configuration error: {} {complaint}", setting(var)),
+                "{var}={value:?}"
+            );
+        }
+        assert!(
+            parse_config(&[("NOTEDTHAT_METRICS_ENABLED", Some(" true "))])
+                .unwrap()
+                .metrics_listen_addr
+                .is_some()
+        );
     }
 
     #[test]
