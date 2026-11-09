@@ -1,9 +1,13 @@
-//! E2E integration tests for `IndexerWorker`.
+//! Integration tests for the indexer's per-file `Pipeline` and the
+//! `IndexerWorker` that schedules it.
 //!
-//! The subject is the worker's pipeline — chunking, batching, payload
-//! construction, tombstones, obsolete-chunk cleanup and drain-on-shutdown — so
-//! it runs against [`InMemoryVectorStore`] and an in-process wiremock embedder,
-//! with no container. The store reports what was written in the same
+//! Per-file behaviour — chunking, batching, payload construction, tombstones,
+//! obsolete-chunk cleanup, announcements — is driven through
+//! `Pipeline::handle`. Only scheduling — lanes, concurrency, drain, panics
+//! that end the worker — starts an `IndexerWorker`. Everything runs over core's
+//! `ScriptedStorage` (or `InMemoryStorage`, for the two tests seeded by
+//! `storage_with`), [`InMemoryVectorStore`] and an in-process wiremock or
+//! scripted embedder, with no container. The store reports what was written in the same
 //! `RetrievedPoint` shape a Qdrant `scroll` returns, so every payload and vector
 //! assertion below is unchanged.
 //!
@@ -413,23 +417,17 @@ async fn index_once(
     key: &str,
     batch_size: usize,
 ) {
-    let (tx, rx) = index_queue(1);
-    tx.send(IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: opath(key),
-    })
-    .await
-    .unwrap();
-    drop(tx);
-    make_worker_with_batch(
+    Pipeline::new(
         storage,
         embedder,
         store,
-        rx,
         CancellationToken::new(),
         batch_size,
     )
-    .run()
+    .handle(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath(key),
+    })
     .await;
 }
 
@@ -441,17 +439,12 @@ async fn refresh_once(
     kb: &KbSlug,
     key: &str,
 ) {
-    let (tx, rx) = index_queue(1);
-    tx.send(IndexEvent::Refresh {
-        kb: kb.clone(),
-        object_key: opath(key),
-        origin: RefreshOrigin::Watch,
-    })
-    .await
-    .unwrap();
-    drop(tx);
-    make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
-        .run()
+    Pipeline::new(storage, embedder, store, CancellationToken::new(), 32)
+        .handle(IndexEvent::Refresh {
+            kb: kb.clone(),
+            object_key: opath(key),
+            origin: RefreshOrigin::Watch,
+        })
         .await;
 }
 
@@ -610,35 +603,25 @@ async fn a_late_tombstone_keeps_the_points_of_a_live_object() {
         )
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder(&mock_server.uri(), 4),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
+    let pipeline = Pipeline::new(
+        storage.clone(),
+        make_embedder(&mock_server.uri(), 4),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
     );
-
-    tx.send(IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: opath("doc.md"),
-    })
-    .await
-    .unwrap();
-    tx.send(IndexEvent::Tombstone {
-        kb: kb.clone(),
-        object_key: opath("doc.md"),
-    })
-    .await
-    .unwrap();
-
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    pipeline
+        .handle(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("doc.md"),
+        })
+        .await;
+    pipeline
+        .handle(IndexEvent::Tombstone {
+            kb: kb.clone(),
+            object_key: opath("doc.md"),
+        })
+        .await;
 
     let n = count_points(&store, &kb, "doc.md").await;
     assert!(
@@ -694,29 +677,18 @@ async fn not_found_on_reread_implicit_tombstone() {
     let mock_server = MockServer::start().await;
     let storage = Arc::new(scripted());
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder(&mock_server.uri(), 4),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder(&mock_server.uri(), 4),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("missing.md"),
     })
-    .await
-    .unwrap();
-
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 
     let n = count_points(&store, &kb, "missing.md").await;
     assert_eq!(n, 0, "implicit tombstone should produce 0 points, got {n}");
@@ -811,23 +783,17 @@ async fn non_markdown_content_type_skipped() {
         )
         .await;
 
-    let (seed_tx, seed_rx) = index_queue(1);
-    seed_tx
-        .send(IndexEvent::Upsert {
-            kb: kb.clone(),
-            object_key: opath("image.png"),
-        })
-        .await
-        .unwrap();
-    drop(seed_tx);
-    make_worker(
+    Pipeline::new(
         storage.clone(),
         make_embedder(&mock_server.uri(), 4),
         Arc::new(store.clone()),
-        seed_rx,
         CancellationToken::new(),
+        32,
     )
-    .run()
+    .handle(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("image.png"),
+    })
     .await;
     assert_eq!(count_points(&store, &kb, "image.png").await, 1);
 
@@ -835,28 +801,18 @@ async fn non_markdown_content_type_skipped() {
         .insert("test-kb", "image.png", "not markdown", "image/png")
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder(&mock_server.uri(), 4),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder(&mock_server.uri(), 4),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("image.png"),
     })
-    .await
-    .unwrap();
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 
     let n = count_points(&store, &kb, "image.png").await;
     assert_eq!(n, 0, "non-markdown object should not be indexed");
@@ -899,23 +855,17 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         storage
             .insert("test-kb", "metric.md", &raw, "text/markdown")
             .await;
-        let (tx, rx) = index_queue(1);
-        tx.send(IndexEvent::Upsert {
-            kb: kb.clone(),
-            object_key: opath("metric.md"),
-        })
-        .await
-        .unwrap();
-        drop(tx);
-        make_worker_with_batch(
+        Pipeline::new(
             storage.clone(),
             make_embedder_with_limits(&mock.uri(), 4, 32, 1),
             Arc::new(store.clone()),
-            rx,
             CancellationToken::new(),
             1,
         )
-        .run()
+        .handle(IndexEvent::Upsert {
+            kb: kb.clone(),
+            object_key: opath("metric.md"),
+        })
         .await;
         let points = scroll_points(&store, &kb, "metric.md", false).await;
         assert_eq!(
@@ -947,22 +897,17 @@ async fn shrinking_replacement_removes_stale_okf_points() {
         .insert("test-kb", "metric.md", "", "text/markdown")
         .await;
     let empty_mock = MockServer::start().await;
-    let (tx, rx) = index_queue(1);
-    tx.send(IndexEvent::Upsert {
-        kb: kb.clone(),
-        object_key: opath("metric.md"),
-    })
-    .await
-    .unwrap();
-    drop(tx);
-    make_worker(
+    Pipeline::new(
         storage.clone(),
         make_embedder(&empty_mock.uri(), 4),
         Arc::new(store.clone()),
-        rx,
         CancellationToken::new(),
+        32,
     )
-    .run()
+    .handle(IndexEvent::Upsert {
+        kb: kb.clone(),
+        object_key: opath("metric.md"),
+    })
     .await;
     assert_eq!(count_points(&store, &kb, "metric.md").await, 0);
 }
@@ -991,28 +936,18 @@ async fn oversized_chunk_is_split_without_dropping_content() {
         .insert("test-kb", "large.md", source, "text/markdown")
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder_with_limits(&mock_server.uri(), 4, 20, 3),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder_with_limits(&mock_server.uri(), 4, 20, 3),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("large.md"),
     })
-    .await
-    .unwrap();
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 
     let points = scroll_points(&store, &kb, "large.md", false).await;
     assert_eq!(points.len(), expected_chunks);
@@ -1550,28 +1485,18 @@ async fn vector_store_failure_logs_indexing_failed() {
         .insert("test-kb", "down.md", "# Down\n\nContent.", "text/markdown")
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder(&mock_server.uri(), 4),
-            store,
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder(&mock_server.uri(), 4),
+        store,
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb,
         object_key: opath("down.md"),
     })
-    .await
-    .unwrap();
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -1603,28 +1528,18 @@ async fn embedder_retry_on_429_succeeds() {
         )
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder(&mock_server.uri(), 4),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder(&mock_server.uri(), 4),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("retry.md"),
     })
-    .await
-    .unwrap();
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 
     let n = count_points(&store, &kb, "retry.md").await;
     assert!(n >= 1, "expected point after retry success, got {n}");
@@ -1650,28 +1565,18 @@ async fn embedder_retries_exhausted_logs_indexing_failed() {
         .insert("test-kb", "fail.md", "# Fail\n\nContent.", "text/markdown")
         .await;
 
-    let (tx, rx) = index_queue(100);
-    let shutdown = CancellationToken::new();
-    let handle = tokio::spawn(
-        make_worker(
-            storage.clone(),
-            make_embedder_with_limits(&mock_server.uri(), 4, 8192, 2),
-            Arc::new(store.clone()),
-            rx,
-            shutdown.clone(),
-        )
-        .run(),
-    );
-
-    tx.send(IndexEvent::Upsert {
+    Pipeline::new(
+        storage.clone(),
+        make_embedder_with_limits(&mock_server.uri(), 4, 8192, 2),
+        Arc::new(store.clone()),
+        CancellationToken::new(),
+        32,
+    )
+    .handle(IndexEvent::Upsert {
         kb: kb.clone(),
         object_key: opath("fail.md"),
     })
-    .await
-    .unwrap();
-    drop(tx);
-    shutdown.cancel();
-    handle.await.unwrap();
+    .await;
 
     let n = count_points(&store, &kb, "fail.md").await;
     assert_eq!(n, 0, "failed embed should not write points");
@@ -2287,16 +2192,12 @@ mod announcing {
         health: Arc<IndexHealth>,
         events: Vec<IndexEvent>,
     ) {
-        let (tx, rx) = index_queue(events.len().max(1));
-        for event in events {
-            tx.send(event).await.unwrap();
-        }
-        drop(tx);
-        make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
+        let pipeline = Pipeline::new(storage, embedder, store, CancellationToken::new(), 32)
             .with_event_publisher(Some(publisher as Arc<dyn EventPublisher>))
-            .with_health(health)
-            .run()
-            .await;
+            .with_health(health);
+        for event in events {
+            pipeline.handle(event).await;
+        }
     }
 
     fn indexed_events(events: &[ObjectEvent]) -> Vec<&ObjectEvent> {
@@ -3466,26 +3367,21 @@ mod announcing {
         storage
             .insert(kb().as_str(), "other.md", "more", "text/markdown")
             .await;
-        let (tx, rx) = index_queue(2);
         // One announcement and two outcomes refused; neither path may fail
         // the indexing itself.
-        tx.send(refresh("note.md", RefreshOrigin::Watch))
-            .await
-            .unwrap();
-        tx.send(upsert("other.md")).await.unwrap();
-        drop(tx);
         let embedder: Arc<dyn Embedder> = Arc::new(ScriptedEmbedder::new(None, None));
-        make_worker_with_batch(
+        let pipeline = Pipeline::new(
             storage,
             embedder,
             Arc::new(store.clone()),
-            rx,
             CancellationToken::new(),
             32,
         )
-        .with_event_publisher(Some(Arc::new(Refusing)))
-        .run()
-        .await;
+        .with_event_publisher(Some(Arc::new(Refusing)));
+        pipeline
+            .handle(refresh("note.md", RefreshOrigin::Watch))
+            .await;
+        pipeline.handle(upsert("other.md")).await;
 
         assert!(count_points(&store, &kb(), "note.md").await > 0);
         assert!(count_points(&store, &kb(), "other.md").await > 0);
@@ -3494,8 +3390,7 @@ mod announcing {
 
 // ─── Index health (#97) ─────────────────────────────────────────────────────
 
-/// Drive one event through a worker that records on `health`, the way the
-/// server wires it, and return once the worker has drained and stopped.
+/// Handle one enqueued event through a pipeline that records on `health`.
 async fn run_one_with_health(
     storage: Arc<dyn Storage>,
     embedder: Arc<dyn Embedder>,
@@ -3503,13 +3398,10 @@ async fn run_one_with_health(
     event: IndexEvent,
     health: Arc<IndexHealth>,
 ) {
-    let (tx, rx) = index_queue(1);
-    tx.send(event).await.unwrap();
     health.enqueued("test-kb");
-    drop(tx);
-    make_worker_with_batch(storage, embedder, store, rx, CancellationToken::new(), 32)
+    Pipeline::new(storage, embedder, store, CancellationToken::new(), 32)
         .with_health(health)
-        .run()
+        .handle(event)
         .await;
 }
 
@@ -3524,18 +3416,20 @@ async fn the_worker_records_a_success_and_its_own_exit_on_the_health_record() {
         .await;
     let health = Arc::new(IndexHealth::new());
 
-    // `run_one_with_health` records the enqueue itself; the worker's own
-    // completion is what brings `pending` back to zero.
-    run_one_with_health(
+    // The worker's own completion is what brings `pending` back to zero.
+    let (tx, rx) = index_queue(1);
+    tx.send(upsert(&kb, "ok.md")).await.unwrap();
+    health.enqueued("test-kb");
+    drop(tx);
+    make_worker(
         storage.clone(),
         Arc::new(ScriptedEmbedder::new(None, None)),
         Arc::new(store.clone()),
-        IndexEvent::Upsert {
-            kb: kb.clone(),
-            object_key: opath("ok.md"),
-        },
-        Arc::clone(&health),
+        rx,
+        CancellationToken::new(),
     )
+    .with_health(Arc::clone(&health))
+    .run()
     .await;
 
     let snapshot = health.snapshot("test-kb");
