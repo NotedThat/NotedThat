@@ -1,5 +1,6 @@
 use notedthat_core::{KbSlug, TenantSlug};
-use notedthat_server::config::{Config, EmbedderConfig, ServerQdrantConfig};
+use notedthat_indexer::QdrantConfig;
+use notedthat_server::config::{Config, EmbedderConfig};
 use notedthat_storage_s3::{S3Config, S3Storage};
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 use testcontainers::{
@@ -99,7 +100,7 @@ impl Backends {
             kbs,
             listen_addr: free_addr(),
             storage: notedthat_server::config::StorageConfig::S3(self.s3_config.clone()),
-            qdrant: ServerQdrantConfig {
+            qdrant: QdrantConfig {
                 url: self.qdrant_url.clone(),
                 ..base.qdrant
             },
@@ -115,7 +116,7 @@ impl Backends {
             mcp_http_allowed_hosts: vec!["127.0.0.1".to_string()],
             // Short enough that the readiness assertion in `phase3_access_e2e` sees
             // several real `HeadBucket` / `HealthCheck` rounds before it moves on.
-            ready_probe_interval_ms: 200,
+            ready_probe_interval: std::time::Duration::from_millis(200),
             ..base
         }
     }

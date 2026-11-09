@@ -11,8 +11,7 @@ use notedthat_api_http::{
 };
 use notedthat_core::{Authenticator, ProtectedResource};
 use notedthat_indexer::{
-    DRAIN_TIMEOUT, IndexQueueSender, IndexerWorker, QdrantClient, QdrantConfig, QdrantProvisioner,
-    VectorStore,
+    DRAIN_TIMEOUT, IndexQueueSender, IndexerWorker, QdrantClient, QdrantProvisioner, VectorStore,
     embedder::openai::{OpenAiCompatibleConfig, OpenAiCompatibleEmbedder},
 };
 use notedthat_storage_fs::{FsStorage, RootLock};
@@ -119,17 +118,11 @@ fn backends_from_config(
         }
     };
 
-    let qdrant_config = QdrantConfig {
-        url: config.qdrant.url.clone(),
-        api_key: config.qdrant.api_key.clone(),
-        timeout: Duration::from_millis(config.qdrant.timeout_ms),
-        connect_timeout: Duration::from_millis(config.qdrant.connect_timeout_ms),
-    };
     // Held as the VectorStore seam rather than as the concrete client, so the
     // provisioner, searcher and indexer worker all share one substitutable
     // backend (see notedthat_indexer::vector_store).
     let store: Arc<dyn VectorStore> =
-        Arc::new(QdrantClient::new(&qdrant_config).context("failed to build Qdrant client")?);
+        Arc::new(QdrantClient::new(&config.qdrant).context("failed to build Qdrant client")?);
 
     if let Some(url) = config.embedder.endpoint_url_without_path() {
         // Not a refusal: a gateway may serve `/embeddings` at its root. But a value
@@ -148,7 +141,7 @@ fn backends_from_config(
         api_key: config.embedder.api_key.clone(),
         dim: config.embedder.dimensions as usize,
         max_input_tokens: config.embedder.max_input_tokens,
-        timeout: Duration::from_millis(config.embedder.timeout_ms),
+        timeout: config.embedder.timeout,
         max_retries: config.embedder.max_retries,
     };
     let embedder: Arc<dyn notedthat_indexer::embedder::Embedder> = Arc::new(
@@ -214,7 +207,7 @@ fn readiness_poller(
         store.clone(),
         witness,
         config.storage.kind().as_str(),
-        Duration::from_millis(config.ready_probe_interval_ms),
+        config.ready_probe_interval,
         conditional_writes,
     ))
 }
