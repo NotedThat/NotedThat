@@ -89,6 +89,11 @@ pub type McpHttpInnerService = StreamableHttpService<NotedThatMcp, LocalSessionM
 /// costs one slot for as long as it is active.
 pub const DEFAULT_MAX_SESSIONS: usize = 256;
 
+/// Largest MCP `POST` body: twice the HTTP API's default 16 MiB body bound, so
+/// a JSON-escaped `write` the API would accept is not refused here first
+/// (rmcp 3's own default is 4 MiB; rmcp 2 had no bound).
+pub const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
+
 /// The session header, as rmcp spells it.
 pub const SESSION_HEADER: &str = "mcp-session-id";
 
@@ -162,6 +167,7 @@ impl McpHttpServiceConfig {
             .with_allowed_hosts(self.allowed_hosts.clone())
             .with_allowed_origins(self.allowed_origins.clone())
             .with_cancellation_token(self.cancellation_token.clone())
+            .with_max_request_body_bytes(MAX_REQUEST_BODY_BYTES)
     }
 }
 
@@ -538,7 +544,7 @@ mod mcp_http_service {
 
         // Then: sessions are on — the notification leg needs them — and the
         // JSON-response switch, which rmcp reads only when stateless, is off.
-        assert!(service.config().stateful_mode);
+        assert!(service.config().legacy_session_mode);
         assert!(!service.config().json_response);
         assert!(service.config().sse_keep_alive.is_some());
     }
@@ -606,7 +612,7 @@ mod mcp_http_service {
         let inner = service.into_service();
 
         // Then: it preserves the stateful rmcp config.
-        assert!(inner.config.stateful_mode);
+        assert!(inner.config.legacy_session_mode);
         assert!(!inner.config.json_response);
     }
 }
@@ -877,6 +883,75 @@ mod caller_identity {
         post(&app, bearer, Some(&session), body).await.0.status()
     }
 
+    /// rmcp 3 caps a POST body at 4 MiB by default; a `write` of a file the
+    /// API accepts (16 MiB by default) must still reach the handler, so the
+    /// cap here is [`MAX_REQUEST_BODY_BYTES`]. A 5 MiB call without a session
+    /// gets the missing-session 400, not a 413.
+    #[tokio::test]
+    async fn a_body_over_rmcps_default_cap_is_not_refused_as_too_large() {
+        let api = wiremock::MockServer::start().await;
+        let app = app(&api.uri());
+        let content = "x".repeat(5 * 1024 * 1024);
+        let call = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "write", "arguments": { "kb": "kb", "key": "k", "content": content } },
+        });
+        let (response, _) = post(&app, SERVICE_TOKEN, None, call).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// rmcp 3 serves protocol `2026-07-28` statelessly (SEP-2567), which
+    /// would bypass the session bound, the keeper and the subscriptions. The
+    /// server advertises only the session-based versions, so a request on
+    /// that version without a session is refused like any other.
+    #[tokio::test]
+    async fn a_sessionless_request_on_the_stateless_protocol_is_refused() {
+        let api = wiremock::MockServer::start().await;
+        let app = app(&api.uri());
+        for (method, params) in [
+            ("server/discover", serde_json::json!({})),
+            (
+                "tools/call",
+                serde_json::json!({ "name": "list_knowledgebases", "arguments": {} }),
+            ),
+        ] {
+            let name = params
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(str::to_owned);
+            let mut params = params;
+            params["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "0" },
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("host", "127.0.0.1")
+                .header("authorization", format!("Bearer {SERVICE_TOKEN}"))
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .header("mcp-protocol-version", "2026-07-28")
+                .header("mcp-method", method);
+            let request = match &name {
+                Some(name) => request.header("mcp-name", name.as_str()),
+                None => request,
+            }
+                .body(Body::from(
+                    serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                        .to_string(),
+                ))
+                .expect("request");
+            let response = app.clone().oneshot(request).await.expect("response");
+            let status = response.status();
+            assert!(
+                status.is_client_error(),
+                "{method} on 2026-07-28 without a session must be refused, got {status}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_tool_call_without_a_session_is_refused_and_one_with_it_answers() {
         let api = api_expecting(SERVICE_TOKEN).await;
@@ -886,10 +961,11 @@ mod caller_identity {
             "params": { "name": "list_knowledgebases", "arguments": {} },
         });
 
-        // Without a session rmcp answers 422 before any handler runs; the
-        // API is not reached (its `expect(1)` is satisfied by the second call).
+        // Without a session rmcp answers 400 (the spec's status since rmcp 3)
+        // before any handler runs; the API is not reached (its `expect(1)` is
+        // satisfied by the second call).
         let (response, _) = post(&app, SERVICE_TOKEN, None, call.clone()).await;
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let session = open_session(&app, SERVICE_TOKEN).await;
         let (response, message) = post(&app, SERVICE_TOKEN, Some(&session), call).await;

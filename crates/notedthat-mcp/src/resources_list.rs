@@ -67,9 +67,8 @@ pub async fn list_resources(
     };
 
     Ok(ListResourcesResult {
-        meta: None,
         next_cursor,
-        resources,
+        ..ListResourcesResult::with_all_items(resources)
     })
 }
 

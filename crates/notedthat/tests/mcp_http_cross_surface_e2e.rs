@@ -635,7 +635,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
     }
 
     //    A request on no session, other than initialize, is refused by the
-    //    transport before any handler runs.
+    //    transport before any handler runs (400, the spec's status, since rmcp 3).
     let resp = client
         .post(&mcp_url)
         .header("Authorization", format!("Bearer {API_TOKEN}"))
@@ -647,7 +647,7 @@ async fn unified_http_auth_matrix_and_legacy_mcp_refusal() {
         .expect("sessionless tools/list");
     assert_eq!(
         resp.status().as_u16(),
-        422,
+        400,
         "a non-initialize POST without Mcp-Session-Id"
     );
 
