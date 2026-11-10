@@ -228,13 +228,12 @@ jobs:
   # Runs on pull requests AND on pushes to `main`, and that split is worth
   # stating rather than discovering:
   #
-  #   1. It does NOT gate a release. `release-plz-release` does not `needs:`
-  #      this job, so a tag cut after an advisory lands will publish eleven
-  #      crates and a signed image carrying it. That is a deliberate scope
-  #      choice — releases here are gated on `test`, `clippy`, `fmt`,
-  #      `docker-build` and `integration-test`, and this is not in that set.
-  #      Running on `main` changes nothing about that, which is exactly why it
-  #      costs nothing to do: a red run here blocks no tag.
+  #   1. It gates every release. `release-plz-release` and `release-plz-pr`
+  #      both `needs:` this job, so a red run on `main` blocks the tag, the
+  #      eleven crates.io publishes and the signed image until the lockfile is
+  #      updated or a reasoned `ignore` entry lands in deny.toml. Provenance
+  #      says what went into a release, not whether it had an open advisory;
+  #      this is the check that does.
   #   2. The `main` run is what tells an author a red check is not their diff.
   #      An advisory filed against a dependency nobody touched turns every open
   #      pull request red at once; without a run on `main` there is nothing to
@@ -264,11 +263,6 @@ jobs:
   # nothing to the pull-request feedback time #87 measured at about six minutes.
   advisories:
     runs-on: ubuntu-latest
-    # A tripwire on a hung advisory-database fetch, not a budget on the check,
-    # which takes about a second. Note this CANCELS rather than fails, which is
-    # harmless only because nothing `needs:` this job — and is the first thing
-    # that stops being harmless if the release gate above is ever wired to it.
-    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -293,7 +287,14 @@ jobs:
       # flag here would be a suppression that never appears in a review.
       # `--locked` is the same assertion every other cargo call in CI makes —
       # judge the lockfile that ships, not what the resolver would pick today.
+      #
+      # The timeout is a tripwire on a hung advisory-database fetch, not a
+      # budget on the check, which takes about a second. It sits on the step,
+      # not the job, because a job-level timeout CANCELS the job, and a
+      # cancelled dependency silently SKIPS the release jobs that `needs:` it;
+      # a step-level timeout FAILS the step, so a hang shows up as red.
       - run: cargo deny --locked check advisories
+        timeout-minutes: 10
       # The database cannot be pinned, so record which one judged this run.
       # `if: always()` because a red run is precisely the one worth reproducing
       # months later, and without this the evidence is gone.
@@ -477,7 +478,7 @@ jobs:
   # against the current HEAD.
   release-plz-release:
     name: Tag and publish crates
-    needs: [test, clippy, fmt, docker-build, integration-test]
+    needs: [test, clippy, fmt, docker-build, integration-test, advisories]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
@@ -701,12 +702,12 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, docker-build, integration-test, release-plz-release]
+    needs: [test, clippy, fmt, docker-build, integration-test, advisories, release-plz-release]
     # `!cancelled()` is what lets this run after a failed release; without it a
     # failed `needs:` skips the job. The result check keeps the rest of the
-    # gate: release-plz-release itself only runs once test, clippy, fmt, docker
-    # and the integration suite have passed, so it is `skipped` whenever any of
-    # them failed, and this job stays skipped with it.
+    # gate: release-plz-release itself only runs once test, clippy, fmt, docker,
+    # the integration suite and the advisories check have passed, so it is
+    # `skipped` whenever any of them failed, and this job stays skipped with it.
     if: >-
       !cancelled()
       && github.event_name == 'push'
