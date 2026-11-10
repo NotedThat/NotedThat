@@ -509,7 +509,7 @@ Env vars:
 - `NOTEDTHAT_OIDC_USERNAME_CLAIM`, `NOTEDTHAT_OIDC_GROUPS_CLAIM` — defaults above
 - `NOTEDTHAT_OIDC_HTTP_TIMEOUT_MS` — discovery and key fetches; default 5000
 - `NOTEDTHAT_OIDC_RESOURCE` — optional public URL
-- `NOTEDTHAT_OIDC_CA_CERT` — optional PEM bundle trusted for the issuer on top of the OS trust store, which supplies the roots; a host without a CA store fails TLS
+- `NOTEDTHAT_OIDC_CA_CERT` — optional PEM bundle trusted for the issuer on top of the OS trust store, which supplies the roots; without a system CA store and without this variable, startup refuses, and with it the bundle is the only trust anchor
 
 Any of the others without the issuer refuses startup rather than being ignored.
 

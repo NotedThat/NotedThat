@@ -60,7 +60,8 @@ pub struct OidcSettings {
     pub resource: Option<String>,
     /// A PEM bundle of CA certificates to trust for the issuer, on top of the
     /// operating system's trust store — a self-hosted provider is usually behind
-    /// an internal CA. Without a system CA store, TLS to the issuer fails.
+    /// an internal CA. Without a system CA store and without this bundle, startup
+    /// refuses; with it, the bundle is the only trust anchor.
     pub ca_cert: Option<std::path::PathBuf>,
 }
 
