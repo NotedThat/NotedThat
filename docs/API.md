@@ -1534,7 +1534,7 @@ closes it in two cases, each announced by one last frame with fixed text:
 | Last frame | When | What the client does |
 |------------|------|----------------------|
 | `event: auth.expired` with `data: {}` and no `id` | The identity-provider token the stream was opened with stops verifying: 61 seconds after its `exp`, since the server allows 60 seconds for clock skew and compares whole seconds ([How a token is checked](CONFIGURATION.md#how-a-token-is-checked)). That is the moment a reconnect with the same token would be refused with `401` | Get a fresh token, then reconnect with `Last-Event-ID`. The frame has no `id`, so the last one received still marks the position and nothing is missed |
-| A `: stream ended: …` comment | The event backend failed mid-stream, or the subscriber fell too far behind a live log | Reconnect with `Last-Event-ID`; the gap is replayed, or `410` says it is gone |
+| A `: stream ended: …` comment | `event backend failed`: the event backend failed mid-stream (its own error is logged under the request id, not sent). `subscriber lagged behind the event log; resume after <id>`: the subscriber fell too far behind a live log | Reconnect with `Last-Event-ID`; the gap is replayed, or `410` says it is gone |
 
 A browser's `EventSource` delivers `auth.expired` to a listener registered for that name, but
 never shows comments. Clients that only handle `object.*` events can ignore the frame, since the
@@ -2324,7 +2324,7 @@ Each hit otherwise has the HTTP `SearchHit` fields: `object_key`, `byte_start`, 
 
 **No cross-knowledge-base ranking.** The groups are not merged and no request-wide order is implied. `score` is a reciprocal-rank fusion value computed inside one knowledge base's collection (see *Score semantics* above), so every knowledge base's top hit scores the same whatever its relevance; a merged sort would be an arbitrary interleave, not a ranking.
 
-**Failures.** With an explicit `kb` list, any knowledge base that cannot be searched fails the whole call — a slug the server does not declare is `not_found`, one the caller's access rules deny is `forbidden` — and the error message names the slug, e.g. `forbidden (knowledge base "hr")`. With `kb` omitted, a knowledge base that is visible but refuses search (`forbidden`, or the concealed `not_found`) is dropped and its slug listed under `skipped`, so the caller can see coverage; any other failure (`invalid_request`, `backend_unavailable`, a transport error) still fails the whole call and names the knowledge base. `skipped` is always present and always empty for an explicit list.
+**Failures.** With an explicit `kb` list, any knowledge base that cannot be searched fails the whole call — a slug the server does not declare is `not_found`, one the caller's access rules deny is `forbidden` — and the error message names the slug, e.g. `forbidden (knowledge base "hr")`. With `kb` omitted, a knowledge base that is visible but refuses search (`forbidden`, or the concealed `not_found`) is dropped and its slug listed under `skipped`, so the caller can see coverage; any other failure (`invalid_request`, `backend_unavailable`, or `transport error: internal API call failed`, whose detail is logged server-side) still fails the whole call and names the knowledge base. `skipped` is always present and always empty for an explicit list.
 
 #### `read`
 
