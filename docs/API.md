@@ -2160,11 +2160,13 @@ describes by default, which is what lets it push `notifications/resources/update
   over with `initialize`). An id that belongs to a *different* principal is answered
   identically, on purpose — see the binding bullet below.
 - Every `POST` answer is `text/event-stream`: the JSON-RPC response is the `data:` of a frame,
-  preceded by a priming frame (`id: 0`, `retry:`, empty `data:`). Send
+  preceded by a priming frame (`id: 0`, `retry:`, empty `data:`), and the stream ends once that
+  answer is sent, so the session's next request is answered at once. Send
   `Accept: application/json, text/event-stream`. A notification (`notifications/initialized`)
   is answered `202` with no body.
 - `GET /mcp` with `Accept: text/event-stream` and the session id opens the notification leg —
-  the stream server-initiated messages arrive on. It carries a keep-alive comment every 15 s.
+  the stream server-initiated messages arrive on, and the only one that stays open. It carries a
+  keep-alive comment every 15 s.
   Only one is live per session; a second becomes a shadow that sees only keep-alives.
 - `DELETE /mcp` with the session id ends the session (`202`) and closes its notification leg.
 - `MCP-Protocol-Version` is optional; when present it must be a version the server knows, and
