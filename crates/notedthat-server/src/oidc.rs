@@ -59,7 +59,8 @@ pub struct OidcSettings {
     /// This deployment's public URL, when it publishes RFC 9728 metadata.
     pub resource: Option<String>,
     /// A PEM bundle of CA certificates to trust for the issuer, on top of the
-    /// built-in roots — a self-hosted provider is usually behind an internal CA.
+    /// operating system's trust store — a self-hosted provider is usually behind
+    /// an internal CA. Without a system CA store, TLS to the issuer fails.
     pub ca_cert: Option<std::path::PathBuf>,
 }
 
