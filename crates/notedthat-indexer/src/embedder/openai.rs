@@ -185,8 +185,9 @@ impl Embedder for OpenAiCompatibleEmbedder {
                         return Err(EmbedderError::RetriesExhausted { attempts });
                     }
                     // The URL goes to the log, not into the error: the error's text reaches
-                    // search callers (503 body), `/index` and the event stream, and the
-                    // embedder's host is not theirs to see.
+                    // `/index` (`last_failure.summary`) and the `object.index_failed` stream
+                    // (the HTTP 503 response is fixed text), and the embedder's host is not
+                    // theirs to see.
                     tracing::warn!(
                         target: "notedthat::indexing",
                         url = %self.url_for_logs,
@@ -204,11 +205,11 @@ impl Embedder for OpenAiCompatibleEmbedder {
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
-                    // As for `Http`: the error's text reaches callers (503 body, `/index`,
-                    // the event stream), and reqwest's text names the URL, query included,
-                    // while the cause chain can name the host (a TLS name mismatch lists the
-                    // expected host and the certificate's names). The log gets all of it;
-                    // callers get a coarse class.
+                    // As for `Http`: the error's text reaches `/index` (`last_failure.summary`)
+                    // and the `object.index_failed` stream (the HTTP 503 response is fixed text),
+                    // and reqwest's text names the URL, query included, while the cause chain
+                    // can name the host (a TLS name mismatch lists the expected host and the
+                    // certificate's names). The log gets all of it; callers get a coarse class.
                     let class = transport_class(&e);
                     tracing::warn!(
                         target: "notedthat::indexing",
@@ -703,8 +704,9 @@ mod tests {
         );
     }
 
-    /// A transport failure's text, which reaches search callers, `/index` and the event
-    /// stream, is its class alone: no URL, host or credential from the query.
+    /// A transport failure's text, which reaches `/index` (`last_failure.summary`) and the
+    /// `object.index_failed` stream, is its class alone: no URL, host or credential from
+    /// the query.
     #[tokio::test]
     async fn transport_error_text_leaves_out_the_url() {
         let mut config = make_config("http://127.0.0.1:1");
