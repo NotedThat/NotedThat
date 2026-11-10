@@ -79,7 +79,7 @@ memchr = "2"
 # HTTP layer
 axum = { version = "0.8", default-features = false }
 axum-extra = { version = "0.10", features = ["typed-header"] }
-base64 = "0.22"
+base64 = "0.23"
 dav-server = { version = "0.11", default-features = false }
 # The version dav-server already brings; parses PROPPATCH bodies.
 xmltree = "0.12"
@@ -143,11 +143,11 @@ subtle = "2.4"
 # crate and its unfixed RUSTSEC-2023-0071. `use_pem` is the default feature
 # restated, for the test key.
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs", "use_pem"] }
-sha2 = "0.10"
+sha2 = "0.11"
 uuid = { version = "1.6", default-features = false, features = ["v7"] }
 
 # Testing
-testcontainers = "0.27"
+testcontainers = "0.28"
 wiremock = "0.6"
 
 # cargo-dist configuration — drives .github/workflows/release.yml.
