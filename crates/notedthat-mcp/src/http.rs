@@ -90,8 +90,10 @@ pub type McpHttpInnerService = StreamableHttpService<NotedThatMcp, LocalSessionM
 pub const DEFAULT_MAX_SESSIONS: usize = 256;
 
 /// Largest MCP `POST` body: twice the HTTP API's default 16 MiB body bound, so
-/// a JSON-escaped `write` the API would accept is not refused here first
-/// (rmcp 3's own default is 4 MiB; rmcp 2 had no bound).
+/// a `write` of ordinary Markdown the API would accept (JSON escaping grows it
+/// by little) is not refused here first. Heavily escaped content can grow up to
+/// sixfold and exceed it; that call gets `413` (rmcp 3's own default is 4 MiB;
+/// rmcp 2 had no bound).
 pub const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// The session header, as rmcp spells it.
@@ -367,10 +369,12 @@ impl McpHttpService {
 ///   owns that session; see [`McpSessions::admits`]. A `DELETE` that gets
 ///   through also drops the record, since rmcp removes the session before
 ///   answering.
-/// - **A `POST` carrying none** is the only request that can open a session
-///   (rmcp answers anything but `initialize` there with `422`), so it is the
-///   only one counted against the bound, and the only one whose response can
-///   carry a new `Mcp-Session-Id` to record. The capacity refusal is `503` with
+/// - **A `POST` carrying none** is the only request that can open a session,
+///   and only as `initialize`: anything else is answered `400` here, as rmcp
+///   answers it on the session path, because rmcp 3 would otherwise serve it
+///   statelessly when its `_meta` carries the SEP-2567 keys. So it is the only
+///   one counted against the bound, and the only one whose response can carry
+///   a new `Mcp-Session-Id` to record. The capacity refusal is `503` with
 ///   `Retry-After`, the shape every other capacity refusal on this server takes
 ///   (D38).
 /// - **A sessionless `GET` or `DELETE`** has nothing to bind; rmcp answers
@@ -438,6 +442,20 @@ pub async fn bind_session(
     }
 
     if request.method() == Method::POST {
+        let (parts, body) = request.into_parts();
+        // A read failure answers 413 too: past the bound it is the honest answer,
+        // and any other failure means the client is already gone.
+        let Ok(body) = axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES).await else {
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        };
+        if !is_initialize(&body) {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Bad Request: Session ID is required",
+            )
+                .into_response();
+        }
+        let request = Request::from_parts(parts, Body::from(body));
         if sessions.at_capacity().await {
             return capacity_refusal(sessions.max_sessions());
         }
@@ -472,6 +490,17 @@ pub async fn bind_session(
     }
 
     next.run(request).await
+}
+
+/// Whether a JSON-RPC body is an `initialize` request, the only one a `POST`
+/// without a session may carry. rmcp 3 would serve any other statelessly when
+/// its `_meta` carries the SEP-2567 keys, whatever protocol version they name.
+fn is_initialize(body: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Message {
+        method: String,
+    }
+    serde_json::from_slice::<Message>(body).is_ok_and(|message| message.method == "initialize")
 }
 
 /// A session id rmcp cannot have issued, substituted onto a refused request so
@@ -900,55 +929,63 @@ mod caller_identity {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// rmcp 3 serves protocol `2026-07-28` statelessly (SEP-2567), which
-    /// would bypass the session bound, the keeper and the subscriptions. The
-    /// server advertises only the session-based versions, so a request on
-    /// that version without a session is refused like any other.
+    /// rmcp 3 serves a request statelessly (SEP-2567) whenever its `_meta`
+    /// carries the per-request protocol keys, whatever version they name, which
+    /// would bypass the session bound, the keeper and the subscriptions. So a
+    /// request without a session is refused unless it is `initialize`, on the
+    /// stateless protocol and on a session-based one alike.
     #[tokio::test]
     async fn a_sessionless_request_on_the_stateless_protocol_is_refused() {
         let api = wiremock::MockServer::start().await;
         let app = app(&api.uri());
-        for (method, params) in [
-            ("server/discover", serde_json::json!({})),
-            (
-                "tools/call",
-                serde_json::json!({ "name": "list_knowledgebases", "arguments": {} }),
-            ),
-        ] {
-            let name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(str::to_owned);
-            let mut params = params;
-            params["_meta"] = serde_json::json!({
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                "io.modelcontextprotocol/clientCapabilities": {},
-                "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "0" },
-            });
-            let request = Request::builder()
-                .method("POST")
-                .uri("/mcp")
-                .header("host", "127.0.0.1")
-                .header("authorization", format!("Bearer {SERVICE_TOKEN}"))
-                .header("accept", "application/json, text/event-stream")
-                .header("content-type", "application/json")
-                .header("mcp-protocol-version", "2026-07-28")
-                .header("mcp-method", method);
-            let request = match &name {
-                Some(name) => request.header("mcp-name", name.as_str()),
-                None => request,
-            }
+        for version in ["2026-07-28", "2025-11-25"] {
+            for (method, params) in [
+                ("server/discover", serde_json::json!({})),
+                (
+                    "tools/call",
+                    serde_json::json!({ "name": "list_knowledgebases", "arguments": {} }),
+                ),
+                ("resources/list", serde_json::json!({})),
+                (
+                    "resources/read",
+                    serde_json::json!({ "uri": "notedthat://kb/note.md" }),
+                ),
+            ] {
+                let name = params
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_owned);
+                let mut params = params;
+                params["_meta"] = serde_json::json!({
+                    "io.modelcontextprotocol/protocolVersion": version,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "0" },
+                });
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "127.0.0.1")
+                    .header("authorization", format!("Bearer {SERVICE_TOKEN}"))
+                    .header("accept", "application/json, text/event-stream")
+                    .header("content-type", "application/json")
+                    .header("mcp-protocol-version", version)
+                    .header("mcp-method", method);
+                let request = match &name {
+                    Some(name) => request.header("mcp-name", name.as_str()),
+                    None => request,
+                }
                 .body(Body::from(
                     serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
                         .to_string(),
                 ))
                 .expect("request");
-            let response = app.clone().oneshot(request).await.expect("response");
-            let status = response.status();
-            assert!(
-                status.is_client_error(),
-                "{method} on 2026-07-28 without a session must be refused, got {status}"
-            );
+                let response = app.clone().oneshot(request).await.expect("response");
+                assert_eq!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST,
+                    "{method} on {version} without a session must be refused"
+                );
+            }
         }
     }
 
