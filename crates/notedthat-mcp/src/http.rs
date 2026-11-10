@@ -370,11 +370,9 @@ impl McpHttpService {
 ///   through also drops the record, since rmcp removes the session before
 ///   answering.
 /// - **A `POST` carrying none** is the only request that can open a session,
-///   and only as `initialize`: anything else is answered `400` here, as rmcp
-///   answers it on the session path, because rmcp 3 would otherwise serve it
-///   statelessly when its `_meta` carries the SEP-2567 keys. So it is the only
-///   one counted against the bound, and the only one whose response can carry
-///   a new `Mcp-Session-Id` to record. The capacity refusal is `503` with
+///   and only as `initialize` ([`require_initialize`] answers anything else
+///   `400`), so it is the only one counted against the bound, and the only one
+///   whose response can carry a new `Mcp-Session-Id` to record. The capacity refusal is `503` with
 ///   `Retry-After`, the shape every other capacity refusal on this server takes
 ///   (D38).
 /// - **A sessionless `GET` or `DELETE`** has nothing to bind; rmcp answers
@@ -442,20 +440,6 @@ pub async fn bind_session(
     }
 
     if request.method() == Method::POST {
-        let (parts, body) = request.into_parts();
-        // A read failure answers 413 too: past the bound it is the honest answer,
-        // and any other failure means the client is already gone.
-        let Ok(body) = axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES).await else {
-            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-        };
-        if !is_initialize(&body) {
-            return (
-                StatusCode::BAD_REQUEST,
-                "Bad Request: Session ID is required",
-            )
-                .into_response();
-        }
-        let request = Request::from_parts(parts, Body::from(body));
         if sessions.at_capacity().await {
             return capacity_refusal(sessions.max_sessions());
         }
@@ -492,9 +476,35 @@ pub async fn bind_session(
     next.run(request).await
 }
 
-/// Whether a JSON-RPC body is an `initialize` request, the only one a `POST`
-/// without a session may carry. rmcp 3 would serve any other statelessly when
-/// its `_meta` carries the SEP-2567 keys, whatever protocol version they name.
+/// Refuse a `POST` without a session unless it is `initialize`, with the `400`
+/// rmcp gives it on the session path. rmcp 3 would serve any other statelessly
+/// when its `_meta` carries the SEP-2567 keys, whatever protocol version they
+/// name, skipping the session bound, the keeper and the subscriptions.
+///
+/// It reads the whole body to tell, so it must be mounted inside the request
+/// bounds (D71): their in-flight permit and body-idle timeout then cover the
+/// read.
+pub async fn require_initialize(request: Request, next: Next) -> Response {
+    if request.method() != Method::POST || request.headers().contains_key(SESSION_HEADER) {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    // A read failure answers 413 too: past the bound it is the honest answer,
+    // and a stalled body is answered 408 by the bounds layer outside this one.
+    let Ok(body) = axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    if !is_initialize(&body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Bad Request: Session ID is required",
+        )
+            .into_response();
+    }
+    next.run(Request::from_parts(parts, Body::from(body))).await
+}
+
+/// Whether a JSON-RPC body is an `initialize` request.
 fn is_initialize(body: &[u8]) -> bool {
     #[derive(serde::Deserialize)]
     struct Message {
@@ -722,8 +732,9 @@ mod caller_identity {
                     .accepting(BOB_TOKEN, "bob", []),
             )),
         );
-        // The same stack `notedthat-server` mounts: auth outermost, then the
-        // session bound, then rmcp for POST, GET and DELETE.
+        // The same stack `notedthat-server` mounts, less the request bounds:
+        // auth outermost, then the session bound, then the initialize check,
+        // then rmcp for POST, GET and DELETE.
         let router = Router::new().route(
             "/mcp",
             on_service(
@@ -732,6 +743,7 @@ mod caller_identity {
                     .or(MethodFilter::DELETE),
                 service.into_service(),
             )
+            .route_layer(middleware::from_fn(require_initialize))
             .route_layer(middleware::from_fn_with_state(
                 sessions.clone(),
                 bind_session,
