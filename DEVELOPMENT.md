@@ -33,6 +33,9 @@ cargo fmt --all -- --check
 # Dependency advisories (mirrors CI)
 cargo deny --locked check advisories
 
+# GHSA/OSV advisories (mirrors the scheduled advisories.yml run; see "Dependency advisories")
+osv-scanner scan source --lockfile Cargo.lock
+
 # Alerting rules: config, syntax and unit tests (mirrors CI; see "Alerting rules")
 docker run --rm --entrypoint promtool -w /etc/prometheus \
   -v "$PWD/docker/prometheus:/etc/prometheus:ro" prom/prometheus:v3.7.3 check config prometheus.yml
@@ -397,6 +400,29 @@ link — so the next person can tell a considered deferral from an unreviewed on
 the check the day the advisory stops matching the tree, so a suppression rots loudly: delete it, do
 not extend it. `deny.toml` likewise records why the `licenses`, `bans` and `sources` checks are off,
 and why `unsound` covers the whole graph; those are decisions, not defaults.
+
+### Advisories outside RustSec
+
+cargo-deny reads only RustSec, so an advisory filed only in GitHub's database (GHSA) never reaches
+it. `advisories.yml` therefore also runs [osv-scanner](https://google.github.io/osv-scanner/)
+against `Cargo.lock` on the same weekday schedule and on demand. OSV merges RustSec and GHSA, so
+this run sees everything cargo-deny sees plus the GHSA-only findings. Like the cargo-deny run there,
+it gates nothing.
+
+```sh
+# The version advisories.yml pins; it moves by hand, here and there.
+go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
+
+# osv-scanner.toml, next to Cargo.lock, is read without a flag.
+osv-scanner scan source --lockfile Cargo.lock
+```
+
+Suppressions live in `osv-scanner.toml`, never on the command line. Every `[[IgnoredVulns]]` entry
+needs a `reason` and an `ignoreUntil` date. osv-scanner does not fail on an entry that stopped
+matching, the way cargo-deny does, so the date is what makes a suppression expire loudly. One
+finding often has several IDs (`RUSTSEC-…`, `GHSA-…`, `CVE-…`): suppress it once, under the ID the
+scan prints, and name the aliases in the reason. An advisory accepted in `deny.toml` is accepted in
+`osv-scanner.toml` with the same reason, and both entries leave in the same commit.
 
 ## Alerting rules
 

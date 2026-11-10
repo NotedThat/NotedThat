@@ -1,0 +1,24 @@
+# Suppressions for the osv-scanner run in `.github/workflows/advisories.yml`.
+#
+# osv-scanner reads OSV, which merges RustSec, GHSA and others, so it sees
+# everything `cargo deny check advisories` sees plus advisories filed only in
+# GHSA. One finding can carry several IDs (RUSTSEC-..., GHSA-..., CVE-...):
+# suppress it once, under the ID the scan prints, and list the others in the
+# reason so a search for any of them finds the entry.
+#
+# Keep this file in step with the `ignore` list in deny.toml: an advisory that
+# is accepted there is accepted here with the same reason, and an entry leaves
+# both files in the same commit. osv-scanner, unlike cargo-deny, does not fail
+# on an entry that no longer matches, so `ignoreUntil` is what makes a
+# suppression expire loudly: past that date the finding turns the run red
+# again. Pick the date deny.toml's reason names as its revisit date.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0449"
+ignoreUntil = 2026-12-15
+reason = "unsafe-libyaml is unmaintained, no patched version; reached only through serde_yaml_ng for OKF frontmatter, bounded by FRONTMATTER_PREFIX_LIMIT. Same as deny.toml; replacement tracked in https://github.com/NotedThat/NotedThat/issues/424."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0440"
+ignoreUntil = 2027-02-01
+reason = "astral-tokio-tar is unmaintained, no patched version; reached only through the testcontainers dev-dependency, so it never ships. Same as deny.toml; delete once testcontainers drops it."
