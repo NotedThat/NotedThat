@@ -434,6 +434,52 @@ async fn an_upload_slower_than_the_request_timeout_still_succeeds() {
     assert!(read.text().await.expect("body").contains("chunk 7"));
 }
 
+/// A session-less MCP `POST` has its body read to tell `initialize` from the
+/// rest; that read is under the request bounds like any other, so a body that
+/// stops arriving is refused rather than holding the task for good.
+#[tokio::test]
+async fn a_sessionless_mcp_body_that_stalls_is_refused() {
+    let server = PatchServer::start_with_config(MAX_PATCHABLE, in_memory_backends(), |config| {
+        // Long enough that the request timeout cannot be what answers.
+        config.request_bounds.request_timeout = Duration::from_secs(30);
+        config.request_bounds.header_read_timeout = Duration::from_millis(400);
+    })
+    .await;
+    let addr = server
+        .base_url
+        .strip_prefix("http://")
+        .expect("an http base URL");
+    let mut socket = tokio::net::TcpStream::connect(addr).await.expect("connect");
+
+    // A complete head with no `Mcp-Session-Id` and a chunked body that never
+    // ends.
+    socket
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\n\
+                 Host: localhost\r\n\
+                 Authorization: Bearer {API_TOKEN}\r\n\
+                 Accept: application/json, text/event-stream\r\n\
+                 Content-Type: application/json\r\n\
+                 Transfer-Encoding: chunked\r\n\r\n\
+                 10\r\n{{\"jsonrpc\":\"2.0\"\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("head and first chunk");
+
+    let mut buffer = Vec::new();
+    let _ = tokio::time::timeout(WAIT, socket.read_to_end(&mut buffer))
+        .await
+        .expect("the server should not wait on a body that stopped arriving");
+    let answer = String::from_utf8_lossy(&buffer);
+    assert!(
+        buffer.is_empty() || status_code(&answer) == Some(StatusCode::REQUEST_TIMEOUT),
+        "expected a 408 or a close, got: {answer}"
+    );
+}
+
 /// The other half of the same bound: a body that stops arriving is refused, so
 /// deferring the deadline past the body does not leave a stalled upload holding
 /// a permit for as long as it likes.

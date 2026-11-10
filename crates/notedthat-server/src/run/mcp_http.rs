@@ -13,7 +13,7 @@ use notedthat_mcp::{
     McpHttpService, McpHttpServiceConfig,
     auth::{McpAuth, authenticate_caller},
     client::NotedThatClient,
-    http::bind_session,
+    http::{bind_session, require_initialize},
     sse_refusal::refusal_body,
 };
 use std::collections::BTreeMap;
@@ -81,11 +81,14 @@ pub(crate) fn build_router(
     // One service, routed as two legs, because only one of them answers once.
     // `GET` is the notification stream and is meant to stay open for hours,
     // so it is registered without the request bounds (D71); `POST` and
-    // `DELETE` carry them, innermost, so a refused request has already been
-    // authenticated and matched to its session.
+    // `DELETE` carry them, so a refused request has already been
+    // authenticated and matched to its session. Inside them, the check that
+    // reads a session-less body to refuse anything but `initialize`, so the
+    // bounds cover that read.
     let service = mcp_service.into_service();
     let stream_leg = on_service(MethodFilter::GET, service.clone());
     let request_leg = on_service(MethodFilter::POST.or(MethodFilter::DELETE), service)
+        .route_layer(middleware::from_fn(require_initialize))
         .route_layer(middleware::from_fn_with_state(bounds.clone(), bound));
     let mcp = stream_leg
         .merge(request_leg)
