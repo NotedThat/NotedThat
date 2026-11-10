@@ -1947,8 +1947,10 @@ async fn a_refresh_re_indexes_unchanged_chunks_that_carry_no_mime() {
     let (store, provisioner) = make_store();
     provisioner.ensure_collection(&kb, 4).await.unwrap();
 
-    let storage = Arc::new(MockStorage::new());
-    storage.insert(kb.as_str(), "legacy.md", "# Old\n\nBody.", "text/markdown");
+    let storage = Arc::new(scripted());
+    storage
+        .insert(kb.as_str(), "legacy.md", "# Old\n\nBody.", "text/markdown")
+        .await;
     let store_arc: Arc<dyn VectorStore> = Arc::new(store.clone());
     refresh_once(
         storage.clone(),
