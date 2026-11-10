@@ -313,7 +313,9 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
 
     /// Only the session-based protocol versions: rmcp 3 serves `2026-07-28`
     /// statelessly (SEP-2567), which would skip the session bound, the keeper
-    /// and the subscriptions this server is built on.
+    /// and the subscriptions this server is built on. rmcp routes on the shape
+    /// of `_meta`, not the version, so `bind_session` also refuses any request
+    /// without a session other than `initialize`.
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(ProtocolVersion::known_up_to(
             &ProtocolVersion::LATEST_WITH_INITIALIZE,
