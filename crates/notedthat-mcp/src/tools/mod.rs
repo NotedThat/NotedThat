@@ -23,12 +23,14 @@ use rmcp::{
     handler::server::wrapper::Parameters,
     model::{
         CallToolResult, Extensions, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResult, ServerInfo, SubscribeRequestMethod,
-        SubscribeRequestParams, UnsubscribeRequestMethod, UnsubscribeRequestParams,
+        ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerConfig,
+        SubscribeRequestMethod, SubscribeRequestParams, UnsubscribeRequestMethod,
+        UnsubscribeRequestParams,
     },
     service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
 };
+use std::borrow::Cow;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -222,11 +224,9 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult {
-            tools: Self::tool_router().list_all(),
-            meta: None,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(
+            Self::tool_router().list_all(),
+        )))
     }
 
     /// List resources — and watch the knowledge base each page named for
@@ -263,9 +263,10 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
+    ) -> Result<ReadResourceResponse, McpError> {
         crate::resources_read::read_resource(&self.client_for(&context.extensions)?, &request.uri)
             .await
+            .map(Into::into)
     }
 
     /// Subscribe to a `notedthat://` resource (D66): the key is probed as
@@ -310,13 +311,22 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         std::future::ready(outcome)
     }
 
+    /// Only the session-based protocol versions: rmcp 3 serves `2026-07-28`
+    /// statelessly (SEP-2567), which would skip the session bound, the keeper
+    /// and the subscriptions this server is built on.
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(
+            &ProtocolVersion::LATEST_WITH_INITIALIZE,
+        ))
+    }
+
     /// Override `get_info` to advertise both tools and resources capabilities.
     ///
     /// Without this override the `#[tool_handler]` macro would generate a
     /// `get_info` that only includes `enable_tools()`. `enable_resources()`
     /// makes `initialize` include `resources`; `subscribe` and `listChanged`
     /// are advertised exactly when an events backend can feed them (D66).
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = rmcp::model::ServerCapabilities::builder()
             .enable_tools()
             .enable_resources();
@@ -327,7 +337,7 @@ impl rmcp::handler::server::ServerHandler for NotedThatMcp {
         } else {
             capabilities
         };
-        ServerInfo::new(capabilities.build())
+        ServerConfig::new(capabilities.build())
     }
 }
 
