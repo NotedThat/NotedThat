@@ -10,10 +10,12 @@
 # added there fires every job in that file — `test`, `clippy`, the integration
 # suite and the Docker build — to answer a question that compiles nothing.
 #
-# It gates nothing. Like the `ci.yml` job it feeds no `needs:`, so a red run
-# here blocks no tag and no merge; it exists to put the finding in front of
-# somebody while `main` is otherwise idle. The fix belongs on `main` — update
-# the lockfile, or add an `ignore` entry to deny.toml with a reason and a link.
+# This run itself feeds no `needs:` (a separate workflow cannot), so a red run
+# here blocks nothing directly; it exists to put the finding in front of
+# somebody while `main` is otherwise idle. The gate is the `ci.yml` job: the
+# release jobs `needs:` it, so the same finding blocks the next release from
+# `main`. The fix belongs on `main` — update the lockfile, or add an `ignore`
+# entry to deny.toml with a reason and a link.
 #
 # Keep the cargo-deny version in step with `ci.yml` and `DEVELOPMENT.md`.
 # Renovate bumps the action SHA but cannot see `tool:`.

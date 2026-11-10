@@ -349,8 +349,13 @@ included. A green run means no advisory matches the tree except those listed, wi
 
 It runs on pull requests and on pushes to `main`, and `advisories.yml` runs the same check on a
 weekday schedule so an advisory filed while the repository is quiet does not wait for the next
-push. None of them gates a release: `release-plz-release` does not `needs:` any of them, so a red
-advisory run blocks no tag. The job's comment in `ci.yml` explains the split.
+push. The `ci.yml` job gates every release: `release-plz-release` and `release-plz-pr` both
+`needs:` it, so a red advisory run on `main` blocks the tag, the crates.io publish and the image
+until it is green again. Unblock it on `main`, not in whichever pull request happened to be open:
+take the fix the advisory names (update `Cargo.lock`), or, when no fixed version exists or the
+affected code never ships, add an `ignore` entry to `deny.toml` with a reason, a link and a
+revisit date (see below). The scheduled `advisories.yml` run is no gate of its own; it only surfaces a
+finding while `main` is quiet. The job's comment in `ci.yml` explains the split.
 
 Same command CI runs, same config, no flags to remember:
 
