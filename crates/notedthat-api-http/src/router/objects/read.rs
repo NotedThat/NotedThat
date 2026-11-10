@@ -11,42 +11,18 @@ use notedthat_core::{
     ConditionalHeaders, Error as CoreError, KbSlug, LineIndex, ObjectPath, ObjectRead,
     StorageError, if_range_matches, parse_line_range_header, parse_range_header,
 };
-use std::borrow::Cow;
 
 use super::super::openapi::{
     BackendUnavailable, BadRequest, Forbidden, InternalError, NotFound, NotModified,
     ObjectPathParams, PreconditionFailed, RangeNotSatisfiable, ReadConditions, Unauthorized,
 };
 
-fn normalize_content_type(content_type: &str) -> Cow<'_, str> {
-    let Ok(media_type) = content_type.parse::<mime::Mime>() else {
-        return Cow::Borrowed(content_type);
-    };
-
-    let subtype = media_type.subtype().as_str();
-    let textual = media_type.type_() == mime::TEXT
-        || (media_type.type_() == mime::APPLICATION
-            && (subtype == "json"
-                || media_type
-                    .suffix()
-                    .is_some_and(|suffix| suffix.as_str() == "json")
-                || subtype == "xml"
-                || media_type
-                    .suffix()
-                    .is_some_and(|suffix| suffix.as_str() == "xml")));
-
-    if textual && media_type.get_param(mime::CHARSET).is_none() {
-        Cow::Owned(format!("{content_type}; charset=utf-8"))
-    } else {
-        Cow::Borrowed(content_type)
-    }
-}
-
-/// The `Content-Type` a read answers with: the stored type, normalized, or
-/// `application/octet-stream` when none was stored. `HEAD` and `GET` share it,
-/// so the two cannot disagree (RFC 9110 §9.3.2).
-fn response_content_type(stored: Option<&str>) -> Cow<'_, str> {
-    normalize_content_type(stored.unwrap_or("application/octet-stream"))
+/// The `Content-Type` a read answers with: the stored type exactly as written, or
+/// `application/octet-stream` when none was stored. Its charset was decided from the
+/// bytes when they were written, so a read never claims UTF-8 it did not check (#483).
+/// `HEAD` and `GET` share it, so the two cannot disagree (RFC 9110 §9.3.2).
+fn response_content_type(stored: Option<&str>) -> &str {
+    stored.unwrap_or("application/octet-stream")
 }
 
 /// Read an object's metadata.
@@ -93,7 +69,7 @@ pub(in crate::router) async fn head_object(
     let content_type = response_content_type(meta.content_type.as_deref());
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref());
+        .header(axum::http::header::CONTENT_TYPE, content_type);
     builder = with_validators(builder, meta.etag.as_deref(), meta.last_modified)
         .header(ACCEPT_RANGES, "bytes");
     // Content-Length from metadata size, not body length (HEAD has no body).
@@ -108,8 +84,9 @@ pub(in crate::router) async fn head_object(
 ///
 /// `Range: bytes=…` selects bytes (one range only); `Range: lines=a-b` selects
 /// lines, 1-based and inclusive, and answers with `Content-Range: lines a-b/N`
-/// and `X-Content-Range-Bytes`. A text content type is served with
-/// `; charset=utf-8`.
+/// and `X-Content-Range-Bytes`. The content type is served exactly as stored:
+/// a write labels a textual type `charset=utf-8` only when its bytes are UTF-8
+/// (see the charset rule in docs/API.md).
 #[utoipa::path(
     get,
     path = "/knowledgebases/{kb_slug}/{object_path}",
@@ -263,7 +240,7 @@ fn full_or_partial_response(read: ObjectRead) -> Response {
     };
     let mut builder = Response::builder()
         .status(status)
-        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
+        .header(axum::http::header::CONTENT_TYPE, content_type)
         .header(axum::http::header::CONTENT_LENGTH, read.bytes.len())
         .header(ACCEPT_RANGES, "bytes");
 
@@ -336,7 +313,7 @@ async fn serve_line_range_read(
 
     let mut builder = Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
-        .header(axum::http::header::CONTENT_TYPE, content_type.as_ref())
+        .header(axum::http::header::CONTENT_TYPE, content_type)
         .header(axum::http::header::CONTENT_LENGTH, sliced.len());
 
     builder = with_validators(builder, read.meta.etag.as_deref(), read.meta.last_modified);

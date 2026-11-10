@@ -147,7 +147,7 @@ async fn a_write_is_announced_then_indexed_with_the_same_etag_and_then_searchabl
         indexed["etag"], etag,
         "the verdict names the version written"
     );
-    assert_eq!(indexed["mime"], "text/markdown");
+    assert_eq!(indexed["mime"], "text/markdown; charset=utf-8");
     assert!(indexed["chunks"].as_u64().unwrap() >= 1, "{indexed}");
     assert!(indexed.get("size").is_none() && indexed.get("mtime").is_none());
     assert!(
@@ -232,7 +232,7 @@ async fn a_failed_index_is_reported_and_a_retry_is_indexed() {
     let failed = frames[1].data.as_ref().unwrap();
     assert_eq!(failed["source"], "indexer");
     assert_eq!(failed["etag"], etag);
-    assert_eq!(failed["mime"], "text/markdown");
+    assert_eq!(failed["mime"], "text/markdown; charset=utf-8");
     let summary = failed["summary"]
         .as_str()
         .unwrap_or_else(|| panic!("{failed}"));
@@ -280,7 +280,7 @@ async fn http_put_patch_replace_and_delete_each_publish_one_event() {
     assert_eq!(data["kb"], server.kb);
     assert_eq!(data["etag"], etag);
     assert_eq!(data["size"], 10);
-    assert_eq!(data["mime"], "text/markdown");
+    assert_eq!(data["mime"], "text/markdown; charset=utf-8");
     assert!(data["mtime"].as_i64().unwrap() > 0);
     assert!(
         data["occurred_at"].as_str().unwrap().ends_with('Z'),

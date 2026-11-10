@@ -437,7 +437,10 @@ async fn test_put_md_with_octet_stream_stored_as_text_markdown() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let stored = storage.get_stored("notes", "sniff.md").await.unwrap();
-    assert_eq!(stored.meta.content_type.as_deref(), Some("text/markdown"));
+    assert_eq!(
+        stored.meta.content_type.as_deref(),
+        Some("text/markdown; charset=utf-8")
+    );
 }
 
 #[tokio::test]
