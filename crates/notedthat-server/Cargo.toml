@@ -84,7 +84,7 @@ notedthat-events = { path = "../notedthat-events" }
 async-nats.workspace = true
 futures.workspace = true
 # `stream` reads an SSE body chunk by chunk as it arrives.
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["form", "stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 bytes.workspace = true
 # A recorder the metered-wrapper tests can read back, to prove a dropped
