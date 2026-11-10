@@ -89,4 +89,22 @@ on it, so an upgrade does not remove it. Revisit by 2027-02-01, or as soon as \
 a testcontainers release drops it; unused-ignored-advisory fails this check \
 once the crate leaves the tree, which is the cue to delete this entry. \
 https://rustsec.org/advisories/RUSTSEC-2026-0440.html""" },
+    { id = "RUSTSEC-2026-0457", reason = """
+rmcp's OAuth client checks host strings instead of resolved addresses in its \
+SSRF filter. The OAuth client is part of rmcp's client side, which only \
+notedthat-mcp's dev-dependency enables (feature "client", for the tests); the \
+shipped server never compiles it. Fixed in rmcp 3.7.0. Stopgap until the rmcp \
+3.9 bump: https://github.com/NotedThat/NotedThat/issues/532. Revisit by \
+2026-12-01; unused-ignored-advisory fails this check once rmcp is upgraded, \
+which is the cue to delete this entry. \
+https://rustsec.org/advisories/RUSTSEC-2026-0457.html""" },
+    { id = "RUSTSEC-2026-0462", reason = """
+rmcp's Streamable HTTP client buffers response bodies without a bound. The \
+client is only enabled by notedthat-mcp's dev-dependency (feature "client", \
+for the tests); the shipped server uses rmcp's server transport only. Fixed \
+in rmcp 3.9.0. Stopgap until the rmcp 3.9 bump: \
+https://github.com/NotedThat/NotedThat/issues/532. Revisit by 2026-12-01; \
+unused-ignored-advisory fails this check once rmcp is upgraded, which is the \
+cue to delete this entry. \
+https://rustsec.org/advisories/RUSTSEC-2026-0462.html""" },
 ]
