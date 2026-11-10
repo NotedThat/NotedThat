@@ -78,7 +78,7 @@ impl MockStorage {
     /// the condition `Skip::IfUnchanged` turns on — so the stub has to vary it.
     fn etag_for(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};
-        format!("\"{:x}\"", Sha256::digest(bytes))
+        format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
     }
 
     fn insert(&self, kb: &str, key: &str, content: &str, content_type: &str) {

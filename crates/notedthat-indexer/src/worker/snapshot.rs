@@ -61,7 +61,7 @@ impl SnapshotObserver {
         let prefix = String::from_utf8(prefix)
             .map_err(|error| Error::new(ErrorKind::InvalidData, error.utf8_error()))?;
         Ok(SnapshotFacts {
-            content_hash: format!("{:x}", self.hasher.clone().finalize()),
+            content_hash: hex::encode(self.hasher.clone().finalize()),
             prefix,
         })
     }
