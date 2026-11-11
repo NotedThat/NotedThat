@@ -167,6 +167,33 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
 
+      # Fail on any HIGH/CRITICAL vulnerability that has a fix, and on any
+      # secret baked into a layer. The runtime base is digest-pinned and never
+      # `apt-get upgrade`d, so red here means "bump the digest" (RELEASING.md,
+      # "Base image digests"), never "re-run". DEVELOPMENT.md has the same scan
+      # as a local command; keep the two flag for flag.
+      #
+      # The subject is the image this leg just produced: the one the
+      # `type=docker` exporter loaded into the daemon on push=false, and the
+      # pushed per-arch digest on push=true (the login step above supplies the
+      # registry credentials).
+      #
+      # Step-level timeout, not job-level: a scan that hangs on the vulnerability
+      # DB download should FAIL this step. See the note on the job's timeout.
+      - name: Scan the image for vulnerabilities and secrets
+        timeout-minutes: 10
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: >-
+            ${{ inputs.push
+              && format('{0}@{1}', env.IMAGE, steps.build.outputs.digest)
+              || format('{0}:validation', env.IMAGE) }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          trivyignores: .trivyignore.yaml
+
       # An empty file named after the digest. Looks like a typo otherwise: the
       # merge job globs these, so the manifest list is built from whatever the
       # matrix actually produced rather than from a hard-coded platform list.
