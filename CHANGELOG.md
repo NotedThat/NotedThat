@@ -10,6 +10,196 @@ See [RELEASING.md](RELEASING.md) for the full versioning policy.
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/NotedThat/NotedThat/compare/v0.12.3...v0.14.0) - 2026-11-11
+
+### Added
+
+- *(metrics)* gate the alerts' new-series arm on the process start time
+- *(metrics)* export MCP session gauges and alert at 80% of the pool
+- *(core)* [**breaking**] report whether delete_object found an object
+- *(nats)* [**breaking**] shared connection with auth, TLS and stream settings; public event contract
+- *(readiness)* probe every knowledge base's bucket, not only the first
+- *(api)* generate an OpenAPI 3.1 document for /api/v1
+
+### Fixed
+
+- *(deps)* [**breaking**] bump rmcp to 3.9
+- *(mcp)* report the API Content-Type on resources/read
+- *(indexer)* [**breaking**] enforce a positive index concurrency and cover the scheduler
+- *(api)* [**breaking**] answer 204 when PUT replaces an object
+- *(indexer)* report an object whose chunks carry no mime as changed
+- name a key's content type from one shared, case-insensitive table
+- *(core)* [**breaking**] report an invalid listing cursor as a 400, not a backend outage
+- *(core)* keep NamedTempFile's handle instead of reopening the staging file
+- *(storage-s3)* log BucketAlreadyExists as a warning instead of "owned by us"
+- *(errors)* [**breaking**] answer every storage condition from one status table per surface
+- *(api)* bound Last-Modified before formatting it
+- *(storage-s3)* percent-encode every reserved byte in the copy source
+- *(storage-s3)* redact the secret access key in S3Config and S3Settings Debug
+- *(indexer)* re-index an object whose chunks carry no mime instead of skipping it
+- *(indexer)* redact the API key in the embedder and Qdrant config Debug
+- *(indexer)* treat an object that chunks to nothing as tombstoned
+- *(indexer)* a tombstone whose re-read fails still removes its points
+- *(indexer)* stamp last-seen only with the state the write path announced
+- *(indexer)* a live-key tombstone that fails to index says so
+- *(indexer)* [**breaking**] every index event looks again at storage before acting
+- *(write)* store a .txt written without a type as text/plain
+- [**breaking**] decide the charset label from the bytes at write time, not at read
+- *(write)* [**breaking**] report a replace's size from its own write, not a second HEAD
+- *(api)* [**breaking**] answer 428 when a required If-Match is missing
+- *(nats)* enforce TLS with a pinned CA, install a rustls provider, and floor the duplicate window
+- *(nats)* send URL credentials and leave unconfigured stream settings alone
+- *(core)* [**breaking**] reserve only root object keys, not folders of the same name
+- *(events)* skip an undecodable NATS event instead of ending the stream
+- *(api-http)* omit the replace ETag header when the write returned none
+- *(webdav)* clamp a modification time past year 9999 instead of panicking
+- send fixed text for broker and transport failures and log the detail
+- *(api-http)* answer 400, not 413, for a request body that cannot be read
+- *(api-http)* [**breaking**] answer path rejections on search and replace in the error envelope
+- *(api-http)* [**breaking**] resolve object requests in one extractor and read bodies through one cap
+- *(api)* send application/octet-stream on HEAD for an untyped object
+- *(api-http)* declare the OpenAPI parameter sets as crate-private markers
+- *(api-http)* declare the OpenAPI-only types without dead_code suppressions
+- *(api-http)* build the OpenAPI fixtures from AppState::for_tests and regenerate the document
+- *(api)* pin the OpenAPI info.version to the API version and renumber to D77
+- *(api-http)* [**breaking**] spell an insert point's byte range as */N with X-Insert-Offset
+- *(webdav)* refuse an unbounded PROPFIND only on a collection
+- *(api)* send Last-Modified on a 304 only when there is no ETag
+- *(server)* place OAuth metadata between host and path per RFC 9728
+- *(api)* honour If-Range and advertise Accept-Ranges
+- *(api)* send ETag and Last-Modified on 304 Not Modified
+- *(webdav)* compare the Destination and Host authorities as parsed hosts
+- *(webdav)* authorize the COPY/MOVE destination, not only the source
+- *(webdav)* list a missing MOVE/COPY source's prefix only once
+- *(webdav)* refuse a folder that shadows a file of the same name
+- *(webdav)* [**breaking**] refuse folder DELETE, MOVE and COPY with 403
+- *(webdav)* serve DAV:error bodies as application/xml
+- *(mcp)* keep reserved keys out of resources/list; document WebDAV DELETE
+- *(core)* [**breaking**] reserve the root object keys that API routes shadow
+- *(webdav)* answer 500 for a non-transient PROPFIND listing failure and log its cause
+- *(webdav)* answer 5xx instead of an empty 207 when a PROPFIND listing fails
+- *(webdav)* take COPY and MOVE's 201 or 204 from the backend
+- *(webdav)* answer PROPPATCH on a folder URL ending in a slash
+- *(webdav)* [**breaking**] answer PROPPATCH with 207 Multi-Status instead of 405
+- *(webdav)* honour If, If-Match and If-None-Match on COPY and MOVE
+- *(webdav)* [**breaking**] treat a missing Depth as infinity and refuse it with 403
+- *(mcp)* read a session-less body under the request bounds
+- *(mcp)* refuse session-less requests other than initialize
+- *(mcp)* wait for the keeper ping's answer so a silent client times out
+- *(mcp)* redact the bearer in NotedThatClient Debug
+- *(api-http)* end an event stream when its credential expires
+- *(mcp)* read an insert point's offset from X-Insert-Offset
+- *(config)* [**breaking**] blank numeric settings mean the default and zero is rejected
+- *(server)* redact the token, WebDAV password and API keys in config Debug
+- *(server)* [**breaking**] refuse to start on a malformed RUST_LOG
+- *(core)* have the stub token verifier refuse from valid_until
+- *(server)* end an event stream when jsonwebtoken first refuses its token
+
+### Other
+
+- fix the clippy 1.99 lints that fail CI on stable
+- use the larger Duration units clippy 1.95 asks for
+- release v0.13.0
+- Merge pull request #324 from NotedThat/fix/startup-error-once-301
+- restructure shared test support so nothing is dead
+- keep the credentials fixtures send explicit
+- build every fixture Config from Config::for_tests
+- *(indexer)* drive one file through Pipeline over ScriptedStorage
+- *(core)* add the shared setting parsers to notedthat_core::setting
+- *(core)* pin InvalidCursor as a storage outcome, not an error
+- *(indexer)* [**breaking**] derive thiserror for StorageError and ProvisionError
+- *(core)* derive Deserialize via try_from for KbSlug, TenantSlug and ObjectPath
+- *(storage)* make put_object a provided method over put_staged_object
+- *(core)* [**breaking**] replace search::ObjectKey with ObjectPath
+- *(operations)* state /metrics, session binding and the conditional-write check as current
+- use KbManifest::KEY instead of private manifest-key copies
+- *(core)* parse each reconcile key once
+- *(config)* [**breaking**] declare each setting name once and drop the test-only from_env adapters
+- read the clock through core's unix_seconds_i64
+- Merge pull request #378 from NotedThat/feat/alerting-rules-186
+- *(config)* parse adapter settings with the shared notedthat_core::setting parsers
+- *(storage-s3)* pin the S3 InvalidArgument to InvalidCursor mapping on listing
+- *(storage-s3)* collect get_object from get_object_stream
+- *(storage-s3)* cover the malformed list_objects pages
+- *(storage-s3)* find the hex digit to flip instead of a flag loop
+- *(storage-fs)* read entry types without an lstat per sibling
+- *(indexer)* run the empty-mime reindex test over ScriptedStorage
+- *(indexer)* drive per-file indexing tests through Pipeline
+- *(indexer)* delete worker_integration's private MockStorage
+- *(indexer)* run the per-file worker tests over ScriptedStorage
+- *(indexer)* [**breaking**] split IndexerWorker into scheduler and Pipeline
+- *(indexer)* type the indexing pipeline's failures
+- *(indexer)* [**breaking**] drop the raw-channel IndexQueueSender adapter
+- *(indexer)* [**breaking**] drop the never-built QdrantWrapperError::Operation
+- *(indexer)* say where the embedder error text really goes
+- *(deps)* bump sha2 to 0.11, base64 to 0.23 and testcontainers to 0.28
+- *(indexer)* describe the index queue in the event module doc
+- *(indexer)* build search errors through their SearchError constructors
+- *(indexer)* compare the length in the not-empty assert clippy 1.99 rejects
+- say the shared extension table names MCP fallback types for text only
+- *(write)* name every extension sniff_content_type infers
+- *(write)* check index health when the queue is full or closed
+- *(write)* reuse manifest::check_size in commit_copy
+- *(write)* send to the index queue through one helper
+- *(write)* find replace matches with memchr::memmem
+- correct the try_update version in the fetch_update note
+- Merge pull request #359 from NotedThat/refactor/cas-rewrite-295
+- Merge pull request #339 from NotedThat/fix/delete-cancel-tombstone-277
+- correct four # Errors and # Panics sections from review
+- *(write)* document errors on the commit paths
+- Merge pull request #328 from NotedThat/test/scripted-storage-298
+- *(write)* stop reading a discarded 512-byte prefix on every staged upload
+- *(nats)* spell a 15-minute retention with Duration::from_mins
+- *(nats)* finish the new-crate checklist
+- *(events)* unset every inventoried variable in the from_env test
+- Merge pull request #312 from NotedThat/fix/unused-deps-302
+- *(nats)* give a restricted consumer its own inbox prefix
+- *(deps)* bump reqwest to 0.13 and tower-http to 0.7
+- *(api-http)* drop the conditional-write paragraph from the HEAD handler
+- *(api-http)* say that /browse has search
+- *(api-http)* percent-encode paths with the percent-encoding crate
+- Merge pull request #375 from NotedThat/fix/reserved-root-keys-279
+- Merge pull request #377 from NotedThat/refactor/indexer-worker-fifo-panic-254-255-257
+- Merge pull request #329 from NotedThat/fix/embedding-endpoint-v1-271
+- Merge pull request #376 from NotedThat/fix/events-mime-essence-370
+- Merge pull request #374 from NotedThat/fix/events-stream-expiry-355
+- Merge pull request #323 from NotedThat/fix/range-parsing-edge-cases-288
+- Merge pull request #327 from NotedThat/fix/untyped-attachments-278
+- Merge pull request #372 from NotedThat/fix/head-content-type-354
+- Merge pull request #322 from NotedThat/fix/redact-5xx-bodies-282
+- Merge pull request #318 from NotedThat/fix/mime-filter-essence-286
+- Merge pull request #317 from NotedThat/refactor/app-state-for-tests-297
+- document the RFC 9110, 6585, 4918 and 9728 conformance changes
+- *(webdav)* split the copy/move precondition check
+- *(webdav)* name Copy and Move instead of a delete_source flag
+- Merge pull request #332 from NotedThat/fix/propfind-list-errors-274
+- *(webdav)* assert the member a served PROPFIND listing must show
+- *(deps)* drop async-trait from notedthat-webdav
+- *(deps)* drop six unused dependencies
+- *(mcp)* derive the object-path encode set from NON_ALPHANUMERIC ([#404](https://github.com/NotedThat/NotedThat/pull/404))
+- *(mcp)* drive keep_alive under paused time
+- Merge pull request #361 from NotedThat/refactor/range-span-299
+- Merge pull request #356 from NotedThat/fix/metis-comments-306
+- Merge pull request #353 from NotedThat/fix/subscriptions-token-refresh-291
+- *(server)* name each server setting once as a const
+- *(server)* parse the backend selectors and metrics switch with notedthat_core::setting
+- *(server)* [**breaking**] hold config timeouts as Duration and reuse the indexer's QdrantConfig
+- *(server)* pin that each MCP POST answer stream ends with its answer
+- *(server)* pin that an MCP tool call fits in a single request permit
+- *(server)* name the config defaults instead of repeating literals
+- *(server)* reuse the config number parsers instead of inline copies
+- Merge pull request #362 from NotedThat/fix/fs-watch-startup-race-341
+- Merge pull request #352 from NotedThat/fix/stalled-upload-status-line-340
+- Merge pull request #338 from NotedThat/fix/jsonwebtoken-nbf-280
+- Merge pull request #321 from NotedThat/fix/config-tests-env-leak-285
+- Merge pull request #311 from NotedThat/fix/304-forbid-dead-code
+- Merge pull request #360 from NotedThat/fix/drain-timeout-single-source-293
+- Merge pull request #313 from NotedThat/test/296-config-for-tests
+- *(server)* say when Config::for_tests panics
+- *(server)* add Config::for_tests baseline
+- Merge pull request #273 from NotedThat/fix/rfc-conformance-244
+- *(server)* expect 204 when the Authelia e2e overwrites a seeded file
+
 ## [0.13.0](https://github.com/NotedThat/NotedThat/compare/v0.12.3...v0.13.0) - 2026-09-30
 
 ### Added
