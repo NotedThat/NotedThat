@@ -26,7 +26,7 @@
 //!
 //! Supported, and the point of the backend. An object edited behind the server's back is
 //! detected on the next request and its `ETag` recomputed from content, and the search
-//! index keeps up too: [`watch`] notices the change and [`reconcile`] works out what it
+//! index keeps up too: [`watch`] notices the change and [`mod@reconcile`] works out what it
 //! means, so an edit made in an editor, by `git`, or by a script is searchable shortly
 //! afterwards without being written through `NotedThat`.
 //!

@@ -99,7 +99,7 @@ impl NatsPublisher {
     ///
     /// # Errors
     ///
-    /// As [`notedthat_nats::connect`] and [`Self::open`].
+    /// As [`fn@notedthat_nats::connect`] and [`Self::open`].
     pub async fn connect(config: &NatsConfig) -> Result<Self, NatsError> {
         let client = notedthat_nats::connect(&config.connect, "notedthat-server").await?;
         Self::open(client, config).await

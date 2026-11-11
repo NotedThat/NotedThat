@@ -71,7 +71,7 @@ pub(crate) enum Told {
 }
 
 /// Async indexing worker: schedules queued events across per-key lanes and
-/// runs each file through a [`Pipeline`].
+/// runs each file through a `Pipeline`.
 pub struct IndexerWorker {
     pipeline: Pipeline,
     rx: crate::IndexQueueReceiver,
@@ -470,7 +470,7 @@ pub(crate) fn collection_name(kb: &KbSlug) -> String {
 /// Check if the content type is indexable (markdown or plain text).
 ///
 /// An empty type is not: an object that declares none is judged by its key
-/// instead, through [`content_type_from_key`].
+/// instead, through `content_type_from_key`.
 pub fn is_indexable(mime: &str) -> bool {
     matches!(
         crate::mime::essence(mime).as_str(),

@@ -104,7 +104,7 @@ pub struct Reconciliation {
 /// entirely and leave it in the index forever.
 ///
 /// A key that is not a valid [`ObjectPath`] cannot be re-read, so it is dropped from both
-/// sides before anything is counted — see [`actionable_path`].
+/// sides before anything is counted — see `actionable_path`.
 ///
 /// A [reserved key](crate::RESERVED_KEYS) is dropped from the storage side only, for the
 /// same reason as `.notedthat/`: no object may be indexed under one (#279), so an object

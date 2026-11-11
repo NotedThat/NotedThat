@@ -34,8 +34,8 @@ const MAX_LIST_LIMIT: u32 = 1000;
 /// [`Storage`] backed by a local directory tree.
 ///
 /// Objects are stored at their key path under a per-KB directory, so the tree can be
-/// read, edited, grepped and backed up with ordinary tools. See [`crate::layout`] for
-/// the shape and [`crate::meta`] for how an out-of-band edit is noticed.
+/// read, edited, grepped and backed up with ordinary tools. See `crate::layout` for
+/// the shape and `crate::meta` for how an out-of-band edit is noticed.
 #[derive(Debug, Clone)]
 pub struct FsStorage {
     inner: Arc<Inner>,
