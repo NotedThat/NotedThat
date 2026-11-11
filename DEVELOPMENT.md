@@ -30,6 +30,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 # Format check (mirrors CI)
 cargo fmt --all -- --check
 
+# Rustdoc link check (mirrors CI)
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
 # Dependency advisories (mirrors CI)
 cargo deny --locked check advisories
 
