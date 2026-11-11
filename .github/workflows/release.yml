@@ -136,15 +136,22 @@ jobs:
           fi
           rustc --version
 
+      # The matrix values are shell command text, so `eval` runs them exactly as
+      # the inline `${{ }}` expansion did, without splicing them into the script.
       - name: Install dist
-        run: ${{ matrix.install_dist.run }}
+        env:
+          INSTALL_DIST: ${{ matrix.install_dist.run }}
+        run: eval "$INSTALL_DIST"
 
       - name: Install packages
-        run: |
-          ${{ matrix.packages_install }}
+        env:
+          PACKAGES_INSTALL: ${{ matrix.packages_install }}
+        run: eval "$PACKAGES_INSTALL"
 
       - name: Build artifacts
-        run: dist build --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+        env:
+          DIST_ARGS: ${{ matrix.dist_args }}
+        run: eval "dist build --output-format=json $DIST_ARGS" > dist-manifest.json
 
       - id: cargo-dist
         name: Extract upload paths
