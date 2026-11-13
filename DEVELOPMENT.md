@@ -325,17 +325,15 @@ list. Locally you normally only want your own architecture:
 docker build -t notedthat-server:local .
 ```
 
-CI also scans the built image, and both scans are reproducible here — a scanner nobody can run locally is
-a scanner people argue with. Same flags as the workflow:
+CI also scans the built image (`docker.yml`, step "Scan the image for vulnerabilities and secrets"), and the scan is reproducible
+here — a scanner nobody can run locally is a scanner people argue with. Same flags as the workflow:
 
 ```sh
-# Vulnerabilities. `--ignore-unfixed` matches CI: a failure means a fix exists
-# in the distribution and the image has not taken it, which is always actionable.
-trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-  --ignorefile .trivyignore.yaml notedthat-server:local
-
-# Secrets. Every hit is a hard fail; there is no "unfixed" for a leaked key.
-trivy image --scanners secret --ignorefile .trivyignore.yaml notedthat-server:local
+# `--ignore-unfixed`: a vulnerability failure means a fix exists in the
+# distribution and the image has not taken it, which is always actionable.
+# Secrets are filtered by the same severity, as in CI.
+trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed \
+  --exit-code 1 --ignorefile .trivyignore.yaml notedthat-server:local
 ```
 
 Both base images are pinned by digest. To bump them, follow
