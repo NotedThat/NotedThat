@@ -4,7 +4,7 @@
 //!
 //! The store is meant to be browsable: opened in an editor, `grep`ed, `rsync`ed, kept
 //! under version control. Every one of those changes objects without going through
-//! `NotedThat`, and [`crate::meta`]'s freshness stamp already makes reads correct
+//! `NotedThat`, and `crate::meta`'s freshness stamp already makes reads correct
 //! afterwards. What it cannot fix is a *search index*, which has no reason to look at an
 //! object again unless something says it changed.
 //!
@@ -39,7 +39,7 @@
 //!
 //! Each knowledge base's own directory is watched, rather than the storage root. The
 //! metadata tree and the lock file sit above those directories, so they are out of range
-//! structurally and need no filter rule at all — the same invariant [`crate::layout`]
+//! structurally and need no filter rule at all — the same invariant `crate::layout`
 //! documents for listings. Each watch carries its [`KbSlug`], so a directory name is never
 //! parsed back into a tenant and knowledge base; that mapping is not reversible.
 //!
@@ -50,7 +50,7 @@
 //! a directory created and filled quickly can have files land before the kernel starts
 //! watching it; and renaming a directory reports both ends but none of the files under
 //! either. All three are answered the same way — re-examine that subtree — and
-//! [`pending`] collapses a burst of them into the smallest set of walks that covers them.
+//! `pending` collapses a burst of them into the smallest set of walks that covers them.
 
 mod pending;
 

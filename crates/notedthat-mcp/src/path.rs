@@ -28,7 +28,7 @@ pub const OBJECT_PATH_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
 /// to `%2F`, preserving the full path as a single URL segment.
 ///
 /// # Warning
-/// Do **NOT** pass the output of this function to [`crate::client::NotedThatClient::api_v1_url`].
+/// Do **NOT** pass the output of this function to `crate::client::NotedThatClient::api_v1_url`.
 /// `api_v1_url` uses `url::Url::path_segments_mut().push()` which percent-encodes its input,
 /// so composing the two will double-encode `%` → `%25` (e.g. `%2F` → `%252F`).
 /// Use this function only for manual URL string construction outside of `api_v1_url`.

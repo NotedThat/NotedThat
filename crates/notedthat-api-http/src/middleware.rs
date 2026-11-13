@@ -55,7 +55,7 @@ pub(crate) const ANONYMOUS_REACHABLE: &[(&Method, &str)] = &[
 /// It is mounted on the `/api/v1` routes only. The unauthenticated root routes
 /// (`/healthz`, `/readyz`, `/llms.txt`) never reach it, and `/browse` resolves
 /// its own principal through the same authenticator because it is mounted
-/// outside this layer (see [`crate::router::browse`]).
+/// outside this layer (see `crate::router::browse`).
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request<Body>,

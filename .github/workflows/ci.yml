@@ -23,7 +23,8 @@ jobs:
   #   * `clippy` runs `-D warnings` over the `pedantic` group, whose membership
   #     moves between releases in both directions (see the 1.97
   #     `manual_assert_eq` entry in CHANGELOG.md). A second toolchain there
-  #     reports lint churn, not defects.
+  #     reports lint churn, not defects. `docs` likewise: its rustdoc lints are
+  #     stable's.
   #   * `package` verifies by building — a duplicate of this job's compile — and
   #     what it uniquely checks (per-crate feature unification) is
   #     toolchain-independent.
@@ -122,6 +123,25 @@ jobs:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  # Promotes rustdoc's warn-by-default `broken_intra_doc_links` and
+  # `private_intra_doc_links` to errors, so a doc link to a missing or private
+  # item fails here instead of landing unnoticed (#343).
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # Fails on a dependency a crate declares but never names. Every crate here is
   # published, so an unused entry is not a local cost: each downstream consumer
@@ -478,7 +498,7 @@ jobs:
   # against the current HEAD.
   release-plz-release:
     name: Tag and publish crates
-    needs: [test, clippy, fmt, docker-build, integration-test, advisories]
+    needs: [test, clippy, fmt, docs, docker-build, integration-test, advisories]
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
@@ -702,10 +722,10 @@ jobs:
 
   release-plz-pr:
     name: Open / update release PR
-    needs: [test, clippy, fmt, docker-build, integration-test, advisories, release-plz-release]
+    needs: [test, clippy, fmt, docs, docker-build, integration-test, advisories, release-plz-release]
     # `!cancelled()` is what lets this run after a failed release; without it a
     # failed `needs:` skips the job. The result check keeps the rest of the
-    # gate: release-plz-release itself only runs once test, clippy, fmt, docker,
+    # gate: release-plz-release itself only runs once test, clippy, fmt, docs, docker,
     # the integration suite and the advisories check have passed, so it is
     # `skipped` whenever any of them failed, and this job stays skipped with it.
     if: >-

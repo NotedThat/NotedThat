@@ -851,7 +851,7 @@ impl Config {
     ///
     /// Returns `Err(Error::Config { .. })` if any required setting is missing,
     /// if any value is invalid (empty token, bad slug, duplicate slug, etc.), or
-    /// if any [`REMOVED_LISTENER_ENV_VARS`] entry was supplied.
+    /// if any `REMOVED_LISTENER_ENV_VARS` entry was supplied.
     #[allow(clippy::too_many_lines)]
     pub fn from_cli(mut cli: ServerCli) -> Result<Self, Error> {
         let removed = [

@@ -2,7 +2,7 @@
 //!
 //! The comparison itself — why it is a comparison and not a replay, and why it is
 //! affordable — lives in [`notedthat_core::reconcile`] and is shared with the `s3`
-//! backend (D50, D67). This module supplies the filesystem's half: [`FsStorage::walk_etags`]
+//! backend (D50, D67). This module supplies the filesystem's half: `FsStorage::walk_etags`
 //! reads each object's `ETag` from its sidecar stamp, so an unchanged object costs a stat
 //! and a small read and its content is never opened.
 

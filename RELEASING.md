@@ -18,7 +18,7 @@ All 12 crates share a single ecosystem-level version:
 
 release-plz runs automatically on every push to `main`:
 
-1. `release-plz-release` runs first (needs: test, clippy, fmt, docker-build, integration-test, advisories). A red `advisories` run, a dependency with a known RustSec advisory, blocks the release until `Cargo.lock` is updated or `deny.toml` gains a reasoned `ignore` entry; see DEVELOPMENT.md, Dependency advisories. If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
+1. `release-plz-release` runs first (needs: test, clippy, fmt, docs, docker-build, integration-test, advisories). A red `advisories` run, a dependency with a known RustSec advisory, blocks the release until `Cargo.lock` is updated or `deny.toml` gains a reasoned `ignore` entry; see DEVELOPMENT.md, Dependency advisories. If the workspace version is ahead of crates.io, it publishes all crates to crates.io and creates the `vX.Y.Z` git tag + GitHub Release. Because `release_always = true`, a release missed by a red or cancelled CI run is retried on the next push to `main` rather than lost.
 2. `release-plz-pr` runs after `release-plz-release` has finished, whether it succeeded or failed. It opens or updates a release PR with the next version bump and aggregated `CHANGELOG.md` entries from all 12 crates. Running after a failure matters: when only a version bump can make the release succeed, the release PR is the way out, and a job that waited for a green release would never open it.
 3. Merging the release PR into `main` triggers the next cycle.
 

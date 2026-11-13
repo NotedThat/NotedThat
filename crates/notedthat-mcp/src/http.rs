@@ -20,10 +20,10 @@
 //! keys and change timing for objects the attacher may not read, with
 //! `list_changed` leaking write timing the same way.
 //!
-//! rmcp holds no room for a caller, and [`LocalSessionManager::create_session`]
+//! rmcp holds no room for a caller, and [`LocalSessionManager::create_session`](rmcp::transport::streamable_http_server::session::SessionManager::create_session)
 //! receives no request at all, so the record is ours: [`bind_session`] reads
 //! `Mcp-Session-Id` off the `initialize` **response** — the first place the id
-//! is visible to us — and stores the session against a [`SessionOwner`]
+//! is visible to us — and stores the session against a `SessionOwner`
 //! derived from the `Principal` the auth layer resolved. A later request
 //! presenting that id as anyone else is refused.
 //!
@@ -35,7 +35,7 @@
 //!   but OIDC access-token refresh — a client keeps one session for its whole
 //!   connection, which is the point of the stateful transport, and rotates its
 //!   token underneath it every few minutes, possibly with different groups (see
-//!   the `WatchKey` rationale in [`crate::subscriptions`]). Binding either
+//!   the `WatchKey` rationale in `crate::subscriptions`). Binding either
 //!   would cost a client its own session on every refresh.
 //! - **A mismatch answers exactly what an unknown id answers**, byte for byte,
 //!   so the check is not an oracle for which session ids exist. That is `404`
@@ -366,7 +366,7 @@ impl McpHttpService {
 /// Three paths, in the order a request meets them:
 ///
 /// - **A request carrying a session id** is refused unless the principal on it
-///   owns that session; see [`McpSessions::admits`]. A `DELETE` that gets
+///   owns that session; see `McpSessions::admits`. A `DELETE` that gets
 ///   through also drops the record, since rmcp removes the session before
 ///   answering.
 /// - **A `POST` carrying none** is the only request that can open a session,

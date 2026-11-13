@@ -2,7 +2,7 @@
 //!
 //! NATS is optional and chosen at runtime: nothing here runs unless an events
 //! backend or the indexing queue selects it. When one does, the process opens
-//! one connection with [`connect`] — URL, authentication, TLS — and each user
+//! one connection with [`fn@connect`] — URL, authentication, TLS — and each user
 //! brings its own stream up with [`ensure_stream`], under the replica, storage
 //! and deduplication settings every NotedThat-owned stream shares.
 #![deny(missing_docs)]
