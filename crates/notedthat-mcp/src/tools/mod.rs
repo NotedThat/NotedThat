@@ -206,7 +206,7 @@ impl NotedThatMcp {
 
     #[tool(
         name = "move",
-        description = "Move/rename an object (non-atomic: GET -> PUT -> DELETE)"
+        description = "Move/rename an object (non-atomic: GET -> PUT -> DELETE). The destination must not exist: an existing `to` is never overwritten and fails with precondition_failed"
     )]
     async fn mv(
         &self,

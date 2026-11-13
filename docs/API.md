@@ -2460,6 +2460,13 @@ Delete an object. Idempotent — deleting a non-existent object returns success.
 
 Move/rename an object within a knowledge base. **Non-atomic** in v1: implemented as GET source → PUT destination → DELETE source. If DELETE fails after PUT succeeds, a descriptive error is returned and the source must be removed manually.
 
+The destination must not exist. The PUT is create-only (`If-None-Match: *`), so an existing `to` is
+never overwritten: the move fails with `invalid params`, message `precondition_failed: move:
+destination <to> already exists; …`, and the source is left untouched (no DELETE is sent). Delete or
+rename the destination first to replace it. On a storage backend that does not enforce conditional
+writes (`NOTEDTHAT_S3_ALLOW_UNENFORCED_CONDITIONAL_WRITES`) this refusal is best-effort, as it is for
+`write` with `if_none_match`.
+
 **Arguments**: `kb` (string), `from` (string), `to` (string), `if_match?` (string ETag on source)
 
 **Response**: text confirmation or partial-failure error
