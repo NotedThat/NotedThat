@@ -56,7 +56,7 @@ macro_rules! storage_integration_scenarios {
         $emit!(get_if_none_match_not_modified);
         $emit!(get_range_unsatisfiable);
         $emit!(delete_if_match_wrong_fails);
-        $emit!(get_malformed_date_rejected);
+        $emit!(get_malformed_date_ignored);
         $emit!(get_suffix_range_larger_than_object);
         $emit!(head_returns_etag);
         $emit!(head_if_none_match_not_modified);
@@ -533,27 +533,47 @@ pub async fn delete_if_match_wrong_fails(store: &dyn Storage, kb: &KbSlug) {
     );
 }
 
-pub async fn get_malformed_date_rejected(store: &dyn Storage, kb: &KbSlug) {
+/// RFC 9110 §13.1.3/§13.1.4: a date header that is not an HTTP-date is ignored.
+pub async fn get_malformed_date_ignored(store: &dyn Storage, kb: &KbSlug) {
     let key = "conditional.txt";
     store.ensure_bucket(kb).await.expect("ensure_bucket");
     put(store, kb, key, b"initial", "text/plain").await;
 
-    let Err(error) = store
-        .get_object(
-            kb,
-            &path(key),
-            None,
-            ConditionalHeaders {
-                if_modified_since: Some("not-a-date".to_string()),
-                ..ConditionalHeaders::default()
-            },
-        )
-        .await
-    else {
-        panic!("malformed HTTP-date should be refused");
-    };
-
-    assert!(matches!(error, StorageError::Other { .. }));
+    for conditionals in [
+        ConditionalHeaders {
+            if_modified_since: Some("not-a-date".to_string()),
+            ..ConditionalHeaders::default()
+        },
+        ConditionalHeaders {
+            if_unmodified_since: Some("not-a-date".to_string()),
+            ..ConditionalHeaders::default()
+        },
+    ] {
+        // Each read site parses the dates separately, so cover every one.
+        let object = store
+            .get_object(kb, &path(key), None, conditionals.clone())
+            .await
+            .expect("a malformed HTTP-date should be ignored");
+        assert_eq!(object.bytes, Bytes::from_static(b"initial"));
+        let ranged = store
+            .get_object(
+                kb,
+                &path(key),
+                Some(ByteRange::FromStart { first: 0, last: 2 }),
+                conditionals.clone(),
+            )
+            .await
+            .expect("a malformed HTTP-date should be ignored on a ranged GET");
+        assert_eq!(ranged.bytes, Bytes::from_static(b"ini"));
+        store
+            .head_object(kb, &path(key), conditionals.clone())
+            .await
+            .expect("a malformed HTTP-date should be ignored on HEAD");
+        store
+            .get_object_stream(kb, &path(key), None, conditionals)
+            .await
+            .expect("a malformed HTTP-date should be ignored on a streamed GET");
+    }
 }
 
 pub async fn get_suffix_range_larger_than_object(store: &dyn Storage, kb: &KbSlug) {

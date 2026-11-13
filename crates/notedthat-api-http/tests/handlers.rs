@@ -2994,9 +2994,8 @@ async fn m3_etag_round_trip() {
     assert_eq!(head_etag, put_etag, "HEAD ETag must match PUT ETag");
 }
 
-/// Malformed HTTP-date in If-Unmodified-Since must not panic; any valid HTTP status is acceptable.
-#[tokio::test]
-async fn m3_malformed_date_if_unmodified_since() {
+/// GET `bad-date.md` with `header: not-a-valid-http-date`, returning status and body.
+async fn get_with_malformed_date(header: &str) -> (StatusCode, Vec<u8>) {
     let a = app();
     assert_eq!(
         put_text(a.clone(), KB, "bad-date.md", "data").await,
@@ -3009,17 +3008,31 @@ async fn m3_malformed_date_if_unmodified_since() {
                 .method("GET")
                 .uri(format!("/api/v1/knowledgebases/{KB}/bad-date.md"))
                 .header(auth().0, auth().1)
-                .header("if-unmodified-since", "not-a-valid-http-date")
+                .header(header, "not-a-valid-http-date")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    let status = resp.status().as_u16();
-    assert!(
-        (200..600).contains(&status),
-        "malformed If-Unmodified-Since must not panic; got {status}"
-    );
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+    (status, body.to_vec())
+}
+
+/// RFC 9110 §13.1.4: a malformed If-Unmodified-Since is ignored, so the GET is served.
+#[tokio::test]
+async fn m3_malformed_date_if_unmodified_since() {
+    let (status, body) = get_with_malformed_date("if-unmodified-since").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"data");
+}
+
+/// RFC 9110 §13.1.3: a malformed If-Modified-Since is ignored, so the GET is served.
+#[tokio::test]
+async fn m3_malformed_date_if_modified_since() {
+    let (status, body) = get_with_malformed_date("if-modified-since").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"data");
 }
 
 // ─── Cursor / Pagination ─────────────────────────────────────────────────────
